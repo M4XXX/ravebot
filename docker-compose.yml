@@ -1,0 +1,31 @@
+# RaveBot — Local Development Docker Compose
+#
+# Provides a PostgreSQL instance for local development ONLY.
+# The bot itself is NOT run via Docker Compose — run it with:
+#   uv run python -m bot.main
+#
+# Usage:
+#   docker compose up -d        # start PostgreSQL
+#   docker compose down -v      # stop and remove volumes
+#
+# [Source: architecture.md#Local Development: Native Python + PostgreSQL-only Docker Compose]
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ravebot
+      POSTGRES_PASSWORD: ravebot
+      POSTGRES_DB: ravebot
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ravebot"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
