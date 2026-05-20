@@ -16,7 +16,7 @@ from disnake.ext import commands
 from bot.context import BotContext
 from bot.db.djs import get_dj_by_discord_id
 from bot.ui.embeds import ErrorCode
-from bot.ui.views import OnboardingIntroView
+from bot.ui.views import FallbackMenuView, OnboardingIntroView
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +69,7 @@ class OnboardingCog(commands.Cog):
             await after.send(
                 "Hey! I'm RaveBot — I handle all DJ bookings here. "
                 "Want me to add you to the booking pool?",
-                view=OnboardingIntroView(self.ctx, after.id),
+                view=OnboardingIntroView(self.ctx, after.id, after.guild.id),
             )
             logger.info("Onboarding DM sent to %s (user_id=%s)", after.name, after.id)
         except disnake.Forbidden:
@@ -91,3 +91,29 @@ class OnboardingCog(commands.Cog):
                         f"(Discord Settings → Privacy & Safety), then re-assign the DJ role."
                     ),
                 )
+
+    @commands.Cog.listener()
+    async def on_message(self, message: disnake.Message) -> None:
+        """Respond to free-text DMs with FallbackMenuView.
+
+        Fires for every Discord message — filters to DMs from non-bot users only.
+        Checks per-user lock: if held, user is in an active multi-step flow.
+        FallbackMenuView NOT shown during active flows (AC5).
+
+        [Source: epics.md#Story 2.4 AC2, AC5]
+        [Source: ux-design-specification.md#UX-DR1]
+        """
+        # Only handle DMs
+        if message.guild is not None:
+            return
+        # Ignore bot messages (including our own)
+        if message.author.bot:
+            return
+        # If user is in an active multi-step flow, do not interrupt
+        lock = self.ctx.get_user_lock(message.author.id)
+        if lock.locked():
+            return
+        await message.channel.send(
+            "I work best with buttons — here's what I can do for you:",
+            view=FallbackMenuView(self.ctx),
+        )

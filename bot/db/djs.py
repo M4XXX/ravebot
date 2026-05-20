@@ -65,3 +65,26 @@ async def insert_dj(
         stream_url_primary,
         stream_url_backup,
     )
+
+
+async def update_active_booking(
+    pool: asyncpg.Pool,
+    *,
+    discord_user_id: int,
+    active_booking: bool,
+) -> bool:
+    """Set active_booking status for a DJ. Returns True if the row was found and updated.
+
+    Returns False if no DJ row exists (DJ never completed onboarding).
+    Called by FallbackMenuView go_active and go_inactive handlers (Story 2.4).
+
+    Ownership-scoped: WHERE discord_user_id = $2.
+    [Source: architecture.md#DJ Data Isolation: Ownership-Scoped Queries]
+    [Source: epics.md#Story 2.4 AC3, AC4]
+    """
+    result = await pool.execute(
+        "UPDATE djs SET active_booking = $1 WHERE discord_user_id = $2",
+        active_booking,
+        discord_user_id,
+    )
+    return result == "UPDATE 1"

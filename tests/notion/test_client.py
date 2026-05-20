@@ -121,3 +121,26 @@ async def test_validate_schema_fetch_error_posts_single_error() -> None:
 
     log.post_error.assert_awaited_once()
     assert log.post_error.call_args.kwargs["error_code"] == ErrorCode.ERR_NOTION_WRITE
+
+
+# ---------------------------------------------------------------------------
+# Story 2.3: write_dj_record
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_write_dj_record_posts_correct_payload() -> None:
+    """write_dj_record calls _write_with_retry with correct Notion page payload."""
+    log = make_mock_log()
+    client = make_client(log)
+
+    with patch.object(client, "_write_with_retry", new=AsyncMock()) as mock_write:
+        await client.write_dj_record(discord_user_id=12345, dj_name="TestDJ")
+
+    mock_write.assert_awaited_once()
+    call_kwargs = mock_write.call_args.kwargs
+    assert call_kwargs["method"] == "POST"
+    assert call_kwargs["endpoint"] == "/pages"
+    payload = call_kwargs["payload"]
+    assert payload["parent"]["database_id"] == "test-db-id"
+    assert payload["properties"]["Name"]["title"][0]["text"]["content"] == "TestDJ"
+    assert payload["properties"]["Discord ID"]["rich_text"][0]["text"]["content"] == "12345"

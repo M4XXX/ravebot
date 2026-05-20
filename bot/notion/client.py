@@ -159,3 +159,34 @@ class NotionClient:
                     ),
                     manual_action=f"Add property '{prop}' to the Notion database schema.",
                 )
+
+    async def write_dj_record(self, discord_user_id: int, dj_name: str) -> None:
+        """Create a DJ page in the Notion database.
+
+        Properties written: Name (title), Discord ID (rich_text).
+        Uses _write_with_retry — posts ERR_NOTION_WRITE and raises NotionWriteError
+        if all 3 attempts fail.
+
+        Called from OnboardingModal.callback after successful DB insert (Story 2.3).
+        Caller catches the exception and continues — Notion sync is best-effort.
+
+        [Source: epics.md#Story 2.3 AC2, AC3]
+        [Source: architecture.md#Notion Client: Raw httpx (async, HTTPS/SSL)]
+        """
+        payload: dict[str, Any] = {
+            "parent": {"database_id": self._database_id},
+            "properties": {
+                "Name": {
+                    "title": [{"type": "text", "text": {"content": dj_name}}]
+                },
+                "Discord ID": {
+                    "rich_text": [{"type": "text", "text": {"content": str(discord_user_id)}}]
+                },
+            },
+        }
+        await self._write_with_retry(
+            method="POST",
+            endpoint="/pages",
+            payload=payload,
+            context=f"DJ record for {dj_name} (discord_user_id={discord_user_id})",
+        )

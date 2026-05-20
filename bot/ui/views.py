@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 
 import disnake
 
-from bot.db.djs import insert_dj
+from bot.db.djs import insert_dj, update_active_booking
 from bot.ui.embeds import ErrorCode
 
 if TYPE_CHECKING:
@@ -43,10 +43,11 @@ class OnboardingIntroView(disnake.ui.View):
     [Source: ux-design-specification.md#UX-DR13, UX-DR16]
     """
 
-    def __init__(self, ctx: "BotContext", user_id: int) -> None:
+    def __init__(self, ctx: "BotContext", user_id: int, guild_id: int = 0) -> None:
         super().__init__(timeout=None)
         self.ctx = ctx
         self.user_id = user_id
+        self.guild_id = guild_id
 
     async def on_timeout(self) -> None:
         """No-op: timeout=None means this never fires.
@@ -78,7 +79,9 @@ class OnboardingIntroView(disnake.ui.View):
             )
             return
         await lock.acquire()
-        await inter.response.send_modal(OnboardingModal(self.ctx, inter.author.id, lock))
+        await inter.response.send_modal(
+            OnboardingModal(self.ctx, inter.author.id, lock, self.guild_id)
+        )
 
     @disnake.ui.button(
         label="Pass for now",
@@ -90,9 +93,10 @@ class OnboardingIntroView(disnake.ui.View):
         button: disnake.ui.Button,
         inter: disnake.MessageInteraction,
     ) -> None:
-        """Warm decline — implemented in Story 2.4."""
-        # Story 2.4: respond warmly, no DB write, no role assignment
-        pass  # noqa: PIE790
+        """Warm decline — no DB write, no role assignment (Story 2.4 AC1)."""
+        await inter.response.send_message(
+            "No problem — you can always join later if you change your mind."
+        )
 
 
 class OnboardingModal(disnake.ui.Modal):
@@ -110,10 +114,13 @@ class OnboardingModal(disnake.ui.Modal):
     [Source: architecture.md#Per-User Flow Lock: asyncio.Lock per user_id]
     """
 
-    def __init__(self, ctx: "BotContext", user_id: int, lock: asyncio.Lock) -> None:
+    def __init__(
+        self, ctx: "BotContext", user_id: int, lock: asyncio.Lock, guild_id: int = 0
+    ) -> None:
         self._ctx = ctx
         self._user_id = user_id
         self._lock = lock
+        self._guild_id = guild_id
         super().__init__(
             title="Set Up Your Profile",
             custom_id="onboarding_modal",
@@ -195,7 +202,7 @@ class OnboardingModal(disnake.ui.Modal):
                 f"Hmm, {field_list} {plural} look right — "
                 "URLs should start with https://. "
                 "Tap the button below to try again.",
-                view=RetryOnboardingModalView(self._ctx, inter.author.id),
+                view=RetryOnboardingModalView(self._ctx, inter.author.id, self._guild_id),
             )
             return
 
@@ -225,7 +232,54 @@ class OnboardingModal(disnake.ui.Modal):
             stream_url_backup=stream_url_backup,
         )
         self._lock.release()
-        # Story 2.3 note: role assignment + Notion sync will be added here BEFORE this send.
+
+        # Story 2.3: assign Active Booking role
+        guild = inter.client.get_guild(self._guild_id)
+        if guild is not None:
+            member = guild.get_member(inter.author.id)
+            if member is not None:
+                role = disnake.utils.get(guild.roles, name="Active Booking")
+                if role is not None:
+                    try:
+                        await member.add_roles(role, reason="Onboarding completed")
+                    except disnake.Forbidden:
+                        logger.warning(
+                            "Missing Manage Roles permission to assign Active Booking role "
+                            "to user %s in guild %s",
+                            inter.author.id,
+                            self._guild_id,
+                        )
+                    except disnake.HTTPException as exc:
+                        logger.warning(
+                            "HTTP error assigning Active Booking role to user %s in guild %s: %s",
+                            inter.author.id,
+                            self._guild_id,
+                            exc,
+                        )
+                else:
+                    logger.warning("Active Booking role not found in guild %s", self._guild_id)
+            else:
+                logger.warning(
+                    "Member %s not in guild cache %s — cannot assign role",
+                    inter.author.id,
+                    self._guild_id,
+                )
+        else:
+            logger.warning("Guild %s not in bot cache — cannot assign role", self._guild_id)
+
+        # Story 2.3: Notion DJ record sync (best-effort — failure does not block confirmation)
+        if self._ctx.notion_client is not None:
+            try:
+                await self._ctx.notion_client.write_dj_record(
+                    discord_user_id=inter.author.id,
+                    dj_name=dj_name,
+                )
+            except Exception:
+                logger.exception(
+                    "Unexpected error during Notion DJ record sync for user %s",
+                    inter.author.id,
+                )
+
         await inter.response.send_message(
             "You're all set! I'll reach out when there's an open slot, "
             "or you can start a booking anytime.",
@@ -243,10 +297,11 @@ class RetryOnboardingModalView(disnake.ui.View):
     [Source: ux-design-specification.md#UX-DR16]
     """
 
-    def __init__(self, ctx: "BotContext", user_id: int) -> None:
+    def __init__(self, ctx: "BotContext", user_id: int, guild_id: int = 0) -> None:
         super().__init__(timeout=None)
         self._ctx = ctx
         self._user_id = user_id
+        self._guild_id = guild_id
 
     async def on_timeout(self) -> None:
         """No-op: timeout=None means this never fires.
@@ -272,4 +327,193 @@ class RetryOnboardingModalView(disnake.ui.View):
             )
             return
         await lock.acquire()
-        await inter.response.send_modal(OnboardingModal(self._ctx, inter.author.id, lock))
+        await inter.response.send_modal(
+            OnboardingModal(self._ctx, inter.author.id, lock, self._guild_id)
+        )
+
+
+class FallbackMenuView(disnake.ui.View):
+    """Fallback help menu — responds to all unrecognised free-text DMs.
+
+    Shown when a DJ sends free text outside any active multi-step flow.
+    NOT shown during active onboarding (on_message checks the lock first).
+
+    Buttons per UX-DR1:
+      Row 0: [Book a Slot] (primary) · [Cancel a Slot] (secondary)
+      Row 1: [Go Active] (success) · [Go Inactive] (secondary)
+      Row 2: [Show Lineup] (primary)
+
+    timeout=None: DJ-facing views never expire (UX-DR16).
+    No per-user lock: Go Active/Go Inactive are single-step interactions.
+
+    [Source: epics.md#Story 2.4 AC2-AC4]
+    [Source: ux-design-specification.md#UX-DR1, UX-DR13, UX-DR16]
+    """
+
+    def __init__(self, ctx: "BotContext") -> None:
+        super().__init__(timeout=None)
+        self.ctx = ctx
+
+    async def on_timeout(self) -> None:
+        """No-op: timeout=None means this never fires.
+        [Source: architecture.md#View Lifecycle Contract]
+        """
+
+    @disnake.ui.button(
+        label="📅 Book a Slot",
+        style=disnake.ButtonStyle.primary,
+        custom_id="fallback:book_slot",
+        row=0,
+    )
+    async def book_slot(
+        self,
+        button: disnake.ui.Button,
+        inter: disnake.MessageInteraction,
+    ) -> None:
+        """Booking flow — implemented in Epic 4 (Story 4.1)."""
+        await inter.response.send_message(
+            "Booking is coming soon — stay tuned!",
+            ephemeral=True,
+        )
+
+    @disnake.ui.button(
+        label="❌ Cancel a Slot",
+        style=disnake.ButtonStyle.secondary,
+        custom_id="fallback:cancel_slot",
+        row=0,
+    )
+    async def cancel_slot(
+        self,
+        button: disnake.ui.Button,
+        inter: disnake.MessageInteraction,
+    ) -> None:
+        """Cancellation flow — implemented in Epic 4 (Story 4.4)."""
+        await inter.response.send_message(
+            "Slot cancellation is coming soon — stay tuned!",
+            ephemeral=True,
+        )
+
+    @disnake.ui.button(
+        label="✅ Go Active",
+        style=disnake.ButtonStyle.success,
+        custom_id="fallback:go_active",
+        row=1,
+    )
+    async def go_active(
+        self,
+        button: disnake.ui.Button,
+        inter: disnake.MessageInteraction,
+    ) -> None:
+        """Set active_booking=True + assign Active Booking role.
+
+        [Source: epics.md#Story 2.4 AC3]
+        """
+        if self.ctx.db is None:
+            await inter.response.send_message(
+                "Something went wrong on our end — please try again in a moment.",
+                ephemeral=True,
+            )
+            return
+
+        updated = await update_active_booking(
+            self.ctx.db,
+            discord_user_id=inter.author.id,
+            active_booking=True,
+        )
+
+        if not updated:
+            await inter.response.send_message(
+                "Looks like you haven't set up your profile yet! "
+                "You'll need to complete onboarding first — "
+                "ask an organizer to re-assign your DJ role to get started.",
+            )
+            return
+
+        # Assign Active Booking role (best-effort — failure does not block confirmation)
+        for guild in inter.client.guilds:
+            member = guild.get_member(inter.author.id)
+            if member is not None:
+                role = disnake.utils.get(guild.roles, name="Active Booking")
+                if role is not None:
+                    try:
+                        await member.add_roles(
+                            role, reason="DJ opted back in via FallbackMenuView"
+                        )
+                    except (disnake.Forbidden, disnake.HTTPException) as exc:
+                        logger.warning(
+                            "Could not assign Active Booking role to user %s: %s",
+                            inter.author.id,
+                            exc,
+                        )
+                break
+
+        await inter.response.send_message(
+            "You're back in the pool — I'll reach out when there's an open slot."
+        )
+
+    @disnake.ui.button(
+        label="🚫 Go Inactive",
+        style=disnake.ButtonStyle.secondary,
+        custom_id="fallback:go_inactive",
+        row=1,
+    )
+    async def go_inactive(
+        self,
+        button: disnake.ui.Button,
+        inter: disnake.MessageInteraction,
+    ) -> None:
+        """Set active_booking=False + remove Active Booking role.
+
+        [Source: epics.md#Story 2.4 AC4]
+        """
+        if self.ctx.db is None:
+            await inter.response.send_message(
+                "Something went wrong on our end — please try again in a moment.",
+                ephemeral=True,
+            )
+            return
+
+        await update_active_booking(
+            self.ctx.db,
+            discord_user_id=inter.author.id,
+            active_booking=False,
+        )
+
+        # Remove Active Booking role (best-effort — failure does not block confirmation)
+        for guild in inter.client.guilds:
+            member = guild.get_member(inter.author.id)
+            if member is not None:
+                role = disnake.utils.get(guild.roles, name="Active Booking")
+                if role is not None:
+                    try:
+                        await member.remove_roles(
+                            role, reason="DJ opted out via FallbackMenuView"
+                        )
+                    except (disnake.Forbidden, disnake.HTTPException) as exc:
+                        logger.warning(
+                            "Could not remove Active Booking role from user %s: %s",
+                            inter.author.id,
+                            exc,
+                        )
+                break
+
+        await inter.response.send_message(
+            "Got it — I'll stop reaching out. You can still self-book anytime."
+        )
+
+    @disnake.ui.button(
+        label="🌌 Show Lineup",
+        style=disnake.ButtonStyle.primary,
+        custom_id="fallback:show_lineup",
+        row=2,
+    )
+    async def show_lineup(
+        self,
+        button: disnake.ui.Button,
+        inter: disnake.MessageInteraction,
+    ) -> None:
+        """Lineup view — implemented in Epic 3 (Story 3.3)."""
+        await inter.response.send_message(
+            "Lineup display is coming soon — stay tuned!",
+            ephemeral=True,
+        )

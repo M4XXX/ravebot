@@ -147,7 +147,7 @@ async def test_go_active_sends_modal() -> None:
     from bot.ui.views import OnboardingIntroView
 
     ctx = make_real_ctx(db=MagicMock())
-    view = OnboardingIntroView(ctx, 12345)
+    view = OnboardingIntroView(ctx, 12345, guild_id=99999)
 
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.author.id = 12345
@@ -170,7 +170,7 @@ async def test_go_active_concurrent_guard() -> None:
     from bot.ui.views import OnboardingIntroView
 
     ctx = make_real_ctx(db=MagicMock())
-    view = OnboardingIntroView(ctx, 12345)
+    view = OnboardingIntroView(ctx, 12345, guild_id=99999)
 
     # Pre-acquire the lock to simulate an active flow
     await ctx.get_user_lock(12345).acquire()
@@ -186,3 +186,121 @@ async def test_go_active_concurrent_guard() -> None:
     inter.response.send_message.assert_awaited_once()
     sent_content = inter.response.send_message.call_args[0][0]
     assert "flow" in sent_content.lower() or "open" in sent_content.lower()
+
+
+# ---------------------------------------------------------------------------
+# Story 2.3: guild_id threading
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_on_member_update_passes_guild_id_to_intro_view() -> None:
+    """on_member_update passes after.guild.id to OnboardingIntroView."""
+    from bot.cogs.onboarding import OnboardingCog
+    from bot.ui.views import OnboardingIntroView
+
+    ctx = make_real_ctx(db=MagicMock())
+    cog = OnboardingCog(ctx)
+
+    dj_role = make_role("DJ")
+    before = make_member()
+    before.roles = []
+    after = make_member(user_id=55555)
+    after.roles = [dj_role]
+    after.guild.id = 88888
+
+    with patch(
+        "bot.cogs.onboarding.get_dj_by_discord_id",
+        new=AsyncMock(return_value=None),
+    ):
+        await cog.on_member_update(before, after)
+
+    after.send.assert_awaited_once()
+    send_kwargs = after.send.call_args.kwargs
+    view = send_kwargs.get("view")
+    assert isinstance(view, OnboardingIntroView)
+    assert view.guild_id == 88888
+
+
+# ---------------------------------------------------------------------------
+# Story 2.4: on_message + FallbackMenuView trigger
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_on_message_dm_sends_fallback_menu() -> None:
+    """Free-text DM outside active flow sends FallbackMenuView."""
+    from bot.cogs.onboarding import OnboardingCog
+    from bot.ui.views import FallbackMenuView
+
+    ctx = make_real_ctx(db=MagicMock())
+    cog = OnboardingCog(ctx)
+
+    message = MagicMock(spec=disnake.Message)
+    message.guild = None
+    message.author.id = 11111
+    message.author.bot = False
+    message.channel.send = AsyncMock()
+
+    await cog.on_message(message)
+
+    message.channel.send.assert_awaited_once()
+    send_kwargs = message.channel.send.call_args.kwargs
+    assert isinstance(send_kwargs.get("view"), FallbackMenuView)
+
+
+@pytest.mark.asyncio
+async def test_on_message_guild_message_ignored() -> None:
+    """Messages in guild channels do not trigger FallbackMenuView."""
+    from bot.cogs.onboarding import OnboardingCog
+
+    ctx = make_real_ctx(db=MagicMock())
+    cog = OnboardingCog(ctx)
+
+    message = MagicMock(spec=disnake.Message)
+    message.guild = MagicMock()  # guild message
+    message.author.id = 22222
+    message.author.bot = False
+    message.channel.send = AsyncMock()
+
+    await cog.on_message(message)
+
+    message.channel.send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_on_message_bot_message_ignored() -> None:
+    """Bot's own DMs do not trigger FallbackMenuView."""
+    from bot.cogs.onboarding import OnboardingCog
+
+    ctx = make_real_ctx(db=MagicMock())
+    cog = OnboardingCog(ctx)
+
+    message = MagicMock(spec=disnake.Message)
+    message.guild = None
+    message.author.id = 33333
+    message.author.bot = True
+    message.channel.send = AsyncMock()
+
+    await cog.on_message(message)
+
+    message.channel.send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_on_message_skips_during_active_flow() -> None:
+    """FallbackMenuView NOT shown when user has an active flow (lock held)."""
+    from bot.cogs.onboarding import OnboardingCog
+
+    ctx = make_real_ctx(db=MagicMock())
+    cog = OnboardingCog(ctx)
+
+    await ctx.get_user_lock(44444).acquire()
+
+    message = MagicMock(spec=disnake.Message)
+    message.guild = None
+    message.author.id = 44444
+    message.author.bot = False
+    message.channel.send = AsyncMock()
+
+    await cog.on_message(message)
+
+    message.channel.send.assert_not_called()

@@ -90,3 +90,34 @@ async def test_insert_dj_with_optional_fields_none() -> None:
     assert params[2] is None   # vrchat_name
     assert params[3] is None   # logo_url
     assert params[5] is None   # stream_url_backup
+
+
+@pytest.mark.asyncio
+async def test_update_active_booking_sets_true() -> None:
+    """update_active_booking returns True when DJ row is found and updated."""
+    from bot.db.djs import update_active_booking
+
+    pool = MagicMock()
+    pool.execute = AsyncMock(return_value="UPDATE 1")
+
+    result = await update_active_booking(pool, discord_user_id=12345, active_booking=True)
+
+    assert result is True
+    pool.execute.assert_awaited_once()
+    call_args = pool.execute.call_args[0]
+    assert "UPDATE djs" in call_args[0]
+    assert call_args[1] is True   # active_booking value
+    assert call_args[2] == 12345  # discord_user_id
+
+
+@pytest.mark.asyncio
+async def test_update_active_booking_not_found_returns_false() -> None:
+    """update_active_booking returns False when no DJ row exists."""
+    from bot.db.djs import update_active_booking
+
+    pool = MagicMock()
+    pool.execute = AsyncMock(return_value="UPDATE 0")
+
+    result = await update_active_booking(pool, discord_user_id=99999, active_booking=True)
+
+    assert result is False
