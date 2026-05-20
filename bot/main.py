@@ -81,6 +81,10 @@ async def main() -> None:
         log_service=ctx.log_service,
     )
 
+    # Story 3.2: init LineupService after DB and log_service are ready
+    from bot.services.lineup import LineupService
+    ctx.lineup_service = LineupService(bot=bot, db=ctx.db, log_service=ctx.log_service)
+
     bot.add_cog(OnboardingCog(ctx))
     bot.add_cog(BookingCog(ctx))
     bot.add_cog(OutreachCog(ctx))

@@ -3,13 +3,15 @@
 RULE: All embed construction MUST reference EmbedColors constants — never inline hex values.
 
 Classes:
-    EmbedColors   — named color constants (Story 1.1 stub, completed Story 1.3)
-    ErrorCode     — six error code strings for AdminLogService.post_error()
-    ErrorEmbed    — red embed for system errors posted to admin log channel
-    AdminLogEmbed — white embed for DJ interaction transcripts
+    EmbedColors          — named color constants (Story 1.1 stub, completed Story 1.3)
+    ErrorCode            — six error code strings for AdminLogService.post_error()
+    ErrorEmbed           — red embed for system errors posted to admin log channel
+    AdminLogEmbed        — white embed for DJ interaction transcripts
+    MissionRosterEmbed   — Mission Gold lineup embed (Story 3.2)
+    MissionOverviewEmbed — Deep Space Blue per-event slot detail embed (Story 3.3)
 """
 import enum
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import disnake
 
@@ -107,4 +109,120 @@ class AdminLogEmbed(disnake.Embed):
         self.add_field(name="Outcome", value=outcome, inline=True)
         if event is not None:
             self.add_field(name="Event", value=event, inline=False)
+        self.set_footer(text="RaveBot")
+
+
+class MissionRosterEmbed(disnake.Embed):
+    """Mission Gold lineup embed — lists upcoming events with slot status.
+
+    Posted to the configured DJ channel on each lineup change (at most once/day).
+    Edit-in-place on subsequent changes; delete-and-repost if edit fails.
+
+    [Source: ux-design-specification.md#MissionRosterEmbed]
+    [Source: epics.md#Story 3.2 AC1]
+    """
+
+    def __init__(self, events: list[dict]) -> None:
+        super().__init__(
+            color=EmbedColors.MISSION_GOLD,
+            title="\U0001f30c Mission Roster",
+            timestamp=datetime.now(tz=UTC),
+        )
+        if not events:
+            self.description = "No upcoming events scheduled."
+        for event in events:
+            try:
+                name = event["properties"]["Name"]["title"][0]["plain_text"]
+            except (KeyError, IndexError):
+                name = "Unnamed Event"
+            try:
+                date_str = event["properties"]["Date"]["date"]["start"]
+                unix_ts = int(datetime.fromisoformat(date_str).timestamp())
+                date_field = f"<t:{unix_ts}:f>"
+            except (KeyError, TypeError, ValueError):
+                date_field = "TBD"
+            try:
+                raw_slots = event["properties"]["Slots"]["number"]
+                slots_total = int(raw_slots) if raw_slots is not None else 6
+            except (KeyError, TypeError, ValueError):
+                slots_total = 6
+            try:
+                djs_booked = len(event["properties"]["DJs"]["relation"])
+            except (KeyError, TypeError):
+                djs_booked = 0
+            slots_open = max(0, slots_total - djs_booked)
+            field_value = f"{date_field}\n{djs_booked} confirmed · {slots_open} open"
+            self.add_field(name=name, value=field_value, inline=False)
+        self.set_footer(text="RaveBot")
+
+
+class MissionOverviewEmbed(disnake.Embed):
+    """Deep Space Blue embed — per-event slot display for Show Lineup flow.
+
+    Shows a single upcoming event with each slot's time (computed as
+    event_start + slot_index * 60 min) and booking status (Confirmed/Open).
+    DJ names are count-based at this stage — individual DJ lookup deferred to Story 4.x.
+
+    Used by: FallbackMenuView.show_lineup() (Story 3.3)
+    Future: proactive outreach, self-service booking (Epic 4, 5)
+
+    [Source: ux-design-specification.md#MissionOverviewEmbed]
+    [Source: epics.md#Story 3.3 AC1–AC4]
+    """
+
+    def __init__(self, event: dict) -> None:
+        super().__init__(
+            color=EmbedColors.DEEP_SPACE_BLUE,
+            timestamp=datetime.now(tz=UTC),
+        )
+        # Parse event name
+        try:
+            name = event["properties"]["Name"]["title"][0]["plain_text"]
+        except (KeyError, IndexError):
+            name = "Unknown Event"
+        self.title = f"\U0001f6f0\ufe0f {name}"  # 🛰️
+
+        # Parse event start time for slot time computation
+        try:
+            date_str = event["properties"]["Date"]["date"]["start"]
+            event_start = datetime.fromisoformat(date_str)
+            if event_start.tzinfo is None:
+                event_start = event_start.replace(tzinfo=UTC)
+        except (KeyError, TypeError, ValueError):
+            event_start = None
+
+        # Parse slot counts
+        try:
+            raw_slots = event["properties"]["Slots"]["number"]
+            slots_total = max(1, int(raw_slots) if raw_slots is not None else 6)
+        except (KeyError, TypeError, ValueError):
+            slots_total = 6
+        try:
+            djs_booked = len(event["properties"]["DJs"]["relation"])
+        except (KeyError, TypeError):
+            djs_booked = 0
+        slots_open = max(0, slots_total - djs_booked)
+
+        date_display = (
+            f"<t:{int(event_start.timestamp())}:f>" if event_start is not None else "TBD"
+        )
+        self.description = (
+            f"{date_display} · All slots filled"
+            if slots_open == 0
+            else f"{date_display} · {djs_booked}/{slots_total} confirmed · {slots_open} open"
+        )
+
+        for i in range(slots_total):
+            if event_start is not None:
+                slot_dt = event_start + timedelta(minutes=60 * i)
+                unix_ts = int(slot_dt.timestamp())
+                time_str = f"<t:{unix_ts}:R>"
+            else:
+                time_str = "TBD"
+            status = "✓ Confirmed" if i < djs_booked else "Open"
+            self.add_field(
+                name=f"Slot {i + 1}",
+                value=f"{status} · {time_str}",
+                inline=True,
+            )
         self.set_footer(text="RaveBot")

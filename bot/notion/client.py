@@ -1,12 +1,14 @@
 """Notion REST API client — exponential backoff, schema validation.
 
 Story 1.5 scope: NotionWriteError, NotionClient with _write_with_retry() and validate_schema().
-Full poll(), read_slots(), write_booking(), delete_booking() are Story 3.x scope.
+Story 3.1 scope: poll_events() — fetch future events for change detection.
+Full read_slots(), write_booking(), delete_booking() are Story 3.x scope.
 
 [Source: architecture.md#Notion Client: Raw httpx (async, HTTPS/SSL)]
 [Source: architecture.md#Error Routing: Centralized AdminLogService]
 """
 import asyncio
+import datetime
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -159,6 +161,56 @@ class NotionClient:
                     ),
                     manual_action=f"Add property '{prop}' to the Notion database schema.",
                 )
+
+    async def poll_events(self) -> list[dict[str, Any]]:
+        """Fetch all future events from Notion sorted by date ascending.
+
+        Uses POST /databases/{id}/query with a date filter (on_or_after today).
+        Follows Notion pagination (has_more / next_cursor) to return ALL pages.
+        Returns the complete list of page objects from the Notion API response.
+
+        On HTTP error or network failure: logs a warning and re-raises so the
+        caller (EventsCog._poll_notion) can handle error reporting and retry semantics.
+        If a later page fails mid-pagination, the exception is raised and the caller
+        treats the whole cycle as failed — no partial snapshot update occurs.
+
+        [Source: epics.md#Story 3.1 AC1, AC4]
+        """
+        today = datetime.date.today().isoformat()
+        base_payload: dict[str, Any] = {
+            "filter": {
+                "property": "Date",
+                "date": {"on_or_after": today},
+            },
+            "sorts": [{"property": "Date", "direction": "ascending"}],
+        }
+
+        all_results: list[dict[str, Any]] = []
+        cursor: str | None = None
+
+        while True:
+            payload = dict(base_payload)
+            if cursor is not None:
+                payload["start_cursor"] = cursor
+            try:
+                response = await self._client.post(
+                    f"/databases/{self._database_id}/query",
+                    json=payload,
+                )
+                response.raise_for_status()
+                data = response.json()
+            except (httpx.HTTPStatusError, httpx.RequestError) as exc:
+                logger.warning("Notion poll_events failed: %s", exc)
+                raise
+
+            all_results.extend(data.get("results", []))
+
+            if data.get("has_more"):
+                cursor = data.get("next_cursor")
+            else:
+                break
+
+        return all_results
 
     async def write_dj_record(self, discord_user_id: int, dj_name: str) -> None:
         """Create a DJ page in the Notion database.

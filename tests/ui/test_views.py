@@ -369,3 +369,111 @@ async def test_fallback_go_inactive_updates_db_removes_role() -> None:
     msg = inter.response.send_message.call_args[0][0]
     assert "stop reaching out" in msg.lower() or "inactive" in msg.lower()
     member.remove_roles.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Story 3.3: FallbackMenuView.show_lineup()
+# ---------------------------------------------------------------------------
+
+def _make_notion_event(
+    name: str = "Friday Night Rave",
+    date_str: str = "2026-06-13T20:00:00+00:00",
+    slots: int = 3,
+    djs: int = 1,
+) -> dict:
+    return {
+        "id": "page-uuid",
+        "properties": {
+            "Name": {"title": [{"plain_text": name}]},
+            "Date": {"date": {"start": date_str}},
+            "Slots": {"number": slots},
+            "DJs": {"relation": [{"id": f"dj-{i}"} for i in range(djs)]},
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_show_lineup_sends_embed_for_first_event() -> None:
+    """Events returned → MissionOverviewEmbed sent for first event."""
+    from bot.ui.embeds import MissionOverviewEmbed
+    from bot.ui.views import FallbackMenuView
+
+    ctx = make_real_ctx(db=MagicMock())
+    notion_client = MagicMock()
+    notion_client.poll_events = AsyncMock(return_value=[_make_notion_event()])
+    ctx.notion_client = notion_client
+    view = FallbackMenuView(ctx)
+
+    inter = MagicMock(spec=disnake.MessageInteraction)
+    inter.response.send_message = AsyncMock()
+
+    await view.show_lineup.callback(inter)
+
+    inter.response.send_message.assert_awaited_once()
+    call_kwargs = inter.response.send_message.call_args.kwargs
+    assert "embed" in call_kwargs
+    assert isinstance(call_kwargs["embed"], MissionOverviewEmbed)
+
+
+@pytest.mark.asyncio
+async def test_show_lineup_sends_no_events_message_when_empty() -> None:
+    """Empty events list → 'No upcoming events' message sent."""
+    from bot.ui.views import FallbackMenuView
+
+    ctx = make_real_ctx(db=MagicMock())
+    notion_client = MagicMock()
+    notion_client.poll_events = AsyncMock(return_value=[])
+    ctx.notion_client = notion_client
+    view = FallbackMenuView(ctx)
+
+    inter = MagicMock(spec=disnake.MessageInteraction)
+    inter.response.send_message = AsyncMock()
+
+    await view.show_lineup.callback(inter)
+
+    inter.response.send_message.assert_awaited_once()
+    call_args = inter.response.send_message.call_args
+    msg = call_args[0][0] if call_args[0] else call_args.kwargs.get("content", "")
+    assert "no upcoming events" in msg.lower()
+
+
+@pytest.mark.asyncio
+async def test_show_lineup_handles_notion_client_none() -> None:
+    """notion_client is None → friendly fallback message sent, no crash."""
+    from bot.ui.views import FallbackMenuView
+
+    ctx = make_real_ctx(db=MagicMock())
+    ctx.notion_client = None
+    view = FallbackMenuView(ctx)
+
+    inter = MagicMock(spec=disnake.MessageInteraction)
+    inter.response.send_message = AsyncMock()
+
+    await view.show_lineup.callback(inter)
+
+    inter.response.send_message.assert_awaited_once()
+    call_args = inter.response.send_message.call_args
+    msg = call_args[0][0] if call_args[0] else call_args.kwargs.get("content", "")
+    assert "available" in msg.lower() or "check back" in msg.lower()
+
+
+@pytest.mark.asyncio
+async def test_show_lineup_handles_poll_exception() -> None:
+    """poll_events raises → 'Something went wrong' message sent, no crash."""
+    from bot.ui.views import FallbackMenuView
+
+    ctx = make_real_ctx(db=MagicMock())
+    notion_client = MagicMock()
+    notion_client.poll_events = AsyncMock(side_effect=Exception("Notion down"))
+    ctx.notion_client = notion_client
+    view = FallbackMenuView(ctx)
+
+    inter = MagicMock(spec=disnake.MessageInteraction)
+    inter.response.send_message = AsyncMock()
+
+    await view.show_lineup.callback(inter)
+
+    inter.response.send_message.assert_awaited_once()
+    call_args = inter.response.send_message.call_args
+    msg = call_args[0][0] if call_args[0] else call_args.kwargs.get("content", "")
+    assert "something went wrong" in msg.lower() or "wrong" in msg.lower()

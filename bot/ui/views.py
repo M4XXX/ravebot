@@ -512,8 +512,38 @@ class FallbackMenuView(disnake.ui.View):
         button: disnake.ui.Button,
         inter: disnake.MessageInteraction,
     ) -> None:
-        """Lineup view — implemented in Epic 3 (Story 3.3)."""
-        await inter.response.send_message(
-            "Lineup display is coming soon — stay tuned!",
-            ephemeral=True,
-        )
+        """Show the first upcoming event's slot overview via MissionOverviewEmbed.
+
+        Uses poll_events() to fetch live Notion data. Falls back gracefully
+        when Notion is unavailable or returns no events.
+
+        [Source: epics.md#Story 3.3 AC1, AC5, AC6]
+        """
+        from bot.ui.embeds import MissionOverviewEmbed
+
+        if self.ctx.notion_client is None:
+            await inter.response.send_message(
+                "Lineup data isn't available right now — check back soon!",
+                ephemeral=True,
+            )
+            return
+
+        try:
+            events = await self.ctx.notion_client.poll_events()
+        except Exception:
+            logger.exception("show_lineup: poll_events() failed")
+            await inter.response.send_message(
+                "Something went wrong fetching the lineup — try again in a moment.",
+                ephemeral=True,
+            )
+            return
+
+        if not events:
+            await inter.response.send_message(
+                "No upcoming events scheduled right now — check back soon!",
+                ephemeral=True,
+            )
+            return
+
+        embed = MissionOverviewEmbed(events[0])
+        await inter.response.send_message(embed=embed)

@@ -127,6 +127,98 @@ async def test_validate_schema_fetch_error_posts_single_error() -> None:
 # Story 2.3: write_dj_record
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Story 3.1: poll_events
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_poll_events_returns_results_list() -> None:
+    """poll_events returns the 'results' list from the Notion query response."""
+    client = make_client()
+    pages = [
+        {"id": "page-a", "last_edited_time": "2026-06-01T00:00:00.000Z", "properties": {}},
+        {"id": "page-b", "last_edited_time": "2026-06-02T00:00:00.000Z", "properties": {}},
+    ]
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_response.json = MagicMock(return_value={"results": pages, "has_more": False})
+    client._client.post = AsyncMock(return_value=mock_response)
+
+    result = await client.poll_events()
+
+    assert result == pages
+    client._client.post.assert_awaited_once()
+    call_args = client._client.post.call_args
+    assert "/databases/test-db-id/query" in call_args[0][0]
+
+
+@pytest.mark.asyncio
+async def test_poll_events_sends_date_filter_and_sort() -> None:
+    """poll_events payload includes on_or_after date filter and ascending date sort."""
+    client = make_client()
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_response.json = MagicMock(return_value={"results": [], "has_more": False})
+    client._client.post = AsyncMock(return_value=mock_response)
+
+    await client.poll_events()
+
+    payload = client._client.post.call_args.kwargs["json"]
+    assert payload["filter"]["property"] == "Date"
+    assert "on_or_after" in payload["filter"]["date"]
+    assert payload["sorts"] == [{"property": "Date", "direction": "ascending"}]
+
+
+@pytest.mark.asyncio
+async def test_poll_events_follows_pagination() -> None:
+    """poll_events fetches all pages when Notion returns has_more=True."""
+    client = make_client()
+    page1 = {"id": "page-a", "last_edited_time": "2026-06-01T00:00:00.000Z"}
+    page2 = {"id": "page-b", "last_edited_time": "2026-06-02T00:00:00.000Z"}
+
+    resp1 = MagicMock()
+    resp1.raise_for_status = MagicMock()
+    resp1.json = MagicMock(return_value={"results": [page1], "has_more": True, "next_cursor": "cursor-1"})
+
+    resp2 = MagicMock()
+    resp2.raise_for_status = MagicMock()
+    resp2.json = MagicMock(return_value={"results": [page2], "has_more": False})
+
+    client._client.post = AsyncMock(side_effect=[resp1, resp2])
+
+    result = await client.poll_events()
+
+    assert result == [page1, page2]
+    assert client._client.post.await_count == 2
+    # Second call must include start_cursor
+    second_payload = client._client.post.call_args_list[1].kwargs["json"]
+    assert second_payload["start_cursor"] == "cursor-1"
+
+
+@pytest.mark.asyncio
+async def test_poll_events_reraises_on_http_error() -> None:
+    """poll_events re-raises httpx errors after logging a warning."""
+    client = make_client()
+    client._client.post = AsyncMock(side_effect=httpx.RequestError("timeout"))
+
+    with pytest.raises(httpx.RequestError):
+        await client.poll_events()
+
+
+@pytest.mark.asyncio
+async def test_poll_events_empty_results_returns_empty_list() -> None:
+    """poll_events returns [] when Notion response has no results key."""
+    client = make_client()
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_response.json = MagicMock(return_value={"has_more": False})
+    client._client.post = AsyncMock(return_value=mock_response)
+
+    result = await client.poll_events()
+
+    assert result == []
+
+
 @pytest.mark.asyncio
 async def test_write_dj_record_posts_correct_payload() -> None:
     """write_dj_record calls _write_with_retry with correct Notion page payload."""
