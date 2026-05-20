@@ -67,6 +67,52 @@ async def insert_dj(
     )
 
 
+async def get_notion_dj_page_id(
+    pool: asyncpg.Pool,
+    discord_user_id: int,
+) -> str | None:
+    """Return the stored Notion page ID for this DJ, or None if not set.
+
+    Used by BookingConfirmView to look up the DJ's Notion page ID before
+    writing the booking to the Notion event's DJs relation.
+
+    None is returned for DJs onboarded before Story 4.2 (notion_dj_page_id
+    column was NULL at migration time). The booking flow handles None gracefully.
+
+    Ownership-scoped: only returns data for the requesting user's ID.
+    [Source: epics.md#Story 4.2 AC2]
+    [Source: architecture.md#DJ Data Isolation: Ownership-Scoped Queries]
+    """
+    row = await pool.fetchrow(
+        "SELECT notion_dj_page_id FROM djs WHERE discord_user_id = $1",
+        discord_user_id,
+    )
+    if row is None:
+        return None
+    return row["notion_dj_page_id"]
+
+
+async def set_notion_dj_page_id(
+    pool: asyncpg.Pool,
+    discord_user_id: int,
+    notion_page_id: str,
+) -> None:
+    """Store the Notion page ID for this DJ after onboarding Notion sync.
+
+    Called from OnboardingModal.callback() after write_dj_record() succeeds.
+    Enables BookingConfirmView to later look up the DJ's Notion page ID.
+
+    Ownership-scoped: WHERE discord_user_id = $2.
+    [Source: epics.md#Story 4.2 AC2]
+    [Source: architecture.md#DJ Data Isolation: Ownership-Scoped Queries]
+    """
+    await pool.execute(
+        "UPDATE djs SET notion_dj_page_id = $1 WHERE discord_user_id = $2",
+        notion_page_id,
+        discord_user_id,
+    )
+
+
 async def update_active_booking(
     pool: asyncpg.Pool,
     *,

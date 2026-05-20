@@ -1,5 +1,12 @@
 """Tests for bot/ui/embeds.py — EmbedColors, ErrorEmbed, AdminLogEmbed, MissionRosterEmbed."""
-from bot.ui.embeds import AdminLogEmbed, EmbedColors, ErrorCode, ErrorEmbed, MissionOverviewEmbed, MissionRosterEmbed
+from bot.ui.embeds import (
+    AdminLogEmbed,
+    EmbedColors,
+    ErrorCode,
+    ErrorEmbed,
+    MissionOverviewEmbed,
+    MissionRosterEmbed,
+)
 
 
 class TestEmbedColors:
@@ -332,3 +339,61 @@ class TestMissionOverviewEmbed:
         del event["properties"]["Slots"]
         embed = MissionOverviewEmbed(event)
         assert len(embed.fields) == 6
+
+
+class TestBookingConfirmEmbed:
+    def test_uses_mission_gold(self) -> None:
+        """BookingConfirmEmbed color is MISSION_GOLD — never inline hex."""
+        from bot.ui.embeds import BookingConfirmEmbed
+        embed = BookingConfirmEmbed(event_name="Friday Night Rave", slot_unix=1751400000)
+        assert embed.color.value == EmbedColors.MISSION_GOLD
+
+    def test_title_confirm_your_booking(self) -> None:
+        """Title is 'Confirm Your Booking'."""
+        from bot.ui.embeds import BookingConfirmEmbed
+        embed = BookingConfirmEmbed(event_name="Test Rave", slot_unix=1751400000)
+        assert embed.title == "Confirm Your Booking"
+
+    def test_has_event_and_slot_fields(self) -> None:
+        """BookingConfirmEmbed has Event and Slot fields."""
+        from bot.ui.embeds import BookingConfirmEmbed
+        embed = BookingConfirmEmbed(event_name="Test Rave", slot_unix=1751400000)
+        field_names = [f.name for f in embed.fields]
+        assert "Event" in field_names
+        assert "Slot" in field_names
+
+    def test_slot_unix_zero_shows_tbd(self) -> None:
+        """slot_unix=0 (parse failure fallback) renders as TBD."""
+        from bot.ui.embeds import BookingConfirmEmbed
+        embed = BookingConfirmEmbed(event_name="Test Rave", slot_unix=0)
+        values = {f.name: f.value for f in embed.fields}
+        assert values["Slot"] == "TBD"
+
+
+class TestBookingConfirmedEmbed:
+    def test_uses_mission_gold(self) -> None:
+        """BookingConfirmedEmbed color is MISSION_GOLD — never inline hex."""
+        from bot.ui.embeds import BookingConfirmedEmbed
+        embed = BookingConfirmedEmbed(event_name="Friday Night Rave", slot_unix=1751400000)
+        assert embed.color.value == EmbedColors.MISSION_GOLD
+
+    def test_title_slot_secured(self) -> None:
+        """Title is 'Slot Secured' per UX-DR5."""
+        from bot.ui.embeds import BookingConfirmedEmbed
+        embed = BookingConfirmedEmbed(event_name="Test Rave", slot_unix=1751400000)
+        assert embed.title == "Slot Secured"
+
+    def test_footer_includes_event_name(self) -> None:
+        """Footer text includes the event name per UX-DR5."""
+        from bot.ui.embeds import BookingConfirmedEmbed
+        embed = BookingConfirmedEmbed(event_name="Friday Night Rave", slot_unix=1751400000)
+        assert "Friday Night Rave" in embed.footer.text
+
+    def test_has_event_slot_headsup_fields(self) -> None:
+        """BookingConfirmedEmbed has Event, Your Slot, and Heads Up fields."""
+        from bot.ui.embeds import BookingConfirmedEmbed
+        embed = BookingConfirmedEmbed(event_name="Test Rave", slot_unix=1751400000)
+        field_names = [f.name for f in embed.fields]
+        assert "Event" in field_names
+        assert "Your Slot" in field_names
+        assert "Heads Up" in field_names

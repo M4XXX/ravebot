@@ -212,17 +212,22 @@ class NotionClient:
 
         return all_results
 
-    async def write_dj_record(self, discord_user_id: int, dj_name: str) -> None:
-        """Create a DJ page in the Notion database.
+    async def write_dj_record(self, discord_user_id: int, dj_name: str) -> str:
+        """Create a DJ page in the Notion database. Returns the new page's Notion ID.
 
         Properties written: Name (title), Discord ID (rich_text).
         Uses _write_with_retry — posts ERR_NOTION_WRITE and raises NotionWriteError
         if all 3 attempts fail.
 
+        Return value (Notion page ID) is stored in the djs table via
+        set_notion_dj_page_id() so BookingConfirmView can later look it up when
+        writing a booking to the event's DJs relation.
+
         Called from OnboardingModal.callback after successful DB insert (Story 2.3).
         Caller catches the exception and continues — Notion sync is best-effort.
 
         [Source: epics.md#Story 2.3 AC2, AC3]
+        [Source: epics.md#Story 4.2 AC2 — DJ Notion page ID prerequisite]
         [Source: architecture.md#Notion Client: Raw httpx (async, HTTPS/SSL)]
         """
         payload: dict[str, Any] = {
@@ -236,9 +241,96 @@ class NotionClient:
                 },
             },
         }
-        await self._write_with_retry(
+        result = await self._write_with_retry(
             method="POST",
             endpoint="/pages",
             payload=payload,
             context=f"DJ record for {dj_name} (discord_user_id={discord_user_id})",
+        )
+        return result["id"]
+
+    async def write_booking(
+        self,
+        event_id: str,
+        slot_index: int,
+        dj_notion_page_id: str | None,
+        current_dj_ids: list[str],
+        event_name: str,
+        slot_unix: int,
+    ) -> None:
+        """Append a DJ to the event's DJs relation in Notion.
+
+        Builds the new DJs list as current_dj_ids + dj_notion_page_id (if not None),
+        then PATCHes the event page. This REPLACES the entire relation — including
+        existing IDs is mandatory to avoid overwriting prior bookings.
+
+        If dj_notion_page_id is None (DJ onboarded before Story 4.2), the PATCH still
+        fires with only the existing IDs. The slot_locks DB row remains the authoritative
+        lock; Notion reflects reality minus the late DJ's page reference.
+
+        Uses _write_with_retry — raises NotionWriteError after 3 failed attempts.
+        Caller (BookingConfirmView._handle_confirm) must call release_slot_lock() on
+        NotionWriteError to undo the DB slot claim.
+
+        [Source: epics.md#Story 4.2 AC2, AC3]
+        [Source: architecture.md#Notion Client: Raw httpx (async, HTTPS/SSL)]
+        [Source: architecture.md#Gap Analysis — PG lock vs Notion write boundary]
+        """
+        new_djs = list(current_dj_ids)
+        if dj_notion_page_id is not None:
+            new_djs.append(dj_notion_page_id)
+        payload: dict[str, Any] = {
+            "properties": {
+                "DJs": {
+                    "relation": [{"id": pid} for pid in new_djs]
+                }
+            }
+        }
+        slot_display = f"<t:{slot_unix}:f>" if slot_unix else "TBD"
+        await self._write_with_retry(
+            method="PATCH",
+            endpoint=f"/pages/{event_id}",
+            payload=payload,
+            context=f"booking slot {slot_index + 1} in event '{event_name}' at {slot_display}",
+        )
+
+    async def delete_booking(
+        self,
+        event_id: str,
+        dj_notion_page_id: str | None,
+        current_dj_ids: list[str],
+        event_name: str,
+        slot_unix: int,
+    ) -> None:
+        """Remove a DJ from the event's DJs relation in Notion.
+
+        Builds a new DJs list excluding dj_notion_page_id, then PATCHes the event page.
+        If dj_notion_page_id is None (DJ has no Notion page), the PATCH fires with
+        current_dj_ids unchanged — best-effort; the slot_locks DB row is the authoritative
+        cancellation record.
+
+        Uses _write_with_retry — raises NotionWriteError after 3 failed attempts.
+        Caller (CancelConfirmView._handle_confirm) MUST call release_slot_lock()
+        regardless of Notion write outcome — the slot must be freed.
+
+        [Source: epics.md#Story 4.4 AC4]
+        [Source: architecture.md#Notion Client: Raw httpx (async, HTTPS/SSL)]
+        """
+        if dj_notion_page_id is not None:
+            new_djs = [pid for pid in current_dj_ids if pid != dj_notion_page_id]
+        else:
+            new_djs = list(current_dj_ids)
+        payload: dict[str, Any] = {
+            "properties": {
+                "DJs": {
+                    "relation": [{"id": pid} for pid in new_djs]
+                }
+            }
+        }
+        slot_display = f"<t:{slot_unix}:f>" if slot_unix else "TBD"
+        await self._write_with_retry(
+            method="PATCH",
+            endpoint=f"/pages/{event_id}",
+            payload=payload,
+            context=f"cancellation of slot in event '{event_name}' at {slot_display}",
         )
