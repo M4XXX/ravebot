@@ -36,6 +36,8 @@ class BotContext:
     notion_client: "Any | None" = None
     log_service: "AdminLogService | None" = None
     lineup_service: "Any | None" = None
+    outreach_service: "Any | None" = None
+    reminders_service: "Any | None" = None
     user_locks: dict[int, asyncio.Lock] = field(default_factory=dict)
 
     def get_user_lock(self, user_id: int) -> asyncio.Lock:

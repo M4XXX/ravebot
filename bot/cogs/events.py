@@ -157,4 +157,13 @@ class EventsCog(commands.Cog):
         """
         if not await self._guard_db("reminder_check"):
             return
-        # Story 3.x: check upcoming events, send day-before DMs
+        guild_id = self._get_guild_id()
+        if guild_id is None:
+            return
+        if self.ctx.reminders_service is None:
+            logger.warning("_check_reminders: reminders_service not available — skipping")
+            return
+        try:
+            await self.ctx.reminders_service.send_reminders(guild_id, self.ctx)
+        except Exception as exc:
+            logger.warning("_check_reminders: send_reminders raised: %s", exc)

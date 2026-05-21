@@ -121,3 +121,47 @@ async def test_update_active_booking_not_found_returns_false() -> None:
     result = await update_active_booking(pool, discord_user_id=99999, active_booking=True)
 
     assert result is False
+
+
+# ---------------------------------------------------------------------------
+# Story 5.2: get_active_booking_djs, update_last_contacted_at
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_active_booking_djs_returns_list():
+    from bot.db.djs import get_active_booking_djs
+
+    pool = MagicMock()
+    fake_rows = [{"discord_user_id": 111, "dj_name": "DJ One", "last_contacted_at": None}]
+    pool.fetch = AsyncMock(return_value=fake_rows)
+    result = await get_active_booking_djs(pool)
+    assert len(result) == 1
+    assert result[0]["discord_user_id"] == 111
+    pool.fetch.assert_awaited_once()
+    sql = pool.fetch.call_args[0][0]
+    assert "active_booking" in sql
+    assert "last_contacted_at" in sql
+
+
+@pytest.mark.asyncio
+async def test_get_active_booking_djs_returns_empty():
+    from bot.db.djs import get_active_booking_djs
+
+    pool = MagicMock()
+    pool.fetch = AsyncMock(return_value=[])
+    result = await get_active_booking_djs(pool)
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_update_last_contacted_at_calls_execute():
+    from bot.db.djs import update_last_contacted_at
+
+    pool = MagicMock()
+    pool.execute = AsyncMock()
+    await update_last_contacted_at(pool, 999)
+    pool.execute.assert_awaited_once()
+    sql = pool.execute.call_args[0][0]
+    assert "last_contacted_at" in sql
+    assert pool.execute.call_args[0][1] == 999

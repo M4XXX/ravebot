@@ -62,12 +62,63 @@ class OutreachCog(commands.Cog):
                 )
             return False
 
+    def _get_guild_id(self) -> int | None:
+        """Return the first guild's ID, or None if the bot has no guilds yet.
+
+        [Source: bot/cogs/events.py#_get_guild_id — mirrors this exact pattern]
+        """
+        if not self.bot.guilds:
+            logger.warning("OutreachCog._get_guild_id: bot has no guilds — skipping cycle")
+            return None
+        return self.bot.guilds[0].id
+
     @tasks.loop(minutes=30)
     async def _outreach_check(self) -> None:
-        """Outreach scheduler loop — full implementation in Story 5.x.
+        """Outreach gap detection — find events with open slots, manage sequences.
 
-        Guard ensures DB is available before any DB-dependent work.
+        Story 5.1: gap detection + sequence lifecycle (upsert, complete, cooldown).
+        Story 5.2: DJ selection and DM delivery.
+        Story 5.3: exhaustion detection, alert, and new-DJ reactivation.
+
+        [Source: epics.md#Story 5.1 AC1–AC4]
+        [Source: architecture.md#Scheduled Work: disnake tasks.loop(minutes=30)]
         """
         if not await self._guard_db("outreach_check"):
             return
-        # Story 5.x: check for open slots, sequence DJ outreach queue
+
+        guild_id = self._get_guild_id()
+        if guild_id is None:
+            return
+
+        if self.ctx.notion_client is None:
+            logger.warning(
+                "OutreachCog._outreach_check: notion_client not available — skipping cycle"
+            )
+            return
+
+        if self.ctx.outreach_service is None:
+            logger.warning(
+                "OutreachCog._outreach_check: outreach_service not available — skipping cycle"
+            )
+            return
+
+        ready_events = await self.ctx.outreach_service.run_gap_detection(guild_id)
+        # Story 5.2: for each ready event, contact the next eligible DJ
+        # Story 5.3: when no eligible DJs remain, check exhaustion and alert admin
+        dm_attempts = 0
+        exhaustion_checks = 0
+        for event in ready_events:
+            sent = await self.ctx.outreach_service.contact_next_dj(event, guild_id, self.ctx)
+            if sent:
+                dm_attempts += 1
+            else:
+                # No eligible DJs — check if outreach sequence should be marked exhausted
+                await self.ctx.outreach_service.handle_exhaustion(event, guild_id)
+                exhaustion_checks += 1
+        logger.debug(
+            "OutreachCog._outreach_check: %d event(s) ready, %d DM(s) attempted,"
+            " %d exhaustion check(s)",
+            len(ready_events),
+            dm_attempts,
+            exhaustion_checks,
+        )

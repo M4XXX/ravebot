@@ -113,6 +113,39 @@ async def set_notion_dj_page_id(
     )
 
 
+async def get_active_booking_djs(pool: asyncpg.Pool) -> list[dict]:
+    """Return all DJs with active_booking=true, sorted by last_contacted_at ASC NULLS FIRST.
+
+    NULLS FIRST gives highest priority to DJs never previously contacted.
+    Used by OutreachService.contact_next_dj() for fair cross-sequence DJ selection.
+
+    [Source: epics.md#Story 5.2 AC1 — 'prioritising those not recently contacted across all sequences']
+    """
+    rows = await pool.fetch(
+        """
+        SELECT discord_user_id, dj_name, last_contacted_at
+        FROM djs
+        WHERE active_booking = true
+        ORDER BY last_contacted_at ASC NULLS FIRST
+        """,
+    )
+    return [dict(row) for row in rows]
+
+
+async def update_last_contacted_at(pool: asyncpg.Pool, discord_user_id: int) -> None:
+    """Record when a DJ was last contacted (globally, across all sequences).
+
+    Called after a successful outreach DM send. Used for cross-sequence DJ
+    prioritisation in get_active_booking_djs() ordering.
+
+    [Source: epics.md#Story 5.2 AC1]
+    """
+    await pool.execute(
+        "UPDATE djs SET last_contacted_at = NOW() WHERE discord_user_id = $1",
+        discord_user_id,
+    )
+
+
 async def update_active_booking(
     pool: asyncpg.Pool,
     *,

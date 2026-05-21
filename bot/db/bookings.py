@@ -140,3 +140,41 @@ async def get_dj_slot_locks(
         discord_user_id,
     )
     return [{"event_id": row["event_id"], "slot_index": row["slot_index"]} for row in rows]
+
+
+async def get_booked_djs_for_event(
+    pool: asyncpg.Pool,
+    event_id: str,
+) -> list[dict]:
+    """Return all DJs with an active booking for this event.
+
+    Joins slot_locks with djs to include DJ display name alongside booking details.
+    Only returns rows where slot_locks.discord_user_id IS NOT NULL (active bookings).
+
+    Returns list of dicts: [{"event_id", "slot_index", "discord_user_id", "dj_name"}, ...]
+    Returns empty list if no slots are booked for this event.
+
+    Used by RemindersService to find DJs who need day-before reminders.
+
+    [Source: epics.md#Story 5.4 AC1]
+    [Source: architecture.md#Repository Pattern]
+    """
+    rows = await pool.fetch(
+        """
+        SELECT sl.event_id, sl.slot_index, sl.discord_user_id, d.dj_name
+        FROM slot_locks sl
+        JOIN djs d ON d.discord_user_id = sl.discord_user_id
+        WHERE sl.event_id = $1 AND sl.discord_user_id IS NOT NULL
+        ORDER BY sl.slot_index ASC
+        """,
+        event_id,
+    )
+    return [
+        {
+            "event_id": row["event_id"],
+            "slot_index": row["slot_index"],
+            "discord_user_id": row["discord_user_id"],
+            "dj_name": row["dj_name"],
+        }
+        for row in rows
+    ]

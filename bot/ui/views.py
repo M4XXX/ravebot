@@ -2,7 +2,8 @@
 
 Views: OnboardingIntroView (Story 2.1), OnboardingModal + RetryOnboardingModalView (Story 2.2),
        BookingConfirmView (Story 4.2), SlotSelectionView (Story 4.1),
-       EventSelectionView (Story 4.1), CancellationView, CancelConfirmView, FallbackMenuView.
+       EventSelectionView (Story 4.1), CancellationView, CancelConfirmView, FallbackMenuView,
+       OutreachView (Story 5.2).
 
 RULE: Every View subclass MUST:
   1. Accept BotContext as a constructor argument
@@ -1579,3 +1580,190 @@ class CancelConfirmView(disnake.ui.View):
         # Release per-user lock — flow complete (AC4)
         if self._lock.locked():
             self._lock.release()
+
+
+# ---------------------------------------------------------------------------
+# Story 5.2: OutreachView
+# ---------------------------------------------------------------------------
+
+
+class OutreachView(disnake.ui.View):
+    """Proactive outreach — two buttons sent with a slot-fill invitation DM.
+
+    Timeout: 43200 seconds (12 hours) — per UX-DR2, UX-DR16.
+    On timeout: log ERR_BUTTON_TIMEOUT and mark contact as 'timeout'.
+
+    Buttons:
+      [🎧 Accept — Show Slots]  — success style — AC2
+      [Not this time]           — secondary style — AC3
+
+    [Source: epics.md#Story 5.2 AC2, AC3, AC5]
+    [Source: ux-design-specification.md#UX-DR2, UX-DR16]
+    [Source: architecture.md#View Lifecycle Contract]
+    """
+
+    def __init__(
+        self,
+        ctx: "BotContext",
+        event: dict,
+        discord_user_id: int,
+    ) -> None:
+        super().__init__(timeout=43200)  # 12 hours — UX-DR2
+        self._ctx = ctx
+        self._event = event
+        self._discord_user_id = discord_user_id
+
+    async def on_timeout(self) -> None:
+        """Log ERR_BUTTON_TIMEOUT and mark contact as 'timeout' in DB.
+
+        No message to DJ — timeout is silent from DJ perspective.
+
+        [Source: epics.md#Story 5.2 AC5]
+        [Source: architecture.md#Error Routing: Centralized AdminLogService]
+        """
+        from bot.db.outreach import update_outreach_contact_status
+        from bot.ui.embeds import ErrorCode
+
+        event_id = self._event.get("id", "")
+        if self._ctx.db is not None and event_id:
+            try:
+                await update_outreach_contact_status(
+                    self._ctx.db, event_id, self._discord_user_id, "timeout"
+                )
+            except Exception as exc:
+                logger.warning(
+                    "OutreachView.on_timeout: failed to update contact status: %s", exc
+                )
+
+        if self._ctx.log_service is not None:
+            try:
+                event_name = self._event["properties"]["Name"]["title"][0]["plain_text"]
+            except (KeyError, IndexError):
+                event_name = event_id
+            try:
+                await self._ctx.log_service.post_error(
+                    error_code=ErrorCode.ERR_BUTTON_TIMEOUT,
+                    trigger=f"OutreachView timed out for DJ {self._discord_user_id} on event '{event_name}'",
+                    action_taken="DJ marked as non-responsive for this sequence. Outreach will proceed to next eligible DJ after cooldown.",
+                    manual_action="No action required unless the event date is imminent.",
+                )
+            except Exception:
+                logger.exception("OutreachView.on_timeout: admin log post failed")
+
+    @disnake.ui.button(
+        label="🎧 Accept — Show Slots",
+        style=disnake.ButtonStyle.success,
+        custom_id="outreach:accept",
+    )
+    async def accept(
+        self,
+        button: disnake.ui.Button,
+        inter: disnake.MessageInteraction,
+    ) -> None:
+        """Enter slot selection booking flow for this event. (AC2)
+
+        Acquires per-user lock FIRST — status is only updated to 'accepted' once
+        the lock is held and the booking flow is actually starting. The view is
+        stopped after lock acquisition to prevent re-use; decline remains available
+        while the lock is held (another flow in progress).
+
+        [Source: epics.md#Story 5.2 AC2]
+        [Source: architecture.md#Per-User Flow Lock: asyncio.Lock per user_id]
+        """
+        from bot.db.outreach import update_outreach_contact_status
+        from bot.ui.embeds import MissionOverviewEmbed
+
+        event_id = self._event.get("id", "")
+
+        # Acquire per-user lock FIRST — prevents false 'accepted' when another flow is open
+        lock = self._ctx.get_user_lock(inter.author.id)
+        if lock.locked():
+            await inter.response.send_message(
+                "Looks like you've got a flow already open — let's finish that one first.",
+                ephemeral=True,
+            )
+            return  # Don't stop view — DJ can still tap [Not this time]
+        await lock.acquire()
+        self.stop()  # Prevent re-use once booking flow is starting
+
+        # Record acceptance AFTER lock acquired (accurate: DJ is entering booking flow)
+        if self._ctx.db is not None and event_id:
+            try:
+                await update_outreach_contact_status(
+                    self._ctx.db, event_id, self._discord_user_id, "accepted"
+                )
+            except Exception as exc:
+                logger.warning("OutreachView.accept: DB update failed: %s", exc)
+
+        # Fetch fresh event data; fall back to cached if Notion unavailable
+        event = self._event
+        if self._ctx.notion_client is not None:
+            try:
+                events = await self._ctx.notion_client.poll_events()
+                fresh = next((e for e in events if e.get("id") == event_id), None)
+                if fresh is not None:
+                    event = fresh
+            except Exception as exc:
+                logger.warning("OutreachView.accept: poll_events failed: %s", exc)
+
+        # Compute open slot indices
+        try:
+            raw_slots = event["properties"]["Slots"]["number"]
+            slots_total = max(1, int(raw_slots) if raw_slots is not None else 6)
+        except (KeyError, TypeError, ValueError):
+            slots_total = 6
+        try:
+            djs_booked = len(event["properties"]["DJs"]["relation"])
+        except (KeyError, TypeError):
+            djs_booked = 0
+
+        open_slot_indices = list(range(djs_booked, slots_total))
+
+        if not open_slot_indices:
+            lock.release()
+            await inter.response.send_message(
+                "Looks like those slots just got filled — nothing available right now!",
+                ephemeral=True,
+            )
+            return
+
+        embed = MissionOverviewEmbed(event)
+        slot_view = SlotSelectionView(self._ctx, event, open_slot_indices, lock, inter.author.id)
+        try:
+            await inter.response.send_message(embed=embed, view=slot_view)
+        except Exception:
+            logger.exception("OutreachView.accept: send_message failed")
+            lock.release()
+
+    @disnake.ui.button(
+        label="Not this time",
+        style=disnake.ButtonStyle.secondary,
+        custom_id="outreach:decline",
+    )
+    async def decline(
+        self,
+        button: disnake.ui.Button,
+        inter: disnake.MessageInteraction,
+    ) -> None:
+        """Warm decline — mark as declined, no further action for this DJ. (AC3)
+
+        The outreach sequence continues to the next eligible DJ after cooldown.
+
+        [Source: epics.md#Story 5.2 AC3]
+        [Source: ux-design-specification.md#UX-DR17 — warm, no urgency]
+        """
+        self.stop()  # Prevent re-use after DJ responds
+        from bot.db.outreach import update_outreach_contact_status
+
+        event_id = self._event.get("id", "")
+        if self._ctx.db is not None and event_id:
+            try:
+                await update_outreach_contact_status(
+                    self._ctx.db, event_id, self._discord_user_id, "declined"
+                )
+            except Exception as exc:
+                logger.warning("OutreachView.decline: DB update failed: %s", exc)
+
+        await inter.response.send_message(
+            "No worries — I'll reach out again next time!"
+        )

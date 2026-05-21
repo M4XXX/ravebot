@@ -85,6 +85,24 @@ async def main() -> None:
     from bot.services.lineup import LineupService
     ctx.lineup_service = LineupService(bot=bot, db=ctx.db, log_service=ctx.log_service)
 
+    # Story 5.1: init OutreachService after notion_client and log_service are ready
+    from bot.services.outreach import OutreachService
+    ctx.outreach_service = OutreachService(
+        bot=bot,
+        db=ctx.db,
+        notion_client=ctx.notion_client,
+        log_service=ctx.log_service,
+    )
+
+    # Story 5.4: init RemindersService after notion_client and log_service are ready
+    from bot.services.reminders import RemindersService
+    ctx.reminders_service = RemindersService(
+        bot=bot,
+        db=ctx.db,
+        notion_client=ctx.notion_client,
+        log_service=ctx.log_service,
+    )
+
     bot.add_cog(OnboardingCog(ctx))
     bot.add_cog(BookingCog(ctx))
     bot.add_cog(OutreachCog(ctx))

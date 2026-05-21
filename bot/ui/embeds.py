@@ -3,14 +3,15 @@
 RULE: All embed construction MUST reference EmbedColors constants — never inline hex values.
 
 Classes:
-    EmbedColors          — named color constants (Story 1.1 stub, completed Story 1.3)
-    ErrorCode            — six error code strings for AdminLogService.post_error()
-    ErrorEmbed           — red embed for system errors posted to admin log channel
-    AdminLogEmbed        — white embed for DJ interaction transcripts
-    MissionRosterEmbed   — Mission Gold lineup embed (Story 3.2)
-    MissionOverviewEmbed — Deep Space Blue per-event slot detail embed (Story 3.3)
-    BookingConfirmEmbed  — Mission Gold pre-confirmation embed (Story 4.2)
-    BookingConfirmedEmbed — Mission Gold post-confirmation embed (Story 4.2)
+    EmbedColors            — named color constants (Story 1.1 stub, completed Story 1.3)
+    ErrorCode              — six error code strings for AdminLogService.post_error()
+    ErrorEmbed             — red embed for system errors posted to admin log channel
+    AdminLogEmbed          — white embed for DJ interaction transcripts
+    MissionRosterEmbed     — Mission Gold lineup embed (Story 3.2)
+    MissionOverviewEmbed   — Deep Space Blue per-event slot detail embed (Story 3.3)
+    BookingConfirmEmbed    — Mission Gold pre-confirmation embed (Story 4.2)
+    BookingConfirmedEmbed  — Mission Gold post-confirmation embed (Story 4.2)
+    ProactiveOutreachEmbed — Deep Space Blue outreach invitation embed (Story 5.2)
 """
 import enum
 from datetime import UTC, datetime, timedelta
@@ -277,3 +278,55 @@ class BookingConfirmedEmbed(disnake.Embed):
             inline=False,
         )
         self.set_footer(text=f"RaveBot \u00b7 {event_name}")
+
+
+class ProactiveOutreachEmbed(disnake.Embed):
+    """Deep Space Blue embed sent alongside proactive outreach DMs.
+
+    Displays structured event details (name, date, open slots) to accompany
+    the plain-text opener in the DM body.
+
+    Color: DEEP_SPACE_BLUE — outreach in progress status indicator.
+    Always includes both color AND text title — satisfies UX-DR18.
+
+    [Source: epics.md#Story 5.2 AC1]
+    [Source: ux-design-specification.md#UX-DR2]
+    [Source: epics.md#UX-DR14 — all times as Discord timestamps]
+    [Source: epics.md#UX-DR18 — color + text label, never color-only]
+    """
+
+    def __init__(self, event: dict) -> None:
+        super().__init__(
+            color=EmbedColors.DEEP_SPACE_BLUE,
+            title="\U0001f30c Mission Opportunity",  # 🌌
+            timestamp=datetime.now(tz=UTC),
+        )
+        try:
+            name = event["properties"]["Name"]["title"][0]["plain_text"]
+        except (KeyError, IndexError):
+            name = "Upcoming Event"
+        try:
+            date_str = event["properties"]["Date"]["date"]["start"]
+            unix_ts = int(datetime.fromisoformat(date_str).timestamp())
+            date_display = f"<t:{unix_ts}:f>"
+        except (KeyError, TypeError, ValueError):
+            date_display = "TBD"
+        try:
+            raw_slots = event["properties"]["Slots"]["number"]
+            slots_total = max(1, int(raw_slots) if raw_slots is not None else 6)
+        except (KeyError, TypeError, ValueError):
+            slots_total = 6
+        try:
+            djs_booked = len(event["properties"]["DJs"]["relation"])
+        except (KeyError, TypeError):
+            djs_booked = 0
+        open_slots = max(0, slots_total - djs_booked)
+
+        self.add_field(name="Event", value=name, inline=True)
+        self.add_field(name="Date", value=date_display, inline=True)
+        self.add_field(
+            name="Open Slots",
+            value=f"{open_slots} of {slots_total}",
+            inline=True,
+        )
+        self.set_footer(text="RaveBot")
