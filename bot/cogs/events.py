@@ -2,20 +2,26 @@
 
 Story 1.5: DB unavailability guard pattern for scheduled task loops.
 Story 3.1: Notion event polling with snapshot-based change detection.
+Story 7.1: _auto_create_events() — maintain look-ahead event count in Notion.
 Full lineup post (FR10) implemented in Story 3.2.
 
 [Source: architecture.md#Scheduled Work: disnake tasks.loop]
 [Source: epics.md#Story 1.5 AC1]
 [Source: epics.md#Story 3.1 AC1-AC4]
+[Source: epics.md#Story 7.1 AC1-AC4]
 """
+import datetime
 import json
 import logging
+from datetime import timedelta
 
 import asyncpg
 from disnake.ext import commands, tasks
 
 from bot.context import BotContext
+from bot.db.bookings import init_event_slots
 from bot.db.config import get_value, set_value
+from bot.notion.client import NotionWriteError
 from bot.ui.embeds import ErrorCode
 
 logger = logging.getLogger(__name__)
@@ -93,6 +99,69 @@ class EventsCog(commands.Cog):
             return None
         return self.bot.guilds[0].id
 
+    async def _auto_create_events(self, events: list[dict], guild_id: int) -> None:
+        """Create Notion events to maintain the configured look-ahead count.
+
+        Reads event_lookahead_count (default 6), event_interval_days (default 7),
+        and slots_per_event (default 6) from config. Finds the latest existing event
+        date and creates new events spaced by interval_days until the count reaches
+        the look-ahead target. After each successful Notion write, pre-initializes
+        slot_locks rows via init_event_slots() (Story 7.3 AC2).
+
+        Called from _poll_notion() after poll_events() succeeds, before snapshot
+        comparison — newly created events appear in the same cycle's snapshot.
+
+        On NotionWriteError: ERR_NOTION_WRITE is already posted by _write_with_retry.
+        Logs a warning and continues — remaining events in the loop still attempted.
+
+        [Source: epics.md#Story 7.1 AC1-AC4]
+        """
+        raw_lookahead = await get_value(self.ctx.db, guild_id, "event_lookahead_count")
+        lookahead = int(raw_lookahead) if raw_lookahead else 6
+
+        if len(events) >= lookahead:
+            return  # AC4: already at or above target, no action
+
+        raw_interval = await get_value(self.ctx.db, guild_id, "event_interval_days")
+        interval_days = int(raw_interval) if raw_interval else 7
+
+        raw_slots = await get_value(self.ctx.db, guild_id, "slots_per_event")
+        slots_per_event = int(raw_slots) if raw_slots else 6
+
+        # Find latest event date; events are sorted ascending by poll_events()
+        latest_date: datetime.date = datetime.date.today()
+        if events:
+            try:
+                date_str = events[-1]["properties"]["Date"]["date"]["start"]
+                latest_date = datetime.date.fromisoformat(date_str[:10])
+            except (KeyError, TypeError, ValueError):
+                pass  # fallback to today
+
+        events_to_create = lookahead - len(events)
+        for i in range(1, events_to_create + 1):
+            new_date = latest_date + timedelta(days=interval_days * i)
+            event_name = f"Rave Night {new_date.strftime('%d %b %Y')}"
+            try:
+                event_id = await self.ctx.notion_client.create_event(event_name, new_date)
+                logger.info(
+                    "Auto-created Notion event: %r on %s", event_name, new_date.isoformat()
+                )
+                # Pre-initialize slot_locks rows (Story 7.3 AC2)
+                try:
+                    await init_event_slots(self.ctx.db, event_id, slots_per_event)
+                except Exception as exc:
+                    logger.warning(
+                        "init_event_slots failed for event %r: %s"
+                        " — slots will be lazily created on booking",
+                        event_id,
+                        exc,
+                    )
+            except NotionWriteError:
+                logger.warning(
+                    "Auto event creation failed for %s — ERR_NOTION_WRITE posted to admin log",
+                    new_date.isoformat(),
+                )
+
     async def _trigger_lineup_update(self, events: list[dict]) -> None:
         """Trigger lineup channel post update via LineupService.
 
@@ -137,6 +206,9 @@ class EventsCog(commands.Cog):
                     ),
                 )
             return
+
+        # Story 7.1: auto-create events to maintain look-ahead count (AC1-AC4)
+        await self._auto_create_events(events, guild_id)
 
         # Compare against stored snapshot (AC1, AC2, AC3)
         new_snapshot = self._build_snapshot(events)

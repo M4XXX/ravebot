@@ -2,6 +2,7 @@
 
 Story 1.5 scope: NotionWriteError, NotionClient with _write_with_retry() and validate_schema().
 Story 3.1 scope: poll_events() — fetch future events for change detection.
+Story 7.1 scope: create_event() — auto-create and manual event creation in Notion.
 Full read_slots(), write_booking(), delete_booking() are Story 3.x scope.
 
 [Source: architecture.md#Notion Client: Raw httpx (async, HTTPS/SSL)]
@@ -334,3 +335,43 @@ class NotionClient:
             payload=payload,
             context=f"cancellation of slot in event '{event_name}' at {slot_display}",
         )
+
+    async def create_event(
+        self,
+        event_name: str,
+        event_date: datetime.date,
+    ) -> str:
+        """Create a new event page in the Notion events database.
+
+        Properties written: Name (title), Date (date, ISO date-only, no time component).
+        The DJs relation is NOT explicitly set — Notion initialises it empty by default.
+
+        Uses _write_with_retry — posts ERR_NOTION_WRITE and raises NotionWriteError
+        if all 3 attempts fail.
+
+        Returns the new Notion page ID (str), stored by callers for later reference.
+
+        Called by EventsCog._auto_create_events() for scheduled auto-creation and
+        by AdminCog.add_event() for manual creation via /add-event command.
+
+        [Source: epics.md#Story 7.1 AC2, AC3, AC5]
+        [Source: architecture.md#Notion Client: Raw httpx (async, HTTPS/SSL)]
+        """
+        payload: dict[str, Any] = {
+            "parent": {"database_id": self._database_id},
+            "properties": {
+                "Name": {
+                    "title": [{"type": "text", "text": {"content": event_name}}]
+                },
+                "Date": {
+                    "date": {"start": event_date.isoformat()}
+                },
+            },
+        }
+        result = await self._write_with_retry(
+            method="POST",
+            endpoint="/pages",
+            payload=payload,
+            context=f"auto event creation for {event_name} on {event_date.isoformat()}",
+        )
+        return result["id"]

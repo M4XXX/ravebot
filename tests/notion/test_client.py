@@ -236,3 +236,51 @@ async def test_write_dj_record_posts_correct_payload() -> None:
     assert payload["parent"]["database_id"] == "test-db-id"
     assert payload["properties"]["Name"]["title"][0]["text"]["content"] == "TestDJ"
     assert payload["properties"]["Discord ID"]["rich_text"][0]["text"]["content"] == "12345"
+
+
+# ---------------------------------------------------------------------------
+# Story 7.1: create_event
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_event_posts_correct_payload() -> None:
+    """create_event calls _write_with_retry with correct POST /pages payload."""
+    import datetime
+    from unittest.mock import patch
+
+    client = make_client()
+    with patch.object(
+        client, "_write_with_retry", new=AsyncMock(return_value={"id": "new-evt-id"})
+    ) as mock_write:
+        result = await client.create_event(
+            "Rave Night 14 Jun 2026", datetime.date(2026, 6, 14)
+        )
+
+    assert result == "new-evt-id"
+    mock_write.assert_awaited_once()
+    call_kwargs = mock_write.call_args.kwargs
+    assert call_kwargs["method"] == "POST"
+    assert call_kwargs["endpoint"] == "/pages"
+    payload = call_kwargs["payload"]
+    assert payload["parent"]["database_id"] == "test-db-id"
+    assert payload["properties"]["Name"]["title"][0]["text"]["content"] == "Rave Night 14 Jun 2026"
+    assert payload["properties"]["Date"]["date"]["start"] == "2026-06-14"
+
+
+@pytest.mark.asyncio
+async def test_create_event_propagates_notion_write_error() -> None:
+    """create_event propagates NotionWriteError from _write_with_retry."""
+    import datetime
+    from unittest.mock import patch
+
+    from bot.notion.client import NotionWriteError
+
+    client = make_client()
+    with patch.object(
+        client,
+        "_write_with_retry",
+        new=AsyncMock(side_effect=NotionWriteError("write failed")),
+    ):
+        with pytest.raises(NotionWriteError):
+            await client.create_event("Rave Night 01 Sep 2026", datetime.date(2026, 9, 1))

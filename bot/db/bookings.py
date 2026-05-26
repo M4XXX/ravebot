@@ -170,6 +170,33 @@ async def admin_force_book_slot(
     )
 
 
+async def init_event_slots(
+    pool: asyncpg.Pool,
+    event_id: str,
+    slots_per_event: int,
+) -> None:
+    """Pre-initialize slot_locks rows for a new event, all with discord_user_id = NULL.
+
+    Inserts one row per slot index (0 to slots_per_event-1).
+    ON CONFLICT DO NOTHING — idempotent; safe to call multiple times.
+    Called by EventsCog._auto_create_events() after a successful create_event() call.
+
+    [Source: epics.md#Story 7.3 AC2 — FR37]
+    [Source: architecture.md#Slot Booking Atomicity: SELECT...FOR UPDATE in Transaction]
+    """
+    if slots_per_event <= 0:
+        return
+    rows = [(event_id, i) for i in range(slots_per_event)]
+    await pool.executemany(
+        """
+        INSERT INTO slot_locks (event_id, slot_index)
+        VALUES ($1, $2)
+        ON CONFLICT (event_id, slot_index) DO NOTHING
+        """,
+        rows,
+    )
+
+
 async def get_booked_djs_for_event(
     pool: asyncpg.Pool,
     event_id: str,

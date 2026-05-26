@@ -10,33 +10,57 @@ Story 6.3: /admin cancel -- force-cancel a DJ's event booking
 Story 6.4: /admin dj set-active -- set a DJ's active booking status
 Story 6.5: /status -- show next event slot status (FR38)
 Story 6.5: /list-djs -- list all registered DJs (FR39)
+Story 7.1: /add-event -- manually create a Notion event (FR40)
+Story 7.2: /config set outreach-days-before -- outreach window (FR36)
+Story 7.2: /config set outreach-cooldown-hours -- outreach cooldown (FR36)
+Story 7.2: /config set lookahead-count -- event look-ahead (FR37)
+Story 7.2: /config set outreach-max -- max outreach contacts (FR36)
+Story 7.2: /config show -- display all config values
+Story 7.3: /config set slots-per-event -- slots per auto-created event (FR37)
+Story 7.3: /config set event-interval-days -- days between auto-created events (FR37)
+Story 7.3: /config set slot-duration -- slot duration in minutes (FR37)
+Story 7.3: /config set start-time -- default event start time HH:MM UTC (FR37)
+Story 7.3: /config set event-schedule -- event recurrence cron expression (FR37)
 FR41: All commands restricted to ADMIN_USER_IDS via cog_slash_command_check
 
 disnake 2.12.0 slash command hierarchy:
-  /config                   <- @commands.slash_command()
-    set                     <- .sub_command_group()
-      dj-channel            <- .sub_command()
-      log-channel           <- .sub_command()
-  /intervene                <- @commands.slash_command()
-    start                   <- .sub_command()
-    send                    <- .sub_command()
-    end                     <- .sub_command()
-  /admin                    <- @commands.slash_command()
-    book                    <- .sub_command()
-    cancel                  <- .sub_command()
-    dj                      <- .sub_command_group()
-      set-active            <- .sub_command()
-  /status                   <- @commands.slash_command()
-  /list-djs                 <- @commands.slash_command()
+  /config                      <- @commands.slash_command()
+    set                        <- .sub_command_group()
+      dj-channel               <- .sub_command()
+      log-channel              <- .sub_command()
+      outreach-days-before     <- .sub_command()
+      outreach-cooldown-hours  <- .sub_command()
+      lookahead-count          <- .sub_command()
+      outreach-max             <- .sub_command()
+      slots-per-event          <- .sub_command()  [Story 7.3]
+      event-interval-days      <- .sub_command()  [Story 7.3]
+      slot-duration            <- .sub_command()  [Story 7.3]
+      start-time               <- .sub_command()  [Story 7.3]
+      event-schedule           <- .sub_command()  [Story 7.3]
+    show                       <- .sub_command()
+  /intervene                   <- @commands.slash_command()
+    start                      <- .sub_command()
+    send                       <- .sub_command()
+    end                        <- .sub_command()
+  /admin                       <- @commands.slash_command()
+    book                       <- .sub_command()
+    cancel                     <- .sub_command()
+    dj                         <- .sub_command_group()
+      set-active               <- .sub_command()
+  /status                      <- @commands.slash_command()
+  /list-djs                    <- @commands.slash_command()
+  /add-event                   <- @commands.slash_command()
 
 [Source: architecture.md#Admin Whitelist: disnake Check Decorator]
 [Source: epics.md#Story 1.4 Acceptance Criteria]
 [Source: epics.md#Story 6.2 Acceptance Criteria]
 [Source: epics.md#Story 6.3 Acceptance Criteria]
 [Source: epics.md#Story 6.5 Acceptance Criteria]
+[Source: epics.md#Story 7.1 Acceptance Criteria]
+[Source: epics.md#Story 7.2 Acceptance Criteria]
 """
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import disnake
 from disnake.ext import commands
@@ -45,6 +69,7 @@ from bot.context import BotContext
 from bot.db import config as db_config
 from bot.db.bookings import get_booked_djs_for_event
 from bot.db.djs import get_all_djs
+from bot.notion.client import NotionWriteError
 from bot.ui.embeds import EmbedColors
 
 logger = logging.getLogger(__name__)
@@ -164,6 +189,386 @@ class AdminCog(commands.Cog):
         await inter.response.send_message(
             f"Log channel set to {channel.mention}", ephemeral=True
         )
+
+    # ---------------------------------------------------------------------------
+    # Story 7.2: /config set outreach-days-before (FR36)
+    # ---------------------------------------------------------------------------
+
+    @config_set_base.sub_command(
+        name="outreach-days-before",
+        description="Set the number of days before an event to start outreach",
+    )
+    async def config_set_outreach_days_before(
+        self,
+        inter: disnake.ApplicationCommandInteraction,
+        days: int = commands.Param(
+            ge=1, description="Days before event to begin outreach (default: 14)"
+        ),
+    ) -> None:
+        """Store outreach_days_before in config table.
+
+        Consumed by OutreachService on every outreach check cycle (default: 14).
+        [Source: epics.md#Story 7.2 AC1 — FR36]
+        [Source: bot/services/outreach.py:84 — outreach_days_before consumer]
+        """
+        guild_id = inter.guild_id
+        assert guild_id is not None
+        if self.ctx.db is None:
+            logger.error("AdminCog: DB pool is None in config_set_outreach_days_before")
+            await inter.response.send_message(
+                "Bot is not ready — please try again.", ephemeral=True
+            )
+            return
+        await db_config.set_value(self.ctx.db, guild_id, "outreach_days_before", str(days))
+        await inter.response.send_message(
+            f"Outreach window set to {days} days before event.", ephemeral=True
+        )
+
+    # ---------------------------------------------------------------------------
+    # Story 7.2: /config set outreach-cooldown-hours (FR36)
+    # ---------------------------------------------------------------------------
+
+    @config_set_base.sub_command(
+        name="outreach-cooldown-hours",
+        description="Set the cooldown in hours between outreach contacts",
+    )
+    async def config_set_outreach_cooldown_hours(
+        self,
+        inter: disnake.ApplicationCommandInteraction,
+        hours: int = commands.Param(
+            ge=1, description="Hours between outreach contacts (default: 12)"
+        ),
+    ) -> None:
+        """Store outreach_cooldown_hours in config table.
+
+        Consumed by OutreachService cooldown check (default: 12).
+        [Source: epics.md#Story 7.2 AC2 — FR36]
+        [Source: bot/services/outreach.py:90 — outreach_cooldown_hours consumer]
+        """
+        guild_id = inter.guild_id
+        assert guild_id is not None
+        if self.ctx.db is None:
+            logger.error("AdminCog: DB pool is None in config_set_outreach_cooldown_hours")
+            await inter.response.send_message(
+                "Bot is not ready — please try again.", ephemeral=True
+            )
+            return
+        await db_config.set_value(
+            self.ctx.db, guild_id, "outreach_cooldown_hours", str(hours)
+        )
+        await inter.response.send_message(
+            f"Outreach cooldown set to {hours} hours between contacts.", ephemeral=True
+        )
+
+    # ---------------------------------------------------------------------------
+    # Story 7.2: /config set lookahead-count (FR37)
+    # ---------------------------------------------------------------------------
+
+    @config_set_base.sub_command(
+        name="lookahead-count",
+        description="Set the number of future events the bot maintains in Notion",
+    )
+    async def config_set_lookahead_count(
+        self,
+        inter: disnake.ApplicationCommandInteraction,
+        count: int = commands.Param(
+            ge=1, description="Number of future events to keep scheduled (default: 6)"
+        ),
+    ) -> None:
+        """Store event_lookahead_count in config table.
+
+        Consumed by EventsCog._auto_create_events() on every poll cycle (default: 6).
+        [Source: epics.md#Story 7.2 AC3 — FR37]
+        [Source: bot/cogs/events.py:116 — event_lookahead_count consumer]
+        """
+        guild_id = inter.guild_id
+        assert guild_id is not None
+        if self.ctx.db is None:
+            logger.error("AdminCog: DB pool is None in config_set_lookahead_count")
+            await inter.response.send_message(
+                "Bot is not ready — please try again.", ephemeral=True
+            )
+            return
+        await db_config.set_value(
+            self.ctx.db, guild_id, "event_lookahead_count", str(count)
+        )
+        await inter.response.send_message(
+            f"Event look-ahead set to {count} future events.", ephemeral=True
+        )
+
+    # ---------------------------------------------------------------------------
+    # Story 7.2: /config set outreach-max (FR36)
+    # ---------------------------------------------------------------------------
+
+    @config_set_base.sub_command(
+        name="outreach-max",
+        description="Set the maximum number of DJs contacted per event outreach cycle",
+    )
+    async def config_set_outreach_max(
+        self,
+        inter: disnake.ApplicationCommandInteraction,
+        max_contacts: int = commands.Param(
+            ge=1, description="Max DJs to contact per event outreach cycle"
+        ),
+    ) -> None:
+        """Store outreach_max_contacts in config table.
+
+        Not yet consumed by services (reserved for future outreach capping logic).
+        [Source: epics.md#Story 7.2 AC4 — FR36]
+        """
+        guild_id = inter.guild_id
+        assert guild_id is not None
+        if self.ctx.db is None:
+            logger.error("AdminCog: DB pool is None in config_set_outreach_max")
+            await inter.response.send_message(
+                "Bot is not ready — please try again.", ephemeral=True
+            )
+            return
+        await db_config.set_value(
+            self.ctx.db, guild_id, "outreach_max_contacts", str(max_contacts)
+        )
+        await inter.response.send_message(
+            f"Max outreach contacts per event set to {max_contacts}.", ephemeral=True
+        )
+
+    # ---------------------------------------------------------------------------
+    # Story 7.3: /config set slots-per-event (FR37)
+    # ---------------------------------------------------------------------------
+
+    @config_set_base.sub_command(
+        name="slots-per-event",
+        description="Set the number of slots per auto-created event",
+    )
+    async def config_set_slots_per_event(
+        self,
+        inter: disnake.ApplicationCommandInteraction,
+        count: int = commands.Param(
+            ge=1, description="Number of slots per event (default: 6)"
+        ),
+    ) -> None:
+        """Store slots_per_event in config table.
+
+        Consumed by status_cmd (admin.py) and _auto_create_events (events.py) for slot count.
+        [Source: epics.md#Story 7.3 AC1 — FR37]
+        [Source: bot/cogs/admin.py — slots_per_event consumer (status_cmd)]
+        [Source: bot/cogs/events.py — slots_per_event consumer (_auto_create_events)]
+        """
+        guild_id = inter.guild_id
+        assert guild_id is not None
+        if self.ctx.db is None:
+            logger.error("AdminCog: DB pool is None in config_set_slots_per_event")
+            await inter.response.send_message(
+                "Bot is not ready — please try again.", ephemeral=True
+            )
+            return
+        await db_config.set_value(self.ctx.db, guild_id, "slots_per_event", str(count))
+        await inter.response.send_message(
+            f"New events will be created with {count} slots.", ephemeral=True
+        )
+
+    # ---------------------------------------------------------------------------
+    # Story 7.3: /config set event-interval-days (FR37)
+    # ---------------------------------------------------------------------------
+
+    @config_set_base.sub_command(
+        name="event-interval-days",
+        description="Set the number of days between auto-created events",
+    )
+    async def config_set_event_interval_days(
+        self,
+        inter: disnake.ApplicationCommandInteraction,
+        days: int = commands.Param(
+            ge=1, description="Days between auto-created events (default: 7)"
+        ),
+    ) -> None:
+        """Store event_interval_days in config table.
+
+        Consumed by EventsCog._auto_create_events() for event spacing (default: 7).
+        [Source: epics.md#Story 7.3 AC3 — FR37]
+        [Source: bot/cogs/events.py:122 — event_interval_days consumer]
+        """
+        guild_id = inter.guild_id
+        assert guild_id is not None
+        if self.ctx.db is None:
+            logger.error("AdminCog: DB pool is None in config_set_event_interval_days")
+            await inter.response.send_message(
+                "Bot is not ready — please try again.", ephemeral=True
+            )
+            return
+        await db_config.set_value(self.ctx.db, guild_id, "event_interval_days", str(days))
+        await inter.response.send_message(
+            f"Auto-created events will be spaced {days} days apart.", ephemeral=True
+        )
+
+    # ---------------------------------------------------------------------------
+    # Story 7.3: /config set slot-duration (FR37)
+    # ---------------------------------------------------------------------------
+
+    @config_set_base.sub_command(
+        name="slot-duration",
+        description="Set the duration of each event slot in minutes",
+    )
+    async def config_set_slot_duration(
+        self,
+        inter: disnake.ApplicationCommandInteraction,
+        minutes: int = commands.Param(
+            ge=1, description="Slot duration in minutes (default: 60)"
+        ),
+    ) -> None:
+        """Store slot_duration_minutes in config table.
+
+        Consumed by RemindersService._compute_slot_time() (reminders.py:112, default: 60).
+        [Source: epics.md#Story 7.3 AC4 — FR37]
+        [Source: bot/services/reminders.py:112 — slot_duration_minutes consumer]
+        """
+        guild_id = inter.guild_id
+        assert guild_id is not None
+        if self.ctx.db is None:
+            logger.error("AdminCog: DB pool is None in config_set_slot_duration")
+            await inter.response.send_message(
+                "Bot is not ready — please try again.", ephemeral=True
+            )
+            return
+        await db_config.set_value(self.ctx.db, guild_id, "slot_duration_minutes", str(minutes))
+        await inter.response.send_message(
+            f"Slot duration set to {minutes} minutes.", ephemeral=True
+        )
+
+    # ---------------------------------------------------------------------------
+    # Story 7.3: /config set start-time (FR37)
+    # ---------------------------------------------------------------------------
+
+    @config_set_base.sub_command(
+        name="start-time",
+        description="Set the default event start time (UTC)",
+    )
+    async def config_set_start_time(
+        self,
+        inter: disnake.ApplicationCommandInteraction,
+        time_str: str = commands.Param(
+            description="Start time in HH:MM format (UTC, e.g. 20:00)"
+        ),
+    ) -> None:
+        """Store default_start_time in config table (HH:MM UTC).
+
+        Consumed by RemindersService._compute_slot_time() (reminders.py:111, default: '20:00').
+        Validates HH:MM format and range before storing.
+        [Source: epics.md#Story 7.3 AC5 — FR37]
+        [Source: bot/services/reminders.py:111 — default_start_time consumer]
+        """
+        guild_id = inter.guild_id
+        assert guild_id is not None
+        if self.ctx.db is None:
+            logger.error("AdminCog: DB pool is None in config_set_start_time")
+            await inter.response.send_message(
+                "Bot is not ready — please try again.", ephemeral=True
+            )
+            return
+        parts = time_str.strip().split(":")
+        valid = (
+            len(parts) == 2
+            and parts[0].isdigit()
+            and parts[1].isdigit()
+            and 0 <= int(parts[0]) <= 23
+            and 0 <= int(parts[1]) <= 59
+        )
+        if not valid:
+            await inter.response.send_message(
+                "Invalid format — use HH:MM (e.g. 20:00).", ephemeral=True
+            )
+            return
+        await db_config.set_value(self.ctx.db, guild_id, "default_start_time", time_str.strip())
+        await inter.response.send_message(
+            f"Default event start time set to {time_str.strip()} UTC.", ephemeral=True
+        )
+
+    # ---------------------------------------------------------------------------
+    # Story 7.3: /config set event-schedule (FR37)
+    # ---------------------------------------------------------------------------
+
+    @config_set_base.sub_command(
+        name="event-schedule",
+        description="Set the event recurrence schedule as a cron expression",
+    )
+    async def config_set_event_schedule(
+        self,
+        inter: disnake.ApplicationCommandInteraction,
+        cron: str = commands.Param(
+            description="Cron expression (e.g. '0 20 * * 6' = every Saturday at 20:00)"
+        ),
+    ) -> None:
+        """Store event_recurrence_cron in config table.
+
+        Not yet consumed by any service — stored for future auto-creation scheduling.
+        [Source: epics.md#Story 7.3 AC6 — FR37]
+        """
+        guild_id = inter.guild_id
+        assert guild_id is not None
+        if self.ctx.db is None:
+            logger.error("AdminCog: DB pool is None in config_set_event_schedule")
+            await inter.response.send_message(
+                "Bot is not ready — please try again.", ephemeral=True
+            )
+            return
+        await db_config.set_value(self.ctx.db, guild_id, "event_recurrence_cron", cron)
+        await inter.response.send_message(
+            f"Event recurrence schedule set to: {cron}", ephemeral=True
+        )
+
+    # ---------------------------------------------------------------------------
+    # Story 7.2: /config show — display all current config values
+    # ---------------------------------------------------------------------------
+
+    @config_base.sub_command(
+        name="show",
+        description="Show all current bot configuration values",
+    )
+    async def config_show(
+        self,
+        inter: disnake.ApplicationCommandInteraction,
+    ) -> None:
+        """Display all runtime config values in a formatted NEBULA_WHITE embed.
+
+        Reads 11 keys from config table; shows default for unset keys.
+        [Source: epics.md#Story 7.2 AC5]
+        [Source: epics.md#Story 7.3 AC1,AC3,AC4,AC5,AC6 — 5 slot config keys added]
+        """
+        guild_id = inter.guild_id
+        assert guild_id is not None
+        if self.ctx.db is None:
+            logger.error("AdminCog: DB pool is None in config_show")
+            await inter.response.send_message(
+                "Bot is not ready — please try again.", ephemeral=True
+            )
+            return
+
+        keys: list[tuple[str, str, str]] = [
+            ("outreach_days_before", "Outreach Window (days before event)", "14"),
+            ("outreach_cooldown_hours", "Outreach Cooldown (hours)", "12"),
+            ("event_lookahead_count", "Event Look-Ahead Count", "6"),
+            ("outreach_max_contacts", "Max Outreach Contacts", "unlimited"),
+            ("dj_channel", "DJ Channel ID", "(not set)"),
+            ("log_channel", "Admin Log Channel ID", "(not set)"),
+            ("slots_per_event", "Slots Per Event", "6"),
+            ("event_interval_days", "Event Interval (days)", "7"),
+            ("slot_duration_minutes", "Slot Duration (minutes)", "60"),
+            ("default_start_time", "Default Start Time (UTC)", "20:00"),
+            ("event_recurrence_cron", "Event Recurrence Cron", "(not set)"),
+        ]
+
+        embed = disnake.Embed(
+            title="⚙️ Bot Configuration",
+            color=EmbedColors.NEBULA_WHITE,
+        )
+        for key, label, default in keys:
+            raw = await db_config.get_value(self.ctx.db, guild_id, key)
+            embed.add_field(
+                name=label,
+                value=raw if raw is not None else f"(default: {default})",
+                inline=True,
+            )
+
+        await inter.response.send_message(embed=embed, ephemeral=True)
 
     # ---------------------------------------------------------------------------
     # Story 6.2: /intervene command group — admin DM takeover (FR32, FR33)
@@ -544,3 +949,65 @@ class AdminCog(commands.Cog):
         )
         embed.set_footer(text=f"{len(djs)} DJ(s) registered")
         await inter.response.send_message(embed=embed, ephemeral=True)
+
+    # ---------------------------------------------------------------------------
+    # Story 7.1: /add-event — manually create a Notion event (FR40)
+    # ---------------------------------------------------------------------------
+
+    @commands.slash_command(
+        name="add-event", description="Manually create a new event in Notion"
+    )
+    async def add_event(
+        self,
+        inter: disnake.ApplicationCommandInteraction,
+        date_str: str = commands.Param(
+            name="date", description="Event date in YYYY-MM-DD format"
+        ),
+    ) -> None:
+        """Create a new event page in Notion on the specified future date.
+
+        Validates date format and that it is strictly in the future.
+        Event name is auto-generated: "Rave Night {DD Mon YYYY}".
+        Uses MISSION_GOLD Discord timestamp in success reply.
+        Protected by cog_slash_command_check — admin-only.
+
+        [Source: epics.md#Story 7.1 AC5, AC6, AC7 — FR40]
+        """
+        if self.ctx.notion_client is None:
+            await inter.response.send_message(
+                "Bot is not ready — please try again.", ephemeral=True
+            )
+            return
+
+        try:
+            event_date = date.fromisoformat(date_str)
+        except ValueError:
+            await inter.response.send_message(
+                "Invalid date — please provide a future date in YYYY-MM-DD format.",
+                ephemeral=True,
+            )
+            return
+
+        if event_date <= date.today():
+            await inter.response.send_message(
+                "Invalid date — please provide a future date in YYYY-MM-DD format.",
+                ephemeral=True,
+            )
+            return
+
+        event_name = f"Rave Night {event_date.strftime('%d %b %Y')}"
+        try:
+            await self.ctx.notion_client.create_event(event_name, event_date)
+        except NotionWriteError:
+            logger.exception("add_event: create_event() failed for %s", event_date)
+            await inter.response.send_message(
+                "Failed to create event in Notion — please try again.", ephemeral=True
+            )
+            return
+
+        event_unix = int(
+            datetime.combine(event_date, datetime.min.time(), tzinfo=UTC).timestamp()
+        )
+        await inter.response.send_message(
+            f"Event created in Notion for <t:{event_unix}:f>.", ephemeral=True
+        )

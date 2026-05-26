@@ -168,3 +168,37 @@ async def test_get_dj_slot_locks_returns_empty() -> None:
     result = await get_dj_slot_locks(pool, 99999)
 
     assert result == []
+
+
+# ---------------------------------------------------------------------------
+# Story 7.3: init_event_slots
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_init_event_slots_inserts_correct_rows() -> None:
+    """init_event_slots calls pool.executemany with one row per slot index."""
+    from bot.db.bookings import init_event_slots
+
+    pool = MagicMock()
+    pool.executemany = AsyncMock()
+
+    await init_event_slots(pool, "evt-abc", 3)
+
+    pool.executemany.assert_awaited_once()
+    call_args = pool.executemany.call_args
+    rows = call_args[0][1]  # second positional arg: list of (event_id, slot_index) tuples
+    assert rows == [("evt-abc", 0), ("evt-abc", 1), ("evt-abc", 2)]
+
+
+@pytest.mark.asyncio
+async def test_init_event_slots_zero_slots_skips_executemany() -> None:
+    """init_event_slots does nothing when slots_per_event is 0 or negative."""
+    from bot.db.bookings import init_event_slots
+
+    pool = MagicMock()
+    pool.executemany = AsyncMock()
+
+    await init_event_slots(pool, "evt-abc", 0)
+
+    pool.executemany.assert_not_called()

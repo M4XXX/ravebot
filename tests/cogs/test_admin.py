@@ -601,3 +601,651 @@ async def test_list_djs_not_ready_when_db_none() -> None:
     await cog.list_djs.callback(cog, inter)
 
     assert "not ready" in inter.response.send_message.call_args[0][0].lower()
+
+
+# ---------------------------------------------------------------------------
+# Story 7.1: /add-event command tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_add_event_creates_event_and_replies() -> None:
+    """add_event calls create_event with correct args and replies with timestamp on success."""
+    import datetime
+
+    from bot.cogs.admin import AdminCog
+
+    ctx = make_mock_ctx(frozenset({1}))
+    ctx.notion_client = MagicMock()
+    ctx.notion_client.create_event = AsyncMock(return_value="new-evt-id")
+
+    cog = AdminCog(ctx)
+    inter = make_mock_inter(user_id=1, guild_id=111)
+
+    future_date = datetime.date.today() + datetime.timedelta(days=7)
+    date_str = future_date.isoformat()
+
+    await cog.add_event.callback(cog, inter, date_str)
+
+    ctx.notion_client.create_event.assert_awaited_once()
+    call_args = ctx.notion_client.create_event.call_args
+    assert call_args[0][1] == future_date  # event_date positional arg
+    assert "Rave Night" in call_args[0][0]  # event_name follows naming convention
+    reply = inter.response.send_message.call_args[0][0]
+    assert "<t:" in reply
+    assert inter.response.send_message.call_args[1].get("ephemeral") is True
+
+
+@pytest.mark.asyncio
+async def test_add_event_past_date_replies_error() -> None:
+    """add_event rejects a past date with 'invalid date' reply and does not call create_event."""
+    import datetime
+
+    from bot.cogs.admin import AdminCog
+
+    ctx = make_mock_ctx(frozenset({1}))
+    ctx.notion_client = MagicMock()
+    ctx.notion_client.create_event = AsyncMock()
+
+    cog = AdminCog(ctx)
+    inter = make_mock_inter(user_id=1, guild_id=111)
+
+    past_date = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
+    await cog.add_event.callback(cog, inter, past_date)
+
+    ctx.notion_client.create_event.assert_not_called()
+    reply = inter.response.send_message.call_args[0][0].lower()
+    assert "invalid date" in reply
+    assert inter.response.send_message.call_args[1].get("ephemeral") is True
+
+
+@pytest.mark.asyncio
+async def test_add_event_invalid_format_replies_error() -> None:
+    """add_event rejects a non-date string with 'invalid date' reply."""
+    from bot.cogs.admin import AdminCog
+
+    ctx = make_mock_ctx(frozenset({1}))
+    ctx.notion_client = MagicMock()
+    ctx.notion_client.create_event = AsyncMock()
+
+    cog = AdminCog(ctx)
+    inter = make_mock_inter(user_id=1, guild_id=111)
+
+    await cog.add_event.callback(cog, inter, "not-a-date")
+
+    ctx.notion_client.create_event.assert_not_called()
+    reply = inter.response.send_message.call_args[0][0].lower()
+    assert "invalid date" in reply
+    assert inter.response.send_message.call_args[1].get("ephemeral") is True
+
+
+@pytest.mark.asyncio
+async def test_add_event_not_ready_when_notion_none() -> None:
+    """add_event replies 'not ready' when notion_client is None."""
+    import datetime
+
+    from bot.cogs.admin import AdminCog
+
+    ctx = make_mock_ctx(frozenset({1}))
+    ctx.notion_client = None
+
+    cog = AdminCog(ctx)
+    inter = make_mock_inter(user_id=1, guild_id=111)
+
+    future_date = (datetime.date.today() + datetime.timedelta(days=7)).isoformat()
+    await cog.add_event.callback(cog, inter, future_date)
+
+    reply = inter.response.send_message.call_args[0][0].lower()
+    assert "not ready" in reply
+    assert inter.response.send_message.call_args[1].get("ephemeral") is True
+
+
+@pytest.mark.asyncio
+async def test_add_event_notion_write_error_replies_error() -> None:
+    """add_event replies 'failed to create' when create_event raises NotionWriteError."""
+    import datetime
+
+    from bot.cogs.admin import AdminCog
+    from bot.notion.client import NotionWriteError
+
+    ctx = make_mock_ctx(frozenset({1}))
+    ctx.notion_client = MagicMock()
+    ctx.notion_client.create_event = AsyncMock(side_effect=NotionWriteError("write failed"))
+
+    cog = AdminCog(ctx)
+    inter = make_mock_inter(user_id=1, guild_id=111)
+
+    future_date = (datetime.date.today() + datetime.timedelta(days=7)).isoformat()
+    await cog.add_event.callback(cog, inter, future_date)
+
+    reply = inter.response.send_message.call_args[0][0].lower()
+    assert "failed to create" in reply
+    assert inter.response.send_message.call_args[1].get("ephemeral") is True
+
+
+# ---------------------------------------------------------------------------
+# Story 7.2: /config set outreach-days-before
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_config_set_outreach_days_before_stores_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """config_set_outreach_days_before stores 'outreach_days_before' via set_value."""
+    from bot.cogs.admin import AdminCog
+
+    ctx = make_mock_ctx(frozenset({1}))
+    cog = AdminCog(ctx)
+    inter = make_mock_inter(user_id=1, guild_id=111)
+
+    set_value_calls: list[tuple[int, str, str]] = []
+
+    async def mock_set_value(pool: object, guild_id: int, key: str, value: str) -> None:
+        set_value_calls.append((guild_id, key, value))
+
+    monkeypatch.setattr("bot.db.config.set_value", mock_set_value)
+    await cog.config_set_outreach_days_before.callback(cog, inter, 10)
+
+    assert set_value_calls == [(111, "outreach_days_before", "10")]
+    call_args = inter.response.send_message.call_args
+    assert "days" in call_args[0][0].lower()
+    assert call_args[1].get("ephemeral") is True
+
+
+@pytest.mark.asyncio
+async def test_config_set_outreach_days_before_db_none_replies_not_ready() -> None:
+    """config_set_outreach_days_before replies 'not ready' when db is None."""
+    from bot.cogs.admin import AdminCog
+
+    ctx = make_mock_ctx(frozenset({1}))
+    ctx.db = None
+    cog = AdminCog(ctx)
+    inter = make_mock_inter(user_id=1, guild_id=111)
+
+    await cog.config_set_outreach_days_before.callback(cog, inter, 10)
+
+    call_args = inter.response.send_message.call_args
+    assert "not ready" in call_args[0][0].lower()
+    assert call_args[1].get("ephemeral") is True
+
+
+@pytest.mark.asyncio
+async def test_config_set_outreach_cooldown_hours_db_none_replies_not_ready() -> None:
+    """config_set_outreach_cooldown_hours replies 'not ready' when db is None."""
+    from bot.cogs.admin import AdminCog
+
+    ctx = make_mock_ctx(frozenset({1}))
+    ctx.db = None
+    cog = AdminCog(ctx)
+    inter = make_mock_inter(user_id=1, guild_id=111)
+
+    await cog.config_set_outreach_cooldown_hours.callback(cog, inter, 6)
+
+    call_args = inter.response.send_message.call_args
+    assert "not ready" in call_args[0][0].lower()
+    assert call_args[1].get("ephemeral") is True
+
+
+@pytest.mark.asyncio
+async def test_config_set_lookahead_count_db_none_replies_not_ready() -> None:
+    """config_set_lookahead_count replies 'not ready' when db is None."""
+    from bot.cogs.admin import AdminCog
+
+    ctx = make_mock_ctx(frozenset({1}))
+    ctx.db = None
+    cog = AdminCog(ctx)
+    inter = make_mock_inter(user_id=1, guild_id=111)
+
+    await cog.config_set_lookahead_count.callback(cog, inter, 8)
+
+    call_args = inter.response.send_message.call_args
+    assert "not ready" in call_args[0][0].lower()
+    assert call_args[1].get("ephemeral") is True
+
+
+@pytest.mark.asyncio
+async def test_config_set_outreach_max_db_none_replies_not_ready() -> None:
+    """config_set_outreach_max replies 'not ready' when db is None."""
+    from bot.cogs.admin import AdminCog
+
+    ctx = make_mock_ctx(frozenset({1}))
+    ctx.db = None
+    cog = AdminCog(ctx)
+    inter = make_mock_inter(user_id=1, guild_id=111)
+
+    await cog.config_set_outreach_max.callback(cog, inter, 5)
+
+    call_args = inter.response.send_message.call_args
+    assert "not ready" in call_args[0][0].lower()
+    assert call_args[1].get("ephemeral") is True
+
+
+# ---------------------------------------------------------------------------
+# Story 7.2: /config set outreach-cooldown-hours
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_config_set_outreach_cooldown_hours_stores_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """config_set_outreach_cooldown_hours stores 'outreach_cooldown_hours' via set_value."""
+    from bot.cogs.admin import AdminCog
+
+    ctx = make_mock_ctx(frozenset({1}))
+    cog = AdminCog(ctx)
+    inter = make_mock_inter(user_id=1, guild_id=111)
+
+    set_value_calls: list[tuple[int, str, str]] = []
+
+    async def mock_set_value(pool: object, guild_id: int, key: str, value: str) -> None:
+        set_value_calls.append((guild_id, key, value))
+
+    monkeypatch.setattr("bot.db.config.set_value", mock_set_value)
+    await cog.config_set_outreach_cooldown_hours.callback(cog, inter, 6)
+
+    assert set_value_calls == [(111, "outreach_cooldown_hours", "6")]
+    call_args = inter.response.send_message.call_args
+    assert "hours" in call_args[0][0].lower()
+    assert call_args[1].get("ephemeral") is True
+
+
+# ---------------------------------------------------------------------------
+# Story 7.2: /config set lookahead-count
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_config_set_lookahead_count_stores_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """config_set_lookahead_count stores 'event_lookahead_count' via set_value."""
+    from bot.cogs.admin import AdminCog
+
+    ctx = make_mock_ctx(frozenset({1}))
+    cog = AdminCog(ctx)
+    inter = make_mock_inter(user_id=1, guild_id=111)
+
+    set_value_calls: list[tuple[int, str, str]] = []
+
+    async def mock_set_value(pool: object, guild_id: int, key: str, value: str) -> None:
+        set_value_calls.append((guild_id, key, value))
+
+    monkeypatch.setattr("bot.db.config.set_value", mock_set_value)
+    await cog.config_set_lookahead_count.callback(cog, inter, 8)
+
+    assert set_value_calls == [(111, "event_lookahead_count", "8")]
+    call_args = inter.response.send_message.call_args
+    assert "look-ahead" in call_args[0][0].lower()
+    assert call_args[1].get("ephemeral") is True
+
+
+# ---------------------------------------------------------------------------
+# Story 7.2: /config set outreach-max
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_config_set_outreach_max_stores_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """config_set_outreach_max stores 'outreach_max_contacts' via set_value."""
+    from bot.cogs.admin import AdminCog
+
+    ctx = make_mock_ctx(frozenset({1}))
+    cog = AdminCog(ctx)
+    inter = make_mock_inter(user_id=1, guild_id=111)
+
+    set_value_calls: list[tuple[int, str, str]] = []
+
+    async def mock_set_value(pool: object, guild_id: int, key: str, value: str) -> None:
+        set_value_calls.append((guild_id, key, value))
+
+    monkeypatch.setattr("bot.db.config.set_value", mock_set_value)
+    await cog.config_set_outreach_max.callback(cog, inter, 5)
+
+    assert set_value_calls == [(111, "outreach_max_contacts", "5")]
+    call_args = inter.response.send_message.call_args
+    assert "max" in call_args[0][0].lower()
+    assert call_args[1].get("ephemeral") is True
+
+
+# ---------------------------------------------------------------------------
+# Story 7.2: /config show
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_config_show_displays_embed_with_all_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """config_show reads all config keys and replies with NEBULA_WHITE embed."""
+    from bot.cogs.admin import AdminCog
+    from bot.ui.embeds import EmbedColors
+
+    ctx = make_mock_ctx(frozenset({1}))
+    cog = AdminCog(ctx)
+    inter = make_mock_inter(user_id=1, guild_id=111)
+
+    async def mock_get_value(pool: object, guild_id: int, key: str) -> str | None:
+        return {"outreach_days_before": "14", "outreach_cooldown_hours": "12"}.get(key)
+
+    monkeypatch.setattr("bot.db.config.get_value", mock_get_value)
+    await cog.config_show.callback(cog, inter)
+
+    inter.response.send_message.assert_awaited_once()
+    call_kwargs = inter.response.send_message.call_args[1]
+    assert call_kwargs.get("ephemeral") is True
+    embed = call_kwargs.get("embed")
+    assert embed is not None
+    assert embed.color.value == EmbedColors.NEBULA_WHITE
+    assert len(embed.fields) == 11  # 6 original (7.2) + 5 slot config (7.3)
+
+
+@pytest.mark.asyncio
+async def test_config_show_db_none_replies_not_ready() -> None:
+    """config_show replies 'not ready' when db is None."""
+    from bot.cogs.admin import AdminCog
+
+    ctx = make_mock_ctx(frozenset({1}))
+    ctx.db = None
+    cog = AdminCog(ctx)
+    inter = make_mock_inter(user_id=1, guild_id=111)
+
+    await cog.config_show.callback(cog, inter)
+
+    call_args = inter.response.send_message.call_args
+    assert "not ready" in call_args[0][0].lower()
+    assert call_args[1].get("ephemeral") is True
+
+
+# ---------------------------------------------------------------------------
+# Story 7.3: /config set slots-per-event
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_config_set_slots_per_event_stores_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """config_set_slots_per_event stores 'slots_per_event' via set_value."""
+    from bot.cogs.admin import AdminCog
+
+    ctx = make_mock_ctx(frozenset({1}))
+    cog = AdminCog(ctx)
+    inter = make_mock_inter(user_id=1, guild_id=111)
+
+    set_value_calls: list[tuple[int, str, str]] = []
+
+    async def mock_set_value(pool: object, guild_id: int, key: str, value: str) -> None:
+        set_value_calls.append((guild_id, key, value))
+
+    monkeypatch.setattr("bot.db.config.set_value", mock_set_value)
+    await cog.config_set_slots_per_event.callback(cog, inter, 4)
+
+    assert set_value_calls == [(111, "slots_per_event", "4")]
+    call_args = inter.response.send_message.call_args
+    assert "slots" in call_args[0][0].lower()
+    assert call_args[1].get("ephemeral") is True
+
+
+@pytest.mark.asyncio
+async def test_config_set_slots_per_event_db_none_replies_not_ready() -> None:
+    """config_set_slots_per_event replies 'not ready' when db is None."""
+    from bot.cogs.admin import AdminCog
+
+    ctx = make_mock_ctx(frozenset({1}))
+    ctx.db = None
+    cog = AdminCog(ctx)
+    inter = make_mock_inter(user_id=1, guild_id=111)
+
+    await cog.config_set_slots_per_event.callback(cog, inter, 4)
+
+    call_args = inter.response.send_message.call_args
+    assert "not ready" in call_args[0][0].lower()
+    assert call_args[1].get("ephemeral") is True
+
+
+# ---------------------------------------------------------------------------
+# Story 7.3: /config set event-interval-days
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_config_set_event_interval_days_stores_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """config_set_event_interval_days stores 'event_interval_days' via set_value."""
+    from bot.cogs.admin import AdminCog
+
+    ctx = make_mock_ctx(frozenset({1}))
+    cog = AdminCog(ctx)
+    inter = make_mock_inter(user_id=1, guild_id=111)
+
+    set_value_calls: list[tuple[int, str, str]] = []
+
+    async def mock_set_value(pool: object, guild_id: int, key: str, value: str) -> None:
+        set_value_calls.append((guild_id, key, value))
+
+    monkeypatch.setattr("bot.db.config.set_value", mock_set_value)
+    await cog.config_set_event_interval_days.callback(cog, inter, 14)
+
+    assert set_value_calls == [(111, "event_interval_days", "14")]
+    call_args = inter.response.send_message.call_args
+    assert "days" in call_args[0][0].lower()
+    assert call_args[1].get("ephemeral") is True
+
+
+@pytest.mark.asyncio
+async def test_config_set_event_interval_days_db_none_replies_not_ready() -> None:
+    """config_set_event_interval_days replies 'not ready' when db is None."""
+    from bot.cogs.admin import AdminCog
+
+    ctx = make_mock_ctx(frozenset({1}))
+    ctx.db = None
+    cog = AdminCog(ctx)
+    inter = make_mock_inter(user_id=1, guild_id=111)
+
+    await cog.config_set_event_interval_days.callback(cog, inter, 14)
+
+    call_args = inter.response.send_message.call_args
+    assert "not ready" in call_args[0][0].lower()
+    assert call_args[1].get("ephemeral") is True
+
+
+# ---------------------------------------------------------------------------
+# Story 7.3: /config set slot-duration
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_config_set_slot_duration_stores_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """config_set_slot_duration stores 'slot_duration_minutes' via set_value."""
+    from bot.cogs.admin import AdminCog
+
+    ctx = make_mock_ctx(frozenset({1}))
+    cog = AdminCog(ctx)
+    inter = make_mock_inter(user_id=1, guild_id=111)
+
+    set_value_calls: list[tuple[int, str, str]] = []
+
+    async def mock_set_value(pool: object, guild_id: int, key: str, value: str) -> None:
+        set_value_calls.append((guild_id, key, value))
+
+    monkeypatch.setattr("bot.db.config.set_value", mock_set_value)
+    await cog.config_set_slot_duration.callback(cog, inter, 90)
+
+    assert set_value_calls == [(111, "slot_duration_minutes", "90")]
+    call_args = inter.response.send_message.call_args
+    assert "minutes" in call_args[0][0].lower()
+    assert call_args[1].get("ephemeral") is True
+
+
+@pytest.mark.asyncio
+async def test_config_set_slot_duration_db_none_replies_not_ready() -> None:
+    """config_set_slot_duration replies 'not ready' when db is None."""
+    from bot.cogs.admin import AdminCog
+
+    ctx = make_mock_ctx(frozenset({1}))
+    ctx.db = None
+    cog = AdminCog(ctx)
+    inter = make_mock_inter(user_id=1, guild_id=111)
+
+    await cog.config_set_slot_duration.callback(cog, inter, 90)
+
+    call_args = inter.response.send_message.call_args
+    assert "not ready" in call_args[0][0].lower()
+    assert call_args[1].get("ephemeral") is True
+
+
+# ---------------------------------------------------------------------------
+# Story 7.3: /config set start-time
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_config_set_start_time_valid_stores_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """config_set_start_time stores 'default_start_time' for valid HH:MM input."""
+    from bot.cogs.admin import AdminCog
+
+    ctx = make_mock_ctx(frozenset({1}))
+    cog = AdminCog(ctx)
+    inter = make_mock_inter(user_id=1, guild_id=111)
+
+    set_value_calls: list[tuple[int, str, str]] = []
+
+    async def mock_set_value(pool: object, guild_id: int, key: str, value: str) -> None:
+        set_value_calls.append((guild_id, key, value))
+
+    monkeypatch.setattr("bot.db.config.set_value", mock_set_value)
+    await cog.config_set_start_time.callback(cog, inter, "20:00")
+
+    assert set_value_calls == [(111, "default_start_time", "20:00")]
+    call_args = inter.response.send_message.call_args
+    assert "utc" in call_args[0][0].lower()
+    assert call_args[1].get("ephemeral") is True
+
+
+@pytest.mark.asyncio
+async def test_config_set_start_time_invalid_format_replies_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """config_set_start_time replies error and does NOT call set_value for bad input."""
+    from bot.cogs.admin import AdminCog
+
+    ctx = make_mock_ctx(frozenset({1}))
+    cog = AdminCog(ctx)
+    inter = make_mock_inter(user_id=1, guild_id=111)
+
+    set_value_calls: list = []
+
+    async def mock_set_value(*args: object, **kwargs: object) -> None:
+        set_value_calls.append(args)
+
+    monkeypatch.setattr("bot.db.config.set_value", mock_set_value)
+    await cog.config_set_start_time.callback(cog, inter, "25:99")
+
+    assert set_value_calls == []  # must NOT store invalid value
+    call_args = inter.response.send_message.call_args
+    assert "invalid format" in call_args[0][0].lower()
+    assert call_args[1].get("ephemeral") is True
+
+
+@pytest.mark.asyncio
+async def test_config_set_start_time_db_none_replies_not_ready() -> None:
+    """config_set_start_time replies 'not ready' when db is None."""
+    from bot.cogs.admin import AdminCog
+
+    ctx = make_mock_ctx(frozenset({1}))
+    ctx.db = None
+    cog = AdminCog(ctx)
+    inter = make_mock_inter(user_id=1, guild_id=111)
+
+    await cog.config_set_start_time.callback(cog, inter, "20:00")
+
+    call_args = inter.response.send_message.call_args
+    assert "not ready" in call_args[0][0].lower()
+    assert call_args[1].get("ephemeral") is True
+
+
+# ---------------------------------------------------------------------------
+# Story 7.3: /config set event-schedule
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_config_set_event_schedule_stores_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """config_set_event_schedule stores 'event_recurrence_cron' via set_value."""
+    from bot.cogs.admin import AdminCog
+
+    ctx = make_mock_ctx(frozenset({1}))
+    cog = AdminCog(ctx)
+    inter = make_mock_inter(user_id=1, guild_id=111)
+
+    set_value_calls: list[tuple[int, str, str]] = []
+
+    async def mock_set_value(pool: object, guild_id: int, key: str, value: str) -> None:
+        set_value_calls.append((guild_id, key, value))
+
+    monkeypatch.setattr("bot.db.config.set_value", mock_set_value)
+    await cog.config_set_event_schedule.callback(cog, inter, "0 20 * * 6")
+
+    assert set_value_calls == [(111, "event_recurrence_cron", "0 20 * * 6")]
+    call_args = inter.response.send_message.call_args
+    assert "schedule" in call_args[0][0].lower()
+    assert call_args[1].get("ephemeral") is True
+
+
+@pytest.mark.asyncio
+async def test_config_set_event_schedule_db_none_replies_not_ready() -> None:
+    """config_set_event_schedule replies 'not ready' when db is None."""
+    from bot.cogs.admin import AdminCog
+
+    ctx = make_mock_ctx(frozenset({1}))
+    ctx.db = None
+    cog = AdminCog(ctx)
+    inter = make_mock_inter(user_id=1, guild_id=111)
+
+    await cog.config_set_event_schedule.callback(cog, inter, "0 20 * * 6")
+
+    call_args = inter.response.send_message.call_args
+    assert "not ready" in call_args[0][0].lower()
+    assert call_args[1].get("ephemeral") is True
+
+
+# ---------------------------------------------------------------------------
+# Story 7.3: config_show field count update
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_config_show_includes_slot_config_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """config_show embed includes all 11 config fields (6 original + 5 slot config from 7.3)."""
+    from bot.cogs.admin import AdminCog
+    from bot.ui.embeds import EmbedColors
+
+    ctx = make_mock_ctx(frozenset({1}))
+    cog = AdminCog(ctx)
+    inter = make_mock_inter(user_id=1, guild_id=111)
+
+    async def mock_get_value(pool: object, guild_id: int, key: str) -> str | None:
+        return None  # all defaults
+
+    monkeypatch.setattr("bot.db.config.get_value", mock_get_value)
+    await cog.config_show.callback(cog, inter)
+
+    call_kwargs = inter.response.send_message.call_args[1]
+    assert call_kwargs.get("ephemeral") is True
+    embed = call_kwargs.get("embed")
+    assert embed is not None
+    assert embed.color.value == EmbedColors.NEBULA_WHITE
+    assert len(embed.fields) == 11
