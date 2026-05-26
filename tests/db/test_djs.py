@@ -165,3 +165,45 @@ async def test_update_last_contacted_at_calls_execute():
     sql = pool.execute.call_args[0][0]
     assert "last_contacted_at" in sql
     assert pool.execute.call_args[0][1] == 999
+
+
+# ---------------------------------------------------------------------------
+# Story 6.5: get_all_djs
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_all_djs_returns_all_rows():
+    """get_all_djs returns a list of all DJ rows as dicts."""
+    from bot.db.djs import get_all_djs
+
+    pool = MagicMock()
+    pool.fetch = AsyncMock(return_value=[
+        {"discord_user_id": 1, "dj_name": "Alpha DJ", "active_booking": True},
+        {"discord_user_id": 2, "dj_name": "Beta DJ", "active_booking": False},
+    ])
+
+    result = await get_all_djs(pool)
+
+    assert len(result) == 2
+    assert result[0]["dj_name"] == "Alpha DJ"
+    assert result[0]["active_booking"] is True
+    assert result[1]["dj_name"] == "Beta DJ"
+    assert result[1]["active_booking"] is False
+    pool.fetch.assert_awaited_once()
+    sql = pool.fetch.call_args[0][0]
+    assert "FROM djs" in sql
+    assert "ORDER BY dj_name ASC" in sql
+
+
+@pytest.mark.asyncio
+async def test_get_all_djs_returns_empty_when_no_djs():
+    """get_all_djs returns empty list when no DJs are registered."""
+    from bot.db.djs import get_all_djs
+
+    pool = MagicMock()
+    pool.fetch = AsyncMock(return_value=[])
+
+    result = await get_all_djs(pool)
+
+    assert result == []

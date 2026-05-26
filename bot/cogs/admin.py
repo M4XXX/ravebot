@@ -8,6 +8,8 @@ FR33: /intervene end -- return DM control to the bot
 Story 6.3: /admin book -- force-book a DJ into an event slot
 Story 6.3: /admin cancel -- force-cancel a DJ's event booking
 Story 6.4: /admin dj set-active -- set a DJ's active booking status
+Story 6.5: /status -- show next event slot status (FR38)
+Story 6.5: /list-djs -- list all registered DJs (FR39)
 FR41: All commands restricted to ADMIN_USER_IDS via cog_slash_command_check
 
 disnake 2.12.0 slash command hierarchy:
@@ -24,19 +26,26 @@ disnake 2.12.0 slash command hierarchy:
     cancel                  <- .sub_command()
     dj                      <- .sub_command_group()
       set-active            <- .sub_command()
+  /status                   <- @commands.slash_command()
+  /list-djs                 <- @commands.slash_command()
 
 [Source: architecture.md#Admin Whitelist: disnake Check Decorator]
 [Source: epics.md#Story 1.4 Acceptance Criteria]
 [Source: epics.md#Story 6.2 Acceptance Criteria]
 [Source: epics.md#Story 6.3 Acceptance Criteria]
+[Source: epics.md#Story 6.5 Acceptance Criteria]
 """
 import logging
+from datetime import UTC, datetime, timedelta
 
 import disnake
 from disnake.ext import commands
 
 from bot.context import BotContext
 from bot.db import config as db_config
+from bot.db.bookings import get_booked_djs_for_event
+from bot.db.djs import get_all_djs
+from bot.ui.embeds import EmbedColors
 
 logger = logging.getLogger(__name__)
 
@@ -400,3 +409,138 @@ class AdminCog(commands.Cog):
             await inter.response.send_message(reply, ephemeral=True)
         else:
             await inter.response.send_message(msg, ephemeral=True)
+
+    # ---------------------------------------------------------------------------
+    # Story 6.5: /status — next event overview (FR38)
+    # ---------------------------------------------------------------------------
+
+    @commands.slash_command(name="status", description="Show the next upcoming event status")
+    async def status_cmd(
+        self,
+        inter: disnake.ApplicationCommandInteraction,
+    ) -> None:
+        """Fetch next event from Notion and display slot-by-slot booking status.
+
+        Uses MISSION_GOLD embed. Slot count from config (default 6).
+        Protected by cog_slash_command_check — admin-only.
+
+        [Source: epics.md#Story 6.5 AC1, AC2, AC5 — FR38]
+        """
+        if self.ctx.notion_client is None or self.ctx.db is None:
+            await inter.response.send_message(
+                "Bot is not ready — please try again.", ephemeral=True
+            )
+            return
+
+        try:
+            events = await self.ctx.notion_client.poll_events()
+        except Exception:
+            logger.exception("status_cmd: poll_events() failed")
+            await inter.response.send_message(
+                "Could not fetch events from Notion — please try again.", ephemeral=True
+            )
+            return
+
+        if not events:
+            await inter.response.send_message(
+                "No upcoming events found in Notion.", ephemeral=True
+            )
+            return
+
+        event = events[0]
+        event_id = event["id"]
+
+        # Parse event name
+        try:
+            event_name = event["properties"]["Name"]["title"][0]["plain_text"]
+        except (KeyError, IndexError, TypeError):
+            event_name = "Unknown Event"
+
+        # Parse event start datetime
+        try:
+            date_str = event["properties"]["Date"]["date"]["start"]
+            event_start = datetime.fromisoformat(date_str)
+            if event_start.tzinfo is None:
+                event_start = event_start.replace(tzinfo=UTC)
+            event_unix = int(event_start.timestamp())
+        except (KeyError, TypeError, ValueError):
+            event_start = None
+            event_unix = 0
+
+        # Get slots_per_event from config (default 6)
+        assert inter.guild_id is not None
+        raw_slots = await db_config.get_value(self.ctx.db, inter.guild_id, "slots_per_event")
+        slots_per_event = int(raw_slots) if raw_slots else 6
+
+        # Get booked slots from DB
+        booked = await get_booked_djs_for_event(self.ctx.db, event_id)
+        booked_by_slot: dict[int, str] = {b["slot_index"]: b["dj_name"] for b in booked}
+
+        # Build embed
+        embed = disnake.Embed(
+            title=f"🌌 {event_name}",
+            color=EmbedColors.MISSION_GOLD,
+        )
+        date_display = f"<t:{event_unix}:f>" if event_unix else "Unknown"
+        embed.add_field(name="Event Date", value=date_display, inline=False)
+        embed.add_field(name="Total Slots", value=str(slots_per_event), inline=True)
+        embed.add_field(name="Booked", value=str(len(booked_by_slot)), inline=True)
+        embed.add_field(name="Open", value=str(slots_per_event - len(booked_by_slot)), inline=True)
+
+        for slot_index in range(slots_per_event):
+            if event_start is not None:
+                slot_unix = int((event_start + timedelta(hours=slot_index)).timestamp())
+                slot_time = f"<t:{slot_unix}:f>"
+            else:
+                slot_time = f"Slot {slot_index + 1}"
+            dj_name = booked_by_slot.get(slot_index, "Open")
+            embed.add_field(
+                name=f"Slot {slot_index + 1} · {slot_time}",
+                value=dj_name,
+                inline=True,
+            )
+
+        await inter.response.send_message(embed=embed, ephemeral=True)
+
+    # ---------------------------------------------------------------------------
+    # Story 6.5: /list-djs — DJ pool overview (FR39)
+    # ---------------------------------------------------------------------------
+
+    @commands.slash_command(
+        name="list-djs", description="List all registered DJs and their booking status"
+    )
+    async def list_djs(
+        self,
+        inter: disnake.ApplicationCommandInteraction,
+    ) -> None:
+        """Query djs table and display all registered DJs with active status.
+
+        Uses NEBULA_WHITE embed (consistent with AdminLogEmbed style).
+        Protected by cog_slash_command_check — admin-only.
+
+        [Source: epics.md#Story 6.5 AC3, AC4, AC5 — FR39]
+        """
+        if self.ctx.db is None:
+            await inter.response.send_message(
+                "Bot is not ready — please try again.", ephemeral=True
+            )
+            return
+
+        djs = await get_all_djs(self.ctx.db)
+
+        if not djs:
+            await inter.response.send_message("No DJs registered yet.", ephemeral=True)
+            return
+
+        lines = [
+            f"<@{dj['discord_user_id']}> · {dj['dj_name']} · "
+            f"{'Active' if dj['active_booking'] else 'Inactive'}"
+            for dj in djs
+        ]
+        embed = disnake.Embed(
+            title="📋 Registered DJs",
+            description="\n".join(lines),
+            color=EmbedColors.NEBULA_WHITE,
+        )
+        embed.set_footer(text=f"{len(djs)} DJ(s) registered")
+        await inter.response.send_message(embed=embed, ephemeral=True)

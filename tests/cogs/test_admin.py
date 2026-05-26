@@ -448,3 +448,156 @@ async def test_admin_dj_set_active_not_ready_when_service_none() -> None:
 
     inter.response.send_message.assert_awaited_once()
     assert "not ready" in inter.response.send_message.call_args[0][0].lower()
+
+
+# ---------------------------------------------------------------------------
+# Story 6.5: /status and /list-djs command tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_status_returns_event_embed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """status_cmd builds a MISSION_GOLD embed for the next upcoming event."""
+    from bot.cogs.admin import AdminCog
+
+    ctx = make_mock_ctx(frozenset({1}))
+    ctx.notion_client = MagicMock()
+    ctx.notion_client.poll_events = AsyncMock(return_value=[{
+        "id": "evt-001",
+        "properties": {
+            "Name": {"title": [{"plain_text": "Rave Night #12"}]},
+            "Date": {"date": {"start": "2026-06-14T20:00:00+00:00"}},
+        },
+    }])
+    monkeypatch.setattr(
+        "bot.cogs.admin.get_booked_djs_for_event",
+        AsyncMock(return_value=[
+            {"slot_index": 0, "dj_name": "DJ Scope", "discord_user_id": 42, "event_id": "evt-001"}
+        ]),
+    )
+    monkeypatch.setattr("bot.cogs.admin.db_config.get_value", AsyncMock(return_value="6"))
+
+    cog = AdminCog(ctx)
+    inter = make_mock_inter(user_id=1, guild_id=111)
+
+    await cog.status_cmd.callback(cog, inter)
+
+    inter.response.send_message.assert_awaited_once()
+    call_kwargs = inter.response.send_message.call_args[1]
+    assert call_kwargs.get("ephemeral") is True
+    embed = call_kwargs.get("embed")
+    assert embed is not None
+    assert "Rave Night #12" in embed.title
+
+
+@pytest.mark.asyncio
+async def test_status_no_events_replies_message() -> None:
+    """status_cmd replies with plain text when Notion has no upcoming events."""
+    from bot.cogs.admin import AdminCog
+
+    ctx = make_mock_ctx(frozenset({1}))
+    ctx.notion_client = MagicMock()
+    ctx.notion_client.poll_events = AsyncMock(return_value=[])
+
+    cog = AdminCog(ctx)
+    inter = make_mock_inter(user_id=1, guild_id=111)
+
+    await cog.status_cmd.callback(cog, inter)
+
+    call_args = inter.response.send_message.call_args
+    assert "no upcoming events" in call_args[0][0].lower()
+    assert call_args[1].get("ephemeral") is True
+
+
+@pytest.mark.asyncio
+async def test_status_not_ready_when_notion_none() -> None:
+    """status_cmd replies 'not ready' when notion_client is None."""
+    from bot.cogs.admin import AdminCog
+
+    ctx = make_mock_ctx(frozenset({1}))
+    ctx.notion_client = None
+
+    cog = AdminCog(ctx)
+    inter = make_mock_inter(user_id=1, guild_id=111)
+
+    await cog.status_cmd.callback(cog, inter)
+
+    assert "not ready" in inter.response.send_message.call_args[0][0].lower()
+
+
+@pytest.mark.asyncio
+async def test_status_not_ready_when_db_none() -> None:
+    """status_cmd replies 'not ready' when db is None (notion_client set, db absent)."""
+    from bot.cogs.admin import AdminCog
+
+    ctx = make_mock_ctx(frozenset({1}))
+    ctx.notion_client = MagicMock()
+    ctx.db = None
+
+    cog = AdminCog(ctx)
+    inter = make_mock_inter(user_id=1, guild_id=111)
+
+    await cog.status_cmd.callback(cog, inter)
+
+    assert "not ready" in inter.response.send_message.call_args[0][0].lower()
+
+
+@pytest.mark.asyncio
+async def test_list_djs_returns_embed_with_all_djs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """list_djs builds a NEBULA_WHITE embed listing all registered DJs."""
+    from bot.cogs.admin import AdminCog
+
+    ctx = make_mock_ctx(frozenset({1}))
+    monkeypatch.setattr(
+        "bot.cogs.admin.get_all_djs",
+        AsyncMock(return_value=[
+            {"discord_user_id": 42, "dj_name": "DJ Scope", "active_booking": True},
+            {"discord_user_id": 99, "dj_name": "DJ Wave", "active_booking": False},
+        ]),
+    )
+
+    cog = AdminCog(ctx)
+    inter = make_mock_inter(user_id=1, guild_id=111)
+
+    await cog.list_djs.callback(cog, inter)
+
+    call_kwargs = inter.response.send_message.call_args[1]
+    assert call_kwargs.get("ephemeral") is True
+    embed = call_kwargs.get("embed")
+    assert embed is not None
+    assert "DJ Scope" in embed.description
+    assert "Active" in embed.description
+    assert "Inactive" in embed.description
+
+
+@pytest.mark.asyncio
+async def test_list_djs_no_djs_replies_message(monkeypatch: pytest.MonkeyPatch) -> None:
+    """list_djs replies with plain text when no DJs are registered."""
+    from bot.cogs.admin import AdminCog
+
+    ctx = make_mock_ctx(frozenset({1}))
+    monkeypatch.setattr("bot.cogs.admin.get_all_djs", AsyncMock(return_value=[]))
+
+    cog = AdminCog(ctx)
+    inter = make_mock_inter(user_id=1, guild_id=111)
+
+    await cog.list_djs.callback(cog, inter)
+
+    assert "no djs registered" in inter.response.send_message.call_args[0][0].lower()
+    assert inter.response.send_message.call_args[1].get("ephemeral") is True
+
+
+@pytest.mark.asyncio
+async def test_list_djs_not_ready_when_db_none() -> None:
+    """list_djs replies 'not ready' when db is None."""
+    from bot.cogs.admin import AdminCog
+
+    ctx = make_mock_ctx(frozenset({1}))
+    ctx.db = None
+
+    cog = AdminCog(ctx)
+    inter = make_mock_inter(user_id=1, guild_id=111)
+
+    await cog.list_djs.callback(cog, inter)
+
+    assert "not ready" in inter.response.send_message.call_args[0][0].lower()

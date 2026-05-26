@@ -119,7 +119,8 @@ async def get_active_booking_djs(pool: asyncpg.Pool) -> list[dict]:
     NULLS FIRST gives highest priority to DJs never previously contacted.
     Used by OutreachService.contact_next_dj() for fair cross-sequence DJ selection.
 
-    [Source: epics.md#Story 5.2 AC1 — 'prioritising those not recently contacted across all sequences']
+    [Source: epics.md#Story 5.2 AC1 — 'prioritising those not recently contacted
+    across all sequences']
     """
     rows = await pool.fetch(
         """
@@ -144,6 +145,21 @@ async def update_last_contacted_at(pool: asyncpg.Pool, discord_user_id: int) -> 
         "UPDATE djs SET last_contacted_at = NOW() WHERE discord_user_id = $1",
         discord_user_id,
     )
+
+
+async def get_all_djs(pool: asyncpg.Pool) -> list[dict]:
+    """Return all registered DJ rows ordered alphabetically by dj_name.
+
+    Used by AdminCog /list-djs to show the full DJ pool with active status.
+    Returns empty list if no DJs are registered.
+
+    [Source: epics.md#Story 6.5 AC3, AC4 — FR39]
+    [Source: architecture.md#Repository Pattern]
+    """
+    rows = await pool.fetch(
+        "SELECT discord_user_id, dj_name, active_booking FROM djs ORDER BY dj_name ASC"
+    )
+    return [dict(row) for row in rows]
 
 
 async def update_active_booking(
