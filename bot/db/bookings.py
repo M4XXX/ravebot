@@ -142,6 +142,34 @@ async def get_dj_slot_locks(
     return [{"event_id": row["event_id"], "slot_index": row["slot_index"]} for row in rows]
 
 
+async def admin_force_book_slot(
+    pool: asyncpg.Pool,
+    event_id: str,
+    slot_index: int,
+    discord_user_id: int,
+) -> None:
+    """Force-book a slot for a DJ, overwriting any existing holder (admin override only).
+
+    Uses an UPSERT — does NOT use SELECT...FOR UPDATE. This intentionally bypasses
+    the race condition guard used in acquire_slot_lock(). Only callable from
+    admin slash commands where the admin has already decided to overwrite.
+
+    [Source: epics.md#Story 6.3 AC1]
+    [Source: architecture.md#Repository Pattern]
+    """
+    await pool.execute(
+        """
+        INSERT INTO slot_locks (event_id, slot_index, discord_user_id, booked_at)
+        VALUES ($1, $2, $3, NOW())
+        ON CONFLICT (event_id, slot_index) DO UPDATE
+            SET discord_user_id = $3, booked_at = NOW()
+        """,
+        event_id,
+        slot_index,
+        discord_user_id,
+    )
+
+
 async def get_booked_djs_for_event(
     pool: asyncpg.Pool,
     event_id: str,

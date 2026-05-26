@@ -15,6 +15,7 @@ from disnake.ext import commands
 
 from bot.context import BotContext
 from bot.db.djs import get_dj_by_discord_id
+from bot.db.interventions import is_under_intervention
 from bot.ui.embeds import ErrorCode
 from bot.ui.views import FallbackMenuView, OnboardingIntroView
 
@@ -66,11 +67,21 @@ class OnboardingCog(commands.Cog):
 
         # Attempt to send onboarding DM
         try:
-            await after.send(
+            onboarding_text = (
                 "Hey! I'm RaveBot — I handle all DJ bookings here. "
-                "Want me to add you to the booking pool?",
+                "Want me to add you to the booking pool?"
+            )
+            await after.send(
+                onboarding_text,
                 view=OnboardingIntroView(self.ctx, after.id, after.guild.id),
             )
+            # Story 6.1 AC1: log outgoing onboarding DM
+            if self.ctx.log_service is not None:
+                await self.ctx.log_service.post_dm_transcript(
+                    dj_name=after.name,
+                    direction="BOT",
+                    content=onboarding_text,
+                )
             logger.info("Onboarding DM sent to %s (user_id=%s)", after.name, after.id)
         except disnake.Forbidden:
             logger.warning(
@@ -109,11 +120,35 @@ class OnboardingCog(commands.Cog):
         # Ignore bot messages (including our own)
         if message.author.bot:
             return
+        # Story 6.1 AC2: log all incoming DJ DMs regardless of flow state
+        if self.ctx.log_service is not None:
+            await self.ctx.log_service.post_dm_transcript(
+                dj_name=message.author.name,
+                direction="DJ",
+                content=message.content,
+            )
+
+        # Story 6.2 AC3: if DJ is under admin intervention, forward to admin log and suppress
+        if self.ctx.db is not None:
+            if await is_under_intervention(self.ctx.db, message.author.id):
+                if self.ctx.log_service is not None:
+                    await self.ctx.log_service.post_intervention(
+                        sender=f"@{message.author.name}",
+                        recipient="ADMIN",
+                        content=message.content,
+                    )
+                return
+
         # If user is in an active multi-step flow, do not interrupt
         lock = self.ctx.get_user_lock(message.author.id)
         if lock.locked():
             return
-        await message.channel.send(
-            "I work best with buttons — here's what I can do for you:",
-            view=FallbackMenuView(self.ctx),
-        )
+        fallback_text = "I work best with buttons — here's what I can do for you:"
+        await message.channel.send(fallback_text, view=FallbackMenuView(self.ctx))
+        # Story 6.1 AC1: log outgoing fallback menu DM
+        if self.ctx.log_service is not None:
+            await self.ctx.log_service.post_dm_transcript(
+                dj_name=message.author.name,
+                direction="BOT",
+                content=fallback_text,
+            )

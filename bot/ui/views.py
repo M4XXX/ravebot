@@ -73,6 +73,13 @@ class OnboardingIntroView(disnake.ui.View):
         [Source: epics.md#Story 2.2 AC1, AC5]
         [Source: architecture.md#Per-User Flow Lock: asyncio.Lock per user_id]
         """
+        # Story 6.1 AC3: log button tap
+        if self.ctx.log_service is not None:
+            await self.ctx.log_service.post_dm_transcript(
+                dj_name=inter.author.name,
+                direction="DJ",
+                content=f"[Button: {button.label}]",
+            )
         lock = self.ctx.get_user_lock(inter.author.id)
         if lock.locked():
             await inter.response.send_message(
@@ -96,9 +103,22 @@ class OnboardingIntroView(disnake.ui.View):
         inter: disnake.MessageInteraction,
     ) -> None:
         """Warm decline — no DB write, no role assignment (Story 2.4 AC1)."""
-        await inter.response.send_message(
-            "No problem — you can always join later if you change your mind."
-        )
+        # Story 6.1 AC3: log button tap
+        if self.ctx.log_service is not None:
+            await self.ctx.log_service.post_dm_transcript(
+                dj_name=inter.author.name,
+                direction="DJ",
+                content=f"[Button: {button.label}]",
+            )
+        response_text = "No problem — you can always join later if you change your mind."
+        await inter.response.send_message(response_text)
+        # Story 6.1 AC1: log bot response
+        if self.ctx.log_service is not None:
+            await self.ctx.log_service.post_dm_transcript(
+                dj_name=inter.author.name,
+                direction="BOT",
+                content=response_text,
+            )
 
 
 class OnboardingModal(disnake.ui.Modal):
@@ -329,6 +349,13 @@ class RetryOnboardingModalView(disnake.ui.View):
         inter: disnake.MessageInteraction,
     ) -> None:
         """Re-open the onboarding modal. Re-acquires the per-user lock."""
+        # Story 6.1 AC3: log button tap
+        if self._ctx.log_service is not None:
+            await self._ctx.log_service.post_dm_transcript(
+                dj_name=inter.author.name,
+                direction="DJ",
+                content=f"[Button: {button.label}]",
+            )
         lock = self._ctx.get_user_lock(inter.author.id)
         if lock.locked():
             await inter.response.send_message(
@@ -388,6 +415,13 @@ class FallbackMenuView(disnake.ui.View):
         [Source: epics.md#Story 4.1 AC1, AC3, AC4, AC6]
         [Source: architecture.md#Per-User Flow Lock: asyncio.Lock per user_id]
         """
+        # Story 6.1 AC3: log button tap
+        if self.ctx.log_service is not None:
+            await self.ctx.log_service.post_dm_transcript(
+                dj_name=inter.author.name,
+                direction="DJ",
+                content=f"[Button: {button.label}]",
+            )
         lock = self.ctx.get_user_lock(inter.author.id)
         if lock.locked():
             await inter.response.send_message(
@@ -451,6 +485,13 @@ class FallbackMenuView(disnake.ui.View):
         content = "\n".join(lines)
         view = EventSelectionView(self.ctx, events_with_open_slots, lock, inter.author.id)
         await inter.response.send_message(content, view=view, ephemeral=True)
+        # Story 6.1 AC1: log bot response
+        if self.ctx.log_service is not None:
+            await self.ctx.log_service.post_dm_transcript(
+                dj_name=inter.author.name,
+                direction="BOT",
+                content=content,
+            )
 
     @disnake.ui.button(
         label="❌ Cancel a Slot",
@@ -468,6 +509,13 @@ class FallbackMenuView(disnake.ui.View):
         [Source: epics.md#Story 4.4 AC1, AC2, AC6]
         [Source: architecture.md#Per-User Flow Lock: asyncio.Lock per user_id]
         """
+        # Story 6.1 AC3: log button tap
+        if self.ctx.log_service is not None:
+            await self.ctx.log_service.post_dm_transcript(
+                dj_name=inter.author.name,
+                direction="DJ",
+                content=f"[Button: {button.label}]",
+            )
         from bot.db.bookings import get_dj_slot_locks
 
         user_id = inter.author.id
@@ -560,11 +608,15 @@ class FallbackMenuView(disnake.ui.View):
             return
 
         view = CancellationView(self.ctx, bookings, lock, user_id)
-        await inter.response.send_message(
-            "Which booking would you like to cancel?",
-            view=view,
-            ephemeral=True,
-        )
+        cancel_prompt = "Which booking would you like to cancel?"
+        await inter.response.send_message(cancel_prompt, view=view, ephemeral=True)
+        # Story 6.1 AC1: log bot response
+        if self.ctx.log_service is not None:
+            await self.ctx.log_service.post_dm_transcript(
+                dj_name=inter.author.name,
+                direction="BOT",
+                content=cancel_prompt,
+            )
 
     @disnake.ui.button(
         label="✅ Go Active",
@@ -581,6 +633,13 @@ class FallbackMenuView(disnake.ui.View):
 
         [Source: epics.md#Story 2.4 AC3]
         """
+        # Story 6.1 AC3: log button tap
+        if self.ctx.log_service is not None:
+            await self.ctx.log_service.post_dm_transcript(
+                dj_name=inter.author.name,
+                direction="DJ",
+                content=f"[Button: {button.label}]",
+            )
         if self.ctx.db is None:
             await inter.response.send_message(
                 "Something went wrong on our end — please try again in a moment.",
@@ -620,9 +679,15 @@ class FallbackMenuView(disnake.ui.View):
                         )
                 break
 
-        await inter.response.send_message(
-            "You're back in the pool — I'll reach out when there's an open slot."
-        )
+        go_active_text = "You're back in the pool — I'll reach out when there's an open slot."
+        await inter.response.send_message(go_active_text)
+        # Story 6.1 AC1: log bot response
+        if self.ctx.log_service is not None:
+            await self.ctx.log_service.post_dm_transcript(
+                dj_name=inter.author.name,
+                direction="BOT",
+                content=go_active_text,
+            )
 
     @disnake.ui.button(
         label="🚫 Go Inactive",
@@ -639,6 +704,13 @@ class FallbackMenuView(disnake.ui.View):
 
         [Source: epics.md#Story 2.4 AC4]
         """
+        # Story 6.1 AC3: log button tap
+        if self.ctx.log_service is not None:
+            await self.ctx.log_service.post_dm_transcript(
+                dj_name=inter.author.name,
+                direction="DJ",
+                content=f"[Button: {button.label}]",
+            )
         if self.ctx.db is None:
             await inter.response.send_message(
                 "Something went wrong on our end — please try again in a moment.",
@@ -670,9 +742,15 @@ class FallbackMenuView(disnake.ui.View):
                         )
                 break
 
-        await inter.response.send_message(
-            "Got it — I'll stop reaching out. You can still self-book anytime."
-        )
+        go_inactive_text = "Got it — I'll stop reaching out. You can still self-book anytime."
+        await inter.response.send_message(go_inactive_text)
+        # Story 6.1 AC1: log bot response
+        if self.ctx.log_service is not None:
+            await self.ctx.log_service.post_dm_transcript(
+                dj_name=inter.author.name,
+                direction="BOT",
+                content=go_inactive_text,
+            )
 
     @disnake.ui.button(
         label="🌌 Show Lineup",
@@ -692,6 +770,13 @@ class FallbackMenuView(disnake.ui.View):
 
         [Source: epics.md#Story 3.3 AC1, AC5, AC6]
         """
+        # Story 6.1 AC3: log button tap
+        if self.ctx.log_service is not None:
+            await self.ctx.log_service.post_dm_transcript(
+                dj_name=inter.author.name,
+                direction="DJ",
+                content=f"[Button: {button.label}]",
+            )
         from bot.ui.embeds import MissionOverviewEmbed
 
         if self.ctx.notion_client is None:
@@ -1060,6 +1145,13 @@ class BookingConfirmView(disnake.ui.View):
         inter: disnake.MessageInteraction,
     ) -> None:
         """Acquire slot lock, write booking to Notion, send confirmation. (AC2–AC3)"""
+        # Story 6.1 AC3: log button tap
+        if self._ctx.log_service is not None:
+            await self._ctx.log_service.post_dm_transcript(
+                dj_name=inter.author.name,
+                direction="DJ",
+                content=f"[Button: {button.label}]",
+            )
         await self._handle_confirm(inter)
 
     @disnake.ui.button(
@@ -1073,6 +1165,13 @@ class BookingConfirmView(disnake.ui.View):
         inter: disnake.MessageInteraction,
     ) -> None:
         """Cancel the pending booking — release lock, warm dismissal. (AC4)"""
+        # Story 6.1 AC3: log button tap
+        if self._ctx.log_service is not None:
+            await self._ctx.log_service.post_dm_transcript(
+                dj_name=inter.author.name,
+                direction="DJ",
+                content=f"[Button: {button.label}]",
+            )
         await self._handle_cancel(inter)
 
     async def _handle_cancel(self, inter: disnake.MessageInteraction) -> None:
@@ -1443,6 +1542,13 @@ class CancelConfirmView(disnake.ui.View):
         inter: disnake.MessageInteraction,
     ) -> None:
         """Remove booking from Notion, free slot lock, send confirmation. (AC4)"""
+        # Story 6.1 AC3: log button tap
+        if self._ctx.log_service is not None:
+            await self._ctx.log_service.post_dm_transcript(
+                dj_name=inter.author.name,
+                direction="DJ",
+                content=f"[Button: {button.label}]",
+            )
         await self._handle_confirm(inter)
 
     @disnake.ui.button(
@@ -1456,6 +1562,13 @@ class CancelConfirmView(disnake.ui.View):
         inter: disnake.MessageInteraction,
     ) -> None:
         """Keep booking — release lock, warm dismissal. (AC5)"""
+        # Story 6.1 AC3: log button tap
+        if self._ctx.log_service is not None:
+            await self._ctx.log_service.post_dm_transcript(
+                dj_name=inter.author.name,
+                direction="DJ",
+                content=f"[Button: {button.label}]",
+            )
         await self._handle_keep(inter)
 
     async def _handle_keep(self, inter: disnake.MessageInteraction) -> None:
@@ -1670,6 +1783,13 @@ class OutreachView(disnake.ui.View):
         [Source: epics.md#Story 5.2 AC2]
         [Source: architecture.md#Per-User Flow Lock: asyncio.Lock per user_id]
         """
+        # Story 6.1 AC3: log button tap
+        if self._ctx.log_service is not None:
+            await self._ctx.log_service.post_dm_transcript(
+                dj_name=inter.author.name,
+                direction="DJ",
+                content=f"[Button: {button.label}]",
+            )
         from bot.db.outreach import update_outreach_contact_status
         from bot.ui.embeds import MissionOverviewEmbed
 
@@ -1752,6 +1872,13 @@ class OutreachView(disnake.ui.View):
         [Source: epics.md#Story 5.2 AC3]
         [Source: ux-design-specification.md#UX-DR17 — warm, no urgency]
         """
+        # Story 6.1 AC3: log button tap
+        if self._ctx.log_service is not None:
+            await self._ctx.log_service.post_dm_transcript(
+                dj_name=inter.author.name,
+                direction="DJ",
+                content=f"[Button: {button.label}]",
+            )
         self.stop()  # Prevent re-use after DJ responds
         from bot.db.outreach import update_outreach_contact_status
 
@@ -1764,6 +1891,12 @@ class OutreachView(disnake.ui.View):
             except Exception as exc:
                 logger.warning("OutreachView.decline: DB update failed: %s", exc)
 
-        await inter.response.send_message(
-            "No worries — I'll reach out again next time!"
-        )
+        decline_text = "No worries — I'll reach out again next time!"
+        await inter.response.send_message(decline_text)
+        # Story 6.1 AC1: log bot response
+        if self._ctx.log_service is not None:
+            await self._ctx.log_service.post_dm_transcript(
+                dj_name=inter.author.name,
+                direction="BOT",
+                content=decline_text,
+            )

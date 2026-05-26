@@ -1,19 +1,34 @@
-"""Admin cog — slash commands for bot configuration (Story 1.4).
+"""Admin cog — slash commands for bot configuration, intervention, and booking override.
 
 FR34: /config set dj-channel — configure DJ lineup post channel
 FR35: /config set log-channel — configure admin log channel
+FR32: /intervene start -- take over bot DM with a DJ
+FR33: /intervene send -- send message to DJ as bot during intervention
+FR33: /intervene end -- return DM control to the bot
+Story 6.3: /admin book -- force-book a DJ into an event slot
+Story 6.3: /admin cancel -- force-cancel a DJ's event booking
+Story 6.4: /admin dj set-active -- set a DJ's active booking status
 FR41: All commands restricted to ADMIN_USER_IDS via cog_slash_command_check
 
-Additional admin commands (FR31–33, FR36–41) are implemented in later stories.
-
 disnake 2.12.0 slash command hierarchy:
-  /config                   ← @commands.slash_command()
-    set                     ← .sub_command_group()
-      dj-channel            ← .sub_command()
-      log-channel           ← .sub_command()
+  /config                   <- @commands.slash_command()
+    set                     <- .sub_command_group()
+      dj-channel            <- .sub_command()
+      log-channel           <- .sub_command()
+  /intervene                <- @commands.slash_command()
+    start                   <- .sub_command()
+    send                    <- .sub_command()
+    end                     <- .sub_command()
+  /admin                    <- @commands.slash_command()
+    book                    <- .sub_command()
+    cancel                  <- .sub_command()
+    dj                      <- .sub_command_group()
+      set-active            <- .sub_command()
 
 [Source: architecture.md#Admin Whitelist: disnake Check Decorator]
 [Source: epics.md#Story 1.4 Acceptance Criteria]
+[Source: epics.md#Story 6.2 Acceptance Criteria]
+[Source: epics.md#Story 6.3 Acceptance Criteria]
 """
 import logging
 
@@ -140,3 +155,248 @@ class AdminCog(commands.Cog):
         await inter.response.send_message(
             f"Log channel set to {channel.mention}", ephemeral=True
         )
+
+    # ---------------------------------------------------------------------------
+    # Story 6.2: /intervene command group — admin DM takeover (FR32, FR33)
+    # ---------------------------------------------------------------------------
+
+    @commands.slash_command(
+        name="intervene", description="Admin DM intervention commands (admin only)"
+    )
+    async def intervene_base(self, inter: disnake.ApplicationCommandInteraction) -> None:
+        """Top-level /intervene command group — entry point for all intervention sub-commands.
+
+        [Source: epics.md#Story 6.2 -- FR32, FR33]
+        """
+        pass
+
+    @intervene_base.sub_command(
+        name="start", description="Take over the bot's DM conversation with a DJ"
+    )
+    async def intervene_start(
+        self,
+        inter: disnake.ApplicationCommandInteraction,
+        dj: disnake.Member = commands.Param(description="The DJ to intervene with"),
+    ) -> None:
+        """Pause automated DMs to the DJ and activate admin intervention mode.
+
+        Inserts a row in the interventions table via InterventionService.
+        All outreach, reminders, and flow prompts are suppressed until /intervene end.
+
+        [Source: epics.md#Story 6.2 AC1]
+        [Source: bot/services/intervention.py -- InterventionService.start()]
+        """
+        if self.ctx.intervention_service is None:
+            await inter.response.send_message(
+                "Bot is not ready — please try again.", ephemeral=True
+            )
+            return
+        await self.ctx.intervention_service.start(dj.id, dj.display_name)
+        await inter.response.send_message(
+            f"Intervention active for {dj.mention}. All automated DMs paused. "
+            "Use `/intervene send` to message them.",
+            ephemeral=True,
+        )
+
+    @intervene_base.sub_command(
+        name="send", description="Send a message to a DJ as the bot during intervention"
+    )
+    async def intervene_send(
+        self,
+        inter: disnake.ApplicationCommandInteraction,
+        dj: disnake.Member = commands.Param(description="Target DJ"),
+        message: str = commands.Param(description="Message to send to the DJ"),
+    ) -> None:
+        """Forward a message to the DJ's DM as if it were a bot message.
+
+        Logs the sent message to the admin channel as [ADMIN -> @DJName] content.
+
+        [Source: epics.md#Story 6.2 AC2]
+        [Source: bot/services/intervention.py -- InterventionService.send_message()]
+        """
+        if self.ctx.intervention_service is None:
+            await inter.response.send_message(
+                "Bot is not ready — please try again.", ephemeral=True
+            )
+            return
+        sent = await self.ctx.intervention_service.send_message(dj.id, dj.display_name, message)
+        if sent:
+            await inter.response.send_message(
+                f"Message sent to {dj.mention}.", ephemeral=True
+            )
+        else:
+            await inter.response.send_message(
+                f"Could not deliver message to {dj.mention} — DMs may be blocked.",
+                ephemeral=True,
+            )
+
+    @intervene_base.sub_command(
+        name="end", description="Return DM control to the bot for a DJ"
+    )
+    async def intervene_end(
+        self,
+        inter: disnake.ApplicationCommandInteraction,
+        dj: disnake.Member = commands.Param(description="The DJ to stop intervening with"),
+    ) -> None:
+        """Remove the intervention record and resume normal automated behaviour.
+
+        Deletes the row from the interventions table via InterventionService.
+
+        [Source: epics.md#Story 6.2 AC4]
+        [Source: bot/services/intervention.py -- InterventionService.end()]
+        """
+        if self.ctx.intervention_service is None:
+            await inter.response.send_message(
+                "Bot is not ready — please try again.", ephemeral=True
+            )
+            return
+        await self.ctx.intervention_service.end(dj.id, dj.display_name)
+        await inter.response.send_message(
+            f"Intervention ended for {dj.mention} — automated flows resumed.",
+            ephemeral=True,
+        )
+
+    # ---------------------------------------------------------------------------
+    # Story 6.3: /admin command group — booking & cancellation override
+    # ---------------------------------------------------------------------------
+
+    @commands.slash_command(
+        name="admin", description="Admin booking management commands (admin only)"
+    )
+    async def admin_base(self, inter: disnake.ApplicationCommandInteraction) -> None:
+        """Top-level /admin command group — entry point for booking override sub-commands.
+
+        [Source: epics.md#Story 6.3]
+        """
+        pass
+
+    @admin_base.sub_command(
+        name="book", description="Force-book a DJ into an event slot (bypasses confirmation)"
+    )
+    async def admin_book(
+        self,
+        inter: disnake.ApplicationCommandInteraction,
+        dj: disnake.Member = commands.Param(description="The DJ to book"),
+        event: str = commands.Param(description="Event name (must match Notion, case-insensitive)"),
+        slot: int = commands.Param(ge=1, description="Slot number (1 = first slot of event)"),
+    ) -> None:
+        """Force-book a DJ into a slot, writing directly to Notion without confirmation.
+
+        Uses AdminBookingService.book_slot_override().
+        Protected by cog_slash_command_check — admin-only.
+
+        [Source: epics.md#Story 6.3 AC1, AC4]
+        [Source: bot/services/admin_booking.py -- AdminBookingService.book_slot_override()]
+        """
+        if self.ctx.admin_booking_service is None:
+            await inter.response.send_message(
+                "Bot is not ready — please try again.", ephemeral=True
+            )
+            return
+        success, msg = await self.ctx.admin_booking_service.book_slot_override(
+            admin_name=inter.author.name,
+            dj_id=dj.id,
+            dj_name=dj.display_name,
+            event_name=event,
+            slot_num=slot,
+        )
+        if success:
+            await inter.response.send_message(
+                f"Done — {dj.mention} booked into slot {slot} of '{event}'.",
+                ephemeral=True,
+            )
+        else:
+            await inter.response.send_message(msg, ephemeral=True)
+
+    @admin_base.sub_command(
+        name="cancel", description="Force-cancel a DJ's event booking"
+    )
+    async def admin_cancel(
+        self,
+        inter: disnake.ApplicationCommandInteraction,
+        dj: disnake.Member = commands.Param(description="The DJ whose booking to cancel"),
+        event: str = commands.Param(description="Event name (must match Notion, case-insensitive)"),
+        slot: int = commands.Param(ge=1, description="Slot number (1 = first slot of event)"),
+    ) -> None:
+        """Force-cancel a DJ's booking, removing it from Notion and slot_locks.
+
+        Uses AdminBookingService.cancel_slot_override().
+        Returns 'No booking found' if the slot is not held by this DJ (AC3).
+        Protected by cog_slash_command_check — admin-only.
+
+        [Source: epics.md#Story 6.3 AC2, AC3, AC4]
+        [Source: bot/services/admin_booking.py -- AdminBookingService.cancel_slot_override()]
+        """
+        if self.ctx.admin_booking_service is None:
+            await inter.response.send_message(
+                "Bot is not ready — please try again.", ephemeral=True
+            )
+            return
+        success, msg = await self.ctx.admin_booking_service.cancel_slot_override(
+            admin_name=inter.author.name,
+            dj_id=dj.id,
+            dj_name=dj.display_name,
+            event_name=event,
+            slot_num=slot,
+        )
+        if success:
+            await inter.response.send_message(
+                f"Done — {dj.mention}'s booking in slot {slot} of '{event}' cancelled.",
+                ephemeral=True,
+            )
+        else:
+            await inter.response.send_message(msg, ephemeral=True)
+
+    # ---------------------------------------------------------------------------
+    # Story 6.4: /admin dj sub-command-group — DJ status management
+    # ---------------------------------------------------------------------------
+
+    @admin_base.sub_command_group(
+        name="dj", description="DJ status management (admin only)"
+    )
+    async def admin_dj(self, inter: disnake.ApplicationCommandInteraction) -> None:
+        """Sub-command group for /admin dj <action>.
+
+        [Source: epics.md#Story 6.4]
+        """
+        pass
+
+    @admin_dj.sub_command(
+        name="set-active",
+        description="Set a DJ's active booking pool status",
+    )
+    async def admin_dj_set_active(
+        self,
+        inter: disnake.ApplicationCommandInteraction,
+        dj: disnake.Member = commands.Param(description="The DJ to update"),
+        active: bool = commands.Param(
+            description="true = add to booking pool, false = remove"
+        ),
+    ) -> None:
+        """Set active_booking in DB and sync the Active Booking Discord role.
+
+        Uses AdminBookingService.set_dj_active_status().
+        Protected by cog_slash_command_check — admin-only.
+
+        [Source: epics.md#Story 6.4 AC1, AC2, AC3, AC4]
+        [Source: bot/services/admin_booking.py -- AdminBookingService.set_dj_active_status()]
+        """
+        if self.ctx.admin_booking_service is None:
+            await inter.response.send_message(
+                "Bot is not ready — please try again.", ephemeral=True
+            )
+            return
+        success, msg = await self.ctx.admin_booking_service.set_dj_active_status(
+            inter.guild_id,
+            dj.id,
+            dj.display_name,
+            active,
+        )
+        if success:
+            if active:
+                reply = f"{dj.mention} is now active in the booking pool."
+            else:
+                reply = f"{dj.mention} has been removed from the booking pool."
+            await inter.response.send_message(reply, ephemeral=True)
+        else:
+            await inter.response.send_message(msg, ephemeral=True)

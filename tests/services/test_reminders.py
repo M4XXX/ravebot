@@ -48,6 +48,7 @@ def _make_service(poll_events_result: list | None = None) -> RemindersService:
     notion_client.poll_events = AsyncMock(return_value=poll_events_result or [])
     log_service = MagicMock()
     log_service.post_error = AsyncMock()
+    log_service.post_dm_transcript = AsyncMock()
     return RemindersService(
         bot=bot, db=db, notion_client=notion_client, log_service=log_service
     )
@@ -148,6 +149,11 @@ async def test_send_reminders_sends_dm_and_records_sent():
     assert "tomorrow at" in dm_text
     assert "\U0001f3a7" in dm_text  # 🎧
     mock_record.assert_awaited_once_with(svc.db, "evt-001", 123, 0)
+    # Story 6.1 AC1: outgoing reminder DM must be transcribed
+    svc.log_service.post_dm_transcript.assert_awaited_once()
+    call_kwargs = svc.log_service.post_dm_transcript.call_args.kwargs
+    assert call_kwargs["direction"] == "BOT"
+    assert "DJ Test" in call_kwargs["dj_name"]
 
 
 @pytest.mark.asyncio

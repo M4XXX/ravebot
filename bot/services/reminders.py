@@ -15,6 +15,7 @@ import disnake
 
 from bot.db.bookings import get_booked_djs_for_event
 from bot.db.config import get_value
+from bot.db.interventions import is_under_intervention
 from bot.db.reminders import has_reminder_been_sent, record_reminder_sent
 from bot.ui.embeds import ErrorCode
 
@@ -210,6 +211,22 @@ class RemindersService:
                     )
                     slot_unix = int(now.timestamp())
 
+                # Story 6.2 AC7: skip DJs under admin intervention silently
+                try:
+                    if await is_under_intervention(self.db, discord_user_id):
+                        logger.info(
+                            "RemindersService.send_reminders: skipping DJ %s (%s) — under admin intervention",
+                            dj_name,
+                            discord_user_id,
+                        )
+                        continue
+                except Exception as exc:
+                    logger.warning(
+                        "RemindersService.send_reminders: intervention check failed for %s: %s",
+                        discord_user_id,
+                        exc,
+                    )
+
                 # Get Discord user from cache
                 user = self.bot.get_user(discord_user_id)
                 if user is None:
@@ -220,11 +237,19 @@ class RemindersService:
                     continue
 
                 # Step 6/7: send DM
+                dm_text = (
+                    f"Heads up \u2014 you're booked tomorrow at <t:{slot_unix}:f>. "
+                    "Get ready to drop some bangers! \U0001f3a7"
+                )
                 try:
-                    await user.send(
-                        f"Heads up \u2014 you're booked tomorrow at <t:{slot_unix}:f>. "
-                        "Get ready to drop some bangers! \U0001f3a7"
-                    )
+                    await user.send(dm_text)
+                    # Story 6.1 AC1: log outgoing reminder DM
+                    if self.log_service is not None:
+                        await self.log_service.post_dm_transcript(
+                            dj_name=dj_name,
+                            direction="BOT",
+                            content=dm_text,
+                        )
                 except disnake.Forbidden:
                     # AC3: DMs blocked — log error, do NOT record sent (allow retry next cycle)
                     if self.log_service is not None:

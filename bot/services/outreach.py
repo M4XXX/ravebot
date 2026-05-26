@@ -17,6 +17,7 @@ import disnake
 from bot.db.config import get_value
 from bot.db.djs import get_active_booking_djs
 from bot.db.djs import update_last_contacted_at as update_dj_last_contacted_at
+from bot.db.interventions import is_under_intervention
 from bot.db.outreach import (
     get_contacted_discord_ids,
     get_sequence,
@@ -277,6 +278,22 @@ class OutreachService:
         discord_user_id = dj["discord_user_id"]
         dj_name = dj.get("dj_name", str(discord_user_id))
 
+        # Story 6.2 AC6: skip DJs under admin intervention silently
+        try:
+            if await is_under_intervention(self.db, discord_user_id):
+                logger.info(
+                    "OutreachService.contact_next_dj: skipping DJ %s (%s) — under admin intervention",
+                    dj_name,
+                    discord_user_id,
+                )
+                return True
+        except Exception as exc:
+            logger.warning(
+                "OutreachService.contact_next_dj: intervention check failed for %s: %s",
+                discord_user_id,
+                exc,
+            )
+
         # Record contact attempt BEFORE sending (idempotent if this cycle retries)
         try:
             await record_outreach_contact(self.db, event_id, discord_user_id)
@@ -317,6 +334,13 @@ class OutreachService:
         # Send DM
         try:
             await user.send(content=opener, embed=embed, view=view)
+            # Story 6.1 AC1: log outgoing outreach DM
+            if self.log_service is not None:
+                await self.log_service.post_dm_transcript(
+                    dj_name=dj_name,
+                    direction="BOT",
+                    content=opener,
+                )
         except disnake.Forbidden:
             await self._mark_unreachable(
                 event_id, discord_user_id, dj_name, reason="DMs blocked"

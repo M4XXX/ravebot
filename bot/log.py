@@ -163,3 +163,56 @@ class AdminLogService:
             await channel.send(message)
         except disnake.DiscordException as exc:
             logger.error("Failed to post intervention log: %s", exc)
+
+    async def post_admin_override(self, content: str) -> None:
+        """Post an admin override action line to the admin log channel.
+
+        Caller constructs the full string, e.g.:
+          "[ADMIN OVERRIDE] @AdminName booked @DJName into EventName at <t:...:f>"
+          "[ADMIN OVERRIDE] @AdminName cancelled @DJName from EventName at <t:...:f>"
+
+        Plain text (not embed) — consistent with post_dm_transcript and post_intervention.
+        Never raises.
+
+        [Source: epics.md#Story 6.3 AC1, AC2]
+        """
+        channel = await self._get_log_channel()
+        if channel is None:
+            logger.warning("Admin override log (no channel): %s", content)
+            return
+        try:
+            await channel.send(content)
+        except disnake.DiscordException as exc:
+            logger.error("Failed to post admin override log: %s", exc)
+
+    async def post_dm_transcript(
+        self,
+        dj_name: str,
+        direction: str,
+        content: str,
+    ) -> None:
+        """Post a raw DM transcript entry to the admin log channel.
+
+        Formats:
+          direction="BOT" → "[BOT → @{dj_name}] {content}"
+          direction="DJ"  → "[@{dj_name} → BOT] {content}"
+
+        Plain text (not embed) — keeps the transcript scannable.
+        Falls back to stdout warning if no channel is configured.
+        Never raises.
+
+        [Source: epics.md#Story 6.1 AC1–AC4]
+        [Source: epics.md#FR31 — every interaction mirrored to admin log]
+        """
+        if direction == "BOT":
+            entry = f"[BOT \u2192 @{dj_name}] {content}"
+        else:
+            entry = f"[@{dj_name} \u2192 BOT] {content}"
+        channel = await self._get_log_channel()
+        if channel is None:
+            logger.warning("DM transcript (no log channel): %s", entry)
+            return
+        try:
+            await channel.send(entry)
+        except disnake.DiscordException as exc:
+            logger.error("Failed to post DM transcript to log channel: %s", exc)

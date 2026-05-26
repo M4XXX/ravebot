@@ -226,10 +226,15 @@ async def test_on_member_update_passes_guild_id_to_intro_view() -> None:
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_on_message_dm_sends_fallback_menu() -> None:
+async def test_on_message_dm_sends_fallback_menu(monkeypatch: pytest.MonkeyPatch) -> None:
     """Free-text DM outside active flow sends FallbackMenuView."""
     from bot.cogs.onboarding import OnboardingCog
     from bot.ui.views import FallbackMenuView
+
+    monkeypatch.setattr(
+        "bot.cogs.onboarding.is_under_intervention",
+        AsyncMock(return_value=False),
+    )
 
     ctx = make_real_ctx(db=MagicMock())
     cog = OnboardingCog(ctx)
@@ -286,9 +291,14 @@ async def test_on_message_bot_message_ignored() -> None:
 
 
 @pytest.mark.asyncio
-async def test_on_message_skips_during_active_flow() -> None:
+async def test_on_message_skips_during_active_flow(monkeypatch: pytest.MonkeyPatch) -> None:
     """FallbackMenuView NOT shown when user has an active flow (lock held)."""
     from bot.cogs.onboarding import OnboardingCog
+
+    monkeypatch.setattr(
+        "bot.cogs.onboarding.is_under_intervention",
+        AsyncMock(return_value=False),
+    )
 
     ctx = make_real_ctx(db=MagicMock())
     cog = OnboardingCog(ctx)
@@ -304,3 +314,153 @@ async def test_on_message_skips_during_active_flow() -> None:
     await cog.on_message(message)
 
     message.channel.send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_on_message_dm_logs_transcript_for_incoming_and_outgoing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Story 6.1 AC2 + AC1: incoming DM and fallback menu response are both transcribed."""
+    from bot.cogs.onboarding import OnboardingCog
+
+    monkeypatch.setattr(
+        "bot.cogs.onboarding.is_under_intervention",
+        AsyncMock(return_value=False),
+    )
+
+    log_service = MagicMock()
+    log_service.post_dm_transcript = AsyncMock()
+    ctx = make_real_ctx(db=MagicMock())
+    ctx.log_service = log_service
+
+    message = MagicMock(spec=disnake.Message)
+    message.guild = None
+    message.author.id = 55555
+    message.author.name = "DJ Tester"
+    message.author.bot = False
+    message.content = "hello bot"
+    message.channel.send = AsyncMock()
+
+    cog = OnboardingCog(ctx)
+    await cog.on_message(message)
+
+    # AC2: incoming message logged first; AC1: outgoing fallback menu logged second
+    calls = log_service.post_dm_transcript.call_args_list
+    assert len(calls) == 2
+    incoming = calls[0].kwargs
+    assert incoming["direction"] == "DJ"
+    assert incoming["dj_name"] == "DJ Tester"
+    assert incoming["content"] == "hello bot"
+    outgoing = calls[1].kwargs
+    assert outgoing["direction"] == "BOT"
+    assert "buttons" in outgoing["content"].lower()
+
+
+# ---------------------------------------------------------------------------
+# Story 6.2: intervention check in on_message
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_on_message_under_intervention_forwards_to_admin_no_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Story 6.2 AC3: DJ under intervention → forward to admin log, no FallbackMenuView."""
+    from bot.cogs.onboarding import OnboardingCog
+
+    monkeypatch.setattr(
+        "bot.cogs.onboarding.is_under_intervention",
+        AsyncMock(return_value=True),
+    )
+
+    log_service = MagicMock()
+    log_service.post_dm_transcript = AsyncMock()
+    log_service.post_intervention = AsyncMock()
+
+    ctx = make_real_ctx(db=MagicMock())
+    ctx.log_service = log_service
+
+    message = MagicMock(spec=disnake.Message)
+    message.guild = None
+    message.author.id = 99
+    message.author.name = "DJ Blocked"
+    message.author.bot = False
+    message.content = "I need help"
+    message.channel.send = AsyncMock()
+
+    cog = OnboardingCog(ctx)
+    await cog.on_message(message)
+
+    # Transcript was still logged (6.1 hook fires before intervention check)
+    log_service.post_dm_transcript.assert_awaited_once()
+
+    # post_intervention called to forward to admin
+    log_service.post_intervention.assert_awaited_once()
+    call = log_service.post_intervention.call_args
+    assert call.kwargs["sender"] == "@DJ Blocked"
+    assert call.kwargs["recipient"] == "ADMIN"
+    assert call.kwargs["content"] == "I need help"
+
+    # No FallbackMenuView sent
+    message.channel.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_on_message_under_intervention_suppresses_even_when_log_service_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Story 6.2 HIGH fix: intervention suppression fires even when log_service is None."""
+    from bot.cogs.onboarding import OnboardingCog
+
+    monkeypatch.setattr(
+        "bot.cogs.onboarding.is_under_intervention",
+        AsyncMock(return_value=True),
+    )
+
+    ctx = make_real_ctx(db=MagicMock())
+    ctx.log_service = None  # log_service absent — suppression must still work
+
+    message = MagicMock(spec=disnake.Message)
+    message.guild = None
+    message.author.id = 88
+    message.author.name = "DJ Silent"
+    message.author.bot = False
+    message.content = "any message"
+    message.channel.send = AsyncMock()
+
+    cog = OnboardingCog(ctx)
+    await cog.on_message(message)
+
+    # No FallbackMenuView despite log_service being None
+    message.channel.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_on_message_not_under_intervention_shows_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DJ NOT under intervention → normal FallbackMenuView shown."""
+    from bot.cogs.onboarding import OnboardingCog
+    from bot.ui.views import FallbackMenuView
+
+    monkeypatch.setattr(
+        "bot.cogs.onboarding.is_under_intervention",
+        AsyncMock(return_value=False),
+    )
+
+    ctx = make_real_ctx(db=MagicMock())
+
+    message = MagicMock(spec=disnake.Message)
+    message.guild = None
+    message.author.id = 77
+    message.author.name = "DJ Free"
+    message.author.bot = False
+    message.content = "hello"
+    message.channel.send = AsyncMock()
+
+    cog = OnboardingCog(ctx)
+    await cog.on_message(message)
+
+    message.channel.send.assert_awaited_once()
+    view = message.channel.send.call_args.kwargs.get("view")
+    assert isinstance(view, FallbackMenuView)
