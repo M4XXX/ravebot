@@ -47,7 +47,7 @@ disnake 2.12.0 slash command hierarchy:
     cancel                     <- .sub_command()
     dj                         <- .sub_command_group()
       set-active               <- .sub_command()
-  /status                      <- @commands.slash_command()
+  /ravebot-status              <- @commands.slash_command()
   /list-djs                    <- @commands.slash_command()
   /add-event                   <- @commands.slash_command()
 
@@ -74,6 +74,13 @@ from bot.notion.client import NotionWriteError
 from bot.ui.embeds import EmbedColors
 
 logger = logging.getLogger(__name__)
+
+# Admin commands are hidden from members without Manage Server and only usable in servers.
+# The ADMIN_USER_IDS whitelist (cog_slash_command_check) still applies on top.
+ADMIN_COMMAND = {
+    "default_member_permissions": disnake.Permissions(manage_guild=True),
+    "contexts": disnake.InteractionContextTypes(guild=True),
+}
 
 
 class AdminCog(commands.Cog):
@@ -132,7 +139,9 @@ class AdminCog(commands.Cog):
                     ephemeral=True,
                 )
 
-    @commands.slash_command(name="config", description="Bot configuration commands (admin only)")
+    @commands.slash_command(
+        **ADMIN_COMMAND, name="config", description="Bot configuration commands (admin only)"
+    )
     async def config_base(self, inter: disnake.ApplicationCommandInteraction) -> None:
         """Top-level /config command group — entry point for all config sub-commands."""
         pass
@@ -530,6 +539,29 @@ class AdminCog(commands.Cog):
         await inter.response.send_message(text, ephemeral=True)
 
     @config_set_base.sub_command(
+        name="dm-log",
+        description="Mirror DJ DMs into the log channel (on) or keep them private (off)",
+    )
+    async def config_set_dm_log(
+        self,
+        inter: disnake.ApplicationCommandInteraction,
+        state: str = commands.Param(
+            choices=["on", "off"], description="on = mirror, off = private"
+        ),
+    ) -> None:
+        """Store dm_log; AdminLogService.post_dm_transcript skips mirroring when it is off."""
+        guild_id = inter.guild_id
+        assert guild_id is not None
+        if self.ctx.db is None:
+            logger.error("AdminCog: DB pool is None in config_set_dm_log")
+            await inter.response.send_message(
+                "Bot is not ready — please try again.", ephemeral=True
+            )
+            return
+        await db_config.set_value(self.ctx.db, guild_id, "dm_log", state)
+        await inter.response.send_message(f"DM log mirroring is {state}.", ephemeral=True)
+
+    @config_set_base.sub_command(
         name="timezone",
         description="Set the time zone for the event start time (IANA name, default UTC)",
     )
@@ -632,6 +664,7 @@ class AdminCog(commands.Cog):
             ("default_start_time", "Default Start Time", "20:00"),
             ("timezone", "Timezone", "UTC"),
             ("bot_active", "Active", "off"),
+            ("dm_log", "DM Log Mirroring", "on"),
             ("event_recurrence_cron", "Event Recurrence Cron", "(not set)"),
         ]
 
@@ -654,6 +687,7 @@ class AdminCog(commands.Cog):
     # ---------------------------------------------------------------------------
 
     @commands.slash_command(
+        **ADMIN_COMMAND,
         name="intervene", description="Admin DM intervention commands (admin only)"
     )
     async def intervene_base(self, inter: disnake.ApplicationCommandInteraction) -> None:
@@ -758,6 +792,7 @@ class AdminCog(commands.Cog):
     # ---------------------------------------------------------------------------
 
     @commands.slash_command(
+        **ADMIN_COMMAND,
         name="admin", description="Admin booking management commands (admin only)"
     )
     async def admin_base(self, inter: disnake.ApplicationCommandInteraction) -> None:
@@ -908,7 +943,9 @@ class AdminCog(commands.Cog):
     # Story 6.5: /status — next event overview (FR38)
     # ---------------------------------------------------------------------------
 
-    @commands.slash_command(name="status", description="Show the next upcoming event status")
+    @commands.slash_command(
+        **ADMIN_COMMAND, name="ravebot-status", description="Show the next upcoming event status"
+    )
     async def status_cmd(
         self,
         inter: disnake.ApplicationCommandInteraction,
@@ -994,6 +1031,7 @@ class AdminCog(commands.Cog):
     # ---------------------------------------------------------------------------
 
     @commands.slash_command(
+        **ADMIN_COMMAND,
         name="list-djs", description="List all registered DJs and their booking status"
     )
     async def list_djs(
@@ -1037,6 +1075,7 @@ class AdminCog(commands.Cog):
     # ---------------------------------------------------------------------------
 
     @commands.slash_command(
+        **ADMIN_COMMAND,
         name="add-event", description="Manually create a new event in Notion"
     )
     async def add_event(

@@ -49,7 +49,12 @@ def create_bot() -> commands.Bot:
     """
     intents = disnake.Intents.default()
     intents.members = True  # Required for on_member_update (FR1 — DJ role detection)
-    return commands.Bot(command_prefix="!", intents=intents)
+    # Never ping from bot messages: mirrored DMs may contain @everyone or role mentions
+    return commands.Bot(
+        command_prefix=commands.when_mentioned,  # no prefix commands; silences the intent warning
+        intents=intents,
+        allowed_mentions=disnake.AllowedMentions.none(),
+    )
 
 
 async def main() -> None:
