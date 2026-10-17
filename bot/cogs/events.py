@@ -18,7 +18,7 @@ from datetime import timedelta
 import asyncpg
 from disnake.ext import commands, tasks
 
-from bot import active, loops, schedule
+from bot import active, loops, reconcile, schedule
 from bot import guild as served
 from bot.context import BotContext
 from bot.db.bookings import init_event_slots
@@ -216,6 +216,12 @@ class EventsCog(commands.Cog):
                     ),
                 )
             return
+
+        # Read-only: report drift between Notion and slot_locks (never writes either)
+        try:
+            await reconcile.report(self.ctx.db, guild_id, events, self.ctx.log_service)
+        except Exception:
+            logger.exception("Reconciliation check failed")
 
         # Story 7.1: auto-create events to maintain look-ahead count (AC1-AC4)
         await self._auto_create_events(events, guild_id)

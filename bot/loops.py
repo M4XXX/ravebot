@@ -34,9 +34,7 @@ async def guarded(name: str, cycle: Callable[[], Awaitable[None]], log_service: 
             _last_alert[name] = now
             try:
                 await log_service.post_error(
-                    error_code=ErrorCode.ERR_DB_UNAVAILABLE
-                    if "asyncpg" in type(exc).__module__
-                    else ErrorCode.ERR_NOTION_WRITE,
+                    error_code=ErrorCode.ERR_BACKGROUND_TASK,
                     trigger=f"Background task {name} raised {type(exc).__name__}: {exc}",
                     action_taken="This cycle was skipped; the loop keeps running.",
                     manual_action="See the bot log for the traceback.",

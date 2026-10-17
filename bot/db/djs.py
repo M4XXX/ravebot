@@ -196,3 +196,15 @@ async def update_active_booking(
         discord_user_id,
     )
     return result == "UPDATE 1"
+
+
+async def get_notion_page_ids(pool: asyncpg.Pool, discord_user_ids: list[int]) -> dict[int, str]:
+    """Notion DJ page IDs for the given DJs (DJs without a page are absent)."""
+    if not discord_user_ids:
+        return {}
+    rows = await pool.fetch(
+        "SELECT discord_user_id, notion_dj_page_id FROM djs "
+        "WHERE discord_user_id = ANY($1::bigint[]) AND notion_dj_page_id IS NOT NULL",
+        discord_user_ids,
+    )
+    return {row["discord_user_id"]: row["notion_dj_page_id"] for row in rows}
