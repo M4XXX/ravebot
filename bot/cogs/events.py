@@ -48,14 +48,15 @@ class EventsCog(commands.Cog):
         """Return True if DB is available; post ERR_DB_UNAVAILABLE and return False if not.
 
         Call at the start of every scheduled task that requires DB access.
-        On False: caller must return immediately — loop will retry next cycle.
+        On False the caller raises loops.CycleSkipped — the loop retries next cycle, the
+        cycle does not count as OK, and the alert is posted at most once an hour.
 
         [Source: epics.md#Story 1.5 AC1]
         [Source: architecture.md#Error Routing: Centralized AdminLogService]
         """
         if self.ctx.db is None:
             logger.warning("DB pool not available during %s — skipping cycle", operation)
-            if self.ctx.log_service is not None:
+            if self.ctx.log_service is not None and loops.alert_due(f"db:{operation}"):
                 await self.ctx.log_service.post_error(
                     error_code=ErrorCode.ERR_DB_UNAVAILABLE,
                     trigger=f"DB pool is None at start of {operation}",
@@ -68,7 +69,7 @@ class EventsCog(commands.Cog):
             return True
         except (asyncpg.PostgresConnectionError, OSError) as exc:
             logger.warning("DB unavailable during %s: %s", operation, exc)
-            if self.ctx.log_service is not None:
+            if self.ctx.log_service is not None and loops.alert_due(f"db:{operation}"):
                 await self.ctx.log_service.post_error(
                     error_code=ErrorCode.ERR_DB_UNAVAILABLE,
                     trigger=f"PostgreSQL connection failed during {operation}: {exc}",
@@ -192,7 +193,7 @@ class EventsCog(commands.Cog):
         [Source: architecture.md#Scheduled Work: disnake tasks.loop]
         """
         if not await self._guard_db("notion_poll"):
-            return
+            raise loops.CycleSkipped
 
         guild_id = self._get_guild_id()
         if guild_id is None:
@@ -205,17 +206,11 @@ class EventsCog(commands.Cog):
         try:
             events = await self.ctx.notion_client.poll_events()
         except Exception as exc:
-            logger.warning("Notion poll failed — skipping cycle: %s", exc)
-            if self.ctx.log_service is not None:
-                await self.ctx.log_service.post_error(
-                    error_code=ErrorCode.ERR_NOTION_WRITE,
-                    trigger=f"Notion poll_events() raised during notion_poll: {exc}",
-                    action_taken="Skipped this cycle — will retry on next scheduled run.",
-                    manual_action=(
-                        "Check NOTION_API_KEY, NOTION_DATABASE_ID, and Notion API status."
-                    ),
-                )
-            return
+            raise loops.CycleFailed(
+                f"Notion poll_events() raised during notion_poll: {exc}",
+                error_code=ErrorCode.ERR_NOTION_WRITE,
+                manual_action="Check NOTION_API_KEY, NOTION_DATABASE_ID, and Notion API status.",
+            ) from exc
 
         # Read-only: report drift between Notion and slot_locks (never writes either)
         try:
@@ -248,7 +243,7 @@ class EventsCog(commands.Cog):
         Guard ensures DB is available before any DB-dependent work.
         """
         if not await self._guard_db("reminder_check"):
-            return
+            raise loops.CycleSkipped
         guild_id = self._get_guild_id()
         if guild_id is None:
             return
@@ -257,10 +252,7 @@ class EventsCog(commands.Cog):
         if self.ctx.reminders_service is None:
             logger.warning("_check_reminders: reminders_service not available — skipping")
             return
-        try:
-            await self.ctx.reminders_service.send_reminders(guild_id, self.ctx)
-        except Exception as exc:
-            logger.warning("_check_reminders: send_reminders raised: %s", exc)
+        await self.ctx.reminders_service.send_reminders(guild_id, self.ctx)
 
     @_poll_notion.before_loop
     @_check_reminders.before_loop

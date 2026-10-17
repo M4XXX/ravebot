@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 import disnake
 
 from bot import guild as served
-from bot import slots
+from bot import loops, slots
 from bot.db.config import get_value, set_value
 from bot.ui.embeds import ErrorCode, MissionRosterEmbed
 
@@ -60,7 +60,8 @@ class LineupService:
         dj_channel_id = await get_value(self.db, guild_id, "dj_channel")
         if dj_channel_id is None:
             logger.warning("LineupService: dj_channel not configured — cannot post lineup")
-            if self.log_service is not None:
+            # every poll cycle retries the post; tell the organizers once an hour, not each time
+            if self.log_service is not None and loops.alert_due(f"lineup:no_channel:{guild_id}"):
                 await self.log_service.post_error(
                     error_code=ErrorCode.ERR_NOTION_WRITE,
                     trigger="Lineup update triggered but dj_channel is not configured.",
@@ -72,6 +73,13 @@ class LineupService:
         channel = self.bot.get_channel(int(dj_channel_id))
         if channel is None:
             logger.warning("LineupService: channel %s not found in cache", dj_channel_id)
+            if self.log_service is not None and loops.alert_due(f"lineup:gone:{guild_id}"):
+                await self.log_service.post_error(
+                    error_code=ErrorCode.ERR_BACKGROUND_TASK,
+                    trigger=f"Lineup channel {dj_channel_id} not found (deleted, or no access).",
+                    action_taken="Lineup post skipped; retried every poll cycle.",
+                    manual_action="Run /config set dj-channel, or give the bot View Channel.",
+                )
             return False
 
         embed = MissionRosterEmbed(events)

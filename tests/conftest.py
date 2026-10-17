@@ -21,6 +21,15 @@ def make_real_ctx(db: object = None) -> object:
     return BotContext(config=cfg, db=db)
 
 
+@pytest.fixture(autouse=True)
+def _fresh_loop_state() -> None:
+    """Alert rate limits and last-OK times are module state; every test starts clean."""
+    from bot import loops
+
+    loops._last_alert.clear()
+    loops._last_ok.clear()
+
+
 @pytest.fixture
 def mock_config() -> Config:
     """Minimal valid Config for unit tests — no real DB or Discord connections."""

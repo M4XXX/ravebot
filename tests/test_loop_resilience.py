@@ -110,3 +110,58 @@ async def test_outreach_skips_intervened_and_already_booked_djs() -> None:
         svc.bot.get_user = MagicMock(return_value=None)  # stop after the contact is recorded
         await svc.contact_next_dj(event, 42, MagicMock())
     assert record.await_args.args[1:] == ("evt", 3)
+
+
+@pytest.mark.asyncio
+async def test_notion_outage_is_not_ok_and_alerts_once_an_hour() -> None:
+    """A failing poll keeps its specific wording, is not 'last OK', and does not flood."""
+    from bot import guild as served
+    from bot.cogs.events import EventsCog
+    from bot.ui.embeds import ErrorCode
+
+    ctx = MagicMock()
+    ctx.db = AsyncMock()
+    ctx.log_service.post_error = AsyncMock()
+    ctx.notion_client.poll_events = AsyncMock(side_effect=RuntimeError("notion 502"))
+    cog = EventsCog(ctx, MagicMock())
+    with patch("bot.schedule.refresh", AsyncMock()), \
+         patch.object(served, "resolve", lambda bot: 42), \
+         patch.object(EventsCog, "_guard_db", AsyncMock(return_value=True)):
+        for _ in range(3):
+            await EventsCog._poll_notion.coro(cog)
+    assert "notion_poll" not in loops.last_ok()
+    ctx.log_service.post_error.assert_awaited_once()
+    kwargs = ctx.log_service.post_error.call_args.kwargs
+    assert kwargs["error_code"] == ErrorCode.ERR_NOTION_WRITE
+    assert "notion 502" in kwargs["trigger"]
+
+
+@pytest.mark.asyncio
+async def test_reminder_failure_is_reported_and_not_ok() -> None:
+    from bot import guild as served
+    from bot.cogs.events import EventsCog
+
+    ctx = MagicMock()
+    ctx.db = AsyncMock()
+    ctx.log_service.post_error = AsyncMock()
+    ctx.reminders_service.send_reminders = AsyncMock(side_effect=RuntimeError("boom"))
+    cog = EventsCog(ctx, MagicMock())
+    with patch.object(served, "resolve", lambda bot: 42), \
+         patch.object(EventsCog, "_guard_db", AsyncMock(return_value=True)):
+        await EventsCog._check_reminders.coro(cog)
+    assert "reminders" not in loops.last_ok()
+    ctx.log_service.post_error.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_db_outage_is_skipped_without_a_second_alert_and_not_ok() -> None:
+    from bot.cogs.events import EventsCog
+
+    ctx = MagicMock()
+    ctx.db = None
+    ctx.log_service.post_error = AsyncMock()
+    cog = EventsCog(ctx, MagicMock())
+    for _ in range(3):
+        await EventsCog._poll_notion.coro(cog)
+    assert "notion_poll" not in loops.last_ok()
+    ctx.log_service.post_error.assert_awaited_once()  # from the DB guard, once an hour

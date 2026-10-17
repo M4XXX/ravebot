@@ -36,14 +36,15 @@ class OutreachCog(commands.Cog):
         """Return True if DB is available; post ERR_DB_UNAVAILABLE and return False if not.
 
         Call at the start of every scheduled task that requires DB access.
-        On False: caller must return immediately — loop will retry next cycle.
+        On False the caller raises loops.CycleSkipped — the loop retries next cycle, the
+        cycle does not count as OK, and the alert is posted at most once an hour.
 
         [Source: epics.md#Story 1.5 AC1]
         [Source: architecture.md#Error Routing: Centralized AdminLogService]
         """
         if self.ctx.db is None:
             logger.warning("DB pool not available during %s — skipping cycle", operation)
-            if self.ctx.log_service is not None:
+            if self.ctx.log_service is not None and loops.alert_due(f"db:{operation}"):
                 await self.ctx.log_service.post_error(
                     error_code=ErrorCode.ERR_DB_UNAVAILABLE,
                     trigger=f"DB pool is None at start of {operation}",
@@ -56,7 +57,7 @@ class OutreachCog(commands.Cog):
             return True
         except (asyncpg.PostgresConnectionError, OSError) as exc:
             logger.warning("DB unavailable during %s: %s", operation, exc)
-            if self.ctx.log_service is not None:
+            if self.ctx.log_service is not None and loops.alert_due(f"db:{operation}"):
                 await self.ctx.log_service.post_error(
                     error_code=ErrorCode.ERR_DB_UNAVAILABLE,
                     trigger=f"PostgreSQL connection failed during {operation}: {exc}",
@@ -87,7 +88,7 @@ class OutreachCog(commands.Cog):
         [Source: architecture.md#Scheduled Work: disnake tasks.loop(minutes=30)]
         """
         if not await self._guard_db("outreach_check"):
-            return
+            raise loops.CycleSkipped
 
         guild_id = self._get_guild_id()
         if guild_id is None:

@@ -291,3 +291,24 @@ async def test_post_update_deletes_old_and_reposts_when_edit_forbidden() -> None
     existing_msg.delete.assert_awaited_once()
     channel.send.assert_awaited_once()
     assert mock_set.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_missing_or_vanished_channel_alerts_once_an_hour_not_every_cycle() -> None:
+    """The poll retries the post every cycle; the organizers hear about it once."""
+    log = MagicMock(post_error=AsyncMock())
+    config: dict[str, str | None] = {"dj_channel": None}
+    bot = _make_bot()
+    service = _make_service(bot=bot, log_service=log)
+    with patch("bot.services.lineup.get_value", new=AsyncMock(
+        side_effect=lambda db, guild_id, key: config.get(key)
+    )):
+        for _ in range(3):
+            assert await service.post_update(_make_events()) is False
+        assert log.post_error.await_count == 1
+        config["dj_channel"] = "111"
+        bot.get_channel = MagicMock(return_value=None)  # channel deleted or hidden
+        for _ in range(3):
+            assert await service.post_update(_make_events()) is False
+    assert log.post_error.await_count == 2
+    assert "not found" in log.post_error.call_args.kwargs["trigger"]

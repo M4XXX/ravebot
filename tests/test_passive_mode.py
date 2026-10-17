@@ -195,7 +195,8 @@ async def test_passive_poll_creates_no_events_and_posts_no_lineup() -> None:
     with patch("bot.active.get_value", new=AsyncMock(return_value=None)), patch(
         "bot.schedule.refresh", new=AsyncMock()
     ), patch.object(EventsCog, "_guard_db", new=AsyncMock(return_value=True)):
-        await EventsCog._poll_notion.coro(cog)
+        # the cycle itself, not the guarded loop: a crash must fail the test, not look passive
+        await cog._poll_notion_once()
     ctx.notion_client.poll_events.assert_not_called()
     ctx.notion_client.create_event.assert_not_called()
     ctx.lineup_service.post_update.assert_not_called()
@@ -213,8 +214,8 @@ async def test_passive_outreach_and_reminders_do_nothing() -> None:
     with patch("bot.active.get_value", new=AsyncMock(return_value=None)), patch.object(
         EventsCog, "_guard_db", new=AsyncMock(return_value=True)
     ), patch.object(OutreachCog, "_guard_db", new=AsyncMock(return_value=True)):
-        await EventsCog._check_reminders.coro(EventsCog(ctx, _bot(GUILD)))
-        await OutreachCog._outreach_check.coro(OutreachCog(ctx, _bot(GUILD)))
+        await EventsCog(ctx, _bot(GUILD))._check_reminders_once()
+        await OutreachCog(ctx, _bot(GUILD))._outreach_check_once()
     ctx.reminders_service.send_reminders.assert_not_called()
     ctx.notion_client.poll_events.assert_not_called()
     assert ctx.outreach_service.mock_calls == []
