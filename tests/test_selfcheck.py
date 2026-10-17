@@ -47,14 +47,13 @@ def test_healthy_server_has_no_problems() -> None:
 def test_problems_from_the_live_test_are_named() -> None:
     """What the first live test in a private server ran into, one by one."""
     guild = _guild(
-        [Role("dj", 5)],  # same position as the bot role, Active Booking missing
+        [Role("dj", 5), Role("Active Booking", 6)],  # Active Booking above the bot role
         manage_roles=False,
         channels={10: _channel("testing", view_channel=False, send_messages=False)},
     )
     problems = selfcheck.check_guild(guild, "10", None)
     assert any("Manage Roles" in p for p in problems)
-    assert any("'Active Booking' does not exist" in p for p in problems)
-    assert any("above 'dj'" in p for p in problems)
+    assert any("above 'Active Booking'" in p for p in problems)
     assert any("#testing" in p and "view channel" in p and "send messages" in p for p in problems)
     assert any("No log channel set" in p for p in problems)
 
@@ -70,3 +69,14 @@ async def test_run_posts_one_notice_with_all_problems() -> None:
     assert len(problems) >= 4
     log.post_notice.assert_awaited_once()
     assert "RaveBot setup check" in log.post_notice.call_args.args[0]
+
+
+def test_dj_role_position_does_not_matter_but_booking_role_name_must_match() -> None:
+    """The bot never assigns DJ; it assigns Active Booking by its exact name."""
+    guild = _guild([Role("dj", 9), Role("active booking", 1)],
+                   channels={10: _channel("lineup"), 11: _channel("log")})
+    problems = selfcheck.check_guild(guild, "10", "11")
+    assert problems == [
+        "Role 'Active Booking' does not exist ('active booking' exists, but the name must "
+        "match exactly)."
+    ]

@@ -10,7 +10,12 @@ import disnake
 
 logger = logging.getLogger(__name__)
 
-REQUIRED_ROLES = ("DJ", "Active Booking")
+# Organizers give the DJ role; the bot recognises it in any letter case (views.is_registered_dj)
+# and never assigns it, so its position does not matter. The bot assigns Active Booking and
+# finds it by its exact name (disnake.utils.get), so that one must match exactly and sit
+# below the bot's role.
+DJ_ROLE = "DJ"
+BOOKING_ROLE = "Active Booking"
 CHANNEL_PERMISSIONS = ("view_channel", "send_messages", "embed_links", "read_message_history")
 
 
@@ -24,12 +29,15 @@ def check_guild(guild: Any, dj_channel_id: str | None, log_channel_id: str | Non
     me = guild.me
     if not me.guild_permissions.manage_roles:
         problems.append("The bot lacks Manage Roles (needed to give DJs the Active Booking role).")
-    for name in REQUIRED_ROLES:
-        role = _role(guild, name)
-        if role is None:
-            problems.append(f"Role '{name}' does not exist.")
-        elif role >= me.top_role:
-            problems.append(f"Move the bot's role above '{role.name}' so it can assign it.")
+    if _role(guild, DJ_ROLE) is None:
+        problems.append(f"Role '{DJ_ROLE}' does not exist.")
+    booking = next((r for r in guild.roles if r.name == BOOKING_ROLE), None)
+    if booking is None:
+        near = _role(guild, BOOKING_ROLE)
+        hint = f" ('{near.name}' exists, but the name must match exactly)" if near else ""
+        problems.append(f"Role '{BOOKING_ROLE}' does not exist{hint}.")
+    elif booking >= me.top_role:
+        problems.append(f"Move the bot's role above '{BOOKING_ROLE}' so it can assign it.")
     for label, raw in (("DJ channel", dj_channel_id), ("log channel", log_channel_id)):
         if raw is None:
             problems.append(f"No {label} set (/config set {label.split()[0].lower()}-channel).")
