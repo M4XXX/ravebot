@@ -55,7 +55,7 @@ uv run python -m bot.main
 ## 3. Tests, Linting, Type Checking
 
 ```bash
-# Run the full test suite (360 tests)
+# Run the full test suite (real-SQL tests in tests/pg are skipped unless enabled, see below)
 uv run pytest
 
 # Verbose output with per-test names
@@ -76,6 +76,20 @@ uv run pyright bot/
 ```
 
 All checks should pass before opening a PR or building a release image.
+
+Markers: `passive` and `real_slots` switch off two convenience fixtures in `tests/conftest.py`
+(an always-active bot and slot state taken from the Notion relation count). Tests marked `pg`
+run real SQL and migrations against a disposable PostgreSQL and are skipped unless
+`RAVEBOT_TEST_POSTGRES_URL` is set:
+
+```bash
+docker run --rm -d --name ravebot-testpg -p 127.0.0.1:55432:5432 \
+  -e POSTGRES_USER=ravebot -e POSTGRES_PASSWORD=test -e POSTGRES_DB=ravebot_test postgres:16-alpine
+RAVEBOT_TEST_POSTGRES_URL=postgresql://ravebot:test@127.0.0.1:55432/ravebot_test uv run pytest -m pg
+docker stop ravebot-testpg
+```
+
+Never point it at real data — the schema is dropped and recreated.
 
 ---
 
@@ -104,7 +118,7 @@ output/ravebot/
 │   └── main.py             # Bot entry point, startup validation
 ├── migrations/
 │   └── versions/           # 6 Alembic migration files (Epics 1–7)
-├── tests/                  # 360 tests mirroring bot/ structure
+├── tests/                  # 461 tests mirroring bot/ structure (+ 5 opt-in real-SQL tests in tests/pg)
 ├── Dockerfile              # Multi-stage build
 ├── docker-compose.yml      # Postgres-only (local dev)
 ├── pyproject.toml          # Dependencies and tool config

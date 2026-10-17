@@ -26,6 +26,7 @@ Before deploying RaveBot you need:
 - **Notion account** — a Notion workspace with an internal integration. Created at [notion.so/my-integrations](https://www.notion.so/my-integrations).
 - **PostgreSQL 16** — a PostgreSQL instance reachable from the bot container. On Unraid this is typically a separate PostgreSQL Docker container.
 - **Docker** (or Podman) on your host machine.
+- **Two server roles** — `DJ` (members who play; the name is matched case-insensitively) and `Active Booking` (the bot gives it to DJs in the booking pool). Drag the bot's own role **above both** in Server Settings → Roles, otherwise it cannot assign them. The bot also needs the **Manage Roles** permission.
 
 ---
 
@@ -56,13 +57,15 @@ Add the following properties to your database:
 |---|---|---|
 | `Name` | Title | Auto-created on every Notion database — already present |
 | `Date` | Date | Event date (ISO format). Populated on event pages. |
-| `Slots` | Number | Validated at bot startup — bot logs a warning if missing. **Not used for booking logic** (slot assignments tracked in PostgreSQL). Add it as Number type to silence the startup warning. |
+| `Slots` | Number | Number of DJ slots of this event. When empty, `/config set slots-per-event` (default 6) applies; an explicit `0` means the event has no DJ slots. The bot writes it on events it creates. Which DJ holds which slot is tracked in PostgreSQL. |
 | `DJs` | Relation | Self-relation within this same database. Links event pages to DJ profile pages. When creating, select the same database as the related database. |
 | `Discord ID` | Text (Rich Text) | Stored on DJ profile pages to link Discord accounts. |
 
 **How the dual-purpose pattern works:** Event pages populate `Date`, `Slots`, and `DJs`. DJ profile pages populate `Discord ID`. Each page type simply leaves the other properties empty.
 
-**About `Slots`:** The property is listed in the bot's startup schema validation (`main.py`). If missing, the bot logs a warning to the admin channel but continues running. Booking slots are tracked in the PostgreSQL `slot_locks` table — the Notion `Slots` value is not read by any booking logic.
+**About `Slots`:** The slot count shown and offered to DJs comes from this property when set, otherwise from the `slots-per-event` setting. Which slot each DJ holds lives in the PostgreSQL `slot_locks` table; Notion only lists the linked DJs. All five properties are checked at startup and a warning is posted when one is missing.
+
+**Nothing is ever deleted in Notion by the bot.** It only creates pages and adds or removes its own DJ links on event pages; deleting or archiving is refused in the client itself. Removing pages is left to a human.
 
 **About the `DJs` relation:** This is a self-relation. In the Notion UI, when you create a Relation property and are asked "Select a database to relate to", choose the same database you are editing. This allows event pages to link to DJ profile pages within the same database.
 
@@ -89,6 +92,7 @@ Copy `.env.example` to `.env` and fill in your values. **Never commit `.env` to 
 | `NOTION_API_KEY` | Yes | — | Notion integration secret (starts with `secret_`) |
 | `NOTION_DATABASE_ID` | Yes | — | 32-character ID from your Notion database URL |
 | `ADMIN_USER_IDS` | Yes | — | Comma-separated Discord user IDs for admin slash commands |
+| `GUILD_ID` | No | — | Discord server ID the bot serves. Without it the bot serves the single server it is in, and **none** (with an error in the log) when it is in several. Set it in production. |
 | `LOG_LEVEL` | No | `INFO` | Log verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 | `DB_POOL_MIN` | No | `5` | Minimum asyncpg connection pool size |
 | `DB_POOL_MAX` | No | `20` | Maximum asyncpg connection pool size |
@@ -252,31 +256,38 @@ POSTGRES_URL=postgresql://ravebot:ravebot@host.containers.internal:5432/ravebot
 
 ## 7. First-Run Checklist
 
+**The bot starts in passive mode.** Until an organizer runs `/config set active on` it sends no DMs, runs no outreach or reminders, posts no lineup, creates no Notion events and refuses admin commands that would contact DJs or change bookings. Read-only commands and `/config` work, so everything below can be set up first.
+
 After the bot comes online:
 
-- [ ] Verify the bot appears in your server's member list as online
+- [ ] Verify the bot appears in your server's member list
+- [ ] Read the **RaveBot setup check** the bot posts to the log channel (or the console) on startup — it lists missing roles, a wrong role order and missing channel permissions
 
-**Required — run these before the bot is useful:**
+**Required:**
 
+- [ ] Roles `DJ` and `Active Booking` exist and the bot's role sits **above** both (Server Settings → Roles)
 - [ ] `/config set dj-channel #your-channel` — where the lineup post is published
-- [ ] `/config set log-channel #your-channel` — where admin alerts and DM transcripts go
-- [ ] Verify the bot has **Send Messages** and **Embed Links** permissions in both channels
-- [ ] Check the admin log channel for any Notion schema warnings (missing properties)
+- [ ] `/config set log-channel #your-channel` — admin alerts (and DM transcripts, see below); use a private channel
+- [ ] The bot can **View Channel, Send Messages, Embed Links and Read Message History** in both channels (for private channels add the bot's role to the channel)
+- [ ] `/config set timezone Europe/Berlin` (any IANA name) and `/config set start-time 21:00` — the first slot starts at this local time; slots keep their clock time across daylight saving changes
+- [ ] `/config set slot-duration 60` and `/config set slots-per-event 6` if your nights differ
 
-**Optional tuning (defaults shown):**
+**Optional (defaults shown):**
 
-- [ ] `/config set slots-per-event 6` — number of DJ slots per auto-created event
-- [ ] `/config set event-interval-days 7` — days between auto-created events
-- [ ] `/config set lookahead-count 6` — how many future events to maintain in Notion
-- [ ] `/config set start-time 20:00` — default event start time (HH:MM UTC)
-- [ ] `/config set slot-duration 60` — slot length in minutes
-- [ ] `/config set outreach-days-before 14` — how far before an event to begin outreach
-- [ ] `/config set outreach-cooldown-hours 12` — minimum hours between contacts per DJ
-- [ ] `/config set outreach-max` — cap on DJs contacted per outreach cycle (default: unlimited)
-- [ ] `/config set event-schedule` — cron expression for future automated event scheduling
-- [ ] `/config show` — review all current settings at any time
+- [ ] `/config set lookahead-count 0` — automatic event creation is **off** by default; a positive number keeps that many future events in Notion, spaced `event-interval-days` apart. Leave it at 0 if your dates are irregular and create events with `/add-event`
+- [ ] `/config set event-interval-days 7`
+- [ ] `/config set outreach-days-before 14`, `/config set outreach-cooldown-hours 12`, `/config set outreach-max` (default: unlimited)
+- [ ] `/config set dm-log on` — DJ DMs are mirrored into the log channel; `off` keeps them private. Tell your DJs which one you use
+- [ ] `/config set event-schedule` — stored for a future scheduler; **not used yet**
+- [ ] `/config show` — all settings plus when each background loop last completed
 
-> **Permissions note:** All `/config`, `/admin`, `/intervene`, `/status`, `/list-djs`, and `/add-event` commands are restricted to the Discord user IDs listed in `ADMIN_USER_IDS`. If a command shows "You don't have permission", verify your user ID is in the env var.
+**Going live:**
+
+- [ ] `/admin onboard-preview` — lists members with the DJ role who are not registered yet (sends nothing)
+- [ ] `/config set active on`
+- [ ] Existing DJs are not contacted automatically (onboarding starts when a member newly gets the DJ role). Invite them one by one with `/admin onboard dj:@name`
+
+> **Permissions note:** All admin commands (`/config`, `/admin`, `/intervene`, `/ravebot-status`, `/list-djs`, `/add-event`) are only visible to members with **Manage Server**, only work inside the server, and are additionally restricted to the Discord user IDs in `ADMIN_USER_IDS`. If a command shows "You don't have permission", verify your user ID is in the env var.
 
 ---
 
@@ -299,7 +310,7 @@ Same as above — the asyncpg pool could not be opened. Fix the connection strin
 
 ### Admin log channel shows a Notion schema warning on startup
 
-The startup validation found a missing database property. The most common cause is a missing `Slots` (Number) property. Add the missing property to your Notion database (see [section 2.4](#24-required-database-properties)) and restart the bot.
+The startup validation found a missing database property (`Name`, `Date`, `Slots`, `DJs`, `Discord ID`). Add the missing property to your Notion database (see [section 2.4](#24-required-database-properties)) and restart the bot.
 
 ### "Could not fetch Notion database schema"
 
@@ -307,6 +318,18 @@ Check:
 - `NOTION_API_KEY` is correct (starts with `secret_`)
 - `NOTION_DATABASE_ID` is the correct 32-character ID from the database URL
 - The integration has been shared with the database (database → `...` → **Add connections**)
+
+### The bot does not answer DMs and buttons say it isn't taking bookings
+
+It is in passive mode, the default. Run `/config set active on`.
+
+### Log says "Serving no server" / "Bot is in N servers and GUILD_ID is not set"
+
+Set `GUILD_ID` to the server the bot should serve and restart. The bot never picks one of several servers on its own.
+
+### Admin log shows ERR_DATA_MISMATCH
+
+Notion and the booking database disagree for an event (a DJ booked but not linked in Notion, or linked by hand without a booking). The bot only reports this, once per distinct difference, and never fixes it automatically. Compare the event in Notion with `/ravebot-status` and correct it by hand.
 
 ### Admin log channel shows no messages
 
