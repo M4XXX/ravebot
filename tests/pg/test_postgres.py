@@ -13,52 +13,17 @@ The schema is dropped and recreated with alembic; never point this at real data.
 guard the database name must end in "_test", anything else is refused before alembic runs.
 """
 import asyncio
-import os
-import subprocess
-import sys
-from urllib.parse import urlparse
 
 import pytest
 
-URL = os.environ.get("RAVEBOT_TEST_POSTGRES_URL")
+from tests.pg import SKIP_WITHOUT_URL, run_alembic
 
-pytestmark = [
-    pytest.mark.pg,
-    pytest.mark.skipif(not URL, reason="RAVEBOT_TEST_POSTGRES_URL not set (opt-in real-SQL tests)"),
-]
-
-
-def _alembic(*args: str) -> None:
-    database = urlparse(URL or "").path.lstrip("/")
-    if not database.endswith("_test"):
-        pytest.exit(f"refusing to drop the schema of '{database}': the name must end in _test")
-    env = {**os.environ, "POSTGRES_URL": URL or ""}
-    subprocess.run([sys.executable, "-m", "alembic", *args], check=True, env=env,
-                   capture_output=True, text=True)
-
-
-@pytest.fixture(scope="module", autouse=True)
-def schema():
-    _alembic("downgrade", "base")
-    _alembic("upgrade", "head")
-    yield
-    _alembic("downgrade", "base")
-
-
-@pytest.fixture
-async def pool():
-    import asyncpg
-
-    pool = await asyncpg.create_pool(URL, min_size=1, max_size=4)
-    async with pool.acquire() as conn:
-        await conn.execute("TRUNCATE slot_locks, djs, config RESTART IDENTITY CASCADE")
-    yield pool
-    await pool.close()
+pytestmark = [pytest.mark.pg, SKIP_WITHOUT_URL]
 
 
 def test_migrations_go_down_and_up_again() -> None:
-    _alembic("downgrade", "base")
-    _alembic("upgrade", "head")
+    run_alembic("downgrade", "base")
+    run_alembic("upgrade", "head")
 
 
 async def test_two_djs_racing_for_one_slot_get_exactly_one_lock(pool) -> None:
