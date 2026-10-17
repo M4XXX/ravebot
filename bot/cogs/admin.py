@@ -47,6 +47,8 @@ disnake 2.12.0 slash command hierarchy:
     cancel                     <- .sub_command()
     dj                         <- .sub_command_group()
       set-active               <- .sub_command()
+    onboard                    <- .sub_command()
+    onboard-preview            <- .sub_command()
   /ravebot-status              <- @commands.slash_command()
   /list-djs                    <- @commands.slash_command()
   /add-event                   <- @commands.slash_command()
@@ -69,7 +71,7 @@ from bot import active, loops, schedule, slots
 from bot.context import BotContext
 from bot.db import config as db_config
 from bot.db.bookings import get_booked_djs_for_event
-from bot.db.djs import get_all_djs
+from bot.db.djs import get_all_djs, get_dj_by_discord_id
 from bot.notion.client import NotionWriteError
 from bot.ui.embeds import EmbedColors
 
@@ -895,6 +897,78 @@ class AdminCog(commands.Cog):
     # ---------------------------------------------------------------------------
     # Story 6.4: /admin dj sub-command-group — DJ status management
     # ---------------------------------------------------------------------------
+
+    @admin_base.sub_command(
+        name="onboard",
+        description="Send the onboarding DM to one member with the DJ role",
+    )
+    async def admin_onboard(
+        self,
+        inter: disnake.ApplicationCommandInteraction,
+        dj: disnake.Member = commands.Param(description="Member with the DJ role"),
+    ) -> None:
+        """Invite one existing DJ: the role-change trigger never fires for them.
+
+        Only for a single, explicitly chosen member — never in bulk. Refused while passive.
+        """
+        if await self._refuse_if_passive(inter):
+            return
+        if not any(r.name.lower() == "dj" for r in dj.roles):
+            await inter.response.send_message(
+                f"{dj.display_name} doesn't have the DJ role — nothing sent.", ephemeral=True
+            )
+            return
+        existing = await get_dj_by_discord_id(self.ctx.db, dj.id) if self.ctx.db else None
+        if existing is not None and existing["onboarding_complete"]:
+            await inter.response.send_message(
+                f"{dj.display_name} is already registered — nothing sent.", ephemeral=True
+            )
+            return
+        onboarding = inter.client.get_cog("OnboardingCog")
+        if onboarding is None:
+            await inter.response.send_message("Onboarding is not loaded.", ephemeral=True)
+            return
+        result = await onboarding.send_onboarding_dm(dj)
+        text = {
+            "sent": f"Onboarding DM sent to {dj.display_name}.",
+            "dms_closed": f"{dj.display_name} has DMs from server members turned off.",
+        }.get(result, f"Onboarding DM to {dj.display_name}: {result}")
+        await inter.response.send_message(text, ephemeral=True)
+
+    @admin_base.sub_command(
+        name="onboard-preview",
+        description="List members with the DJ role who are not registered yet (sends nothing)",
+    )
+    async def admin_onboard_preview(self, inter: disnake.ApplicationCommandInteraction) -> None:
+        """Read-only: who would /admin onboard be for? Works while passive."""
+        guild = inter.guild
+        if guild is None or self.ctx.db is None:
+            await inter.response.send_message(
+                "Bot is not ready — please try again.", ephemeral=True
+            )
+            return
+        registered = {
+            row["discord_user_id"]
+            for row in await get_all_djs(self.ctx.db)
+            if row.get("onboarding_complete", True)
+        }
+        pending = sorted(
+            (m for m in guild.members
+             if not m.bot and m.id not in registered
+             and any(r.name.lower() == "dj" for r in m.roles)),
+            key=lambda m: m.display_name.lower(),
+        )
+        if not pending:
+            await inter.response.send_message(
+                "Every member with the DJ role is registered.", ephemeral=True
+            )
+            return
+        shown = ", ".join(m.display_name for m in pending[:50])
+        more = f" … and {len(pending) - 50} more" if len(pending) > 50 else ""
+        await inter.response.send_message(
+            f"{len(pending)} member(s) with the DJ role are not registered: {shown}{more}",
+            ephemeral=True,
+        )
 
     @admin_base.sub_command_group(
         name="dj", description="DJ status management (admin only)"

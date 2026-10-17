@@ -169,7 +169,8 @@ async def get_all_djs(pool: asyncpg.Pool) -> list[dict]:
     [Source: architecture.md#Repository Pattern]
     """
     rows = await pool.fetch(
-        "SELECT discord_user_id, dj_name, active_booking FROM djs ORDER BY dj_name ASC"
+        "SELECT discord_user_id, dj_name, active_booking, onboarding_complete FROM djs "
+        "ORDER BY dj_name ASC"
     )
     return [dict(row) for row in rows]
 

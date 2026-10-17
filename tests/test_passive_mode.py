@@ -179,7 +179,7 @@ async def test_passive_admin_write_commands_are_refused() -> None:
     inter.response.send_message.assert_awaited_once_with(active.PASSIVE_NOTICE, ephemeral=True)
 
     for name in ("intervene_start", "intervene_send", "admin_book", "admin_cancel",
-                 "admin_dj_set_active", "add_event"):
+                 "admin_dj_set_active", "add_event", "admin_onboard"):
         source = inspect.getsource(getattr(AdminCog, name).callback)
         assert "self._refuse_if_passive(inter)" in source, name
 
