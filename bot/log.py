@@ -168,6 +168,17 @@ class AdminLogService:
         except disnake.DiscordException as exc:
             logger.error("Failed to post intervention log: %s", exc)
 
+    async def post_notice(self, content: str) -> None:
+        """Post a plain informational message (e.g. the startup self-check). Never raises."""
+        channel = await self._get_log_channel()
+        if channel is None:
+            logger.warning("Notice (no log channel): %s", content)
+            return
+        try:
+            await channel.send(content)
+        except disnake.DiscordException as exc:
+            logger.error("Failed to post notice: %s", exc)
+
     async def post_admin_override(self, content: str) -> None:
         """Post an admin override action line to the admin log channel.
 

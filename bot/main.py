@@ -24,7 +24,7 @@ import disnake
 from disnake.ext import commands
 from dotenv import load_dotenv
 
-from bot import active
+from bot import active, selfcheck
 from bot import guild as served
 from bot.config import Config
 from bot.context import BotContext
@@ -152,13 +152,14 @@ async def main() -> None:
         else:
             mode = "ACTIVE" if await active.is_active(ctx.db, gid) else "PASSIVE"
             logger.info("Serving guild %s in %s mode", gid, mode)
+            bot.loop.create_task(selfcheck.run(bot, ctx, gid))
         # Story 1.5: validate Notion schema now that Discord is connected
         # (admin log channel may already be configured for error posting)
         if ctx.notion_client is not None:
             bot.loop.create_task(
                 ctx.notion_client.validate_schema(
                     # Minimum required Notion database properties — extend in Story 3.x
-                    required_properties=["Name", "Date", "Slots"],
+                    required_properties=["Name", "Date", "Slots", "DJs", "Discord ID"],
                 )
             )
 
