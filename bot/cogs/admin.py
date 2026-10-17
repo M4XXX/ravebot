@@ -16,7 +16,7 @@ Story 7.2: /config set outreach-cooldown-hours -- outreach cooldown (FR36)
 Story 7.2: /config set lookahead-count -- event look-ahead (FR37)
 Story 7.2: /config set outreach-max -- max outreach contacts (FR36)
 Story 7.2: /config show -- display all config values
-Story 7.3: /config set slots-per-event -- slots per auto-created event (FR37)
+Story 7.3: /config set slots-per-event -- default slot count of events without Notion Slots (FR37)
 Story 7.3: /config set event-interval-days -- days between auto-created events (FR37)
 Story 7.3: /config set slot-duration -- slot duration in minutes (FR37)
 Story 7.3: /config set start-time -- default event start time HH:MM UTC (FR37)
@@ -379,7 +379,7 @@ class AdminCog(commands.Cog):
 
     @config_set_base.sub_command(
         name="slots-per-event",
-        description="Set the number of slots per auto-created event",
+        description="Set the slot count of events whose Notion Slots is empty",
     )
     async def config_set_slots_per_event(
         self,
@@ -390,7 +390,8 @@ class AdminCog(commands.Cog):
     ) -> None:
         """Store slots_per_event in config table.
 
-        Consumed by status_cmd (admin.py) and _auto_create_events (events.py) for slot count.
+        The slot count of every event whose Notion Slots property is empty (bot.slots), and
+        the Slots value written to events the bot creates (_auto_create_events).
         [Source: epics.md#Story 7.3 AC1 — FR37]
         [Source: bot/cogs/admin.py — slots_per_event consumer (status_cmd)]
         [Source: bot/cogs/events.py — slots_per_event consumer (_auto_create_events)]
@@ -593,7 +594,7 @@ class AdminCog(commands.Cog):
             description="IANA time zone, e.g. Europe/Berlin, America/New_York, UTC"
         ),
     ) -> None:
-        """Store the time zone used to place the start time; slots then follow DST changes."""
+        """Store the time zone of the start time; each night then starts at that local time."""
         guild_id = inter.guild_id
         assert guild_id is not None
         if self.ctx.db is None:

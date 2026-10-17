@@ -43,6 +43,15 @@ def test_slots_keep_wall_clock_across_midnight() -> None:
     assert (local.day, local.hour, local.minute) == (1, 0, 0)
 
 
+@pytest.mark.parametrize("night", ["2027-03-27", "2026-10-24"])  # clocks forward / back
+def test_slots_are_evenly_spaced_on_the_night_the_clocks_change(night: str) -> None:
+    sched = schedule.Schedule(tz=ZoneInfo("Europe/Berlin"), start=dt.time(22, 0), slot_minutes=60)
+    starts = [schedule.slot_unix(_event(night), i, sched) for i in range(7)]
+    assert [b - a for a, b in zip(starts, starts[1:])] == [3600] * 6
+    first = schedule.slot_start(_event(night), 0, sched).astimezone(sched.tz)
+    assert (first.hour, first.minute) == (22, 0)
+
+
 def test_date_with_time_is_used_as_entered() -> None:
     assert schedule.event_start(_event("2026-10-24T18:30:00+00:00"), BERLIN) == _utc(
         2026, 10, 24, 18, 30

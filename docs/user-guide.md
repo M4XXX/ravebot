@@ -269,7 +269,7 @@ After the bot comes online:
 - [ ] `/config set dj-channel #your-channel` — where the lineup post is published
 - [ ] `/config set log-channel #your-channel` — admin alerts (and DM transcripts, see below); use a private channel
 - [ ] The bot can **View Channel, Send Messages, Embed Links and Read Message History** in both channels (for private channels add the bot's role to the channel)
-- [ ] `/config set timezone Europe/Berlin` (any IANA name) and `/config set start-time 21:00` — the first slot starts at this local time; slots keep their clock time across daylight saving changes
+- [ ] `/config set timezone Europe/Berlin` (any IANA name) and `/config set start-time 21:00` — the first slot starts at this local time all year round. Slots then follow in real time, each exactly one slot duration long, so on the night the clocks change the later slots of that night show the shifted clock time
 - [ ] `/config set slot-duration 60` and `/config set slots-per-event 6` if your nights differ
 
 **Optional (defaults shown):**

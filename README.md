@@ -67,7 +67,7 @@ A live lineup post in your DJ channel updates automatically whenever Notion chan
 
 **Automation**
 - Optionally auto-creates future events in Notion (off by default; set a look-ahead count to enable)
-- Slot times follow a configurable start time and time zone, so they stay put across DST changes
+- Every night starts at a configurable local time in a configurable time zone, all year round; its slots follow one after another, each exactly one slot duration long
 - Auto-posts and updates the lineup embed whenever Notion changes
 - Proactive outreach to fill open slots before each event
 - Alembic database migrations run automatically at container start
@@ -87,7 +87,7 @@ A live lineup post in your DJ channel updates automatically whenever Notion chan
 |---|---|---|
 | `/config set dj-channel` | Admin | Channel where lineup posts are sent |
 | `/config set log-channel` | Admin | Channel for admin alerts and DM transcripts |
-| `/config set slots-per-event` | Admin | Slots per auto-created event (default: 6) |
+| `/config set slots-per-event` | Admin | Slots of every event whose Notion `Slots` is empty, and of events the bot creates (default: 6) |
 | `/config set event-interval-days` | Admin | Days between auto-created events (default: 7) |
 | `/config set lookahead-count` | Admin | Future events to keep in Notion; 0 = automatic creation off (default: 0) |
 | `/config set start-time` | Admin | First slot start time HH:MM in the configured time zone (default: 20:00) |

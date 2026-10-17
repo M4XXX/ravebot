@@ -104,15 +104,17 @@ def event_start(event: dict, schedule: Schedule | None = None) -> dt.datetime | 
 def slot_start(
     event: dict, slot_index: int, schedule: Schedule | None = None
 ) -> dt.datetime | None:
-    """Return the start of slot `slot_index` (0-based) as an aware UTC datetime, or None."""
+    """Return the start of slot `slot_index` (0-based) as an aware UTC datetime, or None.
+
+    The night starts at its local clock time (event_start); its slots follow in real time,
+    each exactly slot_minutes long. Adding in wall time instead gave two slots the same
+    start on the night the clocks go forward and a one-hour hole when they go back.
+    """
     sched = schedule or _current
     start = event_start(event, sched)
     if start is None:
         return None
-    # Add the offset in local wall time so a slot after a DST switch keeps its clock time.
-    local = start.astimezone(sched.tz)
-    naive = local.replace(tzinfo=None) + dt.timedelta(minutes=slot_index * sched.slot_minutes)
-    return naive.replace(tzinfo=sched.tz).astimezone(dt.UTC)
+    return start + dt.timedelta(minutes=slot_index * sched.slot_minutes)
 
 
 def slot_unix(event: dict, slot_index: int, schedule: Schedule | None = None) -> int:
