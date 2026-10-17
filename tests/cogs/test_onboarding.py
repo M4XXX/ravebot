@@ -303,7 +303,9 @@ async def test_on_message_bot_message_ignored() -> None:
 
 
 @pytest.mark.asyncio
-async def test_on_message_skips_during_active_flow(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_on_message_offers_start_over_during_active_flow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """FallbackMenuView NOT shown when user has an active flow (lock held)."""
     from bot.cogs.onboarding import OnboardingCog
 
@@ -325,11 +327,15 @@ async def test_on_message_skips_during_active_flow(monkeypatch: pytest.MonkeyPat
 
     await cog.on_message(message)
 
-    message.channel.send.assert_not_called()
+    message.channel.send.assert_awaited_once()
+    from bot.ui.views import StartOverView
+
+    assert isinstance(message.channel.send.call_args.kwargs["view"], StartOverView)
 
 
 @pytest.mark.asyncio
-async def test_on_message_dm_logs_transcript_for_incoming_and_outgoing(registered_dj, 
+async def test_on_message_dm_logs_transcript_for_incoming_and_outgoing(
+    registered_dj,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Story 6.1 AC2 + AC1: incoming DM and fallback menu response are both transcribed."""
@@ -448,7 +454,8 @@ async def test_on_message_under_intervention_suppresses_even_when_log_service_no
 
 
 @pytest.mark.asyncio
-async def test_on_message_not_under_intervention_shows_fallback(registered_dj, 
+async def test_on_message_not_under_intervention_shows_fallback(
+    registered_dj,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """DJ NOT under intervention → normal FallbackMenuView shown."""

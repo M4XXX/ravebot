@@ -132,6 +132,13 @@ async def main() -> None:
     bot.add_cog(AdminCog(ctx))
     bot.add_cog(EventsCog(ctx, bot))
 
+    # Buttons in DMs sent before a restart keep working (static custom_ids, timeout=None)
+    from bot.ui.views import FallbackMenuView, OnboardingIntroView, StartOverView
+
+    bot.add_view(FallbackMenuView(ctx))
+    bot.add_view(OnboardingIntroView(ctx, user_id=0, guild_id=0))
+    bot.add_view(StartOverView(ctx))
+
     @bot.event
     async def on_ready() -> None:  # noqa: RUF029
         logger.info("Bot ready")

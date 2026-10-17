@@ -61,6 +61,45 @@ class ActiveOnlyView(disnake.ui.View):
         await interaction.response.send_message(active.DJ_NOTICE, ephemeral=True)
         return False
 
+    async def on_error(
+        self, error: Exception, item: disnake.ui.Item, interaction: disnake.MessageInteraction
+    ) -> None:
+        """Free the DJ's flow lock when a button handler fails, so the bot doesn't go silent."""
+        logger.exception("View %s failed: %s", type(self).__name__, error, exc_info=error)
+        ctx = getattr(self, "ctx", None) or getattr(self, "_ctx", None)
+        lock = getattr(ctx, "user_locks", {}).get(interaction.author.id)
+        if lock is not None:
+            lock.release_if_held()
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(FLOW_FAILED_TEXT, ephemeral=True)
+            else:
+                await interaction.response.send_message(FLOW_FAILED_TEXT, ephemeral=True)
+        except disnake.HTTPException:
+            pass
+
+
+FLOW_FAILED_TEXT = "Something went wrong on my side — send me any message to start over."
+
+
+class StartOverView(ActiveOnlyView):
+    """Shown when a DJ writes while a flow is still open: one button to drop it."""
+
+    def __init__(self, ctx: "BotContext") -> None:
+        super().__init__(timeout=None)
+        self.ctx = ctx
+
+    @disnake.ui.button(
+        label="Start over", style=disnake.ButtonStyle.secondary, custom_id="flow:start_over"
+    )
+    async def start_over(
+        self, button: disnake.ui.Button, inter: disnake.MessageInteraction
+    ) -> None:
+        self.ctx.get_user_lock(inter.author.id).release_if_held()
+        await inter.response.send_message(
+            "Done — here's what I can do for you:", view=FallbackMenuView(self.ctx)
+        )
+
 class OnboardingIntroView(ActiveOnlyView):
     """Intro DM view — two buttons sent when DJ role is first detected.
 
@@ -118,8 +157,9 @@ class OnboardingIntroView(ActiveOnlyView):
             )
             return
         await lock.acquire()
+        guild_id = self.guild_id or served.resolve(inter.client) or 0
         await inter.response.send_modal(
-            OnboardingModal(self.ctx, inter.author.id, lock, self.guild_id)
+            OnboardingModal(self.ctx, inter.author.id, lock, guild_id)
         )
 
     @disnake.ui.button(
@@ -220,6 +260,19 @@ class OnboardingModal(disnake.ui.Modal):
                 ),
             ],
         )
+
+    async def on_timeout(self) -> None:
+        """The DJ closed the form or walked away: free the flow lock it was holding."""
+        self._lock.release_if_held()
+
+    async def on_error(self, error: Exception, inter: disnake.ModalInteraction) -> None:
+        """A failed submission must not leave the DJ locked out."""
+        logger.exception("OnboardingModal failed for user %s", self._user_id, exc_info=error)
+        self._lock.release_if_held()
+        try:
+            await inter.response.send_message(FLOW_FAILED_TEXT)
+        except disnake.HTTPException:
+            pass
 
     async def callback(self, inter: disnake.ModalInteraction) -> None:
         """Process modal submission: validate URLs → insert DJ → confirm → release lock.
