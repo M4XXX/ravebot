@@ -60,7 +60,7 @@ disnake 2.12.0 slash command hierarchy:
 [Source: epics.md#Story 7.2 Acceptance Criteria]
 """
 import logging
-from datetime import UTC, date, datetime
+from datetime import date
 
 import disnake
 from disnake.ext import commands
@@ -293,12 +293,12 @@ class AdminCog(commands.Cog):
         self,
         inter: disnake.ApplicationCommandInteraction,
         count: int = commands.Param(
-            ge=1, description="Number of future events to keep scheduled (default: 6)"
+            ge=0, description="Future events to keep scheduled; 0 = off (default)"
         ),
     ) -> None:
         """Store event_lookahead_count in config table.
 
-        Consumed by EventsCog._auto_create_events() on every poll cycle (default: 6).
+        Consumed by EventsCog._auto_create_events() on every poll cycle (default: 0 = off).
         [Source: epics.md#Story 7.2 AC3 — FR37]
         [Source: bot/cogs/events.py:116 — event_lookahead_count consumer]
         """
@@ -313,9 +313,12 @@ class AdminCog(commands.Cog):
         await db_config.set_value(
             self.ctx.db, guild_id, "event_lookahead_count", str(count)
         )
-        await inter.response.send_message(
-            f"Event look-ahead set to {count} future events.", ephemeral=True
+        text = (
+            "Automatic event creation is off."
+            if count == 0
+            else f"Event look-ahead set to {count} future events."
         )
+        await inter.response.send_message(text, ephemeral=True)
 
     # ---------------------------------------------------------------------------
     # Story 7.2: /config set outreach-max (FR36)
@@ -654,7 +657,7 @@ class AdminCog(commands.Cog):
         keys: list[tuple[str, str, str]] = [
             ("outreach_days_before", "Outreach Window (days before event)", "14"),
             ("outreach_cooldown_hours", "Outreach Cooldown (hours)", "12"),
-            ("event_lookahead_count", "Event Look-Ahead Count", "6"),
+            ("event_lookahead_count", "Event Look-Ahead Count", "0 = off"),
             ("outreach_max_contacts", "Max Outreach Contacts", "unlimited"),
             ("dj_channel", "DJ Channel ID", "(not set)"),
             ("log_channel", "Admin Log Channel ID", "(not set)"),
@@ -1128,8 +1131,8 @@ class AdminCog(commands.Cog):
             )
             return
 
-        event_unix = int(
-            datetime.combine(event_date, datetime.min.time(), tzinfo=UTC).timestamp()
+        event_unix = schedule.slot_unix(
+            {"properties": {"Date": {"date": {"start": event_date.isoformat()}}}}, 0
         )
         await inter.response.send_message(
             f"Event created in Notion for <t:{event_unix}:f>.", ephemeral=True

@@ -102,7 +102,7 @@ class EventsCog(commands.Cog):
     async def _auto_create_events(self, events: list[dict], guild_id: int) -> None:
         """Create Notion events to maintain the configured look-ahead count.
 
-        Reads event_lookahead_count (default 6), event_interval_days (default 7),
+        Reads event_lookahead_count (default 0 = off), event_interval_days (default 7),
         and slots_per_event (default 6) from config. Finds the latest existing event
         date and creates new events spaced by interval_days until the count reaches
         the look-ahead target. After each successful Notion write, pre-initializes
@@ -117,7 +117,9 @@ class EventsCog(commands.Cog):
         [Source: epics.md#Story 7.1 AC1-AC4]
         """
         raw_lookahead = await get_value(self.ctx.db, guild_id, "event_lookahead_count")
-        lookahead = int(raw_lookahead) if raw_lookahead else 6
+        lookahead = int(raw_lookahead) if raw_lookahead else 0
+        if lookahead <= 0:
+            return  # auto-creation is off (default): events come from /add-event or Notion
 
         if len(events) >= lookahead:
             return  # AC4: already at or above target, no action
