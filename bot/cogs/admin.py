@@ -73,6 +73,7 @@ from bot.db import config as db_config
 from bot.db.bookings import get_booked_djs_for_event
 from bot.db.djs import get_all_djs, get_dj_by_discord_id
 from bot.notion.client import NotionWriteError
+from bot.ui.ack import auto_ack, reply
 from bot.ui.embeds import EmbedColors
 
 logger = logging.getLogger(__name__)
@@ -112,7 +113,7 @@ class AdminCog(commands.Cog):
         """
         if await active.is_active(self.ctx.db, inter.guild_id):
             return False
-        await inter.response.send_message(active.PASSIVE_NOTICE, ephemeral=True)
+        await reply(inter, active.PASSIVE_NOTICE, ephemeral=True)
         return True
 
     async def cog_slash_command_error(
@@ -127,7 +128,7 @@ class AdminCog(commands.Cog):
         [Source: epics.md#Story 1.4 AC3 — user sees "You don't have permission to use this command"]
         """
         if isinstance(error, commands.CheckFailure):
-            await inter.response.send_message(
+            await reply(inter, 
                 "You don't have permission to use this command.",
                 ephemeral=True,
             )
@@ -136,7 +137,7 @@ class AdminCog(commands.Cog):
                 "Unexpected error in AdminCog slash command: %s", error, exc_info=True
             )
             if not inter.response.is_done():
-                await inter.response.send_message(
+                await reply(inter, 
                     "Something went wrong — please try again.",
                     ephemeral=True,
                 )
@@ -173,12 +174,12 @@ class AdminCog(commands.Cog):
         assert guild_id is not None  # slash commands always have guild context
         if self.ctx.db is None:
             logger.error("AdminCog: DB pool is None in config_set_dj_channel")
-            await inter.response.send_message(
+            await reply(inter, 
                 "Bot is not ready — please try again.", ephemeral=True
             )
             return
         await db_config.set_value(self.ctx.db, guild_id, "dj_channel", str(channel.id))
-        await inter.response.send_message(
+        await reply(inter, 
             f"DJ channel set to {channel.mention}", ephemeral=True
         )
 
@@ -204,12 +205,12 @@ class AdminCog(commands.Cog):
         assert guild_id is not None
         if self.ctx.db is None:
             logger.error("AdminCog: DB pool is None in config_set_log_channel")
-            await inter.response.send_message(
+            await reply(inter, 
                 "Bot is not ready — please try again.", ephemeral=True
             )
             return
         await db_config.set_value(self.ctx.db, guild_id, "log_channel", str(channel.id))
-        await inter.response.send_message(
+        await reply(inter, 
             f"Log channel set to {channel.mention}", ephemeral=True
         )
 
@@ -238,12 +239,12 @@ class AdminCog(commands.Cog):
         assert guild_id is not None
         if self.ctx.db is None:
             logger.error("AdminCog: DB pool is None in config_set_outreach_days_before")
-            await inter.response.send_message(
+            await reply(inter, 
                 "Bot is not ready — please try again.", ephemeral=True
             )
             return
         await db_config.set_value(self.ctx.db, guild_id, "outreach_days_before", str(days))
-        await inter.response.send_message(
+        await reply(inter, 
             f"Outreach window set to {days} days before event.", ephemeral=True
         )
 
@@ -272,14 +273,14 @@ class AdminCog(commands.Cog):
         assert guild_id is not None
         if self.ctx.db is None:
             logger.error("AdminCog: DB pool is None in config_set_outreach_cooldown_hours")
-            await inter.response.send_message(
+            await reply(inter, 
                 "Bot is not ready — please try again.", ephemeral=True
             )
             return
         await db_config.set_value(
             self.ctx.db, guild_id, "outreach_cooldown_hours", str(hours)
         )
-        await inter.response.send_message(
+        await reply(inter, 
             f"Outreach cooldown set to {hours} hours between contacts.", ephemeral=True
         )
 
@@ -308,7 +309,7 @@ class AdminCog(commands.Cog):
         assert guild_id is not None
         if self.ctx.db is None:
             logger.error("AdminCog: DB pool is None in config_set_lookahead_count")
-            await inter.response.send_message(
+            await reply(inter, 
                 "Bot is not ready — please try again.", ephemeral=True
             )
             return
@@ -320,7 +321,7 @@ class AdminCog(commands.Cog):
             if count == 0
             else f"Event look-ahead set to {count} future events."
         )
-        await inter.response.send_message(text, ephemeral=True)
+        await reply(inter, text, ephemeral=True)
 
     # ---------------------------------------------------------------------------
     # Story 7.2: /config set outreach-max (FR36)
@@ -346,14 +347,14 @@ class AdminCog(commands.Cog):
         assert guild_id is not None
         if self.ctx.db is None:
             logger.error("AdminCog: DB pool is None in config_set_outreach_max")
-            await inter.response.send_message(
+            await reply(inter, 
                 "Bot is not ready — please try again.", ephemeral=True
             )
             return
         await db_config.set_value(
             self.ctx.db, guild_id, "outreach_max_contacts", str(max_contacts)
         )
-        await inter.response.send_message(
+        await reply(inter, 
             f"Max outreach contacts per event set to {max_contacts}.", ephemeral=True
         )
 
@@ -383,12 +384,12 @@ class AdminCog(commands.Cog):
         assert guild_id is not None
         if self.ctx.db is None:
             logger.error("AdminCog: DB pool is None in config_set_slots_per_event")
-            await inter.response.send_message(
+            await reply(inter, 
                 "Bot is not ready — please try again.", ephemeral=True
             )
             return
         await db_config.set_value(self.ctx.db, guild_id, "slots_per_event", str(count))
-        await inter.response.send_message(
+        await reply(inter, 
             f"New events will be created with {count} slots.", ephemeral=True
         )
 
@@ -417,12 +418,12 @@ class AdminCog(commands.Cog):
         assert guild_id is not None
         if self.ctx.db is None:
             logger.error("AdminCog: DB pool is None in config_set_event_interval_days")
-            await inter.response.send_message(
+            await reply(inter, 
                 "Bot is not ready — please try again.", ephemeral=True
             )
             return
         await db_config.set_value(self.ctx.db, guild_id, "event_interval_days", str(days))
-        await inter.response.send_message(
+        await reply(inter, 
             f"Auto-created events will be spaced {days} days apart.", ephemeral=True
         )
 
@@ -451,13 +452,13 @@ class AdminCog(commands.Cog):
         assert guild_id is not None
         if self.ctx.db is None:
             logger.error("AdminCog: DB pool is None in config_set_slot_duration")
-            await inter.response.send_message(
+            await reply(inter, 
                 "Bot is not ready — please try again.", ephemeral=True
             )
             return
         await db_config.set_value(self.ctx.db, guild_id, "slot_duration_minutes", str(minutes))
         await schedule.refresh(self.ctx.db, guild_id)
-        await inter.response.send_message(
+        await reply(inter, 
             f"Slot duration set to {minutes} minutes.", ephemeral=True
         )
 
@@ -487,7 +488,7 @@ class AdminCog(commands.Cog):
         assert guild_id is not None
         if self.ctx.db is None:
             logger.error("AdminCog: DB pool is None in config_set_start_time")
-            await inter.response.send_message(
+            await reply(inter, 
                 "Bot is not ready — please try again.", ephemeral=True
             )
             return
@@ -500,13 +501,13 @@ class AdminCog(commands.Cog):
             and 0 <= int(parts[1]) <= 59
         )
         if not valid:
-            await inter.response.send_message(
+            await reply(inter, 
                 "Invalid format — use HH:MM (e.g. 20:00).", ephemeral=True
             )
             return
         await db_config.set_value(self.ctx.db, guild_id, "default_start_time", time_str.strip())
         sched = await schedule.refresh(self.ctx.db, guild_id)
-        await inter.response.send_message(
+        await reply(inter, 
             f"Default event start time set to {time_str.strip()} ({sched.tz.key}).", ephemeral=True
         )
 
@@ -530,7 +531,7 @@ class AdminCog(commands.Cog):
         assert guild_id is not None
         if self.ctx.db is None:
             logger.error("AdminCog: DB pool is None in config_set_active")
-            await inter.response.send_message(
+            await reply(inter, 
                 "Bot is not ready — please try again.", ephemeral=True
             )
             return
@@ -541,7 +542,7 @@ class AdminCog(commands.Cog):
             if state == "on"
             else "RaveBot is now PASSIVE — it will not contact anyone."
         )
-        await inter.response.send_message(text, ephemeral=True)
+        await reply(inter, text, ephemeral=True)
 
     @config_set_base.sub_command(
         name="dm-log",
@@ -559,12 +560,12 @@ class AdminCog(commands.Cog):
         assert guild_id is not None
         if self.ctx.db is None:
             logger.error("AdminCog: DB pool is None in config_set_dm_log")
-            await inter.response.send_message(
+            await reply(inter, 
                 "Bot is not ready — please try again.", ephemeral=True
             )
             return
         await db_config.set_value(self.ctx.db, guild_id, "dm_log", state)
-        await inter.response.send_message(f"DM log mirroring is {state}.", ephemeral=True)
+        await reply(inter, f"DM log mirroring is {state}.", ephemeral=True)
 
     @config_set_base.sub_command(
         name="timezone",
@@ -582,19 +583,19 @@ class AdminCog(commands.Cog):
         assert guild_id is not None
         if self.ctx.db is None:
             logger.error("AdminCog: DB pool is None in config_set_timezone")
-            await inter.response.send_message(
+            await reply(inter, 
                 "Bot is not ready — please try again.", ephemeral=True
             )
             return
         tz = schedule.parse_timezone(name)
         if tz is None:
-            await inter.response.send_message(
+            await reply(inter, 
                 "Unknown time zone — use an IANA name like Europe/Berlin.", ephemeral=True
             )
             return
         await db_config.set_value(self.ctx.db, guild_id, "timezone", tz.key)
         await schedule.refresh(self.ctx.db, guild_id)
-        await inter.response.send_message(f"Time zone set to {tz.key}.", ephemeral=True)
+        await reply(inter, f"Time zone set to {tz.key}.", ephemeral=True)
 
     # ---------------------------------------------------------------------------
     # Story 7.3: /config set event-schedule (FR37)
@@ -620,12 +621,12 @@ class AdminCog(commands.Cog):
         assert guild_id is not None
         if self.ctx.db is None:
             logger.error("AdminCog: DB pool is None in config_set_event_schedule")
-            await inter.response.send_message(
+            await reply(inter, 
                 "Bot is not ready — please try again.", ephemeral=True
             )
             return
         await db_config.set_value(self.ctx.db, guild_id, "event_recurrence_cron", cron)
-        await inter.response.send_message(
+        await reply(inter, 
             f"Event recurrence schedule set to: {cron}", ephemeral=True
         )
 
@@ -651,7 +652,7 @@ class AdminCog(commands.Cog):
         assert guild_id is not None
         if self.ctx.db is None:
             logger.error("AdminCog: DB pool is None in config_show")
-            await inter.response.send_message(
+            await reply(inter, 
                 "Bot is not ready — please try again.", ephemeral=True
             )
             return
@@ -691,7 +692,7 @@ class AdminCog(commands.Cog):
             when = health.get(name)
             lines.append(f"{name}: <t:{int(when.timestamp())}:R>" if when else f"{name}: not yet")
         embed.add_field(name="Background loops (last OK)", value="\n".join(lines), inline=False)
-        await inter.response.send_message(embed=embed, ephemeral=True)
+        await reply(inter, embed=embed, ephemeral=True)
 
     # ---------------------------------------------------------------------------
     # Story 6.2: /intervene command group — admin DM takeover (FR32, FR33)
@@ -711,6 +712,7 @@ class AdminCog(commands.Cog):
     @intervene_base.sub_command(
         name="start", description="Take over the bot's DM conversation with a DJ"
     )
+    @auto_ack(ephemeral=True)
     async def intervene_start(
         self,
         inter: disnake.ApplicationCommandInteraction,
@@ -727,12 +729,12 @@ class AdminCog(commands.Cog):
         if await self._refuse_if_passive(inter):
             return
         if self.ctx.intervention_service is None:
-            await inter.response.send_message(
+            await reply(inter, 
                 "Bot is not ready — please try again.", ephemeral=True
             )
             return
         await self.ctx.intervention_service.start(dj.id, dj.display_name)
-        await inter.response.send_message(
+        await reply(inter, 
             f"Intervention active for {dj.mention}. All automated DMs paused. "
             "Use `/intervene send` to message them.",
             ephemeral=True,
@@ -741,6 +743,7 @@ class AdminCog(commands.Cog):
     @intervene_base.sub_command(
         name="send", description="Send a message to a DJ as the bot during intervention"
     )
+    @auto_ack(ephemeral=True)
     async def intervene_send(
         self,
         inter: disnake.ApplicationCommandInteraction,
@@ -757,17 +760,17 @@ class AdminCog(commands.Cog):
         if await self._refuse_if_passive(inter):
             return
         if self.ctx.intervention_service is None:
-            await inter.response.send_message(
+            await reply(inter, 
                 "Bot is not ready — please try again.", ephemeral=True
             )
             return
         sent = await self.ctx.intervention_service.send_message(dj.id, dj.display_name, message)
         if sent:
-            await inter.response.send_message(
+            await reply(inter, 
                 f"Message sent to {dj.mention}.", ephemeral=True
             )
         else:
-            await inter.response.send_message(
+            await reply(inter, 
                 f"Could not deliver message to {dj.mention} — DMs may be blocked.",
                 ephemeral=True,
             )
@@ -788,12 +791,12 @@ class AdminCog(commands.Cog):
         [Source: bot/services/intervention.py -- InterventionService.end()]
         """
         if self.ctx.intervention_service is None:
-            await inter.response.send_message(
+            await reply(inter, 
                 "Bot is not ready — please try again.", ephemeral=True
             )
             return
         await self.ctx.intervention_service.end(dj.id, dj.display_name)
-        await inter.response.send_message(
+        await reply(inter, 
             f"Intervention ended for {dj.mention} — automated flows resumed.",
             ephemeral=True,
         )
@@ -816,6 +819,7 @@ class AdminCog(commands.Cog):
     @admin_base.sub_command(
         name="book", description="Force-book a DJ into an event slot (bypasses confirmation)"
     )
+    @auto_ack(ephemeral=True)
     async def admin_book(
         self,
         inter: disnake.ApplicationCommandInteraction,
@@ -834,7 +838,7 @@ class AdminCog(commands.Cog):
         if await self._refuse_if_passive(inter):
             return
         if self.ctx.admin_booking_service is None:
-            await inter.response.send_message(
+            await reply(inter, 
                 "Bot is not ready — please try again.", ephemeral=True
             )
             return
@@ -846,16 +850,17 @@ class AdminCog(commands.Cog):
             slot_num=slot,
         )
         if success:
-            await inter.response.send_message(
+            await reply(inter, 
                 f"Done — {dj.mention} booked into slot {slot} of '{event}'.",
                 ephemeral=True,
             )
         else:
-            await inter.response.send_message(msg, ephemeral=True)
+            await reply(inter, msg, ephemeral=True)
 
     @admin_base.sub_command(
         name="cancel", description="Force-cancel a DJ's event booking"
     )
+    @auto_ack(ephemeral=True)
     async def admin_cancel(
         self,
         inter: disnake.ApplicationCommandInteraction,
@@ -875,7 +880,7 @@ class AdminCog(commands.Cog):
         if await self._refuse_if_passive(inter):
             return
         if self.ctx.admin_booking_service is None:
-            await inter.response.send_message(
+            await reply(inter, 
                 "Bot is not ready — please try again.", ephemeral=True
             )
             return
@@ -887,12 +892,12 @@ class AdminCog(commands.Cog):
             slot_num=slot,
         )
         if success:
-            await inter.response.send_message(
+            await reply(inter, 
                 f"Done — {dj.mention}'s booking in slot {slot} of '{event}' cancelled.",
                 ephemeral=True,
             )
         else:
-            await inter.response.send_message(msg, ephemeral=True)
+            await reply(inter, msg, ephemeral=True)
 
     # ---------------------------------------------------------------------------
     # Story 6.4: /admin dj sub-command-group — DJ status management
@@ -902,6 +907,7 @@ class AdminCog(commands.Cog):
         name="onboard",
         description="Send the onboarding DM to one member with the DJ role",
     )
+    @auto_ack(ephemeral=True)
     async def admin_onboard(
         self,
         inter: disnake.ApplicationCommandInteraction,
@@ -914,26 +920,26 @@ class AdminCog(commands.Cog):
         if await self._refuse_if_passive(inter):
             return
         if not any(r.name.lower() == "dj" for r in dj.roles):
-            await inter.response.send_message(
+            await reply(inter, 
                 f"{dj.display_name} doesn't have the DJ role — nothing sent.", ephemeral=True
             )
             return
         existing = await get_dj_by_discord_id(self.ctx.db, dj.id) if self.ctx.db else None
         if existing is not None and existing["onboarding_complete"]:
-            await inter.response.send_message(
+            await reply(inter, 
                 f"{dj.display_name} is already registered — nothing sent.", ephemeral=True
             )
             return
         onboarding = inter.client.get_cog("OnboardingCog")
         if onboarding is None:
-            await inter.response.send_message("Onboarding is not loaded.", ephemeral=True)
+            await reply(inter, "Onboarding is not loaded.", ephemeral=True)
             return
         result = await onboarding.send_onboarding_dm(dj)
         text = {
             "sent": f"Onboarding DM sent to {dj.display_name}.",
             "dms_closed": f"{dj.display_name} has DMs from server members turned off.",
         }.get(result, f"Onboarding DM to {dj.display_name}: {result}")
-        await inter.response.send_message(text, ephemeral=True)
+        await reply(inter, text, ephemeral=True)
 
     @admin_base.sub_command(
         name="onboard-preview",
@@ -943,7 +949,7 @@ class AdminCog(commands.Cog):
         """Read-only: who would /admin onboard be for? Works while passive."""
         guild = inter.guild
         if guild is None or self.ctx.db is None:
-            await inter.response.send_message(
+            await reply(inter, 
                 "Bot is not ready — please try again.", ephemeral=True
             )
             return
@@ -959,13 +965,13 @@ class AdminCog(commands.Cog):
             key=lambda m: m.display_name.lower(),
         )
         if not pending:
-            await inter.response.send_message(
+            await reply(inter, 
                 "Every member with the DJ role is registered.", ephemeral=True
             )
             return
         shown = ", ".join(m.display_name for m in pending[:50])
         more = f" … and {len(pending) - 50} more" if len(pending) > 50 else ""
-        await inter.response.send_message(
+        await reply(inter, 
             f"{len(pending)} member(s) with the DJ role are not registered: {shown}{more}",
             ephemeral=True,
         )
@@ -984,6 +990,7 @@ class AdminCog(commands.Cog):
         name="set-active",
         description="Set a DJ's active booking pool status",
     )
+    @auto_ack(ephemeral=True)
     async def admin_dj_set_active(
         self,
         inter: disnake.ApplicationCommandInteraction,
@@ -1003,7 +1010,7 @@ class AdminCog(commands.Cog):
         if await self._refuse_if_passive(inter):
             return
         if self.ctx.admin_booking_service is None:
-            await inter.response.send_message(
+            await reply(inter, 
                 "Bot is not ready — please try again.", ephemeral=True
             )
             return
@@ -1015,12 +1022,12 @@ class AdminCog(commands.Cog):
         )
         if success:
             if active:
-                reply = f"{dj.mention} is now active in the booking pool."
+                text = f"{dj.mention} is now active in the booking pool."
             else:
-                reply = f"{dj.mention} has been removed from the booking pool."
-            await inter.response.send_message(reply, ephemeral=True)
+                text = f"{dj.mention} has been removed from the booking pool."
+            await reply(inter, text, ephemeral=True)
         else:
-            await inter.response.send_message(msg, ephemeral=True)
+            await reply(inter, msg, ephemeral=True)
 
     # ---------------------------------------------------------------------------
     # Story 6.5: /status — next event overview (FR38)
@@ -1029,6 +1036,7 @@ class AdminCog(commands.Cog):
     @commands.slash_command(
         **ADMIN_COMMAND, name="ravebot-status", description="Show the next upcoming event status"
     )
+    @auto_ack(ephemeral=True)
     async def status_cmd(
         self,
         inter: disnake.ApplicationCommandInteraction,
@@ -1041,7 +1049,7 @@ class AdminCog(commands.Cog):
         [Source: epics.md#Story 6.5 AC1, AC2, AC5 — FR38]
         """
         if self.ctx.notion_client is None or self.ctx.db is None:
-            await inter.response.send_message(
+            await reply(inter, 
                 "Bot is not ready — please try again.", ephemeral=True
             )
             return
@@ -1050,13 +1058,13 @@ class AdminCog(commands.Cog):
             events = await self.ctx.notion_client.poll_events()
         except Exception:
             logger.exception("status_cmd: poll_events() failed")
-            await inter.response.send_message(
+            await reply(inter, 
                 "Could not fetch events from Notion — please try again.", ephemeral=True
             )
             return
 
         if not events:
-            await inter.response.send_message(
+            await reply(inter, 
                 "No upcoming events found in Notion.", ephemeral=True
             )
             return
@@ -1107,7 +1115,7 @@ class AdminCog(commands.Cog):
                 inline=True,
             )
 
-        await inter.response.send_message(embed=embed, ephemeral=True)
+        await reply(inter, embed=embed, ephemeral=True)
 
     # ---------------------------------------------------------------------------
     # Story 6.5: /list-djs — DJ pool overview (FR39)
@@ -1117,6 +1125,7 @@ class AdminCog(commands.Cog):
         **ADMIN_COMMAND,
         name="list-djs", description="List all registered DJs and their booking status"
     )
+    @auto_ack(ephemeral=True)
     async def list_djs(
         self,
         inter: disnake.ApplicationCommandInteraction,
@@ -1129,7 +1138,7 @@ class AdminCog(commands.Cog):
         [Source: epics.md#Story 6.5 AC3, AC4, AC5 — FR39]
         """
         if self.ctx.db is None:
-            await inter.response.send_message(
+            await reply(inter, 
                 "Bot is not ready — please try again.", ephemeral=True
             )
             return
@@ -1137,7 +1146,7 @@ class AdminCog(commands.Cog):
         djs = await get_all_djs(self.ctx.db)
 
         if not djs:
-            await inter.response.send_message("No DJs registered yet.", ephemeral=True)
+            await reply(inter, "No DJs registered yet.", ephemeral=True)
             return
 
         lines = [
@@ -1151,7 +1160,7 @@ class AdminCog(commands.Cog):
             color=EmbedColors.NEBULA_WHITE,
         )
         embed.set_footer(text=f"{len(djs)} DJ(s) registered")
-        await inter.response.send_message(embed=embed, ephemeral=True)
+        await reply(inter, embed=embed, ephemeral=True)
 
     # ---------------------------------------------------------------------------
     # Story 7.1: /add-event — manually create a Notion event (FR40)
@@ -1161,6 +1170,7 @@ class AdminCog(commands.Cog):
         **ADMIN_COMMAND,
         name="add-event", description="Manually create a new event in Notion"
     )
+    @auto_ack(ephemeral=True)
     async def add_event(
         self,
         inter: disnake.ApplicationCommandInteraction,
@@ -1180,7 +1190,7 @@ class AdminCog(commands.Cog):
         if await self._refuse_if_passive(inter):
             return
         if self.ctx.notion_client is None:
-            await inter.response.send_message(
+            await reply(inter, 
                 "Bot is not ready — please try again.", ephemeral=True
             )
             return
@@ -1188,14 +1198,14 @@ class AdminCog(commands.Cog):
         try:
             event_date = date.fromisoformat(date_str)
         except ValueError:
-            await inter.response.send_message(
+            await reply(inter, 
                 "Invalid date — please provide a future date in YYYY-MM-DD format.",
                 ephemeral=True,
             )
             return
 
         if event_date <= date.today():
-            await inter.response.send_message(
+            await reply(inter, 
                 "Invalid date — please provide a future date in YYYY-MM-DD format.",
                 ephemeral=True,
             )
@@ -1206,7 +1216,7 @@ class AdminCog(commands.Cog):
             await self.ctx.notion_client.create_event(event_name, event_date)
         except NotionWriteError:
             logger.exception("add_event: create_event() failed for %s", event_date)
-            await inter.response.send_message(
+            await reply(inter, 
                 "Failed to create event in Notion — please try again.", ephemeral=True
             )
             return
@@ -1214,6 +1224,6 @@ class AdminCog(commands.Cog):
         event_unix = schedule.slot_unix(
             {"properties": {"Date": {"date": {"start": event_date.isoformat()}}}}, 0
         )
-        await inter.response.send_message(
+        await reply(inter, 
             f"Event created in Notion for <t:{event_unix}:f>.", ephemeral=True
         )
