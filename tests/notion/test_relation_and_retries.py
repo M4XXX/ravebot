@@ -26,6 +26,10 @@ class FakeNotion:
         self.fail_post_with: Exception | None = None
         self.status_for_patch: int | None = None
         self.retry_after: str | None = None
+        self.failing_patches = 0                   # the next n PATCHes answer with 429
+        self.human_link_during_wait: str | None = None
+        self.applied_patches_answer: int | None = None  # PATCH applied, answered with this
+        self.post_status: int | None = None        # POST applied, answered with this
 
     async def handler(self, request: httpx.Request) -> httpx.Response:
         self.requests.append((request.method, request.url.path))
@@ -47,11 +51,18 @@ class FakeNotion:
                 "relation": [{"id": pid} for pid in self.relation[: self.page_size]],
             }}})
         if request.method == "PATCH":
+            if self.failing_patches:
+                self.failing_patches -= 1
+                if self.human_link_during_wait:
+                    self.relation.append(self.human_link_during_wait)  # organizer edits by hand
+                return httpx.Response(429, headers={"Retry-After": "1"}, json={})
             if self.status_for_patch:
                 headers = {"Retry-After": self.retry_after} if self.retry_after else {}
                 return httpx.Response(self.status_for_patch, headers=headers, json={})
             body = json.loads(request.content)
             self.relation = [r["id"] for r in body["properties"]["DJs"]["relation"]]
+            if self.applied_patches_answer:
+                return httpx.Response(self.applied_patches_answer, json={})
             return httpx.Response(200, json={"id": "evt"})
         if request.method == "POST" and path.endswith("/query"):
             return httpx.Response(200, json={"results": self.pages[:1]})
@@ -59,6 +70,8 @@ class FakeNotion:
             self.pages.append({"id": f"page-{len(self.pages) + 1}"})
             if self.fail_post_with is not None:
                 raise self.fail_post_with  # created on Notion's side, response lost
+            if self.post_status is not None:
+                return httpx.Response(self.post_status, json={})  # created, but a 502/504
             return httpx.Response(200, json=self.pages[-1])
         return httpx.Response(404, json={})
 
@@ -145,3 +158,49 @@ async def test_rate_limit_waits_for_retry_after() -> None:
         await client.write_booking("evt", 0, "page-A", [], "Rave", 0)
     assert [r[0] for r in fake.requests].count("PATCH") == 3
     assert all(call.args[0] >= 7 for call in sleep.await_args_list)
+
+
+@pytest.mark.asyncio
+async def test_retry_rereads_the_relation_so_a_hand_edit_during_the_wait_survives() -> None:
+    fake = FakeNotion(relation=["page-admin"])
+    fake.failing_patches = 1
+    fake.human_link_during_wait = "page-HUMAN"
+    client = make_client(fake)
+    with patch("bot.notion.client.asyncio.sleep", new=AsyncMock()):
+        await client.write_booking("evt", 0, "page-A", [], "Rave", 0)
+    assert fake.relation == ["page-admin", "page-HUMAN", "page-A"]
+
+
+@pytest.mark.asyncio
+async def test_long_retry_after_is_capped() -> None:
+    fake = FakeNotion(relation=[])
+    fake.status_for_patch = 429
+    fake.retry_after = "600"
+    client = make_client(fake)
+    sleep = AsyncMock()
+    with patch("bot.notion.client.asyncio.sleep", new=sleep), pytest.raises(NotionWriteError):
+        await client.write_booking("evt", 0, "page-A", [], "Rave", 0)
+    assert sleep.await_args_list and all(c.args[0] <= 10 for c in sleep.await_args_list)
+
+
+@pytest.mark.asyncio
+async def test_applied_patch_answered_with_5xx_is_not_sent_again() -> None:
+    fake = FakeNotion(relation=[])
+    fake.applied_patches_answer = 502
+    client = make_client(fake)
+    with patch("bot.notion.client.asyncio.sleep", new=AsyncMock()):
+        await client.write_booking("evt", 0, "page-A", [], "Rave", 0)
+    assert fake.relation == ["page-A"]
+    assert [r[0] for r in fake.requests].count("PATCH") == 1
+    client._log.post_error.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_5xx_after_create_does_not_create_twice() -> None:
+    fake = FakeNotion(relation=[])
+    fake.post_status = 504
+    client = make_client(fake)
+    with patch("bot.notion.client.asyncio.sleep", new=AsyncMock()):
+        page_id = await client.create_event("Rave Night 24 Oct 2026", datetime.date(2026, 10, 24))
+    assert page_id == "page-1"
+    assert len(fake.pages) == 1

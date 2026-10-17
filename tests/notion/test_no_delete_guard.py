@@ -76,3 +76,26 @@ async def test_write_with_retry_does_not_retry_blocked_delete() -> None:
     with pytest.raises(NotionDeletionBlockedError):
         await client._write_with_retry("PATCH", "/pages/page-1", {"in_trash": True}, "test")
     assert sent == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path,body", [
+    ("/databases/db-1", {"properties": {"DJs": None}}),          # drops a whole column
+    ("/databases/db-1", {"title": []}),                          # blanks the database name
+    ("/pages/page-1", {"properties": {"Name": {"title": []}}}),  # blanks an event name
+])
+async def test_wiping_a_column_or_a_title_is_blocked(path: str, body: dict) -> None:
+    sent: list[httpx.Request] = []
+    async with make_guarded_client(sent) as client:
+        with pytest.raises(NotionDeletionBlockedError):
+            await client.request("PATCH", path, json=body)
+    assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_unlinking_the_last_dj_is_allowed() -> None:
+    """An empty relation is how the last DJ of an event is unlinked."""
+    sent: list[httpx.Request] = []
+    async with make_guarded_client(sent) as client:
+        await client.request("PATCH", "/pages/evt", json={"properties": {"DJs": {"relation": []}}})
+    assert len(sent) == 1
