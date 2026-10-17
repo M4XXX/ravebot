@@ -10,6 +10,7 @@ Full read_slots(), write_booking(), delete_booking() are Story 3.x scope.
 """
 import asyncio
 import datetime
+import json
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -28,9 +29,57 @@ NOTION_BASE_URL = "https://api.notion.com/v1"
 # Retry delays in seconds: attempt 1 → wait 1s, attempt 2 → wait 2s, attempt 3 → fail
 _RETRY_DELAYS = (1.0, 2.0)
 
+# Body keys Notion reads to move a page, block or database to the trash.
+_TRASH_KEYS = ("archived", "in_trash", "is_archived")
+
 
 class NotionWriteError(Exception):
     """Raised when a Notion write fails after all retry attempts."""
+
+
+class NotionDeletionBlockedError(Exception):
+    """Raised when a request would delete or trash Notion content.
+
+    The bot never deletes anything in Notion — removing content is left to a human.
+    """
+
+
+def _sets_trash_flag(value: Any) -> bool:
+    """True if any nested dict sets one of the trash keys to True."""
+    if isinstance(value, dict):
+        return any(
+            (key in _TRASH_KEYS and item is True) or _sets_trash_flag(item)
+            for key, item in value.items()
+        )
+    if isinstance(value, list):
+        return any(_sets_trash_flag(item) for item in value)
+    return False
+
+
+async def _refuse_deletion(request: httpx.Request) -> None:
+    """httpx request hook: block DELETE and archive/trash writes before they are sent.
+
+    Registered on the client itself, so it also covers code paths added later.
+    """
+    if request.method == "DELETE":
+        logger.error("Blocked Notion DELETE %s — deletion is human-only", request.url.path)
+        raise NotionDeletionBlockedError(f"DELETE {request.url.path} blocked")
+    body = await request.aread()
+    if not body:
+        return
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        return
+    if _sets_trash_flag(payload):
+        logger.error(
+            "Blocked Notion %s %s that would trash content — deletion is human-only",
+            request.method,
+            request.url.path,
+        )
+        raise NotionDeletionBlockedError(
+            f"{request.method} {request.url.path} would trash content"
+        )
 
 
 class NotionClient:
@@ -58,6 +107,7 @@ class NotionClient:
                 "Content-Type": "application/json",
             },
             timeout=10.0,
+            event_hooks={"request": [_refuse_deletion]},
         )
 
     async def close(self) -> None:
