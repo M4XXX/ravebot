@@ -19,6 +19,7 @@ Future stories extend the sequence:
 """
 import asyncio
 import logging
+import signal
 
 import disnake
 from disnake.ext import commands
@@ -55,6 +56,21 @@ def create_bot() -> commands.Bot:
         intents=intents,
         allowed_mentions=disnake.AllowedMentions.none(),
     )
+
+
+TRANSCRIPT_FLUSH_SECONDS = 5.0
+
+
+async def graceful_shutdown(bot: commands.Bot, ctx: BotContext) -> None:
+    """Post the queued DM transcripts while Discord is still reachable, then disconnect."""
+    if ctx.log_service is not None:
+        try:
+            await asyncio.wait_for(
+                ctx.log_service.flush_transcripts(), timeout=TRANSCRIPT_FLUSH_SECONDS
+            )
+        except Exception:
+            logger.warning("Shutting down with DM transcripts still queued", exc_info=True)
+    await bot.close()
 
 
 async def main() -> None:
@@ -162,6 +178,23 @@ async def main() -> None:
                     required_properties=["Name", "Date", "Slots", "DJs", "Discord ID"],
                 )
             )
+
+    # In the container the bot is PID 1, which ignores SIGTERM unless it has a handler:
+    # docker stop then killed it after 10 s, skipping the cleanup below.
+    loop = asyncio.get_running_loop()
+    shutdown_tasks: set[asyncio.Task[None]] = set()
+
+    def _on_signal(sig: signal.Signals) -> None:
+        logger.info("%s received — shutting down", sig.name)
+        task = loop.create_task(graceful_shutdown(bot, ctx))
+        shutdown_tasks.add(task)
+        task.add_done_callback(shutdown_tasks.discard)
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(sig, _on_signal, sig)
+        except NotImplementedError:  # Windows event loops have no signal handlers
+            pass
 
     try:
         await bot.start(config.discord_bot_token)
