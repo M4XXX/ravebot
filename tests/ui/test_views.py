@@ -873,6 +873,36 @@ async def test_booking_confirm_notion_failure_releases_lock() -> None:
     assert not lock.locked()
 
 
+@pytest.mark.parametrize("failure", ["page_lookup", "unexpected_write_error"])
+@pytest.mark.asyncio
+async def test_booking_confirm_gives_the_slot_back_on_any_failure_after_the_claim(failure) -> None:
+    """Once slot_locks says 'ours', no failure may leave the slot booked behind the DJ's back."""
+    ctx = make_real_ctx(db=MagicMock())
+    lock = ctx.get_user_lock(20005)
+    await lock.acquire()
+    ctx.notion_client = MagicMock()
+    ctx.notion_client.write_booking = AsyncMock(
+        side_effect=RuntimeError("unexpected") if failure == "unexpected_write_error" else None
+    )
+    page_lookup = AsyncMock(
+        side_effect=ConnectionError("db hiccup") if failure == "page_lookup" else None,
+        return_value="page",
+    )
+    view = _make_booking_confirm_view(ctx, lock, user_id=20005)
+    inter = MagicMock(spec=disnake.MessageInteraction)
+    inter.response.send_message = AsyncMock()
+
+    with patch("bot.db.bookings.acquire_slot_lock", new=AsyncMock(return_value=True)), \
+         patch("bot.db.bookings.release_slot_lock", new=AsyncMock()) as mock_release, \
+         patch("bot.db.djs.get_notion_dj_page_id", new=page_lookup):
+        await view._handle_confirm(inter)
+
+    mock_release.assert_awaited_once()
+    assert mock_release.call_args.args[3] == 20005  # only the DJ's own claim is undone
+    assert "something went wrong" in inter.response.send_message.call_args[0][0].lower()
+    assert not lock.locked()
+
+
 @pytest.mark.asyncio
 async def test_booking_confirm_success_sends_confirmed_embed() -> None:
     """Full success path → BookingConfirmedEmbed sent, per-user lock released. (AC3)"""

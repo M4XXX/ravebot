@@ -69,3 +69,23 @@ async def test_menu_of_an_older_flow_is_inert_and_cannot_free_the_new_lock() -> 
     inter.response.send_message.assert_awaited_once_with(STALE_MENU_TEXT, ephemeral=True)
     view._release_lock()
     assert lock.locked() is True
+
+
+@pytest.mark.asyncio
+async def test_used_menu_stays_registered_so_a_second_tap_is_answered() -> None:
+    """disnake drops finished views before dispatch; the DJ would see 'interaction failed'."""
+    view, _ = await _slot_view(111)
+    assert await view.interaction_check(_click(111)) is True
+    assert view.is_finished() is False
+
+
+@pytest.mark.asyncio
+async def test_outreach_invitation_survives_a_tap_while_another_flow_is_open() -> None:
+    """'Finish that one first' must leave [Accept] and [Not this time] working."""
+    from bot.ui.views import OutreachView
+
+    ctx = MagicMock()
+    view = OutreachView(ctx, EVENT, 111)
+    assert await view.interaction_check(_click(111)) is True
+    assert await view.interaction_check(_click(111)) is True  # not spent by the first tap
+    assert view.is_finished() is False

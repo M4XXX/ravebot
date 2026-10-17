@@ -63,6 +63,14 @@ class FlowLock(asyncio.Lock):
         if super().locked():
             self.release()
 
+    def release_if_generation(self, generation: int | None) -> None:
+        """Release only while the flow that took the lock as `generation` still holds it.
+
+        A form or menu of an older flow must not free the lock of the DJ's current flow.
+        """
+        if generation is not None and self.generation == generation and super().locked():
+            self.release()
+
 
 @dataclass
 class BotContext:

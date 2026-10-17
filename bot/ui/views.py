@@ -11,6 +11,7 @@ RULE: Every View subclass MUST:
   3. Acquire user's asyncio.Lock on entry; release on completion, abandonment, and in on_timeout()
 """
 import asyncio
+import contextvars
 import functools
 import logging
 import uuid
@@ -58,23 +59,39 @@ STALE_MENU_TEXT = "This menu is out of date — send me any message to start ove
 NOT_YOUR_MENU_TEXT = "This menu belongs to someone else."
 
 
+# The DJ's flow-lock generation when the current click arrived (or None if no flow was
+# open). disnake handles each click in its own task, so on_error sees its own click's value.
+_UNSET = object()
+_flow_at_click: contextvars.ContextVar[object] = contextvars.ContextVar(
+    "flow_at_click", default=_UNSET
+)
+
+
 class ActiveOnlyView(disnake.ui.View):
     """Base for every DJ-facing view.
 
     - Buttons do nothing while the bot is passive (bot.active).
-    - Non-persistent views (declared without persistent=True) are single-use and get
-      per-instance custom_ids. disnake stores views sent as interaction responses under
+    - Non-persistent views (declared without persistent=True) get per-instance
+      custom_ids. disnake stores views sent as interaction responses under
       (type, None, custom_id); with static IDs the newest view of another DJ answered
       this DJ's click, acting on the other DJ's slot.
+    - They are also single-use unless declared single_use=False (a view that decides
+      itself when it is spent, like the outreach invitation). A used menu stays
+      registered for USED_MENU_GRACE_SECONDS so a second tap gets STALE_MENU_TEXT
+      instead of Discord's "This interaction failed", then leaves the view store.
     - A view only reacts to the DJ it was made for, and only while the DJ's flow lock is
       still in the generation the view was created in.
     """
 
     persistent = False
+    single_use = True
 
-    def __init_subclass__(cls, persistent: bool = False, **kwargs: object) -> None:
+    def __init_subclass__(
+        cls, persistent: bool = False, single_use: bool | None = None, **kwargs: object
+    ) -> None:
         super().__init_subclass__(**kwargs)
         cls.persistent = persistent
+        cls.single_use = (not persistent) if single_use is None else single_use
         original = cls.__init__
 
         @functools.wraps(original)
@@ -112,6 +129,11 @@ class ActiveOnlyView(disnake.ui.View):
         return None
 
     async def interaction_check(self, interaction: disnake.MessageInteraction) -> bool:
+        ctx = getattr(self, "ctx", None) or getattr(self, "_ctx", None)
+        user_lock = getattr(ctx, "user_locks", {}).get(interaction.author.id)
+        _flow_at_click.set(
+            user_lock.generation if user_lock is not None and user_lock.locked() else None
+        )
         owner = self._owner_id()
         if owner is not None and interaction.author.id != owner:
             await interaction.response.send_message(NOT_YOUR_MENU_TEXT, ephemeral=True)
@@ -119,29 +141,38 @@ class ActiveOnlyView(disnake.ui.View):
         lock = getattr(self, "_lock", None)
         generation = getattr(self, "_lock_generation", None)
         if not self.persistent and (
-            getattr(self, "_used", False)
+            (self.single_use and getattr(self, "_used", False))
             or (lock is not None and generation is not None and lock.generation != generation)
         ):
             await interaction.response.send_message(STALE_MENU_TEXT, ephemeral=True)
             return False
-        ctx = getattr(self, "ctx", None) or getattr(self, "_ctx", None)
         if not await active.is_active(getattr(ctx, "db", None), served.resolve(interaction.client)):
             await interaction.response.send_message(active.DJ_NOTICE, ephemeral=True)
             return False
-        if not self.persistent:
-            self._used = True  # single-use: the handler below runs once, later clicks are refused
-            self.stop()
+        if self.single_use:
+            self._used = True  # the handler below runs once, later clicks are refused
+            asyncio.get_running_loop().call_later(USED_MENU_GRACE_SECONDS, self.stop)
         return True
 
     async def on_error(
         self, error: Exception, item: disnake.ui.Item, interaction: disnake.MessageInteraction
     ) -> None:
-        """Free the DJ's flow lock when a button handler fails, so the bot doesn't go silent."""
+        """Free the failed flow's lock, so the bot doesn't go silent — and only that flow's.
+
+        A menu bound to a flow releases by its generation. Other menus (persistent ones,
+        the outreach invitation) release only a lock this very click took; a flow that
+        was already open when the click arrived keeps its lock.
+        """
         logger.exception("View %s failed: %s", type(self).__name__, error, exc_info=error)
-        ctx = getattr(self, "ctx", None) or getattr(self, "_ctx", None)
-        lock = getattr(ctx, "user_locks", {}).get(interaction.author.id)
-        if lock is not None:
-            lock.release_if_held()
+        if getattr(self, "_lock", None) is not None and self._lock_generation is not None:
+            self._release_lock()
+        else:
+            ctx = getattr(self, "ctx", None) or getattr(self, "_ctx", None)
+            lock = getattr(ctx, "user_locks", {}).get(interaction.author.id)
+            at_click = _flow_at_click.get()
+            if lock is not None and at_click is not _UNSET and lock.locked():
+                if lock.generation != at_click:
+                    lock.release()
         try:
             if interaction.response.is_done():
                 await interaction.followup.send(FLOW_FAILED_TEXT, ephemeral=True)
@@ -150,6 +181,9 @@ class ActiveOnlyView(disnake.ui.View):
         except disnake.HTTPException:
             pass
 
+
+# How long a used single-use menu still answers taps with STALE_MENU_TEXT.
+USED_MENU_GRACE_SECONDS = 15 * 60
 
 FLOW_FAILED_TEXT = "Something went wrong on my side — send me any message to start over."
 
@@ -284,6 +318,8 @@ class OnboardingModal(disnake.ui.Modal):
         self._ctx = ctx
         self._user_id = user_id
         self._lock = lock
+        # The form may outlive its flow (closed, Start over, new flow): release by generation.
+        self._lock_generation = lock.generation
         self._guild_id = guild_id
         super().__init__(
             title="Set Up Your Profile",
@@ -335,12 +371,12 @@ class OnboardingModal(disnake.ui.Modal):
 
     async def on_timeout(self) -> None:
         """The DJ closed the form or walked away: free the flow lock it was holding."""
-        self._lock.release_if_held()
+        self._lock.release_if_generation(self._lock_generation)
 
     async def on_error(self, error: Exception, inter: disnake.ModalInteraction) -> None:
         """A failed submission must not leave the DJ locked out."""
         logger.exception("OnboardingModal failed for user %s", self._user_id, exc_info=error)
-        self._lock.release_if_held()
+        self._lock.release_if_generation(self._lock_generation)
         try:
             await reply(inter, FLOW_FAILED_TEXT)
         except Exception:  # InteractionResponded is a ClientException, not an HTTPException
@@ -359,7 +395,7 @@ class OnboardingModal(disnake.ui.Modal):
         # The form may have been opened before an organizer switched the bot to passive:
         # then it must not assign roles or create a Notion page.
         if not await active.is_active(self._ctx.db, served.resolve(inter.client)):
-            self._lock.release_if_held()
+            self._lock.release_if_generation(self._lock_generation)
             await reply(inter, active.DJ_NOTICE, ephemeral=True)
             return
 
@@ -380,7 +416,7 @@ class OnboardingModal(disnake.ui.Modal):
             invalid_fields.append("Backup Stream URL")
 
         if invalid_fields:
-            self._lock.release()
+            self._lock.release_if_generation(self._lock_generation)
             field_list = " and ".join(invalid_fields)
             plural = "don't" if len(invalid_fields) > 1 else "doesn't"
             await reply(inter, 
@@ -394,7 +430,7 @@ class OnboardingModal(disnake.ui.Modal):
         # Guard: DB pool should always be available at this point,
         # but guard defensively in case of startup race condition.
         if self._ctx.db is None:
-            self._lock.release()
+            self._lock.release_if_generation(self._lock_generation)
             if self._ctx.log_service is not None:
                 await self._ctx.log_service.post_error(
                     error_code=ErrorCode.ERR_DB_UNAVAILABLE,
@@ -416,7 +452,7 @@ class OnboardingModal(disnake.ui.Modal):
             stream_url_primary=stream_url_primary,
             stream_url_backup=stream_url_backup,
         )
-        self._lock.release()
+        self._lock.release_if_generation(self._lock_generation)
 
         # Story 2.3: assign Active Booking role
         guild = inter.client.get_guild(self._guild_id)
@@ -1297,6 +1333,20 @@ class BookingConfirmView(ActiveOnlyView):
             )
         await self._handle_cancel(inter)
 
+    async def _undo_slot_claim(self, inter: disnake.MessageInteraction, event_id: str) -> None:
+        """Give the slot back after a failed booking and tell the DJ."""
+        from bot.db.bookings import release_slot_lock
+
+        try:
+            await release_slot_lock(self._ctx.db, event_id, self._slot_index, self._user_id)
+        except Exception:
+            logger.exception("BookingConfirmView: could not give the slot back")
+        self._release_lock()
+        await reply(inter,
+            "Something went wrong saving your booking — please try again in a moment.",
+            ephemeral=True,
+        )
+
     async def _handle_cancel(self, inter: disnake.MessageInteraction) -> None:
         """[✖ Cancel] — release per-user lock and respond warmly. (AC4)"""
         self._release_lock()
@@ -1422,8 +1472,15 @@ class BookingConfirmView(ActiveOnlyView):
             )
             return
 
-        # Get DJ's Notion page ID (may be None for DJs onboarded before Story 4.2)
-        dj_notion_page_id = await get_notion_dj_page_id(self._ctx.db, self._user_id)
+        # From here on the slot is ours in slot_locks: every failure must give it back,
+        # or it stays booked without the DJ knowing.
+        try:
+            # Get DJ's Notion page ID (may be None for DJs onboarded before Story 4.2)
+            dj_notion_page_id = await get_notion_dj_page_id(self._ctx.db, self._user_id)
+        except Exception:
+            logger.exception("BookingConfirmView: reading the DJ's Notion page failed")
+            await self._undo_slot_claim(inter, event_id)
+            return
 
         # Extract current DJs relation IDs from the event (so we don't overwrite them)
         try:
@@ -1449,14 +1506,10 @@ class BookingConfirmView(ActiveOnlyView):
                 event_name=event_name,
                 slot_unix=self._slot_unix,
             )
-        except NotionWriteError:
-            # Undo the DB slot lock so the slot is available again
-            await release_slot_lock(self._ctx.db, event_id, self._slot_index, self._user_id)
-            self._release_lock()
-            await reply(inter, 
-                "Something went wrong saving your booking — please try again in a moment.",
-                ephemeral=True,
-            )
+        except Exception as exc:
+            if not isinstance(exc, NotionWriteError):
+                logger.exception("BookingConfirmView: unexpected error writing the booking")
+            await self._undo_slot_claim(inter, event_id)
             return
 
         # Send booking confirmed embed (AC3)
@@ -1802,7 +1855,7 @@ class CancelConfirmView(ActiveOnlyView):
 # ---------------------------------------------------------------------------
 
 
-class OutreachView(ActiveOnlyView):
+class OutreachView(ActiveOnlyView, single_use=False):
     """Proactive outreach — two buttons sent with a slot-fill invitation DM.
 
     Timeout: 43200 seconds (12 hours) — per UX-DR2, UX-DR16.

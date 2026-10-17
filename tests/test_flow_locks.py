@@ -58,14 +58,45 @@ async def test_failed_button_frees_the_users_lock() -> None:
 
     ctx = BotContext(config=MagicMock())
     lock = ctx.get_user_lock(7)
-    await lock.acquire()
     inter = MagicMock()
     inter.author.id = 7
     inter.response.is_done = MagicMock(return_value=False)
     inter.response.send_message = AsyncMock()
-    await FallbackMenuView(ctx).on_error(RuntimeError("boom"), MagicMock(), inter)
+    view = FallbackMenuView(ctx)
+    assert await view.interaction_check(inter) is True  # no flow open when the click arrives
+    await lock.acquire()  # the handler starts a flow, then fails
+    await view.on_error(RuntimeError("boom"), MagicMock(), inter)
     assert lock.locked() is False
     inter.response.send_message.assert_awaited_once_with(FLOW_FAILED_TEXT, ephemeral=True)
+
+
+@pytest.mark.asyncio
+async def test_failed_button_keeps_the_lock_of_a_flow_that_was_already_open() -> None:
+    from bot.context import BotContext
+    from bot.ui.views import FallbackMenuView
+
+    ctx = BotContext(config=MagicMock())
+    lock = ctx.get_user_lock(7)
+    await lock.acquire()  # e.g. a booking flow in progress
+    inter = MagicMock()
+    inter.author.id = 7
+    inter.response.is_done = MagicMock(return_value=False)
+    inter.response.send_message = AsyncMock()
+    view = FallbackMenuView(ctx)
+    await view.interaction_check(inter)
+    await view.on_error(RuntimeError("db hiccup"), MagicMock(), inter)
+    assert lock.locked() is True
+
+
+@pytest.mark.asyncio
+async def test_closed_form_cannot_free_the_lock_of_a_later_flow() -> None:
+    lock = FlowLock()
+    await lock.acquire()
+    modal = _modal(lock)
+    lock.release()  # the DJ closed the form and pressed Start over
+    await lock.acquire()  # ...and started booking
+    await modal.on_timeout()
+    assert lock.locked() is True
 
 
 @pytest.mark.asyncio
