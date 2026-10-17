@@ -253,33 +253,40 @@ class OutreachService:
             logger.warning("OutreachService.contact_next_dj: DB error: %s", exc)
             return False
 
-        eligible = [dj for dj in all_active if dj["discord_user_id"] not in already_contacted]
-        if not eligible:
+        await slots.annotate(self.db, guild_id, [event])
+        already_booked = set(slots.state(event).booked.values())
+        eligible = [
+            dj for dj in all_active
+            if dj["discord_user_id"] not in already_contacted
+            and dj["discord_user_id"] not in already_booked
+        ]
+
+        # Story 6.2 AC6: DJs under admin intervention are skipped — move on to the next one
+        dj = None
+        for candidate in eligible:
+            try:
+                if await is_under_intervention(self.db, candidate["discord_user_id"]):
+                    logger.info(
+                        "OutreachService.contact_next_dj: skipping DJ %s — under intervention",
+                        candidate["discord_user_id"],
+                    )
+                    continue
+            except Exception as exc:
+                logger.warning(
+                    "OutreachService.contact_next_dj: intervention check failed for %s: %s",
+                    candidate["discord_user_id"],
+                    exc,
+                )
+            dj = candidate
+            break
+        if dj is None:
             logger.info(
-                "OutreachService.contact_next_dj: no eligible DJs for event %s — all contacted",
-                event_id,
+                "OutreachService.contact_next_dj: no eligible DJs for event %s", event_id
             )
             return False
 
-        dj = eligible[0]
         discord_user_id = dj["discord_user_id"]
         dj_name = dj.get("dj_name", str(discord_user_id))
-
-        # Story 6.2 AC6: skip DJs under admin intervention silently
-        try:
-            if await is_under_intervention(self.db, discord_user_id):
-                logger.info(
-                    "OutreachService.contact_next_dj: skipping DJ %s (%s) — under admin intervention",
-                    dj_name,
-                    discord_user_id,
-                )
-                return True
-        except Exception as exc:
-            logger.warning(
-                "OutreachService.contact_next_dj: intervention check failed for %s: %s",
-                discord_user_id,
-                exc,
-            )
 
         # Record contact attempt BEFORE sending (idempotent if this cycle retries)
         try:

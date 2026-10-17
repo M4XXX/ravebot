@@ -65,7 +65,7 @@ from datetime import date
 import disnake
 from disnake.ext import commands
 
-from bot import active, schedule, slots
+from bot import active, loops, schedule, slots
 from bot.context import BotContext
 from bot.db import config as db_config
 from bot.db.bookings import get_booked_djs_for_event
@@ -683,6 +683,12 @@ class AdminCog(commands.Cog):
                 inline=True,
             )
 
+        health = loops.last_ok()
+        lines = []
+        for name in ("notion_poll", "reminders", "outreach"):
+            when = health.get(name)
+            lines.append(f"{name}: <t:{int(when.timestamp())}:R>" if when else f"{name}: not yet")
+        embed.add_field(name="Background loops (last OK)", value="\n".join(lines), inline=False)
         await inter.response.send_message(embed=embed, ephemeral=True)
 
     # ---------------------------------------------------------------------------

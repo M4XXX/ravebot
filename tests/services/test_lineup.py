@@ -78,8 +78,35 @@ async def test_post_update_posts_when_no_prior_post() -> None:
 
 
 @pytest.mark.asyncio
-async def test_post_update_skips_when_posted_today() -> None:
-    """lineup_last_post_date == today → no send/edit called."""
+async def test_post_update_edits_even_when_posted_today() -> None:
+    """lineup_last_post_date == today → the existing message is still edited (no freeze)."""
+    today = datetime.date.today().isoformat()
+    existing_msg = MagicMock(id=888)
+    existing_msg.edit = AsyncMock()
+    channel = _make_channel()
+    channel.fetch_message = AsyncMock(return_value=existing_msg)
+    bot = _make_bot(channel=channel)
+    service = _make_service(bot=bot)
+
+    with (
+        patch("bot.services.lineup.get_value", new_callable=AsyncMock) as mock_get,
+        patch("bot.services.lineup.set_value", new_callable=AsyncMock),
+    ):
+        mock_get.side_effect = lambda db, guild_id, key: {
+            "dj_channel": "111",
+            "lineup_last_post_date": today,
+            "lineup_post_message_id": "888",
+        }.get(key)
+
+        assert await service.post_update(_make_events()) is True
+
+    existing_msg.edit.assert_awaited_once()
+    channel.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_post_update_new_post_capped_per_day_reports_not_done() -> None:
+    """No editable message and a new post already sent today → nothing sent, returns False."""
     today = datetime.date.today().isoformat()
     channel = _make_channel()
     bot = _make_bot(channel=channel)
@@ -92,13 +119,11 @@ async def test_post_update_skips_when_posted_today() -> None:
         mock_get.side_effect = lambda db, guild_id, key: {
             "dj_channel": "111",
             "lineup_last_post_date": today,
-            "lineup_post_message_id": "888",
         }.get(key)
 
-        await service.post_update(_make_events())
+        assert await service.post_update(_make_events()) is False
 
     channel.send.assert_not_awaited()
-    channel.fetch_message.assert_not_awaited()
     mock_set.assert_not_awaited()
 
 

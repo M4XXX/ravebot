@@ -18,7 +18,7 @@ from datetime import timedelta
 import asyncpg
 from disnake.ext import commands, tasks
 
-from bot import active, schedule
+from bot import active, loops, schedule
 from bot import guild as served
 from bot.context import BotContext
 from bot.db.bookings import init_event_slots
@@ -166,18 +166,21 @@ class EventsCog(commands.Cog):
                     new_date.isoformat(),
                 )
 
-    async def _trigger_lineup_update(self, events: list[dict]) -> None:
+    async def _trigger_lineup_update(self, events: list[dict]) -> bool:
         """Trigger lineup channel post update via LineupService.
 
         [Source: epics.md#Story 3.2]
         """
         if self.ctx.lineup_service is None:
             logger.warning("lineup_service not available — skipping lineup update")
-            return
-        await self.ctx.lineup_service.post_update(events)
+            return False
+        return bool(await self.ctx.lineup_service.post_update(events))
 
     @tasks.loop(minutes=5)
     async def _poll_notion(self) -> None:
+        await loops.guarded("notion_poll", self._poll_notion_once, self.ctx.log_service)
+
+    async def _poll_notion_once(self) -> None:
         """Notion event polling — fetches future events, compares snapshot, triggers lineup update.
 
         On DB unavailability: skips cycle (guard handles logging).
@@ -224,12 +227,16 @@ class EventsCog(commands.Cog):
         if new_snapshot == stored_snapshot:
             return  # AC3: no change, no action
 
-        # AC2: change detected — trigger lineup post then persist new snapshot
-        await self._trigger_lineup_update(events)
-        await set_value(self.ctx.db, guild_id, "lineup_snapshot", new_snapshot)
+        # AC2: change detected — persist the snapshot only once the lineup shows it,
+        # so a failed or capped post is retried on the next cycle
+        if await self._trigger_lineup_update(events):
+            await set_value(self.ctx.db, guild_id, "lineup_snapshot", new_snapshot)
 
     @tasks.loop(hours=1)
     async def _check_reminders(self) -> None:
+        await loops.guarded("reminders", self._check_reminders_once, self.ctx.log_service)
+
+    async def _check_reminders_once(self) -> None:
         """Day-before reminder scheduler loop — full implementation in Story 3.x.
 
         Guard ensures DB is available before any DB-dependent work.

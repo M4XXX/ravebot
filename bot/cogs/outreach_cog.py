@@ -11,7 +11,7 @@ import logging
 import asyncpg
 from disnake.ext import commands, tasks
 
-from bot import active
+from bot import active, loops
 from bot import guild as served
 from bot.context import BotContext
 from bot.ui.embeds import ErrorCode
@@ -74,6 +74,9 @@ class OutreachCog(commands.Cog):
 
     @tasks.loop(minutes=30)
     async def _outreach_check(self) -> None:
+        await loops.guarded("outreach", self._outreach_check_once, self.ctx.log_service)
+
+    async def _outreach_check_once(self) -> None:
         """Outreach gap detection — find events with open slots, manage sequences.
 
         Story 5.1: gap detection + sequence lifecycle (upsert, complete, cooldown).
