@@ -18,7 +18,7 @@ import disnake
 
 from bot import active, schedule
 from bot import guild as served
-from bot.db.djs import insert_dj, set_notion_dj_page_id, update_active_booking
+from bot.db.djs import get_dj_by_discord_id, insert_dj, set_notion_dj_page_id, update_active_booking
 from bot.ui.embeds import ErrorCode
 
 if TYPE_CHECKING:
@@ -32,6 +32,24 @@ def _is_valid_url(value: str) -> bool:
     return bool(value) and value.startswith(("http://", "https://")) and len(value) > 10
 
 
+
+
+NOT_REGISTERED_TEXT = (
+    "You're not set up as a DJ here yet — ask an organizer for the DJ role, "
+    "then finish the onboarding I send you."
+)
+
+
+async def is_registered_dj(ctx: "BotContext", inter: disnake.Interaction) -> bool:
+    """True if the user finished onboarding and still holds the DJ role in the served guild."""
+    if ctx.db is None:
+        return False
+    dj = await get_dj_by_discord_id(ctx.db, inter.author.id)
+    if dj is None or not dj["onboarding_complete"]:
+        return False
+    guild = served.served_guild(inter.client)
+    member = guild.get_member(inter.author.id) if guild is not None else None
+    return member is not None and any(r.name.lower() == "dj" for r in member.roles)
 
 class ActiveOnlyView(disnake.ui.View):
     """Base for every DJ-facing view: buttons do nothing while the bot is passive (bot.active)."""
@@ -434,6 +452,9 @@ class FallbackMenuView(ActiveOnlyView):
                 direction="DJ",
                 content=f"[Button: {button.label}]",
             )
+        if not await is_registered_dj(self.ctx, inter):
+            await inter.response.send_message(NOT_REGISTERED_TEXT, ephemeral=True)
+            return
         lock = self.ctx.get_user_lock(inter.author.id)
         if lock.locked():
             await inter.response.send_message(

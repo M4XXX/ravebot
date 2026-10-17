@@ -7,6 +7,13 @@ import pytest
 from tests.conftest import make_real_ctx
 
 
+@pytest.fixture
+def registered_dj():
+    """The user finished onboarding and holds the DJ role — booking is allowed."""
+    with patch("bot.ui.views.is_registered_dj", new=AsyncMock(return_value=True)):
+        yield
+
+
 def make_modal_inter(
     dj_name: str = "TestDJ",
     vrchat_name: str = "",
@@ -503,7 +510,7 @@ def _make_event(
 
 
 @pytest.mark.asyncio
-async def test_book_slot_lock_already_held_returns_message() -> None:
+async def test_book_slot_lock_already_held_returns_message(registered_dj) -> None:
     """Lock already acquired → 'active booking session' message, no re-acquire. (AC4)"""
     from bot.ui.views import FallbackMenuView
 
@@ -528,7 +535,7 @@ async def test_book_slot_lock_already_held_returns_message() -> None:
 
 
 @pytest.mark.asyncio
-async def test_book_slot_notion_client_none_releases_lock() -> None:
+async def test_book_slot_notion_client_none_releases_lock(registered_dj) -> None:
     """notion_client=None → error message sent, lock acquired then released. (AC6)"""
     from bot.ui.views import FallbackMenuView
 
@@ -547,7 +554,7 @@ async def test_book_slot_notion_client_none_releases_lock() -> None:
 
 
 @pytest.mark.asyncio
-async def test_book_slot_poll_events_raises_releases_lock() -> None:
+async def test_book_slot_poll_events_raises_releases_lock(registered_dj) -> None:
     """poll_events raises → error message sent, lock released. (AC6)"""
     from bot.ui.views import FallbackMenuView
 
@@ -568,7 +575,7 @@ async def test_book_slot_poll_events_raises_releases_lock() -> None:
 
 
 @pytest.mark.asyncio
-async def test_book_slot_all_events_full_releases_lock() -> None:
+async def test_book_slot_all_events_full_releases_lock(registered_dj) -> None:
     """All events fully booked → 'All slots filled' message, lock released. (AC3)"""
     from bot.ui.views import FallbackMenuView
 
@@ -593,7 +600,7 @@ async def test_book_slot_all_events_full_releases_lock() -> None:
 
 
 @pytest.mark.asyncio
-async def test_book_slot_no_events_at_all_releases_lock() -> None:
+async def test_book_slot_no_events_at_all_releases_lock(registered_dj) -> None:
     """poll_events returns [] → 'All slots filled' message, lock released. (AC3)"""
     from bot.ui.views import FallbackMenuView
 
@@ -614,7 +621,7 @@ async def test_book_slot_no_events_at_all_releases_lock() -> None:
 
 
 @pytest.mark.asyncio
-async def test_book_slot_open_slots_shows_event_selection_view() -> None:
+async def test_book_slot_open_slots_shows_event_selection_view(registered_dj) -> None:
     """Events with open slots → message with EventSelectionView sent. (AC1)"""
     from bot.ui.views import EventSelectionView, FallbackMenuView
 

@@ -8,6 +8,16 @@ from bot.ui.embeds import ErrorCode
 from tests.conftest import make_real_ctx
 
 
+@pytest.fixture
+def registered_dj():
+    """The DM author finished onboarding — they get the booking menu."""
+    with patch(
+        "bot.cogs.onboarding.get_dj_by_discord_id",
+        new=AsyncMock(return_value={"onboarding_complete": True}),
+    ):
+        yield
+
+
 def make_role(name: str) -> MagicMock:
     role = MagicMock(spec=disnake.Role)
     role.name = name
@@ -226,7 +236,9 @@ async def test_on_member_update_passes_guild_id_to_intro_view() -> None:
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_on_message_dm_sends_fallback_menu(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_on_message_dm_sends_fallback_menu(
+    registered_dj, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Free-text DM outside active flow sends FallbackMenuView."""
     from bot.cogs.onboarding import OnboardingCog
     from bot.ui.views import FallbackMenuView
@@ -317,7 +329,7 @@ async def test_on_message_skips_during_active_flow(monkeypatch: pytest.MonkeyPat
 
 
 @pytest.mark.asyncio
-async def test_on_message_dm_logs_transcript_for_incoming_and_outgoing(
+async def test_on_message_dm_logs_transcript_for_incoming_and_outgoing(registered_dj, 
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Story 6.1 AC2 + AC1: incoming DM and fallback menu response are both transcribed."""
@@ -436,7 +448,7 @@ async def test_on_message_under_intervention_suppresses_even_when_log_service_no
 
 
 @pytest.mark.asyncio
-async def test_on_message_not_under_intervention_shows_fallback(
+async def test_on_message_not_under_intervention_shows_fallback(registered_dj, 
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """DJ NOT under intervention → normal FallbackMenuView shown."""

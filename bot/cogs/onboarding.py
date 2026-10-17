@@ -23,6 +23,11 @@ from bot.ui.views import FallbackMenuView, OnboardingIntroView
 
 logger = logging.getLogger(__name__)
 
+NOT_A_DJ_TEXT = (
+    "Hi! I handle DJ bookings for this server. "
+    "If you'd like to play, ask an organizer for the DJ role."
+)
+
 
 class OnboardingCog(commands.Cog):
     """Handles DJ role detection, DM onboarding flow, and FallbackMenuView."""
@@ -75,43 +80,52 @@ class OnboardingCog(commands.Cog):
             )
             return
 
-        # Attempt to send onboarding DM
+        await self.send_onboarding_dm(after)
+
+    async def send_onboarding_dm(self, member: disnake.Member) -> str:
+        """Send the intro DM with the Go Active / Pass buttons.
+
+        Returns "sent" or "dms_closed". Callers decide whether the member should get it
+        (new DJ role, /admin onboard, or a DJ without a profile who DMs the bot).
+        """
         try:
             onboarding_text = (
                 "Hey! I'm RaveBot — I handle all DJ bookings here. "
                 "Want me to add you to the booking pool?"
             )
-            await after.send(
+            await member.send(
                 onboarding_text,
-                view=OnboardingIntroView(self.ctx, after.id, after.guild.id),
+                view=OnboardingIntroView(self.ctx, member.id, member.guild.id),
             )
             # Story 6.1 AC1: log outgoing onboarding DM
             if self.ctx.log_service is not None:
                 await self.ctx.log_service.post_dm_transcript(
-                    dj_name=after.name,
+                    dj_name=member.name,
                     direction="BOT",
                     content=onboarding_text,
                 )
-            logger.info("Onboarding DM sent to %s (user_id=%s)", after.name, after.id)
+            logger.info("Onboarding DM sent to %s (user_id=%s)", member.name, member.id)
+            return "sent"
         except disnake.Forbidden:
             logger.warning(
                 "Onboarding DM blocked for %s (user_id=%s) — DMs disabled",
-                after.name,
-                after.id,
+                member.name,
+                member.id,
             )
             if self.ctx.log_service is not None:
                 await self.ctx.log_service.post_error(
                     error_code=ErrorCode.ERR_DM_FAILED,
                     trigger=(
-                        f"Onboarding DM to {after.name} (user_id={after.id}) "
+                        f"Onboarding DM to {member.name} (user_id={member.id}) "
                         "was blocked — user has DMs from server members disabled."
                     ),
                     action_taken="Onboarding DM skipped. DJ was not added to the booking pool.",
                     manual_action=(
-                        f"Ask {after.name} to enable DMs from server members "
+                        f"Ask {member.name} to enable DMs from server members "
                         f"(Discord Settings → Privacy & Safety), then re-assign the DJ role."
                     ),
                 )
+        return "dms_closed"
 
     @commands.Cog.listener()
     async def on_message(self, message: disnake.Message) -> None:
@@ -156,6 +170,21 @@ class OnboardingCog(commands.Cog):
         lock = self.ctx.get_user_lock(message.author.id)
         if lock.locked():
             return
+        # Only registered DJs get the booking menu
+        dj = await get_dj_by_discord_id(self.ctx.db, message.author.id) if self.ctx.db else None
+        if dj is None or not dj["onboarding_complete"]:
+            guild = served.served_guild(self.bot)
+            member = guild.get_member(message.author.id) if guild is not None else None
+            if member is not None and any(r.name.lower() == "dj" for r in member.roles):
+                await self.send_onboarding_dm(member)
+            else:
+                await message.channel.send(NOT_A_DJ_TEXT)
+                if self.ctx.log_service is not None:
+                    await self.ctx.log_service.post_dm_transcript(
+                        dj_name=message.author.name, direction="BOT", content=NOT_A_DJ_TEXT
+                    )
+            return
+
         fallback_text = "I work best with buttons — here's what I can do for you:"
         await message.channel.send(fallback_text, view=FallbackMenuView(self.ctx))
         # Story 6.1 AC1: log outgoing fallback menu DM
