@@ -239,7 +239,7 @@ async def test_onboarding_form_submitted_after_switch_to_passive_changes_nothing
                          "stream_url_primary": "https://twitch.tv/x", "stream_url_backup": ""}
     with patch("bot.active.get_value", new=AsyncMock(return_value=None)), \
          patch("bot.guild.resolve", new=lambda bot: GUILD), \
-         patch("bot.db.djs.insert_dj", new=AsyncMock()) as insert:
+         patch("bot.ui.views.insert_dj", new=AsyncMock()) as insert:  # name bound in views
         await modal.callback(inter)
     insert.assert_not_called()
     assert lock.locked() is False

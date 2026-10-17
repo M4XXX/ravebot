@@ -19,6 +19,9 @@ logger = logging.getLogger(__name__)
 
 CONFIG_KEY = "reconcile_last_report"
 
+# Events already logged as too large to check (logged once per process, not every poll).
+_skipped_large: set[str | None] = set()
+
 
 def _norm(page_id: str) -> str:
     return page_id.replace("-", "").lower()
@@ -46,7 +49,11 @@ async def find_mismatches(pool: Any, events: list[dict]) -> list[dict]:
         if djs.get("has_more"):
             # A database query returns at most 25 related pages; comparing the cut list
             # would report every DJ beyond it as "not linked".
-            logger.debug("Reconcile skips %s: its DJs relation is truncated", _name(event))
+            if event.get("id") not in _skipped_large:
+                _skipped_large.add(event.get("id"))
+                logger.warning(
+                    "Reconcile does not check %s: more than 25 linked DJs", _name(event)
+                )
             continue
         holders_here = booked.get(event.get("id", ""), {}).values()
         in_db = {_norm(pages[uid]) for uid in holders_here if uid in pages}
