@@ -199,6 +199,12 @@ async def main() -> None:
     try:
         await bot.start(config.discord_bot_token)
     finally:
+        # bot.start() returns as soon as the gateway is closed, while graceful_shutdown is
+        # still closing the HTTP session; asyncio.run would cancel it half-way.
+        if shutdown_tasks:
+            await asyncio.gather(*shutdown_tasks, return_exceptions=True)
+        elif not bot.is_closed():
+            await bot.close()
         if ctx.db is not None:
             await ctx.db.close()
             logger.info("asyncpg pool closed.")
