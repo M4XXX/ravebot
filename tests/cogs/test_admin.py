@@ -1257,3 +1257,59 @@ async def test_config_show_includes_slot_config_fields(
     assert embed is not None
     assert embed.color.value == EmbedColors.NEBULA_WHITE
     assert len(embed.fields) == 15
+
+
+def _guilds(*ids: int) -> list[MagicMock]:
+    return [MagicMock(id=gid) for gid in ids]
+
+
+@pytest.mark.passive  # real bot.guild lookup
+def test_cog_check_refuses_admin_in_a_server_the_bot_does_not_serve() -> None:
+    """A second server the bot is in must not run admin commands on its own config."""
+    from bot import guild as served
+    from bot.cogs.admin import AdminCog, NotServedHere
+
+    served.configure(42)
+    try:
+        cog = AdminCog(make_mock_ctx(frozenset({123})))
+        here = make_mock_inter(user_id=123, guild_id=42)
+        here.client.guilds = _guilds(42, 7)
+        assert cog.cog_slash_command_check(here) is True
+        elsewhere = make_mock_inter(user_id=123, guild_id=7)
+        elsewhere.client.guilds = _guilds(42, 7)
+        with pytest.raises(NotServedHere):
+            cog.cog_slash_command_check(elsewhere)
+        stranger = make_mock_inter(user_id=999, guild_id=7)
+        stranger.client.guilds = _guilds(42, 7)
+        assert cog.cog_slash_command_check(stranger) is False  # not told which server is served
+    finally:
+        served.configure(None)
+
+
+@pytest.mark.asyncio
+async def test_cog_error_names_the_unserved_server() -> None:
+    from bot.cogs.admin import NOT_SERVED_TEXT, AdminCog, NotServedHere
+
+    cog = AdminCog(make_mock_ctx(frozenset({1})))
+    inter = make_mock_inter(user_id=1)
+    await cog.cog_slash_command_error(inter, NotServedHere())
+    inter.response.send_message.assert_awaited_once_with(NOT_SERVED_TEXT, ephemeral=True)
+
+
+@pytest.mark.passive
+@pytest.mark.asyncio
+async def test_passive_check_reads_the_served_server_not_the_command_server(monkeypatch) -> None:
+    """Even past the check, the passive switch of the served server decides."""
+    from bot import guild as served
+    from bot.cogs.admin import AdminCog
+
+    served.configure(42)
+    try:
+        flags = {42: None, 7: "on"}
+        monkeypatch.setattr("bot.active.get_value", AsyncMock(side_effect=lambda p, g, k: flags[g]))
+        cog = AdminCog(make_mock_ctx(frozenset({1})))
+        inter = make_mock_inter(user_id=1, guild_id=7)
+        inter.client.guilds = _guilds(42, 7)
+        assert await cog._refuse_if_passive(inter) is True
+    finally:
+        served.configure(None)

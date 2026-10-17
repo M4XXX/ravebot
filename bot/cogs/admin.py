@@ -68,6 +68,7 @@ import disnake
 from disnake.ext import commands
 
 from bot import active, loops, schedule, slots
+from bot import guild as served
 from bot.context import BotContext
 from bot.db import config as db_config
 from bot.db.bookings import get_booked_djs_for_event
@@ -85,6 +86,12 @@ ADMIN_COMMAND = {
     "contexts": disnake.InteractionContextTypes(guild=True),
 }
 
+NOT_SERVED_TEXT = "This bot does not serve this server (GUILD_ID) — nothing was changed."
+
+
+class NotServedHere(commands.CheckFailure):
+    """An admin command was used in a server this bot is in but does not serve."""
+
 
 class AdminCog(commands.Cog):
     """Admin slash commands — whitelist-gated via cog_slash_command_check."""
@@ -99,11 +106,17 @@ class AdminCog(commands.Cog):
 
         Reads admin_user_ids from Config (loaded from ADMIN_USER_IDS env var at startup).
         Returning False raises CheckFailure — handled in cog_slash_command_error.
+        A whitelisted admin in another server the bot is in gets NotServedHere: config,
+        onboarding DMs and bookings there would act outside the served server's settings.
         Note: disnake 2.12.0 defines cog_slash_command_check as a synchronous method.
         [Source: architecture.md#Admin Whitelist: disnake Check Decorator]
         [Source: epics.md#FR41, NFR6]
         """
-        return inter.author.id in self.ctx.config.admin_user_ids
+        if inter.author.id not in self.ctx.config.admin_user_ids:
+            return False
+        if not served.serves(inter.client, inter.guild_id):
+            raise NotServedHere()
+        return True
 
     async def _refuse_if_passive(self, inter: disnake.ApplicationCommandInteraction) -> bool:
         """Tell the admin and return True when the bot is passive (bot.active).
@@ -111,7 +124,7 @@ class AdminCog(commands.Cog):
         Used by every command that contacts DJs or writes bookings/events; read-only
         commands and /config keep working while passive.
         """
-        if await active.is_active(self.ctx.db, inter.guild_id):
+        if await active.is_active(self.ctx.db, served.resolve(inter.client)):
             return False
         await reply(inter, active.PASSIVE_NOTICE, ephemeral=True)
         return True
@@ -127,7 +140,9 @@ class AdminCog(commands.Cog):
         so the user is never left without a response.
         [Source: epics.md#Story 1.4 AC3 — user sees "You don't have permission to use this command"]
         """
-        if isinstance(error, commands.CheckFailure):
+        if isinstance(error, NotServedHere):
+            await reply(inter, NOT_SERVED_TEXT, ephemeral=True)
+        elif isinstance(error, commands.CheckFailure):
             await reply(inter, 
                 "You don't have permission to use this command.",
                 ephemeral=True,
