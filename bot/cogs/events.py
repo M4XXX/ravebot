@@ -144,7 +144,9 @@ class EventsCog(commands.Cog):
             new_date = latest_date + timedelta(days=interval_days * i)
             event_name = f"Rave Night {new_date.strftime('%d %b %Y')}"
             try:
-                event_id = await self.ctx.notion_client.create_event(event_name, new_date)
+                event_id = await self.ctx.notion_client.create_event(
+                    event_name, new_date, slots=slots_per_event
+                )
                 logger.info(
                     "Auto-created Notion event: %r on %s", event_name, new_date.isoformat()
                 )

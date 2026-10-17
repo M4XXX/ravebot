@@ -233,3 +233,24 @@ async def get_booked_djs_for_event(
         }
         for row in rows
     ]
+
+
+async def get_booked_slots(pool: asyncpg.Pool, event_ids: list[str]) -> dict[str, dict[int, int]]:
+    """Booked slot indices per event in one query: {event_id: {slot_index: discord_user_id}}.
+
+    Events without bookings are absent from the result.
+    """
+    if not event_ids:
+        return {}
+    rows = await pool.fetch(
+        """
+        SELECT event_id, slot_index, discord_user_id
+        FROM slot_locks
+        WHERE event_id = ANY($1::text[]) AND discord_user_id IS NOT NULL
+        """,
+        event_ids,
+    )
+    result: dict[str, dict[int, int]] = {}
+    for row in rows:
+        result.setdefault(row["event_id"], {})[row["slot_index"]] = row["discord_user_id"]
+    return result

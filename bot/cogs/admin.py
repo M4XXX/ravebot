@@ -65,7 +65,7 @@ from datetime import date
 import disnake
 from disnake.ext import commands
 
-from bot import active, schedule
+from bot import active, schedule, slots
 from bot.context import BotContext
 from bot.db import config as db_config
 from bot.db.bookings import get_booked_djs_for_event
@@ -996,8 +996,8 @@ class AdminCog(commands.Cog):
 
         # Get slots_per_event from config (default 6)
         assert inter.guild_id is not None
-        raw_slots = await db_config.get_value(self.ctx.db, inter.guild_id, "slots_per_event")
-        slots_per_event = int(raw_slots) if raw_slots else 6
+        await slots.annotate(self.ctx.db, inter.guild_id, [event])
+        slots_per_event = slots.state(event).total
 
         # Get booked slots from DB
         booked = await get_booked_djs_for_event(self.ctx.db, event_id)

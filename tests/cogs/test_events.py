@@ -361,7 +361,9 @@ async def test_auto_create_events_uses_interval_from_config() -> None:
     events = [_make_event_with_date("page-a", "2026-06-07")]  # 1 event, lookahead=3
     created_dates: list[datetime.date] = []
 
-    async def capture_create(event_name: str, event_date: datetime.date) -> str:
+    async def capture_create(
+        event_name: str, event_date: datetime.date, slots: int | None = None
+    ) -> str:
         created_dates.append(event_date)
         return "new-id"
 
@@ -388,7 +390,7 @@ async def test_auto_create_events_continues_on_notion_write_error() -> None:
     events = [_make_event_with_date("page-a", "2026-06-07")]  # lookahead=3 → 2 to create
     call_count = 0
 
-    async def flaky_create(event_name: str, event_date: object) -> str:
+    async def flaky_create(event_name: str, event_date: object, slots: int | None = None) -> str:
         nonlocal call_count
         call_count += 1
         if call_count == 1:

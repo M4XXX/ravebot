@@ -480,6 +480,7 @@ class NotionClient:
         self,
         event_name: str,
         event_date: datetime.date,
+        slots: int | None = None,
     ) -> str:
         """Create a new event page in the Notion events database.
 
@@ -508,6 +509,8 @@ class NotionClient:
                 },
             },
         }
+        if slots is not None:
+            payload["properties"]["Slots"] = {"number": slots}
         result = await self._write_with_retry(
             method="POST",
             endpoint="/pages",

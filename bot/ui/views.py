@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 
 import disnake
 
-from bot import active, schedule
+from bot import active, schedule, slots
 from bot import guild as served
 from bot.db.djs import get_dj_by_discord_id, insert_dj, set_notion_dj_page_id, update_active_booking
 from bot.ui.embeds import ErrorCode
@@ -485,6 +485,7 @@ class FallbackMenuView(ActiveOnlyView):
             return
 
         # Filter to events with at least one open slot
+        await slots.annotate(self.ctx.db, served.resolve(inter.client), events)
         events_with_open_slots = _filter_events_with_open_slots(events)
 
         if not events_with_open_slots:
@@ -822,6 +823,7 @@ class FallbackMenuView(ActiveOnlyView):
             )
             return
 
+        await slots.annotate(self.ctx.db, served.resolve(inter.client), events[:1])
         embed = MissionOverviewEmbed(events[0])
         await inter.response.send_message(embed=embed)
 
@@ -831,27 +833,8 @@ class FallbackMenuView(ActiveOnlyView):
 # ---------------------------------------------------------------------------
 
 def _filter_events_with_open_slots(events: list[dict]) -> list[dict]:
-    """Return only events that have at least one open slot.
-
-    Uses the same defensive Notion property parsing as MissionOverviewEmbed.
-    Open slots = max(0, slots_total - djs_booked).
-
-    [Source: 3-3-missionoverviewembed-for-individual-event-display.md#Slot Open Detection]
-    """
-    result = []
-    for event in events:
-        try:
-            raw_slots = event["properties"]["Slots"]["number"]
-            slots_total = max(1, int(raw_slots) if raw_slots is not None else 6)
-        except (KeyError, TypeError, ValueError):
-            slots_total = 6
-        try:
-            djs_booked = len(event["properties"]["DJs"]["relation"])
-        except (KeyError, TypeError):
-            djs_booked = 0
-        if slots_total - djs_booked > 0:
-            result.append(event)
-    return result
+    """Return only events that have at least one open slot (call slots.annotate first)."""
+    return [event for event in events if slots.state(event).open_indices]
 
 
 # ---------------------------------------------------------------------------
@@ -943,17 +926,9 @@ class EventSelectionView(ActiveOnlyView):
         """
         from bot.ui.embeds import MissionOverviewEmbed
 
-        try:
-            raw_slots = event["properties"]["Slots"]["number"]
-            slots_total = max(1, int(raw_slots) if raw_slots is not None else 6)
-        except (KeyError, TypeError, ValueError):
-            slots_total = 6
-        try:
-            djs_booked = len(event["properties"]["DJs"]["relation"])
-        except (KeyError, TypeError):
-            djs_booked = 0
-
-        open_slot_indices = list(range(djs_booked, slots_total))
+        # Fresh occupancy: other DJs may have booked since the event list was shown
+        await slots.annotate(self._ctx.db, served.resolve(inter.client), [event])
+        open_slot_indices = slots.state(event).open_indices
 
         embed = MissionOverviewEmbed(event)
         slot_view = SlotSelectionView(
@@ -1288,16 +1263,12 @@ class BookingConfirmView(ActiveOnlyView):
                     )
 
             # Compute remaining open slots from (possibly fresh) event data
-            try:
-                raw_slots = event_for_refresh["properties"]["Slots"]["number"]
-                slots_total = max(1, int(raw_slots) if raw_slots is not None else 6)
-            except (KeyError, TypeError, ValueError):
-                slots_total = 6
-            try:
-                djs_booked = len(event_for_refresh["properties"]["DJs"]["relation"])
-            except (KeyError, TypeError):
-                djs_booked = 0
-            remaining = [i for i in range(djs_booked, slots_total) if i != self._slot_index]
+            await slots.annotate(
+                self._ctx.db, served.resolve(inter.client), [event_for_refresh]
+            )
+            remaining = [
+                i for i in slots.state(event_for_refresh).open_indices if i != self._slot_index
+            ]
 
             if not remaining:
                 if self._lock.locked():
@@ -1838,18 +1809,9 @@ class OutreachView(ActiveOnlyView):
             except Exception as exc:
                 logger.warning("OutreachView.accept: poll_events failed: %s", exc)
 
-        # Compute open slot indices
-        try:
-            raw_slots = event["properties"]["Slots"]["number"]
-            slots_total = max(1, int(raw_slots) if raw_slots is not None else 6)
-        except (KeyError, TypeError, ValueError):
-            slots_total = 6
-        try:
-            djs_booked = len(event["properties"]["DJs"]["relation"])
-        except (KeyError, TypeError):
-            djs_booked = 0
-
-        open_slot_indices = list(range(djs_booked, slots_total))
+        # Compute open slot indices from slot_locks (bot.slots)
+        await slots.annotate(self._ctx.db, served.resolve(inter.client), [event])
+        open_slot_indices = slots.state(event).open_indices
 
         if not open_slot_indices:
             lock.release()

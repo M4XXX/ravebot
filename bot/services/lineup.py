@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 import disnake
 
 from bot import guild as served
+from bot import slots
 from bot.db.config import get_value, set_value
 from bot.ui.embeds import ErrorCode, MissionRosterEmbed
 
@@ -54,6 +55,7 @@ class LineupService:
             return
 
         # AC4 — channel must be configured
+        await slots.annotate(self.db, guild_id, events)
         dj_channel_id = await get_value(self.db, guild_id, "dj_channel")
         if dj_channel_id is None:
             logger.warning("LineupService: dj_channel not configured — cannot post lineup")

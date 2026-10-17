@@ -51,3 +51,20 @@ def _bot_active_and_serving(
 
     monkeypatch.setattr("bot.active.is_active", AsyncMock(return_value=True))
     monkeypatch.setattr("bot.guild.serves", lambda bot, guild_id: True)
+
+
+@pytest.fixture(autouse=True)
+def _slot_state_from_notion_count(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Older tests describe bookings only through the Notion DJs relation.
+
+    Leaving events un-annotated makes bot.slots.state() fall back to that count, i.e. these
+    tests run as if slot_locks agreed with Notion. Tests marked @pytest.mark.real_slots use
+    the real annotate() against a mocked pool.
+    """
+    if request.node.get_closest_marker("real_slots"):
+        return
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr("bot.slots.annotate", AsyncMock(side_effect=lambda pool, gid, ev: ev))

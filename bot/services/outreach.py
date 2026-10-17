@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 import disnake
 
-from bot import schedule
+from bot import schedule, slots
 from bot.db.config import get_value
 from bot.db.djs import get_active_booking_djs
 from bot.db.djs import update_last_contacted_at as update_dj_last_contacted_at
@@ -99,6 +99,7 @@ class OutreachService:
         except Exception as exc:
             logger.warning("OutreachService.run_gap_detection: poll_events failed: %s", exc)
             return []
+        await slots.annotate(self.db, guild_id, events)
 
         now_utc = datetime.datetime.now(datetime.timezone.utc)
         window_end = now_utc + datetime.timedelta(days=outreach_days)
@@ -117,19 +118,8 @@ class OutreachService:
             if not (now_utc <= event_dt <= window_end):
                 continue
 
-            # Compute open slots — mirrors _filter_events_with_open_slots in views.py
-            # [Source: bot/ui/views.py:728–749]
-            try:
-                raw_slots = event["properties"]["Slots"]["number"]
-                slots_total = max(1, int(raw_slots) if raw_slots is not None else 6)
-            except (KeyError, TypeError, ValueError):
-                slots_total = 6
-            try:
-                djs_booked = len(event["properties"]["DJs"]["relation"])
-            except (KeyError, TypeError):
-                djs_booked = 0
-
-            open_slots = slots_total - djs_booked
+            # Open slots from slot_locks (bot.slots), same as the booking views
+            open_slots = len(slots.state(event).open_indices)
 
             # AC4: all slots filled — mark active sequence complete
             if open_slots <= 0:
@@ -403,17 +393,9 @@ class OutreachService:
         if seq is None or seq["status"] != "active":
             return  # Already exhausted, complete, or no sequence
 
-        # Compute open slots (same formula as run_gap_detection)
-        try:
-            raw_slots = event["properties"]["Slots"]["number"]
-            slots_total = max(1, int(raw_slots) if raw_slots is not None else 6)
-        except (KeyError, TypeError, ValueError):
-            slots_total = 6
-        try:
-            djs_booked = len(event["properties"]["DJs"]["relation"])
-        except (KeyError, TypeError):
-            djs_booked = 0
-        open_slots = slots_total - djs_booked
+        # Open slots from slot_locks (bot.slots), same as run_gap_detection
+        await slots.annotate(self.db, guild_id, [event])
+        open_slots = len(slots.state(event).open_indices)
 
         if open_slots <= 0:
             # Race: slots filled between contact_next_dj call and here — no alert needed
