@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 import disnake
 
-from bot import schedule
+from bot import loops, schedule
 from bot.db.bookings import get_booked_djs_for_event
 from bot.db.interventions import is_under_intervention
 from bot.db.reminders import has_reminder_been_sent, record_reminder_sent
@@ -136,11 +136,15 @@ class RemindersService:
         [Source: architecture.md#Stateless Services: All Per-User State in PostgreSQL]
         """
         # Step 1: fetch events
+        # A Notion outage fails the cycle, so /config show does not report it as OK
         try:
             events = await self.notion_client.poll_events()
         except Exception as exc:
-            logger.warning("RemindersService.send_reminders: Notion poll failed: %s", exc)
-            return
+            raise loops.CycleFailed(
+                f"Notion poll_events() raised during reminders: {exc}",
+                error_code=ErrorCode.ERR_NOTION_WRITE,
+                manual_action="Check NOTION_API_KEY, NOTION_DATABASE_ID, and Notion API status.",
+            ) from exc
 
         # Step 2: filter to 20-28h window (compute 'now' once for the whole cycle)
         now = _now if _now is not None else datetime.datetime.now(UTC)

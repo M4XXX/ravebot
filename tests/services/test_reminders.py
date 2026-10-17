@@ -90,11 +90,14 @@ def test_is_in_reminder_window_false_for_malformed_date():
 
 @pytest.mark.asyncio
 async def test_send_reminders_skips_on_notion_failure():
-    """Notion poll raises → no crash, no reminders sent."""
+    """Notion poll raises → the cycle fails (not 'last OK'), no reminders sent."""
+    from bot.loops import CycleFailed
+
     svc = _make_service()
     svc.notion_client.poll_events = AsyncMock(side_effect=Exception("API down"))
 
-    with patch("bot.services.reminders.get_booked_djs_for_event", new=AsyncMock()) as mock_get:
+    with patch("bot.services.reminders.get_booked_djs_for_event", new=AsyncMock()) as mock_get, \
+         pytest.raises(CycleFailed, match="API down"):
         await svc.send_reminders(guild_id=1, ctx=MagicMock(), _now=FIXED_NOW)
 
     mock_get.assert_not_awaited()

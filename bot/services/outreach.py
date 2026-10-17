@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 import disnake
 
-from bot import schedule, slots
+from bot import loops, schedule, slots
 from bot.db.config import get_value
 from bot.db.djs import get_active_booking_djs
 from bot.db.djs import update_last_contacted_at as update_dj_last_contacted_at
@@ -30,6 +30,7 @@ from bot.db.outreach import (
     update_outreach_contact_status,
     upsert_sequence,
 )
+from bot.ui.embeds import ErrorCode
 
 if TYPE_CHECKING:
     from bot.log import AdminLogService
@@ -94,11 +95,15 @@ class OutreachService:
             cooldown_hours = _DEFAULT_COOLDOWN_HOURS
 
         # Fetch all future events from Notion (AC1)
+        # A Notion outage fails the cycle, so /config show does not report it as OK
         try:
             events = await self.notion_client.poll_events()
         except Exception as exc:
-            logger.warning("OutreachService.run_gap_detection: poll_events failed: %s", exc)
-            return []
+            raise loops.CycleFailed(
+                f"Notion poll_events() raised during outreach: {exc}",
+                error_code=ErrorCode.ERR_NOTION_WRITE,
+                manual_action="Check NOTION_API_KEY, NOTION_DATABASE_ID, and Notion API status.",
+            ) from exc
         await slots.annotate(self.db, guild_id, events)
 
         now_utc = datetime.datetime.now(datetime.timezone.utc)
