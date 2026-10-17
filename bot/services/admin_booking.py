@@ -9,11 +9,11 @@ Bypasses the confirmation dialog and DJ-facing race condition guard.
 [Source: architecture.md#Stateless Services: All Per-User State in PostgreSQL]
 """
 import logging
-from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 import disnake
 
+from bot import schedule
 from bot.db.bookings import admin_force_book_slot, get_slot_lock_holder, release_slot_lock
 from bot.db.djs import get_notion_dj_page_id, update_active_booking
 from bot.notion.client import NotionWriteError
@@ -61,20 +61,8 @@ class AdminBookingService:
             return ""
 
     def _get_slot_unix(self, event: dict, slot_index: int) -> int:
-        """Compute Unix timestamp for a slot: event_start + slot_index hours.
-
-        Returns 0 on any parse error (slot display will fall back gracefully).
-        [Source: bot/ui/views.py lines 1048-1063 — Notion event property parsing]
-        """
-        try:
-            date_str = event["properties"]["Date"]["date"]["start"]
-            event_start = datetime.fromisoformat(date_str)
-            if event_start.tzinfo is None:
-                event_start = event_start.replace(tzinfo=UTC)
-            slot_dt = event_start + timedelta(hours=slot_index)
-            return int(slot_dt.timestamp())
-        except (KeyError, TypeError, ValueError):
-            return 0
+        """Unix timestamp of a slot start (bot.schedule); 0 if the event date is unparseable."""
+        return schedule.slot_unix(event, slot_index)
 
     def _find_event(self, events: list[dict], event_name: str) -> dict | None:
         """Find first event whose name case-insensitively matches event_name."""

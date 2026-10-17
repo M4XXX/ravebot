@@ -60,11 +60,12 @@ disnake 2.12.0 slash command hierarchy:
 [Source: epics.md#Story 7.2 Acceptance Criteria]
 """
 import logging
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 
 import disnake
 from disnake.ext import commands
 
+from bot import schedule
 from bot.context import BotContext
 from bot.db import config as db_config
 from bot.db.bookings import get_booked_djs_for_event
@@ -430,6 +431,7 @@ class AdminCog(commands.Cog):
             )
             return
         await db_config.set_value(self.ctx.db, guild_id, "slot_duration_minutes", str(minutes))
+        await schedule.refresh(self.ctx.db, guild_id)
         await inter.response.send_message(
             f"Slot duration set to {minutes} minutes.", ephemeral=True
         )
@@ -440,13 +442,13 @@ class AdminCog(commands.Cog):
 
     @config_set_base.sub_command(
         name="start-time",
-        description="Set the default event start time (UTC)",
+        description="Set the event start time (in the configured timezone, default UTC)",
     )
     async def config_set_start_time(
         self,
         inter: disnake.ApplicationCommandInteraction,
         time_str: str = commands.Param(
-            description="Start time in HH:MM format (UTC, e.g. 20:00)"
+            description="Start time in HH:MM format, in the configured timezone (e.g. 21:00)"
         ),
     ) -> None:
         """Store default_start_time in config table (HH:MM UTC).
@@ -478,9 +480,44 @@ class AdminCog(commands.Cog):
             )
             return
         await db_config.set_value(self.ctx.db, guild_id, "default_start_time", time_str.strip())
+        sched = await schedule.refresh(self.ctx.db, guild_id)
         await inter.response.send_message(
-            f"Default event start time set to {time_str.strip()} UTC.", ephemeral=True
+            f"Default event start time set to {time_str.strip()} ({sched.tz.key}).", ephemeral=True
         )
+
+    # ---------------------------------------------------------------------------
+    # /config set timezone - time zone for start-time and all displayed slot times
+    # ---------------------------------------------------------------------------
+
+    @config_set_base.sub_command(
+        name="timezone",
+        description="Set the time zone for the event start time (IANA name, default UTC)",
+    )
+    async def config_set_timezone(
+        self,
+        inter: disnake.ApplicationCommandInteraction,
+        name: str = commands.Param(
+            description="IANA time zone, e.g. Europe/Berlin, America/New_York, UTC"
+        ),
+    ) -> None:
+        """Store the time zone used to place the start time; slots then follow DST changes."""
+        guild_id = inter.guild_id
+        assert guild_id is not None
+        if self.ctx.db is None:
+            logger.error("AdminCog: DB pool is None in config_set_timezone")
+            await inter.response.send_message(
+                "Bot is not ready — please try again.", ephemeral=True
+            )
+            return
+        tz = schedule.parse_timezone(name)
+        if tz is None:
+            await inter.response.send_message(
+                "Unknown time zone — use an IANA name like Europe/Berlin.", ephemeral=True
+            )
+            return
+        await db_config.set_value(self.ctx.db, guild_id, "timezone", tz.key)
+        await schedule.refresh(self.ctx.db, guild_id)
+        await inter.response.send_message(f"Time zone set to {tz.key}.", ephemeral=True)
 
     # ---------------------------------------------------------------------------
     # Story 7.3: /config set event-schedule (FR37)
@@ -552,7 +589,8 @@ class AdminCog(commands.Cog):
             ("slots_per_event", "Slots Per Event", "6"),
             ("event_interval_days", "Event Interval (days)", "7"),
             ("slot_duration_minutes", "Slot Duration (minutes)", "60"),
-            ("default_start_time", "Default Start Time (UTC)", "20:00"),
+            ("default_start_time", "Default Start Time", "20:00"),
+            ("timezone", "Timezone", "UTC"),
             ("event_recurrence_cron", "Event Recurrence Cron", "(not set)"),
         ]
 
@@ -862,15 +900,8 @@ class AdminCog(commands.Cog):
             event_name = "Unknown Event"
 
         # Parse event start datetime
-        try:
-            date_str = event["properties"]["Date"]["date"]["start"]
-            event_start = datetime.fromisoformat(date_str)
-            if event_start.tzinfo is None:
-                event_start = event_start.replace(tzinfo=UTC)
-            event_unix = int(event_start.timestamp())
-        except (KeyError, TypeError, ValueError):
-            event_start = None
-            event_unix = 0
+        event_start = schedule.event_start(event)
+        event_unix = int(event_start.timestamp()) if event_start is not None else 0
 
         # Get slots_per_event from config (default 6)
         assert inter.guild_id is not None
@@ -894,7 +925,7 @@ class AdminCog(commands.Cog):
 
         for slot_index in range(slots_per_event):
             if event_start is not None:
-                slot_unix = int((event_start + timedelta(hours=slot_index)).timestamp())
+                slot_unix = schedule.slot_unix(event, slot_index)
                 slot_time = f"<t:{slot_unix}:f>"
             else:
                 slot_time = f"Slot {slot_index + 1}"

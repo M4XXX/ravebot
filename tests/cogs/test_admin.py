@@ -6,6 +6,14 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from bot import schedule
+
+
+@pytest.fixture(autouse=True)
+def _schedule_without_db(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The schedule cache refresh reads the config table; these tests use a mocked pool."""
+    monkeypatch.setattr("bot.schedule.refresh", AsyncMock(return_value=schedule.DEFAULT_SCHEDULE))
+
 
 def make_mock_ctx(admin_ids: frozenset[int]) -> MagicMock:
     """Build a minimal mock BotContext with config.admin_user_ids set."""
@@ -940,7 +948,7 @@ async def test_config_show_displays_embed_with_all_values(
     embed = call_kwargs.get("embed")
     assert embed is not None
     assert embed.color.value == EmbedColors.NEBULA_WHITE
-    assert len(embed.fields) == 11  # 6 original (7.2) + 5 slot config (7.3)
+    assert len(embed.fields) == 12  # 6 original (7.2) + 5 slot config (7.3) + timezone
 
 
 @pytest.mark.asyncio
@@ -1248,4 +1256,4 @@ async def test_config_show_includes_slot_config_fields(
     embed = call_kwargs.get("embed")
     assert embed is not None
     assert embed.color.value == EmbedColors.NEBULA_WHITE
-    assert len(embed.fields) == 11
+    assert len(embed.fields) == 12

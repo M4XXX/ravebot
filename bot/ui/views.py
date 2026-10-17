@@ -12,11 +12,11 @@ RULE: Every View subclass MUST:
 """
 import asyncio
 import logging
-from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 import disnake
 
+from bot import schedule
 from bot.db.djs import insert_dj, set_notion_dj_page_id, update_active_booking
 from bot.ui.embeds import ErrorCode
 
@@ -472,14 +472,8 @@ class FallbackMenuView(disnake.ui.View):
                 name = event["properties"]["Name"]["title"][0]["plain_text"]
             except (KeyError, IndexError):
                 name = "Unknown Event"
-            try:
-                date_str = event["properties"]["Date"]["date"]["start"]
-                dt = datetime.fromisoformat(date_str)
-                if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=UTC)
-                date_display = f"<t:{int(dt.timestamp())}:f>"
-            except (KeyError, TypeError, ValueError):
-                date_display = "(date unknown)"
+            start = schedule.event_start(event)
+            date_display = f"<t:{int(start.timestamp())}:f>" if start else "(date unknown)"
             lines.append(f"{i}. {name} — {date_display}")
 
         content = "\n".join(lines)
@@ -588,15 +582,7 @@ class FallbackMenuView(disnake.ui.View):
             if event is None:
                 continue  # event no longer in future — skip
             slot_index = row["slot_index"]
-            try:
-                date_str = event["properties"]["Date"]["date"]["start"]
-                event_start = datetime.fromisoformat(date_str)
-                if event_start.tzinfo is None:
-                    event_start = event_start.replace(tzinfo=UTC)
-                slot_dt = event_start + timedelta(hours=slot_index)
-                slot_unix = int(slot_dt.timestamp())
-            except (KeyError, TypeError, ValueError):
-                slot_unix = 0
+            slot_unix = schedule.slot_unix(event, slot_index)
             bookings.append({"event": event, "slot_index": slot_index, "slot_unix": slot_unix})
 
         if not bookings:
@@ -1051,16 +1037,8 @@ class SlotSelectionView(disnake.ui.View):
         except (KeyError, IndexError):
             event_name = "Unknown Event"
 
-        # Compute slot unix timestamp: event_start + slot_index hours
-        try:
-            date_str = self._event["properties"]["Date"]["date"]["start"]
-            event_start = datetime.fromisoformat(date_str)
-            if event_start.tzinfo is None:
-                event_start = event_start.replace(tzinfo=UTC)
-            slot_dt = event_start + timedelta(hours=slot_index)
-            slot_unix = int(slot_dt.timestamp())
-        except (KeyError, TypeError, ValueError):
-            slot_unix = 0
+        # Slot start from bot.schedule (start time, slot length, time zone from config)
+        slot_unix = schedule.slot_unix(self._event, slot_index)
 
         embed = BookingConfirmEmbed(event_name=event_name, slot_unix=slot_unix)
         view = BookingConfirmView(
@@ -1413,7 +1391,8 @@ class CancellationView(disnake.ui.View):
                 event_name = event["properties"]["Name"]["title"][0]["plain_text"]
             except (KeyError, IndexError):
                 event_name = "Unknown Event"
-            time_display = f"<t:{slot_unix}:f>" if slot_unix else "(time unknown)"
+            # Button labels cannot render <t:...> markup, so spell the time out
+            time_display = schedule.plain_label(slot_unix) if slot_unix else "(time unknown)"
             label = f"{event_name} · {time_display}"[:80]
 
             btn = disnake.ui.Button(

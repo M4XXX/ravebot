@@ -5,7 +5,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import asyncpg
 import pytest
 
+from bot import schedule
 from bot.ui.embeds import ErrorCode
+
+
+@pytest.fixture(autouse=True)
+def _schedule_without_db(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The schedule cache refresh reads the config table; these tests use a mocked pool."""
+    monkeypatch.setattr("bot.schedule.refresh", AsyncMock(return_value=schedule.DEFAULT_SCHEDULE))
 
 
 def make_ctx(db: object = None, log: object = None) -> MagicMock:
@@ -206,9 +213,9 @@ async def test_poll_notion_change_triggers_update() -> None:
 @pytest.mark.asyncio
 async def test_poll_notion_notion_failure_no_snapshot_update() -> None:
     """_poll_notion: when poll_events raises, snapshot is NOT updated and ERR is posted."""
-    from bot.cogs.events import EventsCog
-
     import httpx
+
+    from bot.cogs.events import EventsCog
     cog = _make_cog_with_bot()
     cog.ctx.notion_client.poll_events = AsyncMock(side_effect=httpx.RequestError("timeout"))
 
@@ -347,6 +354,7 @@ async def test_auto_create_events_skips_when_at_lookahead() -> None:
 async def test_auto_create_events_uses_interval_from_config() -> None:
     """_auto_create_events schedules new events at configured interval after latest."""
     import datetime
+
     from bot.cogs.events import EventsCog
 
     cog = _make_cog_with_bot()

@@ -123,3 +123,8 @@ class OutreachCog(commands.Cog):
             dm_attempts,
             exhaustion_checks,
         )
+
+    @_outreach_check.before_loop
+    async def _wait_until_ready(self) -> None:
+        """Start the loop only once the gateway knows the guilds."""
+        await self.bot.wait_until_ready()

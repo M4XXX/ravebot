@@ -18,6 +18,7 @@ from datetime import timedelta
 import asyncpg
 from disnake.ext import commands, tasks
 
+from bot import schedule
 from bot.context import BotContext
 from bot.db.bookings import init_event_slots
 from bot.db.config import get_value, set_value
@@ -191,6 +192,7 @@ class EventsCog(commands.Cog):
         guild_id = self._get_guild_id()
         if guild_id is None:
             return
+        await schedule.refresh(self.ctx.db, guild_id)
 
         # Fetch events from Notion (AC1, AC4)
         try:
@@ -240,3 +242,9 @@ class EventsCog(commands.Cog):
             await self.ctx.reminders_service.send_reminders(guild_id, self.ctx)
         except Exception as exc:
             logger.warning("_check_reminders: send_reminders raised: %s", exc)
+
+    @_poll_notion.before_loop
+    @_check_reminders.before_loop
+    async def _wait_until_ready(self) -> None:
+        """Start the loops only once the gateway knows the guilds."""
+        await self.bot.wait_until_ready()

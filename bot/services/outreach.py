@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 import disnake
 
+from bot import schedule
 from bot.db.config import get_value
 from bot.db.djs import get_active_booking_djs
 from bot.db.djs import update_last_contacted_at as update_dj_last_contacted_at
@@ -109,12 +110,8 @@ class OutreachService:
                 continue
 
             # Parse event date — skip if missing or outside window (AC1)
-            try:
-                date_str = event["properties"]["Date"]["date"]["start"]
-                event_dt = datetime.datetime.fromisoformat(date_str)
-                if event_dt.tzinfo is None:
-                    event_dt = event_dt.replace(tzinfo=datetime.timezone.utc)
-            except (KeyError, TypeError, ValueError):
+            event_dt = schedule.event_start(event)
+            if event_dt is None:
                 continue
 
             if not (now_utc <= event_dt <= window_end):
@@ -446,14 +443,8 @@ class OutreachService:
             event_name = event["properties"]["Name"]["title"][0]["plain_text"]
         except (KeyError, IndexError):
             event_name = event_id
-        try:
-            date_str = event["properties"]["Date"]["date"]["start"]
-            unix_ts = int(
-                datetime.datetime.fromisoformat(date_str).timestamp()
-            )
-            date_display = f"<t:{unix_ts}:f>"
-        except (KeyError, TypeError, ValueError):
-            date_display = "TBD"
+        start = schedule.event_start(event)
+        date_display = f"<t:{int(start.timestamp())}:f>" if start is not None else "TBD"
 
         # Post ERR_OUTREACH_EXHAUSTED to admin log (AC1)
         if self.log_service is not None:

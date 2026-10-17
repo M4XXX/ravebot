@@ -1,0 +1,104 @@
+"""Tests for bot/schedule.py — event and slot start times from date, start, length and zone."""
+import datetime as dt
+from unittest.mock import AsyncMock, patch
+from zoneinfo import ZoneInfo
+
+import pytest
+
+from bot import schedule
+from bot.services.reminders import RemindersService
+
+BERLIN = schedule.Schedule(tz=ZoneInfo("Europe/Berlin"), start=dt.time(21, 0), slot_minutes=60)
+
+
+def _event(date_str: str) -> dict:
+    return {"id": "evt-1", "properties": {"Date": {"date": {"start": date_str}}}}
+
+
+def _utc(*args: int) -> dt.datetime:
+    return dt.datetime(*args, tzinfo=dt.UTC)
+
+
+def test_default_schedule_is_20_utc() -> None:
+    assert schedule.event_start(_event("2026-10-24"), schedule.DEFAULT_SCHEDULE) == _utc(
+        2026, 10, 24, 20, 0
+    )
+
+
+def test_local_start_follows_dst() -> None:
+    """21:00 Berlin is 19:00 UTC in summer time and 20:00 UTC in winter time."""
+    assert schedule.event_start(_event("2026-10-24"), BERLIN) == _utc(2026, 10, 24, 19, 0)
+    assert schedule.event_start(_event("2026-10-31"), BERLIN) == _utc(2026, 10, 31, 20, 0)
+
+
+def test_slots_follow_start_and_length() -> None:
+    sched = schedule.Schedule(tz=ZoneInfo("UTC"), start=dt.time(20, 0), slot_minutes=90)
+    assert schedule.slot_start(_event("2026-10-24"), 0, sched) == _utc(2026, 10, 24, 20, 0)
+    assert schedule.slot_start(_event("2026-10-24"), 2, sched) == _utc(2026, 10, 24, 23, 0)
+
+
+def test_slots_keep_wall_clock_across_midnight() -> None:
+    """Slot 3 of a 21:00 Berlin event is midnight Berlin time."""
+    local = schedule.slot_start(_event("2026-10-31"), 3, BERLIN).astimezone(BERLIN.tz)
+    assert (local.day, local.hour, local.minute) == (1, 0, 0)
+
+
+def test_date_with_time_is_used_as_entered() -> None:
+    assert schedule.event_start(_event("2026-10-24T18:30:00+00:00"), BERLIN) == _utc(
+        2026, 10, 24, 18, 30
+    )
+
+
+def test_date_with_naive_time_uses_configured_zone() -> None:
+    assert schedule.event_start(_event("2026-10-24T22:00:00"), BERLIN) == _utc(2026, 10, 24, 20, 0)
+
+
+@pytest.mark.parametrize("event", [{}, {"properties": {}}, _event("not-a-date")])
+def test_unparseable_date_gives_none_and_zero(event: dict) -> None:
+    assert schedule.event_start(event, BERLIN) is None
+    assert schedule.slot_unix(event, 1, BERLIN) == 0
+
+
+def test_parse_schedule_falls_back_per_field() -> None:
+    sched = schedule.parse_schedule("Mars/Olympus", "25:99", "0")
+    assert sched == schedule.DEFAULT_SCHEDULE
+    sched = schedule.parse_schedule("Europe/Berlin", "21:00", None)
+    assert (sched.tz.key, sched.start, sched.slot_minutes) == ("Europe/Berlin", dt.time(21, 0), 60)
+
+
+def test_parse_timezone() -> None:
+    assert schedule.parse_timezone(" Europe/Berlin ").key == "Europe/Berlin"
+    assert schedule.parse_timezone("Nowhere/Land") is None
+    assert schedule.parse_timezone("") is None
+
+
+@pytest.mark.asyncio
+async def test_reminder_slot_time_matches_booking_slot_time() -> None:
+    """Regression: the booking view and the reminder must show the same slot time.
+
+    Booking used event midnight UTC + slot_index hours, reminders used the configured start
+    time — a DJ booked "02:00" and was reminded for 20:00 UTC.
+    """
+    config = {
+        "timezone": "Europe/Berlin",
+        "default_start_time": "21:00",
+        "slot_duration_minutes": "60",
+    }
+
+    async def fake_get_value(pool, guild_id, key):
+        return config.get(key)
+
+    svc = RemindersService(
+        bot=AsyncMock(), db=AsyncMock(), notion_client=AsyncMock(), log_service=None
+    )
+    event = _event("2026-10-24")
+    with patch("bot.schedule.get_value", new=fake_get_value):
+        reminder_unix = await svc._compute_slot_unix(event, 2, guild_id=1)
+    booking_unix = schedule.slot_unix(event, 2)  # cached schedule after the refresh above
+    assert reminder_unix == booking_unix == int(_utc(2026, 10, 24, 21, 0).timestamp())
+
+
+def test_plain_label_uses_configured_zone() -> None:
+    unix = int(_utc(2026, 10, 24, 19, 0).timestamp())
+    assert schedule.plain_label(unix, BERLIN) == "Sat 24 Oct 21:00 CEST"
+    assert "<t:" not in schedule.plain_label(unix, BERLIN)
