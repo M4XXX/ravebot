@@ -164,7 +164,8 @@ class NotionClient:
             timeout=10.0,
             event_hooks={"request": [_refuse_deletion]},
         )
-        # Serialises read-modify-write of each event's DJs relation (one bot process).
+        # Serialises read-modify-write of each event's DJs relation. Only within this
+        # process: the deployment must run one instance (docs/user-guide.md, section 3).
         self._event_locks: dict[str, asyncio.Lock] = {}
 
     async def close(self) -> None:

@@ -75,3 +75,15 @@ async def test_agreement_posts_nothing() -> None:
         found = await reconcile.report(MagicMock(), 42, [_event("a", "aaaa1111")], log)
     assert found == []
     log.post_error.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_events_with_a_truncated_relation_are_not_compared() -> None:
+    """Notion cuts the relation in query results at 25 pages and sets has_more."""
+    event = _event("big", *[f"page{i:04d}" for i in range(25)])
+    event["properties"]["DJs"]["has_more"] = True
+    booked = {"big": {i: i for i in range(26)}}
+    pages = {i: f"page{i:04d}" for i in range(26)}  # DJ 25 is beyond the cut
+    _, ps = _patches(booked, pages)
+    with ps[0], ps[1]:
+        assert await reconcile.find_mismatches(MagicMock(), [event]) == []

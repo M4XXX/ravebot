@@ -39,8 +39,14 @@ async def find_mismatches(pool: Any, events: list[dict]) -> list[dict]:
     result = []
     for event in events:
         try:
-            linked = {_norm(r["id"]) for r in event["properties"]["DJs"]["relation"]}
+            djs = event["properties"]["DJs"]
+            linked = {_norm(r["id"]) for r in djs["relation"]}
         except (KeyError, TypeError):
+            continue
+        if djs.get("has_more"):
+            # A database query returns at most 25 related pages; comparing the cut list
+            # would report every DJ beyond it as "not linked".
+            logger.debug("Reconcile skips %s: its DJs relation is truncated", _name(event))
             continue
         holders_here = booked.get(event.get("id", ""), {}).values()
         in_db = {_norm(pages[uid]) for uid in holders_here if uid in pages}

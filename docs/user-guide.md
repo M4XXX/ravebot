@@ -101,6 +101,8 @@ Copy `.env.example` to `.env` and fill in your values. **Never commit `.env` to 
 
 **Finding your Notion database ID:** See [section 2.5](#25-finding-your-database-id) above.
 
+**Run exactly one instance.** Two bookings for the same event are written to Notion one after the other by a lock inside the bot process. A second container against the same Notion database and PostgreSQL (for example a copy started for testing with the same `.env`) does not share that lock and can drop a DJ from an event's lineup. Restarting or updating is safe: Unraid, Docker Compose and Podman stop the old container before starting the new one. If it happens anyway, the reconcile check reports the difference in the log channel.
+
 ---
 
 ## 4. Deployment: Unraid (Primary)
