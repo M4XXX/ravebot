@@ -39,6 +39,7 @@ venv = ".venv"
 markers = [
     "passive: run without the default active-bot fixture (tests/conftest.py)",
     "real_slots: use the real bot.slots.annotate (tests/conftest.py)",
+    "pg: real-SQL tests, need RAVEBOT_TEST_POSTGRES_URL (tests/pg)",
 ]
 asyncio_mode = "auto"
 pythonpath = ["."]
