@@ -36,5 +36,6 @@ venvPath = "."
 venv = ".venv"
 
 [tool.pytest.ini_options]
+markers = ["passive: run without the default active-bot fixture (tests/conftest.py)"]
 asyncio_mode = "auto"
 pythonpath = ["."]

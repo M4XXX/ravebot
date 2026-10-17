@@ -13,6 +13,8 @@ import logging
 import disnake
 from disnake.ext import commands
 
+from bot import active
+from bot import guild as served
 from bot.context import BotContext
 from bot.db.djs import get_dj_by_discord_id
 from bot.db.interventions import is_under_intervention
@@ -25,8 +27,9 @@ logger = logging.getLogger(__name__)
 class OnboardingCog(commands.Cog):
     """Handles DJ role detection, DM onboarding flow, and FallbackMenuView."""
 
-    def __init__(self, ctx: BotContext) -> None:
+    def __init__(self, ctx: BotContext, bot: commands.Bot) -> None:
         self.ctx = ctx
+        self.bot = bot
 
     @commands.Cog.listener()
     async def on_member_update(
@@ -42,6 +45,9 @@ class OnboardingCog(commands.Cog):
         [Source: epics.md#Story 2.1 AC1-AC4]
         [Source: epics.md#FR1, FR2, FR8]
         """
+        if not served.serves(self.bot, after.guild.id):
+            return  # role change in a server this bot does not serve
+
         # Detect newly added roles only
         new_roles = set(after.roles) - set(before.roles)
         dj_role = next((r for r in new_roles if r.name.lower() == "dj"), None)
@@ -54,6 +60,10 @@ class OnboardingCog(commands.Cog):
                 "on_member_update: DB pool not available — skipping onboarding for user %s",
                 after.id,
             )
+            return
+
+        if not await active.is_active(self.ctx.db, after.guild.id):
+            logger.info("Passive mode: no onboarding DM for user %s", after.id)
             return
 
         # Check if DJ already exists in DB (any state — prevents duplicate DMs)
@@ -119,6 +129,9 @@ class OnboardingCog(commands.Cog):
             return
         # Ignore bot messages (including our own)
         if message.author.bot:
+            return
+        # Passive mode: DMs are neither answered nor mirrored to the log channel
+        if not await active.is_active(self.ctx.db, served.resolve(self.bot)):
             return
         # Story 6.1 AC2: log all incoming DJ DMs regardless of flow state
         if self.ctx.log_service is not None:

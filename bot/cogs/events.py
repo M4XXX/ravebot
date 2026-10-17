@@ -18,7 +18,8 @@ from datetime import timedelta
 import asyncpg
 from disnake.ext import commands, tasks
 
-from bot import schedule
+from bot import active, schedule
+from bot import guild as served
 from bot.context import BotContext
 from bot.db.bookings import init_event_slots
 from bot.db.config import get_value, set_value
@@ -92,14 +93,11 @@ class EventsCog(commands.Cog):
         return json.dumps(entries)
 
     def _get_guild_id(self) -> int | None:
-        """Return the first guild's ID, or None if the bot has no guilds yet.
-
-        [Source: epics.md#Story 3.1 AC1]
-        """
-        if not self.bot.guilds:
-            logger.warning("_get_guild_id: bot has no guilds — skipping poll cycle")
-            return None
-        return self.bot.guilds[0].id
+        """Return the served guild ID (bot.guild), or None if the bot serves none."""
+        guild_id = served.resolve(self.bot)
+        if guild_id is None:
+            logger.warning("_get_guild_id: no served guild — skipping poll cycle")
+        return guild_id
 
     async def _auto_create_events(self, events: list[dict], guild_id: int) -> None:
         """Create Notion events to maintain the configured look-ahead count.
@@ -193,6 +191,8 @@ class EventsCog(commands.Cog):
         if guild_id is None:
             return
         await schedule.refresh(self.ctx.db, guild_id)
+        if not await active.is_active(self.ctx.db, guild_id):
+            return  # passive: no lineup posts, no auto-created events
 
         # Fetch events from Notion (AC1, AC4)
         try:
@@ -235,6 +235,8 @@ class EventsCog(commands.Cog):
         guild_id = self._get_guild_id()
         if guild_id is None:
             return
+        if not await active.is_active(self.ctx.db, guild_id):
+            return  # passive: no reminder DMs
         if self.ctx.reminders_service is None:
             logger.warning("_check_reminders: reminders_service not available — skipping")
             return

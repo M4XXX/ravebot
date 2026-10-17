@@ -24,6 +24,8 @@ import disnake
 from disnake.ext import commands
 from dotenv import load_dotenv
 
+from bot import active
+from bot import guild as served
 from bot.config import Config
 from bot.context import BotContext
 from bot.db.pool import create_pool, run_migrations
@@ -53,6 +55,7 @@ def create_bot() -> commands.Bot:
 async def main() -> None:
     """Async entry point — configure, run migrations, open pool, start bot."""
     config = Config.from_env()
+    served.configure(config.guild_id)
     _setup_logging(config.log_level)
 
     ctx = BotContext(config=config)
@@ -118,7 +121,7 @@ async def main() -> None:
         log_service=ctx.log_service,
     )
 
-    bot.add_cog(OnboardingCog(ctx))
+    bot.add_cog(OnboardingCog(ctx, bot))
     bot.add_cog(BookingCog(ctx))
     bot.add_cog(OutreachCog(ctx, bot))
     bot.add_cog(AdminCog(ctx))
@@ -127,6 +130,16 @@ async def main() -> None:
     @bot.event
     async def on_ready() -> None:  # noqa: RUF029
         logger.info("Bot ready")
+        gid = served.resolve(bot)
+        if gid is None:
+            logger.error(
+                "Serving no server (member of %d, GUILD_ID=%s) — staying idle",
+                len(bot.guilds),
+                config.guild_id,
+            )
+        else:
+            mode = "ACTIVE" if await active.is_active(ctx.db, gid) else "PASSIVE"
+            logger.info("Serving guild %s in %s mode", gid, mode)
         # Story 1.5: validate Notion schema now that Discord is connected
         # (admin log channel may already be configured for error posting)
         if ctx.notion_client is not None:

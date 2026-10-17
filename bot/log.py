@@ -17,6 +17,7 @@ import asyncpg
 import disnake
 from disnake.ext import commands
 
+from bot import guild as served
 from bot.db import config as db_config
 from bot.ui.embeds import AdminLogEmbed, ErrorCode, ErrorEmbed
 
@@ -47,9 +48,9 @@ class AdminLogService:
           - stored value is not a valid integer
           - channel not found or not a TextChannel
         """
-        if not self._bot.guilds:
+        guild_id = served.resolve(self._bot)
+        if guild_id is None:
             return None
-        guild_id = self._bot.guilds[0].id
         try:
             raw = await db_config.get_value(self._db, guild_id, "log_channel")
         except Exception as exc:  # asyncpg errors when DB is unavailable

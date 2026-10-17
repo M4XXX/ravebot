@@ -11,6 +11,8 @@ import logging
 import asyncpg
 from disnake.ext import commands, tasks
 
+from bot import active
+from bot import guild as served
 from bot.context import BotContext
 from bot.ui.embeds import ErrorCode
 
@@ -64,14 +66,11 @@ class OutreachCog(commands.Cog):
             return False
 
     def _get_guild_id(self) -> int | None:
-        """Return the first guild's ID, or None if the bot has no guilds yet.
-
-        [Source: bot/cogs/events.py#_get_guild_id — mirrors this exact pattern]
-        """
-        if not self.bot.guilds:
-            logger.warning("OutreachCog._get_guild_id: bot has no guilds — skipping cycle")
-            return None
-        return self.bot.guilds[0].id
+        """Return the served guild ID (bot.guild), or None if the bot serves none."""
+        guild_id = served.resolve(self.bot)
+        if guild_id is None:
+            logger.warning("OutreachCog._get_guild_id: no served guild — skipping cycle")
+        return guild_id
 
     @tasks.loop(minutes=30)
     async def _outreach_check(self) -> None:
@@ -90,6 +89,8 @@ class OutreachCog(commands.Cog):
         guild_id = self._get_guild_id()
         if guild_id is None:
             return
+        if not await active.is_active(self.ctx.db, guild_id):
+            return  # passive: no outreach DMs
 
         if self.ctx.notion_client is None:
             logger.warning(

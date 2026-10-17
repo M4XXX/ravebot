@@ -16,7 +16,8 @@ from typing import TYPE_CHECKING
 
 import disnake
 
-from bot import schedule
+from bot import active, schedule
+from bot import guild as served
 from bot.db.djs import insert_dj, set_notion_dj_page_id, update_active_booking
 from bot.ui.embeds import ErrorCode
 
@@ -31,7 +32,18 @@ def _is_valid_url(value: str) -> bool:
     return bool(value) and value.startswith(("http://", "https://")) and len(value) > 10
 
 
-class OnboardingIntroView(disnake.ui.View):
+
+class ActiveOnlyView(disnake.ui.View):
+    """Base for every DJ-facing view: buttons do nothing while the bot is passive (bot.active)."""
+
+    async def interaction_check(self, interaction: disnake.MessageInteraction) -> bool:
+        ctx = getattr(self, "ctx", None) or getattr(self, "_ctx", None)
+        if await active.is_active(getattr(ctx, "db", None), served.resolve(interaction.client)):
+            return True
+        await interaction.response.send_message(active.DJ_NOTICE, ephemeral=True)
+        return False
+
+class OnboardingIntroView(ActiveOnlyView):
     """Intro DM view — two buttons sent when DJ role is first detected.
 
     Buttons:
@@ -316,7 +328,7 @@ class OnboardingModal(disnake.ui.Modal):
         )
 
 
-class RetryOnboardingModalView(disnake.ui.View):
+class RetryOnboardingModalView(ActiveOnlyView):
     """Single-button view shown after URL validation failure.
 
     Allows DJ to re-open the onboarding modal without restarting from scratch.
@@ -369,7 +381,7 @@ class RetryOnboardingModalView(disnake.ui.View):
         )
 
 
-class FallbackMenuView(disnake.ui.View):
+class FallbackMenuView(ActiveOnlyView):
     """Fallback help menu — responds to all unrecognised free-text DMs.
 
     Shown when a DJ sends free text outside any active multi-step flow.
@@ -648,7 +660,7 @@ class FallbackMenuView(disnake.ui.View):
             return
 
         # Assign Active Booking role (best-effort — failure does not block confirmation)
-        for guild in inter.client.guilds:
+        for guild in served.served_guilds(inter.client):
             member = guild.get_member(inter.author.id)
             if member is not None:
                 role = disnake.utils.get(guild.roles, name="Active Booking")
@@ -711,7 +723,7 @@ class FallbackMenuView(disnake.ui.View):
         )
 
         # Remove Active Booking role (best-effort — failure does not block confirmation)
-        for guild in inter.client.guilds:
+        for guild in served.served_guilds(inter.client):
             member = guild.get_member(inter.author.id)
             if member is not None:
                 role = disnake.utils.get(guild.roles, name="Active Booking")
@@ -825,7 +837,7 @@ def _filter_events_with_open_slots(events: list[dict]) -> list[dict]:
 # Story 4.1: EventSelectionView
 # ---------------------------------------------------------------------------
 
-class EventSelectionView(disnake.ui.View):
+class EventSelectionView(ActiveOnlyView):
     """Event selection — one button per upcoming event with open slots.
 
     Presented after DJ taps [Book a Slot] from FallbackMenuView.
@@ -941,7 +953,7 @@ class EventSelectionView(disnake.ui.View):
 # Story 4.1: SlotSelectionView
 # ---------------------------------------------------------------------------
 
-class SlotSelectionView(disnake.ui.View):
+class SlotSelectionView(ActiveOnlyView):
     """Slot selection — one button per open slot in the chosen event.
 
     Presented alongside MissionOverviewEmbed after DJ selects an event in
@@ -1061,7 +1073,7 @@ class SlotSelectionView(disnake.ui.View):
 # Story 4.2: BookingConfirmView
 # ---------------------------------------------------------------------------
 
-class BookingConfirmView(disnake.ui.View):
+class BookingConfirmView(ActiveOnlyView):
     """Two-button confirmation view — confirms or cancels a pending slot booking.
 
     Presented alongside BookingConfirmEmbed after DJ selects a slot in
@@ -1357,7 +1369,7 @@ class BookingConfirmView(disnake.ui.View):
 # Story 4.4: CancellationView
 # ---------------------------------------------------------------------------
 
-class CancellationView(disnake.ui.View):
+class CancellationView(ActiveOnlyView):
     """One button per DJ's upcoming booked slot + [Never mind].
 
     Presented after DJ taps [❌ Cancel a Slot] from FallbackMenuView.
@@ -1471,7 +1483,7 @@ class CancellationView(disnake.ui.View):
 # Story 4.4: CancelConfirmView
 # ---------------------------------------------------------------------------
 
-class CancelConfirmView(disnake.ui.View):
+class CancelConfirmView(ActiveOnlyView):
     """Two-button confirmation — confirms or keeps a pending slot cancellation.
 
     Presented alongside the "Are you sure?" message after DJ selects a booking
@@ -1679,7 +1691,7 @@ class CancelConfirmView(disnake.ui.View):
 # ---------------------------------------------------------------------------
 
 
-class OutreachView(disnake.ui.View):
+class OutreachView(ActiveOnlyView):
     """Proactive outreach — two buttons sent with a slot-fill invitation DM.
 
     Timeout: 43200 seconds (12 hours) — per UX-DR2, UX-DR16.

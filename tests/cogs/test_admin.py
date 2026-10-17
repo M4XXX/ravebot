@@ -948,7 +948,7 @@ async def test_config_show_displays_embed_with_all_values(
     embed = call_kwargs.get("embed")
     assert embed is not None
     assert embed.color.value == EmbedColors.NEBULA_WHITE
-    assert len(embed.fields) == 12  # 6 original (7.2) + 5 slot config (7.3) + timezone
+    assert len(embed.fields) == 13  # 6 original (7.2) + 5 slot config (7.3) + timezone + active
 
 
 @pytest.mark.asyncio
@@ -1256,4 +1256,4 @@ async def test_config_show_includes_slot_config_fields(
     embed = call_kwargs.get("embed")
     assert embed is not None
     assert embed.color.value == EmbedColors.NEBULA_WHITE
-    assert len(embed.fields) == 12
+    assert len(embed.fields) == 13

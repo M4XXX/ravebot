@@ -34,3 +34,20 @@ def mock_config() -> Config:
         db_pool_min=2,
         db_pool_max=5,
     )
+
+
+@pytest.fixture(autouse=True)
+def _bot_active_and_serving(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Most tests exercise the active bot in its one served guild.
+
+    Tests marked @pytest.mark.passive skip this and use the real switch and guild lookup
+    (default: passive, see bot/active.py and bot/guild.py).
+    """
+    if request.node.get_closest_marker("passive"):
+        return
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr("bot.active.is_active", AsyncMock(return_value=True))
+    monkeypatch.setattr("bot.guild.serves", lambda bot, guild_id: True)

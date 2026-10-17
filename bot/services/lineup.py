@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 import disnake
 
+from bot import guild as served
 from bot.db.config import get_value, set_value
 from bot.ui.embeds import ErrorCode, MissionRosterEmbed
 
@@ -34,10 +35,10 @@ class LineupService:
         self.log_service = log_service
 
     def _get_guild_id(self) -> int | None:
-        if not self.bot.guilds:
-            logger.warning("LineupService._get_guild_id: no guilds — skipping")
-            return None
-        return self.bot.guilds[0].id
+        guild_id = served.resolve(self.bot)
+        if guild_id is None:
+            logger.warning("LineupService._get_guild_id: no served guild — skipping")
+        return guild_id
 
     async def post_update(self, events: list[dict]) -> None:
         """Post (or edit) the lineup embed to the DJ channel.

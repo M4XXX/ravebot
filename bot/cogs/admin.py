@@ -65,7 +65,7 @@ from datetime import UTC, date, datetime
 import disnake
 from disnake.ext import commands
 
-from bot import schedule
+from bot import active, schedule
 from bot.context import BotContext
 from bot.db import config as db_config
 from bot.db.bookings import get_booked_djs_for_event
@@ -94,6 +94,17 @@ class AdminCog(commands.Cog):
         [Source: epics.md#FR41, NFR6]
         """
         return inter.author.id in self.ctx.config.admin_user_ids
+
+    async def _refuse_if_passive(self, inter: disnake.ApplicationCommandInteraction) -> bool:
+        """Tell the admin and return True when the bot is passive (bot.active).
+
+        Used by every command that contacts DJs or writes bookings/events; read-only
+        commands and /config keep working while passive.
+        """
+        if await active.is_active(self.ctx.db, inter.guild_id):
+            return False
+        await inter.response.send_message(active.PASSIVE_NOTICE, ephemeral=True)
+        return True
 
     async def cog_slash_command_error(
         self,
@@ -490,6 +501,35 @@ class AdminCog(commands.Cog):
     # ---------------------------------------------------------------------------
 
     @config_set_base.sub_command(
+        name="active",
+        description="Turn RaveBot on or off (off = passive: no DMs, outreach, reminders or posts)",
+    )
+    async def config_set_active(
+        self,
+        inter: disnake.ApplicationCommandInteraction,
+        state: str = commands.Param(
+            choices=["on", "off"], description="on = start contacting DJs, off = passive"
+        ),
+    ) -> None:
+        """Switch between passive (default) and active operation for this server."""
+        guild_id = inter.guild_id
+        assert guild_id is not None
+        if self.ctx.db is None:
+            logger.error("AdminCog: DB pool is None in config_set_active")
+            await inter.response.send_message(
+                "Bot is not ready — please try again.", ephemeral=True
+            )
+            return
+        await active.set_active(self.ctx.db, guild_id, state == "on")
+        logger.info("bot_active set to %s by %s", state, inter.author.id)
+        text = (
+            "RaveBot is now ACTIVE — onboarding DMs, outreach, reminders and lineup posts are on."
+            if state == "on"
+            else "RaveBot is now PASSIVE — it will not contact anyone."
+        )
+        await inter.response.send_message(text, ephemeral=True)
+
+    @config_set_base.sub_command(
         name="timezone",
         description="Set the time zone for the event start time (IANA name, default UTC)",
     )
@@ -591,6 +631,7 @@ class AdminCog(commands.Cog):
             ("slot_duration_minutes", "Slot Duration (minutes)", "60"),
             ("default_start_time", "Default Start Time", "20:00"),
             ("timezone", "Timezone", "UTC"),
+            ("bot_active", "Active", "off"),
             ("event_recurrence_cron", "Event Recurrence Cron", "(not set)"),
         ]
 
@@ -638,6 +679,8 @@ class AdminCog(commands.Cog):
         [Source: epics.md#Story 6.2 AC1]
         [Source: bot/services/intervention.py -- InterventionService.start()]
         """
+        if await self._refuse_if_passive(inter):
+            return
         if self.ctx.intervention_service is None:
             await inter.response.send_message(
                 "Bot is not ready — please try again.", ephemeral=True
@@ -666,6 +709,8 @@ class AdminCog(commands.Cog):
         [Source: epics.md#Story 6.2 AC2]
         [Source: bot/services/intervention.py -- InterventionService.send_message()]
         """
+        if await self._refuse_if_passive(inter):
+            return
         if self.ctx.intervention_service is None:
             await inter.response.send_message(
                 "Bot is not ready — please try again.", ephemeral=True
@@ -740,6 +785,8 @@ class AdminCog(commands.Cog):
         [Source: epics.md#Story 6.3 AC1, AC4]
         [Source: bot/services/admin_booking.py -- AdminBookingService.book_slot_override()]
         """
+        if await self._refuse_if_passive(inter):
+            return
         if self.ctx.admin_booking_service is None:
             await inter.response.send_message(
                 "Bot is not ready — please try again.", ephemeral=True
@@ -779,6 +826,8 @@ class AdminCog(commands.Cog):
         [Source: epics.md#Story 6.3 AC2, AC3, AC4]
         [Source: bot/services/admin_booking.py -- AdminBookingService.cancel_slot_override()]
         """
+        if await self._refuse_if_passive(inter):
+            return
         if self.ctx.admin_booking_service is None:
             await inter.response.send_message(
                 "Bot is not ready — please try again.", ephemeral=True
@@ -833,6 +882,8 @@ class AdminCog(commands.Cog):
         [Source: epics.md#Story 6.4 AC1, AC2, AC3, AC4]
         [Source: bot/services/admin_booking.py -- AdminBookingService.set_dj_active_status()]
         """
+        if await self._refuse_if_passive(inter):
+            return
         if self.ctx.admin_booking_service is None:
             await inter.response.send_message(
                 "Bot is not ready — please try again.", ephemeral=True
@@ -1004,6 +1055,8 @@ class AdminCog(commands.Cog):
 
         [Source: epics.md#Story 7.1 AC5, AC6, AC7 — FR40]
         """
+        if await self._refuse_if_passive(inter):
+            return
         if self.ctx.notion_client is None:
             await inter.response.send_message(
                 "Bot is not ready — please try again.", ephemeral=True
