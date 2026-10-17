@@ -151,11 +151,15 @@ class AdminCog(commands.Cog):
             logger.error(
                 "Unexpected error in AdminCog slash command: %s", error, exc_info=True
             )
-            if not inter.response.is_done():
-                await reply(inter, 
+            # reply() answers by follow-up when the command was deferred ("thinking…"),
+            # which otherwise stays on screen forever
+            try:
+                await reply(inter,
                     "Something went wrong — please try again.",
                     ephemeral=True,
                 )
+            except disnake.HTTPException:
+                logger.exception("Could not tell the admin about the failed command")
 
     @commands.slash_command(
         **ADMIN_COMMAND, name="config", description="Bot configuration commands (admin only)"

@@ -11,6 +11,7 @@ Never raises — errors in the log service must not crash the bot.
 [Source: architecture.md#Error Routing: Centralized AdminLogService]
 [Source: epics.md#FR47, NFR11]
 """
+import asyncio
 import logging
 
 import asyncpg
@@ -40,6 +41,8 @@ class AdminLogService:
     def __init__(self, bot: commands.Bot, db: asyncpg.Pool) -> None:
         self._bot = bot
         self._db = db
+        self._transcripts: asyncio.Queue[tuple[str, str, str]] = asyncio.Queue()
+        self._transcript_worker: asyncio.Task[None] | None = None
 
     async def _get_log_channel(self) -> disnake.TextChannel | None:
         """Look up the configured admin log channel.
@@ -201,6 +204,36 @@ class AdminLogService:
             logger.error("Failed to post admin override log: %s", exc)
 
     async def post_dm_transcript(
+        self,
+        dj_name: str,
+        direction: str,
+        content: str,
+    ) -> None:
+        """Queue a DM transcript entry for the admin log channel and return at once.
+
+        Callers mirror a DJ's click before answering it. Posting inline put a config read
+        and a channel send (rate-limited to a few messages per second) in front of the
+        answer, and Discord drops interactions not answered within 3 seconds. One
+        background task posts the queued entries in order.
+        """
+        self._transcripts.put_nowait((dj_name, direction, content))
+        if self._transcript_worker is None or self._transcript_worker.done():
+            self._transcript_worker = asyncio.create_task(self._drain_transcripts())
+
+    async def _drain_transcripts(self) -> None:
+        while not self._transcripts.empty():
+            entry = self._transcripts.get_nowait()
+            try:
+                await self._send_dm_transcript(*entry)
+            except Exception:
+                logger.exception("Posting a DM transcript entry failed")
+
+    async def flush_transcripts(self) -> None:
+        """Wait until every queued transcript entry has been posted."""
+        if self._transcript_worker is not None:
+            await self._transcript_worker
+
+    async def _send_dm_transcript(
         self,
         dj_name: str,
         direction: str,

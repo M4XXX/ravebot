@@ -219,3 +219,29 @@ async def test_passive_outreach_and_reminders_do_nothing() -> None:
     ctx.reminders_service.send_reminders.assert_not_called()
     ctx.notion_client.poll_events.assert_not_called()
     assert ctx.outreach_service.mock_calls == []
+
+
+@pytest.mark.passive
+@pytest.mark.asyncio
+async def test_onboarding_form_submitted_after_switch_to_passive_changes_nothing() -> None:
+    """Opened while active, sent after an organizer switched to passive: no role, no page."""
+    from bot.context import FlowLock
+    from bot.ui.views import OnboardingModal
+
+    ctx = _ctx()
+    lock = FlowLock()
+    await lock.acquire()
+    modal = OnboardingModal(ctx, 555, lock)
+    inter = MagicMock()
+    inter.response.send_message = AsyncMock()
+    inter.response.is_done = MagicMock(return_value=False)
+    inter.text_values = {"dj_name": "X", "vrchat_name": "", "logo_url": "",
+                         "stream_url_primary": "https://twitch.tv/x", "stream_url_backup": ""}
+    with patch("bot.active.get_value", new=AsyncMock(return_value=None)), \
+         patch("bot.guild.resolve", new=lambda bot: GUILD), \
+         patch("bot.db.djs.insert_dj", new=AsyncMock()) as insert:
+        await modal.callback(inter)
+    insert.assert_not_called()
+    assert lock.locked() is False
+    inter.response.send_message.assert_awaited_once()
+    assert inter.response.send_message.call_args.args[0] == active.DJ_NOTICE

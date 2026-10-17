@@ -29,6 +29,7 @@ def make_mock_inter(user_id: int, guild_id: int = 111) -> MagicMock:
     inter.author.id = user_id
     inter.guild_id = guild_id
     inter.response = AsyncMock()
+    inter.response.is_done = MagicMock(return_value=False)  # synchronous in disnake
     return inter
 
 
@@ -1313,3 +1314,16 @@ async def test_passive_check_reads_the_served_server_not_the_command_server(monk
         assert await cog._refuse_if_passive(inter) is True
     finally:
         served.configure(None)
+
+
+@pytest.mark.asyncio
+async def test_cog_error_after_deferral_answers_by_followup() -> None:
+    from bot.cogs.admin import AdminCog
+
+    cog = AdminCog(make_mock_ctx(frozenset({1})))
+    inter = make_mock_inter(user_id=1)
+    inter.response.is_done = MagicMock(return_value=True)  # AutoAck deferred the command
+    inter.followup.send = AsyncMock()
+    await cog.cog_slash_command_error(inter, RuntimeError("boom"))
+    inter.followup.send.assert_awaited_once()
+    inter.response.send_message.assert_not_called()

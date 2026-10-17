@@ -343,8 +343,8 @@ class OnboardingModal(disnake.ui.Modal):
         self._lock.release_if_held()
         try:
             await reply(inter, FLOW_FAILED_TEXT)
-        except disnake.HTTPException:
-            pass
+        except Exception:  # InteractionResponded is a ClientException, not an HTTPException
+            logger.exception("Could not tell user %s that the form failed", self._user_id)
 
     @auto_ack()
     async def callback(self, inter: disnake.ModalInteraction) -> None:
@@ -356,6 +356,13 @@ class OnboardingModal(disnake.ui.Modal):
 
         [Source: epics.md#Story 2.2 AC2, AC4]
         """
+        # The form may have been opened before an organizer switched the bot to passive:
+        # then it must not assign roles or create a Notion page.
+        if not await active.is_active(self._ctx.db, served.resolve(inter.client)):
+            self._lock.release_if_held()
+            await reply(inter, active.DJ_NOTICE, ephemeral=True)
+            return
+
         values = inter.text_values
         dj_name = values["dj_name"].strip()
         vrchat_name = values["vrchat_name"].strip() or None

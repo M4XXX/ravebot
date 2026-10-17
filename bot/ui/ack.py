@@ -51,9 +51,15 @@ class AutoAck:
 
 
 async def reply(inter: disnake.Interaction, *args: Any, **kwargs: Any) -> Any:
-    """inter.response.send_message, or a follow-up once AutoAck deferred the interaction."""
+    """inter.response.send_message, or a follow-up once the interaction was answered or deferred.
+
+    Also outside AutoAck: an error handler runs after the handler's AutoAck has ended, and
+    may find the interaction already deferred.
+    """
     lock = _locks.get(id(inter))
     if lock is None:
+        if inter.response.is_done() is True:
+            return await inter.followup.send(*args, **kwargs)
         return await inter.response.send_message(*args, **kwargs)
     async with lock:
         if inter.response.is_done() is True:

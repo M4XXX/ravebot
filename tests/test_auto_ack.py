@@ -74,3 +74,13 @@ async def test_decorator_wraps_only_real_interactions() -> None:
         assert await handler(None, MagicMock(), real) == "ran"
         assert await handler(None, MagicMock(), MagicMock()) == "ran"
     assert seen == [real]
+
+
+@pytest.mark.asyncio
+async def test_reply_after_autoack_ended_uses_followup_when_already_deferred() -> None:
+    """An error handler runs after the AutoAck block; the 'thinking…' must still be answered."""
+    inter = _inter()
+    await inter.response.defer()
+    await ack.reply(inter, "Something went wrong", ephemeral=True)
+    inter.followup.send.assert_awaited_once_with("Something went wrong", ephemeral=True)
+    inter.response.send_message.assert_not_called()

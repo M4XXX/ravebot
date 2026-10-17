@@ -49,7 +49,7 @@ def _log_service():
 async def test_dm_log_off_mirrors_nothing() -> None:
     svc, channel = _log_service()
     with patch("bot.log.db_config.get_value", new=AsyncMock(return_value="off")):
-        await svc.post_dm_transcript(dj_name="dj", direction="DJ", content="hello")
+        await svc._send_dm_transcript(dj_name="dj", direction="DJ", content="hello")
     channel.send.assert_not_called()
 
 
@@ -57,7 +57,7 @@ async def test_dm_log_off_mirrors_nothing() -> None:
 async def test_long_dm_is_truncated_below_discord_limit() -> None:
     svc, channel = _log_service()
     with patch("bot.log.db_config.get_value", new=AsyncMock(return_value=None)):
-        await svc.post_dm_transcript(dj_name="dj", direction="DJ", content="x" * 5000)
+        await svc._send_dm_transcript(dj_name="dj", direction="DJ", content="x" * 5000)
     sent = channel.send.call_args[0][0]
     assert len(sent) < 2000
     assert sent.endswith("[truncated]")
