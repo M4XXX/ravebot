@@ -120,9 +120,9 @@ async def main() -> None:
 
     bot.add_cog(OnboardingCog(ctx))
     bot.add_cog(BookingCog(ctx))
-    bot.add_cog(OutreachCog(ctx))
+    bot.add_cog(OutreachCog(ctx, bot))
     bot.add_cog(AdminCog(ctx))
-    bot.add_cog(EventsCog(ctx))
+    bot.add_cog(EventsCog(ctx, bot))
 
     @bot.event
     async def on_ready() -> None:  # noqa: RUF029

@@ -23,7 +23,7 @@ async def test_guard_db_returns_false_and_posts_error_when_db_none() -> None:
     log = MagicMock()
     log.post_error = AsyncMock()
     ctx = make_ctx(db=None, log=log)
-    cog = EventsCog(ctx)
+    cog = EventsCog(ctx, MagicMock())
 
     result = await cog._guard_db("test_op")
 
@@ -42,7 +42,7 @@ async def test_guard_db_returns_false_and_posts_error_on_connection_error() -> N
     mock_pool = MagicMock()
     mock_pool.fetchval = AsyncMock(side_effect=asyncpg.PostgresConnectionError("lost"))
     ctx = make_ctx(db=mock_pool, log=log)
-    cog = EventsCog(ctx)
+    cog = EventsCog(ctx, MagicMock())
 
     result = await cog._guard_db("test_op")
 
@@ -59,7 +59,7 @@ async def test_guard_db_returns_true_when_db_healthy() -> None:
     mock_pool = MagicMock()
     mock_pool.fetchval = AsyncMock(return_value=1)
     ctx = make_ctx(db=mock_pool, log=None)
-    cog = EventsCog(ctx)
+    cog = EventsCog(ctx, MagicMock())
 
     result = await cog._guard_db("test_op")
 
@@ -72,7 +72,7 @@ async def test_guard_db_no_log_service_does_not_crash_when_db_none() -> None:
     from bot.cogs.events import EventsCog
 
     ctx = make_ctx(db=None, log=None)
-    cog = EventsCog(ctx)
+    cog = EventsCog(ctx, MagicMock())
 
     result = await cog._guard_db("test_op")
 
@@ -105,7 +105,7 @@ def _make_cog_with_bot(guilds: list = None) -> "EventsCog":
     ctx.log_service = log
     ctx.notion_client = notion
 
-    cog = EventsCog(ctx)
+    cog = EventsCog(ctx, MagicMock())
     mock_bot = MagicMock()
     mock_bot.guilds = guilds if guilds is not None else [MagicMock(id=99999)]
     # disnake sets .bot as a plain attribute via _inject; set directly on the instance

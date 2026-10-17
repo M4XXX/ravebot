@@ -30,8 +30,9 @@ logger = logging.getLogger(__name__)
 class EventsCog(commands.Cog):
     """Notion polling, lineup post updates, and reminder scheduling."""
 
-    def __init__(self, ctx: BotContext) -> None:
+    def __init__(self, ctx: BotContext, bot: commands.Bot) -> None:
         self.ctx = ctx
+        self.bot = bot
 
     def cog_load(self) -> None:
         self._poll_notion.start()
