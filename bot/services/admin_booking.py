@@ -14,7 +14,12 @@ from typing import TYPE_CHECKING
 import disnake
 
 from bot import schedule
-from bot.db.bookings import admin_force_book_slot, get_slot_lock_holder, release_slot_lock
+from bot.db.bookings import (
+    admin_force_book_slot,
+    get_slot_lock_holder,
+    holds_slot_in_event,
+    release_slot_lock,
+)
 from bot.db.djs import get_notion_dj_page_id, update_active_booking
 from bot.notion.client import NotionWriteError
 
@@ -130,28 +135,17 @@ class AdminBookingService:
         event_id = event["id"]
         slot_index = slot_num - 1  # convert to 0-based
 
-        # Step 3: compute slot unix and current DJs relation
+        # Step 3: compute slot unix
         slot_unix = self._get_slot_unix(event, slot_index)
-        current_dj_ids = [
-            rel["id"]
-            for rel in event.get("properties", {}).get("DJs", {}).get("relation", [])
-        ]
 
-        # Step 3b: if the slot is already held by someone else, remove the displaced
-        # DJ's Notion page ID from current_dj_ids so write_booking replaces rather
-        # than appends. Best-effort — failure here is non-fatal.
+        # Step 3b: who holds the slot now? A displaced DJ is unlinked in Notion after the
+        # new booking is written, and gets the slot back if that write fails.
         try:
-            displaced_holder = await get_slot_lock_holder(self.db, event_id, slot_index)
-            if displaced_holder is not None and displaced_holder != dj_id:
-                displaced_notion_id = await get_notion_dj_page_id(
-                    self.db, displaced_holder
-                )
-                if displaced_notion_id is not None:
-                    current_dj_ids = [
-                        pid for pid in current_dj_ids if pid != displaced_notion_id
-                    ]
+            previous_holder = await get_slot_lock_holder(self.db, event_id, slot_index)
         except Exception:
-            logger.warning("admin book: could not check for displaced DJ Notion page ID")
+            logger.exception("admin book: get_slot_lock_holder failed")
+            return False, "Database error checking slot — please try again."
+        displaced = previous_holder if previous_holder not in (None, dj_id) else None
 
         # Step 4: get DJ's Notion page ID (None is acceptable — best-effort)
         try:
@@ -173,20 +167,45 @@ class AdminBookingService:
                 event_id,
                 slot_index,
                 dj_notion_page_id,
-                current_dj_ids,
+                [],
                 event_name,
                 slot_unix,
             )
         except NotionWriteError:
-            # Undo the DB slot claim so the slot isn't orphaned
+            # Undo the DB claim: the slot goes back to whoever held it before
             try:
-                await release_slot_lock(self.db, event_id, slot_index)
+                if previous_holder is None:
+                    await release_slot_lock(self.db, event_id, slot_index, dj_id)
+                elif displaced is not None:
+                    await admin_force_book_slot(self.db, event_id, slot_index, displaced)
             except Exception:
-                logger.exception("admin book: release_slot_lock failed after Notion error")
+                logger.exception("admin book: could not undo the slot claim after Notion error")
             return False, "Notion write failed after 3 attempts — please try again."
 
-        # Step 7: DM the DJ (non-fatal)
         slot_display = f"<t:{slot_unix}:f>" if slot_unix else "your slot"
+
+        # Step 6b: the displaced DJ leaves the Notion lineup unless they keep another slot
+        if displaced is not None:
+            try:
+                if not await holds_slot_in_event(self.db, event_id, displaced):
+                    await self.notion_client.delete_booking(
+                        event_id,
+                        await get_notion_dj_page_id(self.db, displaced),
+                        [],
+                        event_name,
+                        slot_unix,
+                    )
+            except Exception:
+                logger.exception(
+                    "admin book: could not unlink displaced DJ %s in Notion", displaced
+                )
+            await self._dm_dj(
+                displaced,
+                f"An organizer has given your slot for {event_name} at {slot_display} "
+                "to another DJ.",
+            )
+
+        # Step 7: DM the DJ (non-fatal)
         await self._dm_dj(
             dj_id,
             f"An organizer has booked you for {event_name} at {slot_display}.",
@@ -253,52 +272,42 @@ class AdminBookingService:
         if holder != dj_id:
             return False, f"No booking found for @{dj_name} in that slot."
 
-        # Step 4: compute slot unix and current DJs relation
+        # Step 4: compute slot unix
         slot_unix = self._get_slot_unix(event, slot_index)
-        current_dj_ids = [
-            rel["id"]
-            for rel in event.get("properties", {}).get("DJs", {}).get("relation", [])
-        ]
 
-        # Step 5: get DJ's Notion page ID
+        # Step 5: free the slot, but only if it is still this DJ's (it may have changed
+        # hands since the check above)
         try:
-            dj_notion_page_id = await get_notion_dj_page_id(self.db, dj_id)
-        except Exception:
-            logger.warning("admin cancel: get_notion_dj_page_id failed for %s", dj_id)
-            dj_notion_page_id = None
-
-        # Step 6: delete booking from Notion (retry x3 built in)
-        notion_error: Exception | None = None
-        try:
-            await self.notion_client.delete_booking(
-                event_id,
-                dj_notion_page_id,
-                current_dj_ids,
-                event_name,
-                slot_unix,
-            )
-        except NotionWriteError as exc:
-            # Log but do NOT return yet — slot must always be freed (AC2)
-            logger.error("admin cancel: Notion delete_booking failed: %s", exc)
-            notion_error = exc
-
-        # Step 7: always release slot lock even if Notion write failed
-        try:
-            await release_slot_lock(self.db, event_id, slot_index)
+            freed = await release_slot_lock(self.db, event_id, slot_index, dj_id)
         except Exception:
             logger.exception("admin cancel: release_slot_lock failed")
+            return False, "Database error releasing slot — please try again."
+        if not freed:
+            return False, f"No booking found for @{dj_name} in that slot."
 
-        if notion_error is not None:
-            return False, "Notion write failed — slot lock released but Notion may be out of sync."
+        # Step 6: unlink the DJ in Notion unless they keep another slot of this event
+        notion_error: Exception | None = None
+        try:
+            if not await holds_slot_in_event(self.db, event_id, dj_id):
+                await self.notion_client.delete_booking(
+                    event_id,
+                    await get_notion_dj_page_id(self.db, dj_id),
+                    [],
+                    event_name,
+                    slot_unix,
+                )
+        except Exception as exc:
+            logger.error("admin cancel: Notion unlink failed: %s", exc)
+            notion_error = exc
 
-        # Step 8: DM the DJ (non-fatal)
+        # Step 7: DM the DJ (non-fatal)
         slot_display = f"<t:{slot_unix}:f>" if slot_unix else "your slot"
         await self._dm_dj(
             dj_id,
             f"An organizer has cancelled your booking for {event_name} at {slot_display}.",
         )
 
-        # Step 9: log override to admin channel
+        # Step 8: log override to admin channel
         if self.log_service is not None:
             msg = (
                 f"[ADMIN OVERRIDE] @{admin_name} cancelled @{dj_name}"
@@ -306,6 +315,11 @@ class AdminBookingService:
             )
             await self.log_service.post_admin_override(msg)
 
+        if notion_error is not None:
+            return False, (
+                "Slot released, but Notion could not be updated — "
+                "please unlink the DJ there by hand."
+            )
         return True, ""
 
     async def set_dj_active_status(

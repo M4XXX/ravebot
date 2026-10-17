@@ -9,12 +9,14 @@ throw-away database, e.g.
     RAVEBOT_TEST_POSTGRES_URL=postgresql://ravebot:test@127.0.0.1:55432/ravebot_test \\
         uv run pytest -m pg
 
-The schema is dropped and recreated with alembic; never point this at real data.
+The schema is dropped and recreated with alembic; never point this at real data. As a
+guard the database name must end in "_test", anything else is refused before alembic runs.
 """
 import asyncio
 import os
 import subprocess
 import sys
+from urllib.parse import urlparse
 
 import pytest
 
@@ -27,6 +29,9 @@ pytestmark = [
 
 
 def _alembic(*args: str) -> None:
+    database = urlparse(URL or "").path.lstrip("/")
+    if not database.endswith("_test"):
+        pytest.exit(f"refusing to drop the schema of '{database}': the name must end in _test")
     env = {**os.environ, "POSTGRES_URL": URL or ""}
     subprocess.run([sys.executable, "-m", "alembic", *args], check=True, env=env,
                    capture_output=True, text=True)
@@ -111,3 +116,40 @@ async def test_config_round_trip(pool) -> None:
     assert await active.is_active(pool, 42) is True
     await set_value(pool, 42, "timezone", "Europe/Berlin")
     assert await get_value(pool, 42, "timezone") == "Europe/Berlin"
+
+
+async def test_release_frees_only_the_holders_own_slot(pool) -> None:
+    from bot.db.bookings import (
+        acquire_slot_lock,
+        get_slot_lock_holder,
+        init_event_slots,
+        release_slot_lock,
+    )
+
+    await init_event_slots(pool, "evt", 6)
+    assert await acquire_slot_lock(pool, "evt", 0, 111)
+    assert await release_slot_lock(pool, "evt", 0, 222) is False  # stale button of another DJ
+    assert await get_slot_lock_holder(pool, "evt", 0) == 111
+    assert await release_slot_lock(pool, "evt", 0, 111) is True
+    assert await release_slot_lock(pool, "evt", 0, 111) is False  # second tap frees nothing
+    assert await release_slot_lock(pool, "evt", 5) is False       # never booked
+
+
+async def test_holds_slot_in_event_counts_every_slot_of_the_dj(pool) -> None:
+    from bot.db.bookings import (
+        acquire_slot_lock,
+        holds_slot_in_event,
+        init_event_slots,
+        release_slot_lock,
+    )
+
+    await init_event_slots(pool, "evt", 6)
+    await init_event_slots(pool, "other", 6)
+    assert await acquire_slot_lock(pool, "evt", 0, 111)
+    assert await acquire_slot_lock(pool, "evt", 3, 111)
+    assert await acquire_slot_lock(pool, "other", 1, 222)
+    await release_slot_lock(pool, "evt", 0, 111)
+    assert await holds_slot_in_event(pool, "evt", 111) is True
+    await release_slot_lock(pool, "evt", 3, 111)
+    assert await holds_slot_in_event(pool, "evt", 111) is False
+    assert await holds_slot_in_event(pool, "evt", 222) is False

@@ -1444,7 +1444,7 @@ class BookingConfirmView(ActiveOnlyView):
             )
         except NotionWriteError:
             # Undo the DB slot lock so the slot is available again
-            await release_slot_lock(self._ctx.db, event_id, self._slot_index)
+            await release_slot_lock(self._ctx.db, event_id, self._slot_index, self._user_id)
             self._release_lock()
             await reply(inter, 
                 "Something went wrong saving your booking — please try again in a moment.",
@@ -1693,7 +1693,7 @@ class CancelConfirmView(ActiveOnlyView):
         [Source: architecture.md#Slot Booking Atomicity]
         [Source: architecture.md#Gap Analysis — PG lock vs Notion write boundary]
         """
-        from bot.db.bookings import release_slot_lock
+        from bot.db.bookings import holds_slot_in_event, release_slot_lock
         from bot.db.djs import get_notion_dj_page_id
         from bot.notion.client import NotionWriteError
 
@@ -1726,46 +1726,39 @@ class CancelConfirmView(ActiveOnlyView):
         except (KeyError, IndexError):
             event_name = "Unknown Event"
 
-        # Fetch fresh event data for current DJs relation — best-effort
-        event_for_write = self._event
-        try:
-            fresh_events = await self._ctx.notion_client.poll_events()
-            for fresh_event in fresh_events:
-                if fresh_event.get("id") == event_id:
-                    event_for_write = fresh_event
-                    break
-        except Exception:
-            logger.exception("CancelConfirmView: poll_events failed — using stale event data")
-
-        # Extract current DJs relation IDs
-        try:
-            current_dj_ids = [
-                r["id"] for r in event_for_write["properties"]["DJs"]["relation"]
-            ]
-        except (KeyError, TypeError):
-            current_dj_ids = []
-
-        # Remove from Notion — best-effort; slot lock MUST be freed regardless
-        try:
-            await self._ctx.notion_client.delete_booking(
-                event_id=event_id,
-                dj_notion_page_id=dj_notion_page_id,
-                current_dj_ids=current_dj_ids,
-                event_name=event_name,
-                slot_unix=self._slot_unix,
-            )
-        except NotionWriteError:
-            # Free the slot lock even on Notion failure — slot must become available
-            await release_slot_lock(self._ctx.db, event_id, self._slot_index)
+        # Free the slot first, and only if it is still this DJ's: a second tap on an old
+        # cancel button must never free a slot another DJ booked in the meantime.
+        freed = await release_slot_lock(
+            self._ctx.db, event_id, self._slot_index, self._user_id
+        )
+        if not freed:
             self._release_lock()
-            await reply(inter, 
-                "Something went wrong cancelling your booking — please try again in a moment.",
+            await reply(inter,
+                "This slot is no longer booked by you — nothing was changed.",
                 ephemeral=True,
             )
             return
 
-        # Free the slot_locks DB row — slot is now open (AC4)
-        await release_slot_lock(self._ctx.db, event_id, self._slot_index)
+        # Notion lists each DJ once per event, so the link stays while another slot is held.
+        try:
+            unlink = not await holds_slot_in_event(self._ctx.db, event_id, self._user_id)
+        except Exception:
+            logger.exception("CancelConfirmView: could not check other slots — keeping Notion link")
+            unlink = False
+
+        if unlink:
+            try:
+                await self._ctx.notion_client.delete_booking(
+                    event_id=event_id,
+                    dj_notion_page_id=dj_notion_page_id,
+                    current_dj_ids=[],
+                    event_name=event_name,
+                    slot_unix=self._slot_unix,
+                )
+            except NotionWriteError:
+                # The slot is free; only the Notion entry lags behind. The client has posted
+                # the error to the log channel and the reconcile check keeps reporting the drift.
+                logger.error("CancelConfirmView: slot freed but Notion unlink failed")
 
         # Confirmation message (AC4)
         await reply(inter, 
