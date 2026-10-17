@@ -17,6 +17,7 @@ from bot import schedule
 from bot.db.bookings import (
     admin_force_book_slot,
     get_slot_lock_holder,
+    hand_back_slot,
     holds_slot_in_event,
     release_slot_lock,
 )
@@ -112,7 +113,7 @@ class AdminBookingService:
             slot_num:   1-based slot number.
 
         Returns:
-            (True, "") on success.
+            (True, "") on success, or (True, note) when it worked but needs a look in Notion.
             (False, error_message) on any failure.
 
         [Source: epics.md#Story 6.3 AC1]
@@ -172,19 +173,30 @@ class AdminBookingService:
                 slot_unix,
             )
         except NotionWriteError:
-            # Undo the DB claim: the slot goes back to whoever held it before
+            # Undo the DB claim: the slot goes back to whoever held it before, but only
+            # while it is still ours (the retries take up to ~30 s; it may have changed hands)
+            undone = True
             try:
                 if previous_holder is None:
                     await release_slot_lock(self.db, event_id, slot_index, dj_id)
                 elif displaced is not None:
-                    await admin_force_book_slot(self.db, event_id, slot_index, displaced)
+                    undone = await hand_back_slot(
+                        self.db, event_id, slot_index, dj_id, displaced
+                    )
             except Exception:
                 logger.exception("admin book: could not undo the slot claim after Notion error")
+                undone = False
+            if not undone:
+                return False, (
+                    "Notion write failed, and the slot could not be given back to the DJ who "
+                    "had it — check it with /ravebot-status."
+                )
             return False, "Notion write failed after 3 attempts — please try again."
 
         slot_display = f"<t:{slot_unix}:f>" if slot_unix else "your slot"
 
         # Step 6b: the displaced DJ leaves the Notion lineup unless they keep another slot
+        note = ""
         if displaced is not None:
             try:
                 if not await holds_slot_in_event(self.db, event_id, displaced):
@@ -198,6 +210,10 @@ class AdminBookingService:
             except Exception:
                 logger.exception(
                     "admin book: could not unlink displaced DJ %s in Notion", displaced
+                )
+                note = (
+                    "The DJ who had this slot may still be linked to the event in Notion — "
+                    "please check it there."
                 )
             await self._dm_dj(
                 displaced,
@@ -219,7 +235,7 @@ class AdminBookingService:
             )
             await self.log_service.post_admin_override(msg)
 
-        return True, ""
+        return True, note
 
     async def cancel_slot_override(
         self,

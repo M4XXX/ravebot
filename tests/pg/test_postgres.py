@@ -118,3 +118,26 @@ async def test_holds_slot_in_event_counts_every_slot_of_the_dj(pool) -> None:
     await release_slot_lock(pool, "evt", 3, 111)
     assert await holds_slot_in_event(pool, "evt", 111) is False
     assert await holds_slot_in_event(pool, "evt", 222) is False
+
+
+async def test_hand_back_only_while_the_forced_dj_still_holds_the_slot(pool) -> None:
+    from bot.db.bookings import (
+        acquire_slot_lock,
+        admin_force_book_slot,
+        get_slot_lock_holder,
+        hand_back_slot,
+        init_event_slots,
+        release_slot_lock,
+    )
+
+    await init_event_slots(pool, "evt", 6)
+    assert await acquire_slot_lock(pool, "evt", 0, 111)   # A
+    await admin_force_book_slot(pool, "evt", 0, 222)      # admin gives it to B
+    assert await hand_back_slot(pool, "evt", 0, 222, 111) is True
+    assert await get_slot_lock_holder(pool, "evt", 0) == 111
+
+    await admin_force_book_slot(pool, "evt", 0, 222)      # again, but meanwhile
+    assert await release_slot_lock(pool, "evt", 0, 222)   # B cancels
+    assert await acquire_slot_lock(pool, "evt", 0, 333)   # and C books
+    assert await hand_back_slot(pool, "evt", 0, 222, 111) is False
+    assert await get_slot_lock_holder(pool, "evt", 0) == 333

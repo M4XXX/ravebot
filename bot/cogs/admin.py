@@ -870,10 +870,8 @@ class AdminCog(commands.Cog):
             slot_num=slot,
         )
         if success:
-            await reply(inter, 
-                f"Done — {dj.mention} booked into slot {slot} of '{event}'.",
-                ephemeral=True,
-            )
+            done = f"Done — {dj.mention} booked into slot {slot} of '{event}'."
+            await reply(inter, f"{done}\n{msg}" if msg else done, ephemeral=True)
         else:
             await reply(inter, msg, ephemeral=True)
 

@@ -199,6 +199,33 @@ async def admin_force_book_slot(
     )
 
 
+async def hand_back_slot(
+    pool: asyncpg.Pool,
+    event_id: str,
+    slot_index: int,
+    from_user_id: int,
+    to_user_id: int,
+) -> bool:
+    """Give a slot back from one DJ to another, only if the first still holds it.
+
+    Undoes an admin force-book whose Notion write failed. Between the force-book and the
+    undo the slot may have been cancelled and booked by someone else; that booking stays.
+    Returns True if the slot was handed back.
+    """
+    status = await pool.execute(
+        """
+        UPDATE slot_locks
+        SET discord_user_id = $4, booked_at = NOW()
+        WHERE event_id = $1 AND slot_index = $2 AND discord_user_id = $3
+        """,
+        event_id,
+        slot_index,
+        from_user_id,
+        to_user_id,
+    )
+    return status != "UPDATE 0"
+
+
 async def init_event_slots(
     pool: asyncpg.Pool,
     event_id: str,

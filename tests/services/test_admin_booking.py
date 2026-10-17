@@ -140,9 +140,10 @@ async def test_book_slot_override_notion_failure_gives_slot_back_to_displaced_dj
     """A failed force-book over an occupied slot restores the previous holder."""
     svc = _make_service()
 
-    force_book_mock = AsyncMock()
+    hand_back = AsyncMock(return_value=True)
     release_mock = AsyncMock()
-    monkeypatch.setattr("bot.services.admin_booking.admin_force_book_slot", force_book_mock)
+    monkeypatch.setattr("bot.services.admin_booking.admin_force_book_slot", AsyncMock())
+    monkeypatch.setattr("bot.services.admin_booking.hand_back_slot", hand_back)
     monkeypatch.setattr("bot.services.admin_booking.release_slot_lock", release_mock)
     monkeypatch.setattr(
         "bot.services.admin_booking.get_slot_lock_holder", AsyncMock(return_value=999)
@@ -152,14 +153,39 @@ async def test_book_slot_override_notion_failure_gives_slot_back_to_displaced_dj
     )
     svc.notion_client.write_booking = AsyncMock(side_effect=NotionWriteError("failed"))
 
-    success, _ = await svc.book_slot_override(
+    success, msg = await svc.book_slot_override(
         admin_name="Admin", dj_id=42, dj_name="DJ X", event_name="Rave Night #12", slot_num=1
     )
 
     assert success is False
-    assert force_book_mock.await_args_list[-1].args == (svc.db, "evt-001", 0, 999)
+    assert "try again" in msg
+    hand_back.assert_awaited_once_with(svc.db, "evt-001", 0, 42, 999)
     release_mock.assert_not_awaited()
     svc.notion_client.delete_booking.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_book_slot_override_rollback_tells_admin_when_the_slot_changed_hands(monkeypatch):
+    """The slot was cancelled and rebooked during the Notion retries: nobody loses it."""
+    svc = _make_service()
+    monkeypatch.setattr("bot.services.admin_booking.admin_force_book_slot", AsyncMock())
+    monkeypatch.setattr(
+        "bot.services.admin_booking.hand_back_slot", AsyncMock(return_value=False)
+    )
+    monkeypatch.setattr(
+        "bot.services.admin_booking.get_slot_lock_holder", AsyncMock(return_value=999)
+    )
+    monkeypatch.setattr(
+        "bot.services.admin_booking.get_notion_dj_page_id", AsyncMock(return_value=None)
+    )
+    svc.notion_client.write_booking = AsyncMock(side_effect=NotionWriteError("failed"))
+
+    success, msg = await svc.book_slot_override(
+        admin_name="Admin", dj_id=42, dj_name="DJ X", event_name="Rave Night #12", slot_num=1
+    )
+
+    assert success is False
+    assert "could not be given back" in msg
 
 
 @pytest.mark.asyncio
@@ -541,3 +567,28 @@ async def test_set_dj_active_status_role_http_exception_nonfatal(monkeypatch):
 
     assert success is True
     assert msg == ""
+
+
+@pytest.mark.asyncio
+async def test_book_slot_override_says_so_when_the_displaced_dj_could_not_be_unlinked(monkeypatch):
+    """Success, but the admin is told to check Notion instead of being left in the dark."""
+    svc = _make_service()
+    monkeypatch.setattr("bot.services.admin_booking.admin_force_book_slot", AsyncMock())
+    monkeypatch.setattr(
+        "bot.services.admin_booking.get_slot_lock_holder", AsyncMock(return_value=999)
+    )
+    monkeypatch.setattr(
+        "bot.services.admin_booking.get_notion_dj_page_id", AsyncMock(return_value="x")
+    )
+    monkeypatch.setattr(
+        "bot.services.admin_booking.holds_slot_in_event",
+        AsyncMock(side_effect=ConnectionError("db hiccup")),
+    )
+
+    success, msg = await svc.book_slot_override(
+        admin_name="Admin", dj_id=42, dj_name="DJ New", event_name="Rave Night #12", slot_num=1
+    )
+
+    assert success is True
+    assert "check it there" in msg
+    svc.notion_client.delete_booking.assert_not_awaited()
