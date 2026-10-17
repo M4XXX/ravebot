@@ -11,7 +11,9 @@ RULE: Every View subclass MUST:
   3. Acquire user's asyncio.Lock on entry; release on completion, abandonment, and in on_timeout()
 """
 import asyncio
+import functools
 import logging
+import uuid
 from typing import TYPE_CHECKING
 
 import disnake
@@ -52,15 +54,84 @@ async def is_registered_dj(ctx: "BotContext", inter: disnake.Interaction) -> boo
     member = guild.get_member(inter.author.id) if guild is not None else None
     return member is not None and any(r.name.lower() == "dj" for r in member.roles)
 
+STALE_MENU_TEXT = "This menu is out of date — send me any message to start over."
+NOT_YOUR_MENU_TEXT = "This menu belongs to someone else."
+
+
 class ActiveOnlyView(disnake.ui.View):
-    """Base for every DJ-facing view: buttons do nothing while the bot is passive (bot.active)."""
+    """Base for every DJ-facing view.
+
+    - Buttons do nothing while the bot is passive (bot.active).
+    - Non-persistent views (declared without persistent=True) are single-use and get
+      per-instance custom_ids. disnake stores views sent as interaction responses under
+      (type, None, custom_id); with static IDs the newest view of another DJ answered
+      this DJ's click, acting on the other DJ's slot.
+    - A view only reacts to the DJ it was made for, and only while the DJ's flow lock is
+      still in the generation the view was created in.
+    """
+
+    persistent = False
+
+    def __init_subclass__(cls, persistent: bool = False, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        cls.persistent = persistent
+        original = cls.__init__
+
+        @functools.wraps(original)
+        def __init__(self: "ActiveOnlyView", *args: object, **kw: object) -> None:
+            original(self, *args, **kw)
+            if type(self) is cls:
+                self._after_init()
+
+        cls.__init__ = __init__  # type: ignore[method-assign]
+
+    def _after_init(self) -> None:
+        self._used = False
+        lock = getattr(self, "_lock", None)
+        self._lock_generation = getattr(lock, "generation", None)
+        if not self.persistent:
+            nonce = uuid.uuid4().hex[:8]
+            for item in self.children:
+                custom_id = getattr(item, "custom_id", None)
+                if custom_id:
+                    item.custom_id = f"{custom_id}~{nonce}"[:100]  # type: ignore[union-attr]
+
+    def _release_lock(self) -> None:
+        """Release the DJ's flow lock, but only if it still belongs to this view's flow."""
+        lock = getattr(self, "_lock", None)
+        if lock is None or getattr(lock, "generation", None) != self._lock_generation:
+            return
+        if lock.locked():
+            lock.release()
+
+    def _owner_id(self) -> int | None:
+        for attr in ("_user_id", "user_id", "_discord_user_id"):
+            value = getattr(self, attr, None)
+            if value:
+                return value
+        return None
 
     async def interaction_check(self, interaction: disnake.MessageInteraction) -> bool:
+        owner = self._owner_id()
+        if owner is not None and interaction.author.id != owner:
+            await interaction.response.send_message(NOT_YOUR_MENU_TEXT, ephemeral=True)
+            return False
+        lock = getattr(self, "_lock", None)
+        generation = getattr(self, "_lock_generation", None)
+        if not self.persistent and (
+            getattr(self, "_used", False)
+            or (lock is not None and generation is not None and lock.generation != generation)
+        ):
+            await interaction.response.send_message(STALE_MENU_TEXT, ephemeral=True)
+            return False
         ctx = getattr(self, "ctx", None) or getattr(self, "_ctx", None)
-        if await active.is_active(getattr(ctx, "db", None), served.resolve(interaction.client)):
-            return True
-        await interaction.response.send_message(active.DJ_NOTICE, ephemeral=True)
-        return False
+        if not await active.is_active(getattr(ctx, "db", None), served.resolve(interaction.client)):
+            await interaction.response.send_message(active.DJ_NOTICE, ephemeral=True)
+            return False
+        if not self.persistent:
+            self._used = True  # single-use: the handler below runs once, later clicks are refused
+            self.stop()
+        return True
 
     async def on_error(
         self, error: Exception, item: disnake.ui.Item, interaction: disnake.MessageInteraction
@@ -83,7 +154,7 @@ class ActiveOnlyView(disnake.ui.View):
 FLOW_FAILED_TEXT = "Something went wrong on my side — send me any message to start over."
 
 
-class StartOverView(ActiveOnlyView):
+class StartOverView(ActiveOnlyView, persistent=True):
     """Shown when a DJ writes while a flow is still open: one button to drop it."""
 
     def __init__(self, ctx: "BotContext") -> None:
@@ -101,7 +172,7 @@ class StartOverView(ActiveOnlyView):
             "Done — here's what I can do for you:", view=FallbackMenuView(self.ctx)
         )
 
-class OnboardingIntroView(ActiveOnlyView):
+class OnboardingIntroView(ActiveOnlyView, persistent=True):
     """Intro DM view — two buttons sent when DJ role is first detected.
 
     Buttons:
@@ -454,7 +525,7 @@ class RetryOnboardingModalView(ActiveOnlyView):
         )
 
 
-class FallbackMenuView(ActiveOnlyView):
+class FallbackMenuView(ActiveOnlyView, persistent=True):
     """Fallback help menu — responds to all unrecognised free-text DMs.
 
     Shown when a DJ sends free text outside any active multi-step flow.
@@ -968,8 +1039,7 @@ class EventSelectionView(ActiveOnlyView):
 
     async def _handle_cancel(self, inter: disnake.MessageInteraction) -> None:
         """[Never mind] — release lock and respond warmly. (AC5)"""
-        if self._lock.locked():
-            self._lock.release()
+        self._release_lock()
         await reply(inter, 
             "No problem — nothing was booked.",
             ephemeral=True,
@@ -1003,7 +1073,7 @@ class EventSelectionView(ActiveOnlyView):
             await reply(inter, embed=embed, view=slot_view, ephemeral=True)
         except Exception:
             logger.exception("_handle_event: send_message failed")
-            self._lock.release()
+            self._release_lock()
 
 
 # ---------------------------------------------------------------------------
@@ -1077,8 +1147,7 @@ class SlotSelectionView(ActiveOnlyView):
 
     async def _handle_cancel(self, inter: disnake.MessageInteraction) -> None:
         """[Never mind] — release lock and respond warmly. (AC5)"""
-        if self._lock.locked():
-            self._lock.release()
+        self._release_lock()
         await reply(inter, 
             "No problem — nothing was booked.",
             ephemeral=True,
@@ -1123,8 +1192,7 @@ class SlotSelectionView(ActiveOnlyView):
             await reply(inter, embed=embed, view=view, ephemeral=True)
         except Exception:
             logger.exception("_handle_slot: send_message failed")
-            if self._lock.locked():
-                self._lock.release()
+            self._release_lock()
 
 
 # ---------------------------------------------------------------------------
@@ -1224,8 +1292,7 @@ class BookingConfirmView(ActiveOnlyView):
 
     async def _handle_cancel(self, inter: disnake.MessageInteraction) -> None:
         """[✖ Cancel] — release per-user lock and respond warmly. (AC4)"""
-        if self._lock.locked():
-            self._lock.release()
+        self._release_lock()
         await reply(inter, 
             "No problem — nothing was booked.",
             ephemeral=True,
@@ -1246,8 +1313,7 @@ class BookingConfirmView(ActiveOnlyView):
 
         # Guard: DB must be available (AC6)
         if self._ctx.db is None:
-            if self._lock.locked():
-                self._lock.release()
+            self._release_lock()
             await reply(inter, 
                 "Something went wrong on our end — please try again in a moment.",
                 ephemeral=True,
@@ -1258,8 +1324,7 @@ class BookingConfirmView(ActiveOnlyView):
 
         # Guard: Notion client must be available — without it we cannot write the booking (AC2)
         if self._ctx.notion_client is None:
-            if self._lock.locked():
-                self._lock.release()
+            self._release_lock()
             await reply(inter, 
                 "Something went wrong on our end — please try again in a moment.",
                 ephemeral=True,
@@ -1279,8 +1344,7 @@ class BookingConfirmView(ActiveOnlyView):
             logger.exception(
                 "BookingConfirmView: acquire_slot_lock raised — transaction rolled back"
             )
-            if self._lock.locked():
-                self._lock.release()
+            self._release_lock()
             await reply(inter, 
                 "Something went wrong — please try again.",
                 ephemeral=True,
@@ -1334,8 +1398,7 @@ class BookingConfirmView(ActiveOnlyView):
             ]
 
             if not remaining:
-                if self._lock.locked():
-                    self._lock.release()
+                self._release_lock()
                 await reply(inter, 
                     "Sorry, all slots for this event are now fully booked.",
                     ephemeral=True,
@@ -1382,8 +1445,7 @@ class BookingConfirmView(ActiveOnlyView):
         except NotionWriteError:
             # Undo the DB slot lock so the slot is available again
             await release_slot_lock(self._ctx.db, event_id, self._slot_index)
-            if self._lock.locked():
-                self._lock.release()
+            self._release_lock()
             await reply(inter, 
                 "Something went wrong saving your booking — please try again in a moment.",
                 ephemeral=True,
@@ -1416,8 +1478,7 @@ class BookingConfirmView(ActiveOnlyView):
                 logger.exception("BookingConfirmView: admin log post failed")
 
         # Release per-user lock — flow complete (AC3)
-        if self._lock.locked():
-            self._lock.release()
+        self._release_lock()
 
 
 # ---------------------------------------------------------------------------
@@ -1494,8 +1555,7 @@ class CancellationView(ActiveOnlyView):
 
     async def _handle_never_mind(self, inter: disnake.MessageInteraction) -> None:
         """[Never mind] — release lock and respond warmly."""
-        if self._lock.locked():
-            self._lock.release()
+        self._release_lock()
         await reply(inter, 
             "No problem — nothing was changed.",
             ephemeral=True,
@@ -1531,8 +1591,7 @@ class CancellationView(ActiveOnlyView):
             )
         except Exception:
             logger.exception("CancellationView: send_message failed")
-            if self._lock.locked():
-                self._lock.release()
+            self._release_lock()
 
 
 # ---------------------------------------------------------------------------
@@ -1620,8 +1679,7 @@ class CancelConfirmView(ActiveOnlyView):
 
     async def _handle_keep(self, inter: disnake.MessageInteraction) -> None:
         """[✖ Keep It] — release per-user lock and respond warmly. (AC5)"""
-        if self._lock.locked():
-            self._lock.release()
+        self._release_lock()
         await reply(inter, 
             "No changes made — you're still booked.",
             ephemeral=True,
@@ -1643,8 +1701,7 @@ class CancelConfirmView(ActiveOnlyView):
 
         # Guard: DB must be available
         if self._ctx.db is None:
-            if self._lock.locked():
-                self._lock.release()
+            self._release_lock()
             await reply(inter, 
                 "Something went wrong on our end — please try again in a moment.",
                 ephemeral=True,
@@ -1653,8 +1710,7 @@ class CancelConfirmView(ActiveOnlyView):
 
         # Guard: Notion client must be available
         if self._ctx.notion_client is None:
-            if self._lock.locked():
-                self._lock.release()
+            self._release_lock()
             await reply(inter, 
                 "Something went wrong on our end — please try again in a moment.",
                 ephemeral=True,
@@ -1701,8 +1757,7 @@ class CancelConfirmView(ActiveOnlyView):
         except NotionWriteError:
             # Free the slot lock even on Notion failure — slot must become available
             await release_slot_lock(self._ctx.db, event_id, self._slot_index)
-            if self._lock.locked():
-                self._lock.release()
+            self._release_lock()
             await reply(inter, 
                 "Something went wrong cancelling your booking — please try again in a moment.",
                 ephemeral=True,
@@ -1739,8 +1794,7 @@ class CancelConfirmView(ActiveOnlyView):
                 logger.exception("CancelConfirmView: admin log post failed")
 
         # Release per-user lock — flow complete (AC4)
-        if self._lock.locked():
-            self._lock.release()
+        self._release_lock()
 
 
 # ---------------------------------------------------------------------------

@@ -35,10 +35,13 @@ class FlowLock(asyncio.Lock):
     def __init__(self) -> None:
         super().__init__()
         self.acquired_at: float | None = None
+        # Bumped on every acquire; views remember it, so menus of an older flow go inert.
+        self.generation = 0
 
     async def acquire(self) -> bool:
         result = await super().acquire()
         self.acquired_at = time.monotonic()
+        self.generation += 1
         return result
 
     def release(self) -> None:
