@@ -60,3 +60,21 @@ def served_guilds(bot: Any) -> list:
     """The served guild as a 0- or 1-element list, for code that used to loop over bot.guilds."""
     g = served_guild(bot)
     return [g] if g is not None else []
+
+
+# The bot's own Discord name, for texts that name it; organizers rename the app freely.
+_name = "RaveBot"
+
+
+def remember_name(bot: Any) -> None:
+    """Take the bot's current Discord name (called when the bot is ready)."""
+    global _name
+    user = getattr(bot, "user", None)
+    name = getattr(user, "name", None)
+    if isinstance(name, str) and name:
+        _name = name
+
+
+def bot_name() -> str:
+    """The bot's Discord name ("RaveBot" until the bot is ready)."""
+    return _name

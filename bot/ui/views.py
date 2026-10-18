@@ -39,9 +39,12 @@ def _is_valid_url(value: str) -> bool:
 
 
 
-ONBOARDING_INTRO_TEXT = (
-    "Hey! I'm RaveBot and I handle the DJ bookings here. Want me to add you to the booking pool?"
-)
+def onboarding_intro_text() -> str:
+    """The intro DM, with the bot's own Discord name (organizers rename the app)."""
+    return (
+        f"Hey! I'm {served.bot_name()} and I handle the DJ bookings here. "
+        "Want me to add you to the booking pool?"
+    )
 
 NOT_REGISTERED_TEXT = (
     "You're not set up as a DJ here yet. Ask an organizer for the DJ role, "
@@ -465,12 +468,18 @@ class OnboardingModal(disnake.ui.Modal):
             self._lock.release_if_generation(self._lock_generation)
             field_list = " and ".join(invalid_fields)
             plural = "don't" if len(invalid_fields) > 1 else "doesn't"
-            await reply(inter, 
+            invalid_text = (
                 f"Hmm, {field_list} {plural} look right. "
                 "Links should start with https://. "
-                "Tap the button below to try again.",
+                "Tap the button below to try again."
+            )
+            await reply(inter, invalid_text,
                 view=RetryOnboardingModalView(self._ctx, inter.author.id, self._guild_id),
             )
+            if self._ctx.log_service is not None:
+                await self._ctx.log_service.post_dm_transcript(
+                    dj_name=inter.author.name, direction="BOT", content=invalid_text
+                )
             return
 
         # Guard: DB pool should always be available at this point,
@@ -898,11 +907,11 @@ class FallbackMenuView(ActiveOnlyView, persistent=True):
             # No profile yet: the DJ-role holder can start the onboarding right here instead
             # of asking an organizer to take the role away and give it back
             guild_id = served.resolve(inter.client) or 0
-            await reply(inter, ONBOARDING_INTRO_TEXT,
+            await reply(inter, onboarding_intro_text(),
                         view=OnboardingIntroView(self.ctx, inter.author.id, guild_id))
             if self.ctx.log_service is not None:
                 await self.ctx.log_service.post_dm_transcript(
-                    dj_name=inter.author.name, direction="BOT", content=ONBOARDING_INTRO_TEXT
+                    dj_name=inter.author.name, direction="BOT", content=onboarding_intro_text()
                 )
             return
 

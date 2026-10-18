@@ -538,7 +538,7 @@ class AdminCog(commands.Cog):
 
     @config_set_base.sub_command(
         name="active",
-        description="Turn RaveBot on or off (off = passive: no DMs, outreach, reminders or posts)",
+        description="Turn the bot on or off (off = passive: no DMs, outreach, reminders or posts)",
     )
     async def config_set_active(
         self,
@@ -559,9 +559,10 @@ class AdminCog(commands.Cog):
         await active.set_active(self.ctx.db, guild_id, state == "on")
         logger.info("bot_active set to %s by %s", state, inter.author.id)
         text = (
-            "RaveBot is now ACTIVE. Onboarding DMs, outreach, reminders and lineup posts are on."
+            f"{served.bot_name()} is now ACTIVE. Onboarding DMs, outreach, reminders and lineup "
+            "posts are on."
             if state == "on"
-            else "RaveBot is now PASSIVE and won't contact anyone."
+            else f"{served.bot_name()} is now PASSIVE and won't contact anyone."
         )
         await reply(inter, text, ephemeral=True)
 

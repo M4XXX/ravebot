@@ -8,6 +8,8 @@ from typing import Any
 
 import disnake
 
+from bot import guild as served
+
 logger = logging.getLogger(__name__)
 
 # Organizers give the DJ role; the bot recognises it in any letter case (views.is_registered_dj)
@@ -72,7 +74,7 @@ async def run(bot: Any, ctx: Any, guild_id: int) -> list[str]:
     if ctx.log_service is not None:
         try:
             await ctx.log_service.post_notice(
-                "**RaveBot setup check**\n" + "\n".join(f"• {p}" for p in problems)
+                f"**{served.bot_name()} setup check**\n" + "\n".join(f"• {p}" for p in problems)
             )
         except disnake.HTTPException:
             logger.exception("Could not post the self-check result")

@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 
 import disnake
 
+from bot import guild as served
 from bot import schedule, slots
 from bot.notion import props
 
@@ -82,7 +83,7 @@ class ErrorEmbed(disnake.Embed):
         self.add_field(name="Trigger Condition", value=trigger, inline=False)
         self.add_field(name="Action Taken", value=action_taken, inline=False)
         self.add_field(name="Manual Action Required", value=manual_action, inline=False)
-        self.set_footer(text="RaveBot")
+        self.set_footer(text=served.bot_name())
 
 
 class AdminLogEmbed(disnake.Embed):
@@ -117,7 +118,7 @@ class AdminLogEmbed(disnake.Embed):
         self.add_field(name="Outcome", value=outcome, inline=True)
         if event is not None:
             self.add_field(name="Event", value=event, inline=False)
-        self.set_footer(text="RaveBot")
+        self.set_footer(text=served.bot_name())
 
 
 class MissionRosterEmbed(disnake.Embed):
@@ -150,7 +151,7 @@ class MissionRosterEmbed(disnake.Embed):
             if not st.bookable:  # tds layout: the status is outside the planning phase
                 field_value += " · not open for booking"
             self.add_field(name=name, value=field_value, inline=False)
-        self.set_footer(text="RaveBot")
+        self.set_footer(text=served.bot_name())
 
 
 class MissionOverviewEmbed(disnake.Embed):
@@ -212,7 +213,7 @@ class MissionOverviewEmbed(disnake.Embed):
                 value=f"{status} · {time_str}",
                 inline=True,
             )
-        self.set_footer(text="RaveBot")
+        self.set_footer(text=served.bot_name())
 
 
 class BookingConfirmEmbed(disnake.Embed):
@@ -234,7 +235,7 @@ class BookingConfirmEmbed(disnake.Embed):
         slot_display = f"<t:{slot_unix}:f>" if slot_unix else "TBD"
         self.add_field(name="Event", value=event_name, inline=True)
         self.add_field(name="Slot", value=slot_display, inline=True)
-        self.set_footer(text="RaveBot")
+        self.set_footer(text=served.bot_name())
 
 
 class BookingConfirmedEmbed(disnake.Embed):
@@ -261,7 +262,7 @@ class BookingConfirmedEmbed(disnake.Embed):
             value="I'll send you a reminder the day before. See you on the decks! \U0001f3a7",
             inline=False,
         )
-        self.set_footer(text=f"RaveBot \u00b7 {event_name}")
+        self.set_footer(text=f"{served.bot_name()} \u00b7 {event_name}")
 
 
 class ProactiveOutreachEmbed(disnake.Embed):
@@ -301,4 +302,4 @@ class ProactiveOutreachEmbed(disnake.Embed):
             value=f"{open_slots} of {slots_total}",
             inline=True,
         )
-        self.set_footer(text="RaveBot")
+        self.set_footer(text=served.bot_name())

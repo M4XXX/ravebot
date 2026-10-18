@@ -165,6 +165,7 @@ async def main() -> None:
     @bot.event
     async def on_ready() -> None:  # noqa: RUF029
         logger.info("Bot ready")
+        served.remember_name(bot)  # texts and footers use the app's current name
         gid = served.resolve(bot)
         if gid is None:
             logger.error(

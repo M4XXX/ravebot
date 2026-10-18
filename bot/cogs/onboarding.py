@@ -20,10 +20,10 @@ from bot.db.djs import get_dj_by_discord_id
 from bot.db.interventions import is_under_intervention
 from bot.ui.embeds import ErrorCode
 from bot.ui.views import (
-    ONBOARDING_INTRO_TEXT,
     FallbackMenuView,
     OnboardingIntroView,
     StartOverView,
+    onboarding_intro_text,
 )
 
 logger = logging.getLogger(__name__)
@@ -94,7 +94,7 @@ class OnboardingCog(commands.Cog):
         (new DJ role, /admin onboard, or a DJ without a profile who DMs the bot).
         """
         try:
-            onboarding_text = ONBOARDING_INTRO_TEXT
+            onboarding_text = onboarding_intro_text()
             await member.send(
                 onboarding_text,
                 view=OnboardingIntroView(self.ctx, member.id, member.guild.id),

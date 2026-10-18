@@ -321,3 +321,19 @@ async def test_the_lineup_leaves_out_a_night_called_off() -> None:
          pytest.raises(Captured):
         await svc.post_update([called_off, live])
     assert [e["id"] for e in shown] == ["b"]
+
+
+def test_texts_use_the_bots_own_discord_name() -> None:
+    """Organizers rename the app; greeting and footers follow its current name."""
+    from bot import guild as served
+    from bot.ui.embeds import BookingConfirmedEmbed
+    from bot.ui.views import onboarding_intro_text
+
+    bot = MagicMock()
+    bot.user.name = "TDS DJ Bot"
+    try:
+        served.remember_name(bot)
+        assert onboarding_intro_text().startswith("Hey! I'm TDS DJ Bot and")
+        assert BookingConfirmedEmbed("Casual Event", 0).footer.text.startswith("TDS DJ Bot")
+    finally:
+        served._name = "RaveBot"

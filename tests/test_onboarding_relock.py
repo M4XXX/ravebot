@@ -90,7 +90,7 @@ async def test_try_again_also_takes_over_a_closed_form() -> None:
 
 @pytest.mark.asyncio
 async def test_menu_go_active_without_profile_starts_onboarding_for_dj_role_holder() -> None:
-    from bot.ui.views import ONBOARDING_INTRO_TEXT, FallbackMenuView, OnboardingIntroView
+    from bot.ui.views import FallbackMenuView, OnboardingIntroView, onboarding_intro_text
 
     ctx = _ctx(None)
     role = MagicMock()
@@ -105,7 +105,7 @@ async def test_menu_go_active_without_profile_starts_onboarding_for_dj_role_hold
         await FallbackMenuView(ctx).go_active.callback(inter)
 
     args, kwargs = inter.response.send_message.call_args
-    assert args[0] == ONBOARDING_INTRO_TEXT
+    assert args[0] == onboarding_intro_text()
     assert isinstance(kwargs["view"], OnboardingIntroView)
 
 
