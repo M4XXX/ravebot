@@ -8,6 +8,7 @@ Bypasses the confirmation dialog and DJ-facing race condition guard.
 [Source: architecture.md#Cog Responsibility Boundary — Cog delegates to service]
 [Source: architecture.md#Stateless Services: All Per-User State in PostgreSQL]
 """
+import datetime
 import logging
 from typing import TYPE_CHECKING
 
@@ -21,8 +22,9 @@ from bot.db.bookings import (
     holds_slot_in_event,
     release_slot_lock,
 )
-from bot.db.djs import get_notion_dj_page_id, update_active_booking
-from bot.notion.client import NotionWriteError
+from bot.db.djs import get_dj_by_discord_id, get_notion_dj_page_id, update_active_booking
+from bot.notion import props
+from bot.notion.client import NotionSlotTakenError, NotionWriteError
 
 if TYPE_CHECKING:
     import asyncpg
@@ -62,7 +64,7 @@ class AdminBookingService:
     def _get_event_name(self, event: dict) -> str:
         """Extract plain text event name from a Notion page object."""
         try:
-            return event["properties"]["Name"]["title"][0]["plain_text"]
+            return props.title_text(event)
         except (KeyError, IndexError, TypeError):
             return ""
 
@@ -70,12 +72,41 @@ class AdminBookingService:
         """Unix timestamp of a slot start (bot.schedule); 0 if the event date is unparseable."""
         return schedule.slot_unix(event, slot_index)
 
-    def _find_event(self, events: list[dict], event_name: str) -> dict | None:
-        """Find first event whose name case-insensitively matches event_name."""
-        for event in events:
-            if self._get_event_name(event).lower() == event_name.lower():
-                return event
-        return None
+    def _find_event(self, events: list[dict], query: str) -> tuple[dict | None, str]:
+        """The event an admin means: by date (YYYY-MM-DD or DD.MM.YYYY) or by name.
+
+        Returns (event, "") or (None, reason). Organizers often give every night the same
+        name ("Casual Event"); a name or date that fits several upcoming events is refused
+        instead of silently taking the first one.
+        """
+        query = query.strip()
+        day = _parse_day(query)
+        if day is not None:
+            matches = [e for e in events if _event_day(e) == day]
+        else:
+            matches = [e for e in events if self._get_event_name(e).lower() == query.lower()]
+        if not matches:
+            return None, f"Event '{query}' not found in Notion."
+        if len(matches) > 1:
+            if day is not None:
+                names = ", ".join(self._get_event_name(e) or "?" for e in matches)
+                return None, (
+                    f"{len(matches)} events on {day.isoformat()} ({names}) — "
+                    "remove the duplicate in Notion first."
+                )
+            dates = ", ".join(d.isoformat() for e in matches if (d := _event_day(e)))
+            return None, (
+                f"{len(matches)} upcoming events are called '{query}' — "
+                f"give the date instead ({dates})."
+            )
+        return matches[0], ""
+
+    async def _cell_name(self, dj_id: int | None) -> str | None:
+        """The DJ's name as written into the plan (tds layout), or None."""
+        if dj_id is None or self.notion_client is None or self.notion_client.per_slot is not True:
+            return None
+        dj = await get_dj_by_discord_id(self.db, dj_id)
+        return dj["dj_name"] if dj is not None else None
 
     async def _dm_dj(self, dj_id: int, text: str) -> None:
         """Send a DM to the DJ. Swallows Forbidden/NotFound — DM failure is non-fatal."""
@@ -129,9 +160,10 @@ class AdminBookingService:
             return False, "Could not fetch events from Notion — please try again."
 
         # Step 2: find matching event
-        event = self._find_event(events, event_name)
+        event, problem = self._find_event(events, event_name)
         if event is None:
-            return False, f"Event '{event_name}' not found in Notion."
+            return False, problem
+        event_name = self._get_event_name(event) or event_name
 
         event_id = event["id"]
         slot_index = slot_num - 1  # convert to 0-based
@@ -154,6 +186,13 @@ class AdminBookingService:
         except Exception:
             logger.warning("admin book: get_notion_dj_page_id failed for %s", dj_id)
             dj_notion_page_id = None
+        # tds layout: the plan gets the DJ's name; a displaced DJ's name is overwritten
+        try:
+            cell_name = await self._cell_name(dj_id)
+            replaces = await self._cell_name(displaced)
+        except Exception:
+            logger.exception("admin book: reading DJ names failed")
+            return False, "Database error reading the DJ — please try again."
 
         # Step 5: force-book in PostgreSQL slot_locks (UPSERT, bypasses race guard)
         try:
@@ -171,8 +210,10 @@ class AdminBookingService:
                 [],
                 event_name,
                 slot_unix,
+                dj_name=cell_name,
+                replaces=replaces,
             )
-        except NotionWriteError:
+        except NotionWriteError as exc:
             # Undo the DB claim: the slot goes back to whoever held it before, but only
             # while it is still ours (the retries take up to ~30 s; it may have changed hands)
             undone = True
@@ -191,15 +232,23 @@ class AdminBookingService:
                     "Notion write failed, and the slot could not be given back to the DJ who "
                     "had it — check it with /ravebot-status."
                 )
+            if isinstance(exc, NotionSlotTakenError):
+                return False, (
+                    f"Slot {slot_num} already says '{exc.current}' in the plan — the bot never "
+                    "overwrites what was typed in by hand. Clear it in Notion first."
+                )
             return False, "Notion write failed after 3 attempts — please try again."
 
         slot_display = f"<t:{slot_unix}:f>" if slot_unix else "your slot"
 
         # Step 6b: the displaced DJ leaves the Notion lineup unless they keep another slot
+        # (tds layout: their name in this slot's column was already overwritten above)
         note = ""
         if displaced is not None:
             try:
-                if not await holds_slot_in_event(self.db, event_id, displaced):
+                if self.notion_client.per_slot is not True and not await holds_slot_in_event(
+                    self.db, event_id, displaced
+                ):
                     await self.notion_client.delete_booking(
                         event_id,
                         await get_notion_dj_page_id(self.db, displaced),
@@ -271,9 +320,10 @@ class AdminBookingService:
             return False, "Could not fetch events from Notion — please try again."
 
         # Step 2: find matching event
-        event = self._find_event(events, event_name)
+        event, problem = self._find_event(events, event_name)
         if event is None:
-            return False, f"Event '{event_name}' not found in Notion."
+            return False, problem
+        event_name = self._get_event_name(event) or event_name
 
         event_id = event["id"]
         slot_index = slot_num - 1
@@ -302,15 +352,20 @@ class AdminBookingService:
             return False, f"No booking found for @{dj_name} in that slot."
 
         # Step 6: unlink the DJ in Notion unless they keep another slot of this event
+        # (tds layout: every slot has its own column, which is always cleared)
         notion_error: Exception | None = None
         try:
-            if not await holds_slot_in_event(self.db, event_id, dj_id):
+            if self.notion_client.per_slot is True or not await holds_slot_in_event(
+                self.db, event_id, dj_id
+            ):
                 await self.notion_client.delete_booking(
                     event_id,
                     await get_notion_dj_page_id(self.db, dj_id),
                     [],
                     event_name,
                     slot_unix,
+                    slot_index=slot_index,
+                    dj_name=await self._cell_name(dj_id),
                 )
         except Exception as exc:
             logger.error("admin cancel: Notion unlink failed: %s", exc)
@@ -397,3 +452,21 @@ class AdminBookingService:
             )
 
         return True, ""
+
+
+def _parse_day(text: str) -> datetime.date | None:
+    """A date given as YYYY-MM-DD or DD.MM.YYYY, else None."""
+    for fmt in ("%Y-%m-%d", "%d.%m.%Y"):
+        try:
+            return datetime.datetime.strptime(text, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _event_day(event: dict) -> datetime.date | None:
+    """The calendar day of an event's Notion Date, or None."""
+    try:
+        return datetime.date.fromisoformat(event["properties"]["Date"]["date"]["start"][:10])
+    except (KeyError, TypeError, ValueError):
+        return None

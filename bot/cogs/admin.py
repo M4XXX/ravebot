@@ -73,6 +73,7 @@ from bot.context import BotContext
 from bot.db import config as db_config
 from bot.db.bookings import get_booked_djs_for_event
 from bot.db.djs import get_all_djs, get_dj_by_discord_id
+from bot.notion import props
 from bot.notion.client import NotionWriteError
 from bot.ui.ack import auto_ack, reply
 from bot.ui.embeds import EmbedColors
@@ -844,7 +845,9 @@ class AdminCog(commands.Cog):
         self,
         inter: disnake.ApplicationCommandInteraction,
         dj: disnake.Member = commands.Param(description="The DJ to book"),
-        event: str = commands.Param(description="Event name (must match Notion, case-insensitive)"),
+        event: str = commands.Param(
+            description="Event date (YYYY-MM-DD) or its exact name in Notion"
+        ),
         slot: int = commands.Param(ge=1, description="Slot number (1 = first slot of event)"),
     ) -> None:
         """Force-book a DJ into a slot, writing directly to Notion without confirmation.
@@ -893,7 +896,9 @@ class AdminCog(commands.Cog):
         self,
         inter: disnake.ApplicationCommandInteraction,
         dj: disnake.Member = commands.Param(description="The DJ whose booking to cancel"),
-        event: str = commands.Param(description="Event name (must match Notion, case-insensitive)"),
+        event: str = commands.Param(
+            description="Event date (YYYY-MM-DD) or its exact name in Notion"
+        ),
         slot: int = commands.Param(ge=1, description="Slot number (1 = first slot of event)"),
     ) -> None:
         """Force-cancel a DJ's booking, removing it from Notion and slot_locks.
@@ -1102,7 +1107,7 @@ class AdminCog(commands.Cog):
 
         # Parse event name
         try:
-            event_name = event["properties"]["Name"]["title"][0]["plain_text"]
+            event_name = props.title_text(event)
         except (KeyError, IndexError, TypeError):
             event_name = "Unknown Event"
 
@@ -1235,6 +1240,32 @@ class AdminCog(commands.Cog):
         if event_date <= date.today():
             await reply(inter, 
                 "Invalid date — please provide a future date in YYYY-MM-DD format.",
+                ephemeral=True,
+            )
+            return
+
+        # One event per night: the plan may name it differently ("Casual Event"), so the
+        # date alone decides whether it already exists
+        try:
+            upcoming = await self.ctx.notion_client.poll_events()
+        except Exception:
+            logger.exception("add_event: poll_events() failed")
+            await reply(inter,
+                "Could not read the events from Notion — please try again.", ephemeral=True
+            )
+            return
+        same_day = [
+            e for e in upcoming
+            if str(e.get("properties", {}).get("Date", {}).get("date", {}).get("start", ""))[:10]
+            == event_date.isoformat()
+        ]
+        if same_day:
+            try:
+                existing = props.title_text(same_day[0])
+            except (KeyError, IndexError, TypeError):
+                existing = "an event"
+            await reply(inter,
+                f"There is already {existing!r} on {event_date.isoformat()} — nothing created.",
                 ephemeral=True,
             )
             return

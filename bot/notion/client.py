@@ -17,6 +17,8 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
+from bot import slots
+from bot.notion import props
 from bot.ui.embeds import ErrorCode
 
 if TYPE_CHECKING:
@@ -57,6 +59,18 @@ _TRASH_KEYS = ("archived", "in_trash", "is_archived")
 
 class NotionWriteError(Exception):
     """Raised when a Notion write fails after all retry attempts."""
+
+
+class NotionSlotTakenError(NotionWriteError):
+    """Raised when a slot's column already holds a name the bot did not write (tds layout).
+
+    The bot never overwrites what an organizer typed into the plan.
+    """
+
+    def __init__(self, column: str, current: str) -> None:
+        super().__init__(f"Slot column {column!r} already says {current!r}")
+        self.column = column
+        self.current = current
 
 
 class NotionDeletionBlockedError(Exception):
@@ -151,9 +165,14 @@ class NotionClient:
         api_key: str,
         database_id: str,
         log_service: "AdminLogService",
+        layout: str = slots.CLASSIC,
+        new_event_status: str | None = None,
     ) -> None:
         self._database_id = database_id
         self._log = log_service
+        self.layout = layout
+        self._new_event_status = new_event_status
+        self._title_name: str | None = None
         self._client = httpx.AsyncClient(
             base_url=NOTION_BASE_URL,
             headers={
@@ -167,6 +186,73 @@ class NotionClient:
         # Serialises read-modify-write of each event's DJs relation. Only within this
         # process: the deployment must run one instance (docs/user-guide.md, section 3).
         self._event_locks: dict[str, asyncio.Lock] = {}
+
+    @property
+    def per_slot(self) -> bool:
+        """True when each slot is written on its own (tds layout: one column per slot).
+
+        In the classic layout a DJ is linked once per event, so the link stays while they
+        hold another slot of it.
+        """
+        return self.layout == slots.TDS
+
+    async def _title_property(self) -> str:
+        """Name of the database's title column ("Name" in the classic layout), cached."""
+        if self._title_name is None:
+            try:
+                response = await self._client.get(f"/databases/{self._database_id}")
+                response.raise_for_status()
+                found = [
+                    k for k, v in response.json().get("properties", {}).items()
+                    if v.get("type") == "title"
+                ]
+                self._title_name = found[0] if found else "Name"
+            except (httpx.HTTPError, ValueError):
+                return "Name"  # not cached: the next call asks again
+        return self._title_name
+
+    async def _read_page(self, event_id: str, context: str) -> dict[str, Any]:
+        """The event page, read fresh from Notion; retried like the relation read.
+
+        Raises NotionWriteError when it cannot be read: writing without it could overwrite
+        a name an organizer typed in meanwhile.
+        """
+        last_exc: Exception | None = None
+        for attempt in range(1, 4):
+            try:
+                response = await self._client.get(f"/pages/{event_id}")
+                response.raise_for_status()
+                return response.json()
+            except (httpx.HTTPError, ValueError) as exc:
+                last_exc = exc
+                logger.warning("Reading event %s failed (%d/3): %s", event_id, attempt, exc)
+                if attempt < 3:
+                    await asyncio.sleep(_RETRY_DELAYS[attempt - 1])
+        await self._log.post_error(
+            error_code=ErrorCode.ERR_NOTION_WRITE,
+            trigger=f"Could not read the event before writing: {context}",
+            action_taken="Bot aborted the write so nothing typed in Notion is overwritten.",
+            manual_action="Check Notion API status and the event page.",
+        )
+        raise NotionWriteError(f"Could not read event page: {context}") from last_exc
+
+    async def _slot_column(self, event_id: str, slot_index: int, context: str) -> tuple[str, str]:
+        """(real column name, current text) of the slot's column on the fresh event page."""
+        page = await self._read_page(event_id, context)
+        wanted = slots.column_name(slot_index)
+        found = props.find_property(page, wanted)
+        if found is None:
+            await self._log.post_error(
+                error_code=ErrorCode.ERR_NOTION_WRITE,
+                trigger=f"The event has no column {wanted!r}: {context}",
+                action_taken="Bot aborted the write.",
+                manual_action=(
+                    f"Add a text column {wanted!r} to the plan, or check /config set start-time "
+                    "and slot-duration."
+                ),
+            )
+            raise NotionWriteError(f"No column {wanted!r}: {context}")
+        return found[0], props.plain_text(found[1])
 
     async def close(self) -> None:
         """Close the underlying httpx client. Call in bot shutdown."""
@@ -400,8 +486,11 @@ class NotionClient:
 
         return all_results
 
-    async def write_dj_record(self, discord_user_id: int, dj_name: str) -> str:
+    async def write_dj_record(self, discord_user_id: int, dj_name: str) -> str | None:
         """Create a DJ page in the Notion database. Returns the new page's Notion ID.
+
+        In the tds layout DJ profiles live only in the bot's database and nothing is
+        written (returns None): the plan holds events, the DJs appear as names in slots.
 
         Properties written: Name (title), Discord ID (rich_text).
         Uses _write_with_retry — posts ERR_NOTION_WRITE and raises NotionWriteError
@@ -418,6 +507,8 @@ class NotionClient:
         [Source: epics.md#Story 4.2 AC2 — DJ Notion page ID prerequisite]
         [Source: architecture.md#Notion Client: Raw httpx (async, HTTPS/SSL)]
         """
+        if self.layout == slots.TDS:
+            return None
         payload: dict[str, Any] = {
             "parent": {"database_id": self._database_id},
             "properties": {
@@ -448,8 +539,15 @@ class NotionClient:
         current_dj_ids: list[str],
         event_name: str,
         slot_unix: int,
+        dj_name: str | None = None,
+        replaces: str | None = None,
     ) -> None:
         """Add a DJ to the event's DJs relation in Notion.
+
+        In the tds layout the DJ's name is written into the slot's column instead, after a
+        fresh read: an empty cell is filled, a cell already holding this name is left as is,
+        and any other text raises NotionSlotTakenError — except `replaces`, the name of a DJ
+        an organizer displaced with /admin book, which is overwritten.
 
         The relation is re-read from Notion under a per-event lock right before every PATCH
         attempt and only this DJ's page is added. A PATCH replaces the whole relation, so building
@@ -469,6 +567,9 @@ class NotionClient:
         """
         slot_display = f"<t:{slot_unix}:f>" if slot_unix else "TBD"
         context = f"booking slot {slot_index + 1} in event '{event_name}' at {slot_display}"
+        if self.layout == slots.TDS:
+            await self._write_slot_name(event_id, slot_index, dj_name, replaces, context)
+            return
         if dj_notion_page_id is None:
             return
 
@@ -494,8 +595,13 @@ class NotionClient:
         current_dj_ids: list[str],
         event_name: str,
         slot_unix: int,
+        slot_index: int | None = None,
+        dj_name: str | None = None,
     ) -> None:
         """Remove this DJ (and only this DJ) from the event's DJs relation in Notion.
+
+        In the tds layout the slot's column is emptied instead — only while it still holds
+        exactly this DJ's name; anything an organizer changed it to stays.
 
         Re-reads the relation under the per-event lock before every attempt and PATCHes it
         without this DJ's page; every other entry stays. current_dj_ids is kept for call
@@ -511,6 +617,10 @@ class NotionClient:
         """
         slot_display = f"<t:{slot_unix}:f>" if slot_unix else "TBD"
         context = f"cancellation of slot in event '{event_name}' at {slot_display}"
+        if self.layout == slots.TDS:
+            if slot_index is not None and dj_name:
+                await self._clear_slot_name(event_id, slot_index, dj_name, context)
+            return
         if dj_notion_page_id is None:
             return  # nothing of ours to remove; never rewrite other DJs' entries
 
@@ -527,6 +637,54 @@ class NotionClient:
                 endpoint=f"/pages/{event_id}",
                 payload=payload,
                 context=context,
+            )
+
+    async def _write_slot_name(
+        self,
+        event_id: str,
+        slot_index: int,
+        dj_name: str | None,
+        replaces: str | None,
+        context: str,
+    ) -> None:
+        """Write dj_name into the slot's column (tds layout), see write_booking."""
+        if not dj_name:
+            raise NotionWriteError(f"No DJ name to write: {context}")
+
+        async def payload() -> dict[str, Any] | None:
+            column, current = await self._slot_column(event_id, slot_index, context)
+            if current == dj_name:
+                return None  # already there (an earlier attempt went through)
+            if current and current != replaces:
+                raise NotionSlotTakenError(column, current)
+            return {"properties": {column: {
+                "rich_text": [{"type": "text", "text": {"content": dj_name}}]
+            }}}
+
+        async with self._event_locks.setdefault(event_id, asyncio.Lock()):
+            await self._write_with_retry(
+                method="PATCH", endpoint=f"/pages/{event_id}", payload=payload, context=context
+            )
+
+    async def _clear_slot_name(
+        self, event_id: str, slot_index: int, dj_name: str, context: str
+    ) -> None:
+        """Empty the slot's column if it still says dj_name (tds layout), see delete_booking."""
+
+        async def payload() -> dict[str, Any] | None:
+            column, current = await self._slot_column(event_id, slot_index, context)
+            if current != dj_name:
+                if current:
+                    logger.info(
+                        "Not clearing %r of %s: it says %r, not %r", column, event_id,
+                        current, dj_name,
+                    )
+                return None
+            return {"properties": {column: {"rich_text": []}}}
+
+        async with self._event_locks.setdefault(event_id, asyncio.Lock()):
+            await self._write_with_retry(
+                method="PATCH", endpoint=f"/pages/{event_id}", payload=payload, context=context
             )
 
     async def create_event(
@@ -551,10 +709,12 @@ class NotionClient:
         [Source: epics.md#Story 7.1 AC2, AC3, AC5]
         [Source: architecture.md#Notion Client: Raw httpx (async, HTTPS/SSL)]
         """
+        slot_count = slots  # the parameter shadows the bot.slots module in here
+        title = await self._title_property() if self.per_slot else "Name"
         payload: dict[str, Any] = {
             "parent": {"database_id": self._database_id},
             "properties": {
-                "Name": {
+                title: {
                     "title": [{"type": "text", "text": {"content": event_name}}]
                 },
                 "Date": {
@@ -562,15 +722,18 @@ class NotionClient:
                 },
             },
         }
-        if slots is not None:
-            payload["properties"]["Slots"] = {"number": slots}
+        if self.per_slot:
+            if self._new_event_status:  # a new event starts in the planning phase
+                payload["properties"]["Status"] = {"status": {"name": self._new_event_status}}
+        elif slot_count is not None:
+            payload["properties"]["Slots"] = {"number": slot_count}
         result = await self._write_with_retry(
             method="POST",
             endpoint="/pages",
             payload=payload,
             context=f"auto event creation for {event_name} on {event_date.isoformat()}",
             find_existing=lambda: self._find_page({"and": [
-                {"property": "Name", "title": {"equals": event_name}},
+                {"property": title, "title": {"equals": event_name}},
                 {"property": "Date", "date": {"equals": event_date.isoformat()}},
             ]}),
         )

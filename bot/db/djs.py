@@ -208,3 +208,14 @@ async def get_notion_page_ids(pool: asyncpg.Pool, discord_user_ids: list[int]) -
         discord_user_ids,
     )
     return {row["discord_user_id"]: row["notion_dj_page_id"] for row in rows}
+
+
+async def get_dj_names(pool: asyncpg.Pool, discord_user_ids: list[int]) -> dict[int, str]:
+    """DJ names for the given DJs (unknown IDs are absent)."""
+    if not discord_user_ids:
+        return {}
+    rows = await pool.fetch(
+        "SELECT discord_user_id, dj_name FROM djs WHERE discord_user_id = ANY($1::bigint[])",
+        discord_user_ids,
+    )
+    return {row["discord_user_id"]: row["dj_name"] for row in rows}

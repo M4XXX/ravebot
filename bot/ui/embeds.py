@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 import disnake
 
 from bot import schedule, slots
+from bot.notion import props
 
 
 class EmbedColors(enum.IntEnum):
@@ -139,13 +140,15 @@ class MissionRosterEmbed(disnake.Embed):
             self.description = "No upcoming events scheduled."
         for event in events:
             try:
-                name = event["properties"]["Name"]["title"][0]["plain_text"]
+                name = props.title_text(event)
             except (KeyError, IndexError):
                 name = "Unnamed Event"
             start = schedule.event_start(event)
             date_field = f"<t:{int(start.timestamp())}:f>" if start is not None else "TBD"
             st = slots.state(event)
             field_value = f"{date_field}\n{st.booked_count} confirmed · {len(st.open_indices)} open"
+            if not st.bookable:  # tds layout: the status is outside the planning phase
+                field_value += " · not open for booking"
             self.add_field(name=name, value=field_value, inline=False)
         self.set_footer(text="RaveBot")
 
@@ -171,7 +174,7 @@ class MissionOverviewEmbed(disnake.Embed):
         )
         # Parse event name
         try:
-            name = event["properties"]["Name"]["title"][0]["plain_text"]
+            name = props.title_text(event)
         except (KeyError, IndexError):
             name = "Unknown Event"
         self.title = f"\U0001f6f0\ufe0f {name}"  # 🛰️
@@ -198,7 +201,10 @@ class MissionOverviewEmbed(disnake.Embed):
                 time_str = f"<t:{unix_ts}:R>"
             else:
                 time_str = "TBD"
-            status = "✓ Confirmed" if i in st.booked else "Open"
+            if i in st.names:  # tds layout: the name in the plan, also when typed by hand
+                status = f"✓ {st.names[i]}"
+            else:
+                status = "✓ Confirmed" if i in st.booked else "Open"
             self.add_field(
                 name=f"Slot {i + 1}",
                 value=f"{status} · {time_str}",
@@ -278,7 +284,7 @@ class ProactiveOutreachEmbed(disnake.Embed):
             timestamp=datetime.now(tz=UTC),
         )
         try:
-            name = event["properties"]["Name"]["title"][0]["plain_text"]
+            name = props.title_text(event)
         except (KeyError, IndexError):
             name = "Upcoming Event"
         start = schedule.event_start(event)

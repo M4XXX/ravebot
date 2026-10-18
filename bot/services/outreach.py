@@ -30,6 +30,7 @@ from bot.db.outreach import (
     update_outreach_contact_status,
     upsert_sequence,
 )
+from bot.notion import props
 from bot.ui.embeds import ErrorCode
 
 if TYPE_CHECKING:
@@ -318,7 +319,7 @@ class OutreachService:
 
         # Get event name for opener text
         try:
-            event_name = event["properties"]["Name"]["title"][0]["plain_text"]
+            event_name = props.title_text(event)
         except (KeyError, IndexError):
             event_name = "an upcoming event"
 
@@ -434,7 +435,7 @@ class OutreachService:
 
         # Build alert context from event
         try:
-            event_name = event["properties"]["Name"]["title"][0]["plain_text"]
+            event_name = props.title_text(event)
         except (KeyError, IndexError):
             event_name = event_id
         start = schedule.event_start(event)

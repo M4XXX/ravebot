@@ -1,18 +1,21 @@
 """Read-only check that Notion and the booking database agree.
 
 Bookings live in two places: slot_locks in Postgres (authoritative) and the DJs relation on
-the Notion event page. After a failed Notion write, a cancellation that freed the slot anyway,
-or a hand edit in Notion they can drift apart. This module only REPORTS differences to the
-admin log, once per distinct set of differences; it never writes to Notion or the database.
+the Notion event page (tds layout: the DJ's name in the slot's column). After a failed Notion
+write, a cancellation that freed the slot anyway, or a hand edit in Notion they can drift apart.
+This module only REPORTS differences to the admin log, once per distinct set of differences; it
+never writes to Notion or the database.
 """
 import hashlib
 import json
 import logging
 from typing import Any
 
+from bot import slots
 from bot.db.bookings import get_booked_slots
 from bot.db.config import get_value, set_value
-from bot.db.djs import get_notion_page_ids
+from bot.db.djs import get_dj_names, get_notion_page_ids
+from bot.notion import props
 from bot.ui.embeds import ErrorCode
 
 logger = logging.getLogger(__name__)
@@ -29,13 +32,36 @@ def _norm(page_id: str) -> str:
 
 def _name(event: dict) -> str:
     try:
-        return event["properties"]["Name"]["title"][0]["plain_text"]
+        return props.title_text(event)
     except (KeyError, IndexError, TypeError):
         return event.get("id", "?")
 
 
+async def _plan_mismatches(pool: Any, events: list[dict]) -> list[dict]:
+    """tds layout: booked slots whose column does not show the booked DJ's name.
+
+    A name typed into a column without a booking is how organizers plan, not a difference.
+    """
+    booked = await get_booked_slots(pool, [e["id"] for e in events if "id" in e])
+    names = await get_dj_names(pool, sorted({u for s in booked.values() for u in s.values()}))
+    result = []
+    for event in events:
+        missing = [
+            f"slot {index + 1}: {names[uid]}"
+            for index, uid in sorted(booked.get(event.get("id", ""), {}).items())
+            if uid in names and slots.cell_text(event, index) != names[uid]
+        ]
+        if missing:
+            result.append(
+                {"event": _name(event), "missing_in_notion": missing, "only_in_notion": []}
+            )
+    return result
+
+
 async def find_mismatches(pool: Any, events: list[dict]) -> list[dict]:
     """Per event: DJs booked in the database but not linked in Notion, and the reverse."""
+    if slots.layout() == slots.TDS:
+        return await _plan_mismatches(pool, events)
     booked = await get_booked_slots(pool, [e["id"] for e in events if "id" in e])
     holders = sorted({uid for slots in booked.values() for uid in slots.values()})
     pages = await get_notion_page_ids(pool, holders)
@@ -79,7 +105,9 @@ async def report(pool: Any, guild_id: int, events: list[dict], log_service: Any)
     lines = []
     for m in mismatches[:10]:
         parts = []
-        if m["missing_in_notion"]:
+        if m["missing_in_notion"] and slots.layout() == slots.TDS:
+            parts.append("not in the plan: " + "; ".join(m["missing_in_notion"]))
+        elif m["missing_in_notion"]:
             parts.append(f"{len(m['missing_in_notion'])} booked DJ(s) not linked in Notion")
         if m["only_in_notion"]:
             parts.append(f"{len(m['only_in_notion'])} linked in Notion without a booking")

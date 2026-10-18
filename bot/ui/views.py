@@ -22,6 +22,7 @@ import disnake
 from bot import active, schedule, slots
 from bot import guild as served
 from bot.db.djs import get_dj_by_discord_id, insert_dj, set_notion_dj_page_id, update_active_booking
+from bot.notion import props
 from bot.ui.ack import auto_ack, reply
 from bot.ui.embeds import ErrorCode
 
@@ -520,8 +521,8 @@ class OnboardingModal(disnake.ui.Modal):
                     dj_name=dj_name,
                 )
                 # Story 4.2: persist the Notion page ID so BookingConfirmView can later
-                # append this DJ to the event's DJs relation
-                if self._ctx.db is not None:
+                # append this DJ to the event's DJs relation (None: tds layout, no DJ pages)
+                if self._ctx.db is not None and notion_page_id is not None:
                     await set_notion_dj_page_id(
                         self._ctx.db,
                         inter.author.id,
@@ -692,7 +693,7 @@ class FallbackMenuView(ActiveOnlyView, persistent=True):
         lines = ["**Pick an event to book:**"]
         for i, event in enumerate(events_with_open_slots, 1):
             try:
-                name = event["properties"]["Name"]["title"][0]["plain_text"]
+                name = props.title_text(event)
             except (KeyError, IndexError):
                 name = "Unknown Event"
             start = schedule.event_start(event)
@@ -1075,7 +1076,7 @@ class EventSelectionView(ActiveOnlyView):
 
         for i, event in enumerate(events):
             try:
-                name = event["properties"]["Name"]["title"][0]["plain_text"]
+                name = props.title_text(event)
             except (KeyError, IndexError):
                 name = "Unknown Event"
 
@@ -1244,7 +1245,7 @@ class SlotSelectionView(ActiveOnlyView):
 
         # Parse event name
         try:
-            event_name = self._event["properties"]["Name"]["title"][0]["plain_text"]
+            event_name = props.title_text(self._event)
         except (KeyError, IndexError):
             event_name = "Unknown Event"
 
@@ -1362,7 +1363,12 @@ class BookingConfirmView(ActiveOnlyView):
             )
         await self._handle_cancel(inter)
 
-    async def _undo_slot_claim(self, inter: disnake.MessageInteraction, event_id: str) -> None:
+    async def _undo_slot_claim(
+        self,
+        inter: disnake.MessageInteraction,
+        event_id: str,
+        text: str = "Something went wrong saving your booking — please try again in a moment.",
+    ) -> None:
         """Give the slot back after a failed booking and tell the DJ."""
         from bot.db.bookings import release_slot_lock
 
@@ -1371,10 +1377,7 @@ class BookingConfirmView(ActiveOnlyView):
         except Exception:
             logger.exception("BookingConfirmView: could not give the slot back")
         self._release_lock()
-        await reply(inter,
-            "Something went wrong saving your booking — please try again in a moment.",
-            ephemeral=True,
-        )
+        await reply(inter, text, ephemeral=True)
 
     async def _handle_cancel(self, inter: disnake.MessageInteraction) -> None:
         """[✖ Cancel] — release per-user lock and respond warmly. (AC4)"""
@@ -1394,7 +1397,7 @@ class BookingConfirmView(ActiveOnlyView):
         """
         from bot.db.bookings import acquire_slot_lock, release_slot_lock
         from bot.db.djs import get_notion_dj_page_id
-        from bot.notion.client import NotionWriteError
+        from bot.notion.client import NotionSlotTakenError, NotionWriteError
         from bot.ui.embeds import BookingConfirmedEmbed
 
         # Guard: DB must be available (AC6)
@@ -1506,6 +1509,10 @@ class BookingConfirmView(ActiveOnlyView):
         try:
             # Get DJ's Notion page ID (may be None for DJs onboarded before Story 4.2)
             dj_notion_page_id = await get_notion_dj_page_id(self._ctx.db, self._user_id)
+            dj_name = None
+            if self._ctx.notion_client.per_slot is True:  # tds layout: the plan shows names
+                dj = await get_dj_by_discord_id(self._ctx.db, self._user_id)
+                dj_name = dj["dj_name"] if dj is not None else None
         except Exception:
             logger.exception("BookingConfirmView: reading the DJ's Notion page failed")
             await self._undo_slot_claim(inter, event_id)
@@ -1521,7 +1528,7 @@ class BookingConfirmView(ActiveOnlyView):
 
         # Get event name for embed + admin log
         try:
-            event_name = self._event["properties"]["Name"]["title"][0]["plain_text"]
+            event_name = props.title_text(self._event)
         except (KeyError, IndexError):
             event_name = "Unknown Event"
 
@@ -1534,7 +1541,15 @@ class BookingConfirmView(ActiveOnlyView):
                 current_dj_ids=current_dj_ids,
                 event_name=event_name,
                 slot_unix=self._slot_unix,
+                dj_name=dj_name,
             )
+        except NotionSlotTakenError as exc:
+            await self._undo_slot_claim(
+                inter,
+                event_id,
+                f"That slot was just filled in the plan ({exc.current}) — pick another one.",
+            )
+            return
         except Exception as exc:
             if not isinstance(exc, NotionWriteError):
                 logger.exception("BookingConfirmView: unexpected error writing the booking")
@@ -1605,7 +1620,7 @@ class CancellationView(ActiveOnlyView):
             event = booking["event"]
             slot_unix = booking["slot_unix"]
             try:
-                event_name = event["properties"]["Name"]["title"][0]["plain_text"]
+                event_name = props.title_text(event)
             except (KeyError, IndexError):
                 event_name = "Unknown Event"
             # Button labels cannot render <t:...> markup, so spell the time out
@@ -1810,10 +1825,15 @@ class CancelConfirmView(ActiveOnlyView):
 
         # Get DJ's Notion page ID (may be None for DJs onboarded before Story 4.2)
         dj_notion_page_id = await get_notion_dj_page_id(self._ctx.db, self._user_id)
+        per_slot = self._ctx.notion_client.per_slot is True  # tds layout: one column per slot
+        dj_name = None
+        if per_slot:
+            dj = await get_dj_by_discord_id(self._ctx.db, self._user_id)
+            dj_name = dj["dj_name"] if dj is not None else None
 
         # Get event name for messages and admin log
         try:
-            event_name = self._event["properties"]["Name"]["title"][0]["plain_text"]
+            event_name = props.title_text(self._event)
         except (KeyError, IndexError):
             event_name = "Unknown Event"
 
@@ -1831,8 +1851,11 @@ class CancelConfirmView(ActiveOnlyView):
             return
 
         # Notion lists each DJ once per event, so the link stays while another slot is held.
+        # In the tds layout every slot has its own column, which is always cleared.
         try:
-            unlink = not await holds_slot_in_event(self._ctx.db, event_id, self._user_id)
+            unlink = per_slot or not await holds_slot_in_event(
+                self._ctx.db, event_id, self._user_id
+            )
         except Exception:
             logger.exception("CancelConfirmView: could not check other slots — keeping Notion link")
             unlink = False
@@ -1845,6 +1868,8 @@ class CancelConfirmView(ActiveOnlyView):
                     current_dj_ids=[],
                     event_name=event_name,
                     slot_unix=self._slot_unix,
+                    slot_index=self._slot_index,
+                    dj_name=dj_name,
                 )
             except NotionWriteError:
                 # The slot is free; only the Notion entry lags behind. The client has posted
@@ -1936,7 +1961,7 @@ class OutreachView(ActiveOnlyView, single_use=False):
 
         if self._ctx.log_service is not None:
             try:
-                event_name = self._event["properties"]["Name"]["title"][0]["plain_text"]
+                event_name = props.title_text(self._event)
             except (KeyError, IndexError):
                 event_name = event_id
             try:

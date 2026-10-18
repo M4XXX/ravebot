@@ -656,6 +656,7 @@ async def test_add_event_creates_event_and_replies() -> None:
     ctx = make_mock_ctx(frozenset({1}))
     ctx.notion_client = MagicMock()
     ctx.notion_client.create_event = AsyncMock(return_value="new-evt-id")
+    ctx.notion_client.poll_events = AsyncMock(return_value=[])
 
     cog = AdminCog(ctx)
     inter = make_mock_inter(user_id=1, guild_id=111)
@@ -749,6 +750,7 @@ async def test_add_event_notion_write_error_replies_error() -> None:
     ctx = make_mock_ctx(frozenset({1}))
     ctx.notion_client = MagicMock()
     ctx.notion_client.create_event = AsyncMock(side_effect=NotionWriteError("write failed"))
+    ctx.notion_client.poll_events = AsyncMock(return_value=[])
 
     cog = AdminCog(ctx)
     inter = make_mock_inter(user_id=1, guild_id=111)
@@ -1356,3 +1358,31 @@ async def test_cog_error_after_deferral_answers_by_followup() -> None:
     await cog.cog_slash_command_error(inter, RuntimeError("boom"))
     inter.followup.send.assert_awaited_once()
     inter.response.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_add_event_refuses_a_second_event_on_the_same_day() -> None:
+    """The plan names nights freely, so the date alone decides that an event already exists."""
+    from datetime import date, timedelta
+
+    from bot.cogs.admin import AdminCog
+
+    day = (date.today() + timedelta(days=10)).isoformat()
+    ctx = make_mock_ctx(frozenset({1}))
+    ctx.notion_client = MagicMock()
+    ctx.notion_client.create_event = AsyncMock()
+    ctx.notion_client.poll_events = AsyncMock(return_value=[{
+        "properties": {
+            "Event": {"type": "title", "title": [{"plain_text": "Casual Event"}]},
+            "Date": {"date": {"start": day}},
+        }
+    }])
+    cog = AdminCog(ctx)
+    inter = make_mock_inter(user_id=1)
+    cog._refuse_if_passive = AsyncMock(return_value=False)
+
+    await cog.add_event.callback(cog, inter, day)
+
+    ctx.notion_client.create_event.assert_not_awaited()
+    text = inter.response.send_message.call_args[0][0]
+    assert "Casual Event" in text and "nothing created" in text

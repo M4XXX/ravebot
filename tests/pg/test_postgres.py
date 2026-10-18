@@ -71,6 +71,16 @@ async def test_profile_resubmission_updates_instead_of_failing(pool) -> None:
     assert await get_notion_page_ids(pool, [7, 8]) == {7: "page-7"}
 
 
+async def test_dj_names_for_the_plan(pool) -> None:
+    from bot.db.djs import get_dj_names, insert_dj
+
+    for uid, name in ((7, "DJ Rayla"), (8, "Echo Fox")):
+        await insert_dj(pool, discord_user_id=uid, dj_name=name, vrchat_name=None, logo_url=None,
+                        stream_url_primary="https://example.com/a", stream_url_backup=None)
+    assert await get_dj_names(pool, [7, 8, 9]) == {7: "DJ Rayla", 8: "Echo Fox"}
+    assert await get_dj_names(pool, []) == {}
+
+
 @pytest.mark.passive  # use the real bot.active, not the conftest stub
 async def test_config_round_trip(pool) -> None:
     from bot import active
