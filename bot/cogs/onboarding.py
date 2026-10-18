@@ -19,7 +19,12 @@ from bot.context import BotContext
 from bot.db.djs import get_dj_by_discord_id
 from bot.db.interventions import is_under_intervention
 from bot.ui.embeds import ErrorCode
-from bot.ui.views import FallbackMenuView, OnboardingIntroView, StartOverView
+from bot.ui.views import (
+    ONBOARDING_INTRO_TEXT,
+    FallbackMenuView,
+    OnboardingIntroView,
+    StartOverView,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -89,10 +94,7 @@ class OnboardingCog(commands.Cog):
         (new DJ role, /admin onboard, or a DJ without a profile who DMs the bot).
         """
         try:
-            onboarding_text = (
-                "Hey! I'm RaveBot — I handle all DJ bookings here. "
-                "Want me to add you to the booking pool?"
-            )
+            onboarding_text = ONBOARDING_INTRO_TEXT
             await member.send(
                 onboarding_text,
                 view=OnboardingIntroView(self.ctx, member.id, member.guild.id),
@@ -169,10 +171,14 @@ class OnboardingCog(commands.Cog):
         # If user is in an active multi-step flow, do not interrupt
         lock = self.ctx.get_user_lock(message.author.id)
         if lock.locked():
-            await message.channel.send(
-                "You're still in the middle of something with me — finish it, or start over:",
-                view=StartOverView(self.ctx),
+            still_text = (
+                "You're still in the middle of something with me — finish it, or start over:"
             )
+            await message.channel.send(still_text, view=StartOverView(self.ctx))
+            if self.ctx.log_service is not None:
+                await self.ctx.log_service.post_dm_transcript(
+                    dj_name=message.author.name, direction="BOT", content=still_text
+                )
             return
         # Only registered DJs get the booking menu
         dj = await get_dj_by_discord_id(self.ctx.db, message.author.id) if self.ctx.db else None

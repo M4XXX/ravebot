@@ -38,6 +38,10 @@ def _is_valid_url(value: str) -> bool:
 
 
 
+ONBOARDING_INTRO_TEXT = (
+    "Hey! I'm RaveBot — I handle all DJ bookings here. Want me to add you to the booking pool?"
+)
+
 NOT_REGISTERED_TEXT = (
     "You're not set up as a DJ here yet — ask an organizer for the DJ role, "
     "then finish the onboarding I send you."
@@ -57,6 +61,29 @@ async def is_registered_dj(ctx: "BotContext", inter: disnake.Interaction) -> boo
 
 STALE_MENU_TEXT = "This menu is out of date — send me any message to start over."
 NOT_YOUR_MENU_TEXT = "This menu belongs to someone else."
+FLOW_OPEN_TEXT = "Looks like you've got a flow already open — finish it, or start over:"
+
+
+async def open_onboarding_form(
+    ctx: "BotContext", inter: disnake.MessageInteraction, guild_id: int
+) -> None:
+    """Open the profile form, taking over a flow lock that a closed form left behind.
+
+    Discord does not tell the bot when a DJ closes a form, so the form's lock is only freed
+    by its timeout (10 minutes) — until then [Go Active] answered "flow already open" with
+    no way out. A DJ without a finished profile cannot be in any other flow (booking and
+    outreach need a profile), so a lock held for them can only be such a form's: take it
+    over. A registered DJ may be mid-booking, so they get the Start over button instead.
+    """
+    lock = ctx.get_user_lock(inter.author.id)
+    if lock.locked():
+        dj = await get_dj_by_discord_id(ctx.db, inter.author.id) if ctx.db is not None else None
+        if dj is not None and dj["onboarding_complete"]:
+            await reply(inter, FLOW_OPEN_TEXT, view=StartOverView(ctx), ephemeral=True)
+            return
+        lock.release_if_held()  # the closed form's on_timeout releases by its own generation only
+    await lock.acquire()
+    await inter.response.send_modal(OnboardingModal(ctx, inter.author.id, lock, guild_id))
 
 
 # The DJ's flow-lock generation when the current click arrived (or None if no flow was
@@ -201,10 +228,17 @@ class StartOverView(ActiveOnlyView, persistent=True):
     async def start_over(
         self, button: disnake.ui.Button, inter: disnake.MessageInteraction
     ) -> None:
+        if self.ctx.log_service is not None:
+            await self.ctx.log_service.post_dm_transcript(
+                dj_name=inter.author.name, direction="DJ", content=f"[Button: {button.label}]"
+            )
         self.ctx.get_user_lock(inter.author.id).release_if_held()
-        await reply(inter, 
-            "Done — here's what I can do for you:", view=FallbackMenuView(self.ctx)
-        )
+        done_text = "Done — here's what I can do for you:"
+        await reply(inter, done_text, view=FallbackMenuView(self.ctx))
+        if self.ctx.log_service is not None:
+            await self.ctx.log_service.post_dm_transcript(
+                dj_name=inter.author.name, direction="BOT", content=done_text
+            )
 
 class OnboardingIntroView(ActiveOnlyView, persistent=True):
     """Intro DM view — two buttons sent when DJ role is first detected.
@@ -255,18 +289,8 @@ class OnboardingIntroView(ActiveOnlyView, persistent=True):
                 direction="DJ",
                 content=f"[Button: {button.label}]",
             )
-        lock = self.ctx.get_user_lock(inter.author.id)
-        if lock.locked():
-            await reply(inter, 
-                "Looks like you've got a flow already open — let's finish that one first.",
-                ephemeral=True,
-            )
-            return
-        await lock.acquire()
         guild_id = self.guild_id or served.resolve(inter.client) or 0
-        await inter.response.send_modal(
-            OnboardingModal(self.ctx, inter.author.id, lock, guild_id)
-        )
+        await open_onboarding_form(self.ctx, inter, guild_id)
 
     @disnake.ui.button(
         label="Pass for now",
@@ -509,10 +533,15 @@ class OnboardingModal(disnake.ui.Modal):
                     inter.author.id,
                 )
 
-        await reply(inter, 
+        all_set_text = (
             "You're all set! I'll reach out when there's an open slot, "
-            "or you can start a booking anytime.",
+            "or you can start a booking anytime."
         )
+        await reply(inter, all_set_text)
+        if self._ctx.log_service is not None:
+            await self._ctx.log_service.post_dm_transcript(
+                dj_name=inter.author.name, direction="BOT", content=all_set_text
+            )
 
 
 class RetryOnboardingModalView(ActiveOnlyView):
@@ -555,17 +584,7 @@ class RetryOnboardingModalView(ActiveOnlyView):
                 direction="DJ",
                 content=f"[Button: {button.label}]",
             )
-        lock = self._ctx.get_user_lock(inter.author.id)
-        if lock.locked():
-            await reply(inter, 
-                "Looks like you've got a flow already open — let's finish that one first.",
-                ephemeral=True,
-            )
-            return
-        await lock.acquire()
-        await inter.response.send_modal(
-            OnboardingModal(self._ctx, inter.author.id, lock, self._guild_id)
-        )
+        await open_onboarding_form(self._ctx, inter, self._guild_id)
 
 
 class FallbackMenuView(ActiveOnlyView, persistent=True):
@@ -846,11 +865,21 @@ class FallbackMenuView(ActiveOnlyView, persistent=True):
         )
 
         if not updated:
-            await reply(inter, 
-                "Looks like you haven't set up your profile yet! "
-                "You'll need to complete onboarding first — "
-                "ask an organizer to re-assign your DJ role to get started.",
-            )
+            # No profile yet: a DJ-role holder can start the onboarding right here instead
+            # of asking an organizer to take the role away and give it back
+            guild = served.served_guild(inter.client)
+            member = guild.get_member(inter.author.id) if guild is not None else None
+            if member is not None and any(r.name.lower() == "dj" for r in member.roles):
+                await reply(inter, ONBOARDING_INTRO_TEXT,
+                            view=OnboardingIntroView(self.ctx, inter.author.id, guild.id))
+                reply_text = ONBOARDING_INTRO_TEXT
+            else:
+                await reply(inter, NOT_REGISTERED_TEXT)
+                reply_text = NOT_REGISTERED_TEXT
+            if self.ctx.log_service is not None:
+                await self.ctx.log_service.post_dm_transcript(
+                    dj_name=inter.author.name, direction="BOT", content=reply_text
+                )
             return
 
         # Assign Active Booking role (best-effort — failure does not block confirmation)
@@ -1740,10 +1769,12 @@ class CancelConfirmView(ActiveOnlyView):
     async def _handle_keep(self, inter: disnake.MessageInteraction) -> None:
         """[✖ Keep It] — release per-user lock and respond warmly. (AC5)"""
         self._release_lock()
-        await reply(inter, 
-            "No changes made — you're still booked.",
-            ephemeral=True,
-        )
+        keep_text = "No changes made — you're still booked."
+        await reply(inter, keep_text, ephemeral=True)
+        if self._ctx.log_service is not None:
+            await self._ctx.log_service.post_dm_transcript(
+                dj_name=inter.author.name, direction="BOT", content=keep_text
+            )
 
     @auto_ack()
     async def _handle_confirm(self, inter: disnake.MessageInteraction) -> None:
@@ -1954,10 +1985,7 @@ class OutreachView(ActiveOnlyView, single_use=False):
         # Acquire per-user lock FIRST — prevents false 'accepted' when another flow is open
         lock = self._ctx.get_user_lock(inter.author.id)
         if lock.locked():
-            await reply(inter, 
-                "Looks like you've got a flow already open — let's finish that one first.",
-                ephemeral=True,
-            )
+            await reply(inter, FLOW_OPEN_TEXT, view=StartOverView(self._ctx), ephemeral=True)
             return  # Don't stop view — DJ can still tap [Not this time]
         await lock.acquire()
         self.stop()  # Prevent re-use once booking flow is starting
