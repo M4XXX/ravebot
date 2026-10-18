@@ -12,7 +12,7 @@ import logging
 from typing import Any
 
 from bot import slots
-from bot.db.bookings import get_booked_slots
+from bot.db.bookings import get_booked_slots, get_plan_texts
 from bot.db.config import get_value, set_value
 from bot.db.djs import get_dj_names, get_notion_page_ids
 from bot.notion import props
@@ -42,15 +42,18 @@ async def _plan_mismatches(pool: Any, events: list[dict]) -> list[dict]:
 
     A name typed into a column without a booking is how organizers plan, not a difference.
     """
-    booked = await get_booked_slots(pool, [e["id"] for e in events if "id" in e])
+    ids = [e["id"] for e in events if "id" in e]
+    booked = await get_booked_slots(pool, ids)
+    written = await get_plan_texts(pool, ids)  # what the bot wrote, by (event, slot)
     names = await get_dj_names(pool, sorted({u for s in booked.values() for u in s.values()}))
     result = []
     for event in events:
-        missing = [
-            f"slot {index + 1}: {names[uid]}"
-            for index, uid in sorted(booked.get(event.get("id", ""), {}).items())
-            if uid in names and slots.cell_text(event, index) != names[uid]
-        ]
+        event_id = event.get("id", "")
+        missing = []
+        for index, uid in sorted(booked.get(event_id, {}).items()):
+            expected = written.get((event_id, index)) or names.get(uid)
+            if expected and slots.cell_text(event, index) != expected:
+                missing.append(f"slot {index + 1}: {expected}")
         if missing:
             result.append(
                 {"event": _name(event), "missing_in_notion": missing, "only_in_notion": []}

@@ -159,7 +159,7 @@ async def test_book_slot_override_notion_failure_gives_slot_back_to_displaced_dj
 
     assert success is False
     assert "try again" in msg
-    hand_back.assert_awaited_once_with(svc.db, "evt-001", 0, 42, 999)
+    hand_back.assert_awaited_once_with(svc.db, "evt-001", 0, 42, 999, plan_text=None)
     release_mock.assert_not_awaited()
     svc.notion_client.delete_booking.assert_not_awaited()
 

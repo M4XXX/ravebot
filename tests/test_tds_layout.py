@@ -167,9 +167,46 @@ async def test_booking_never_overwrites_a_name_typed_in_by_hand() -> None:
 
 
 @pytest.mark.asyncio
-async def test_booking_already_written_is_not_written_again() -> None:
+async def test_the_same_name_typed_in_by_hand_is_not_taken_over() -> None:
+    """Treating it as the bot's own entry would let a later cancel empty the organizer's text."""
     fake = FakePlan({"22:00 - 23:00": "DJ Rayla"})
-    await make_client(fake).write_booking("evt", 1, None, [], "E", 0, dj_name="DJ Rayla")
+    with pytest.raises(NotionSlotTakenError):
+        await make_client(fake).write_booking("evt", 1, None, [], "E", 0, dj_name="DJ Rayla")
+    assert fake.patches == []
+
+
+@pytest.mark.asyncio
+async def test_a_retry_after_an_applied_patch_does_not_write_twice() -> None:
+    """A 502 can arrive after Notion applied the PATCH; the retry finds the bot's own name."""
+    fake = FakePlan()
+    calls = {"n": 0}
+    original = fake.handler
+
+    async def flaky(request: httpx.Request) -> httpx.Response:
+        if request.method == "PATCH" and calls["n"] == 0:
+            calls["n"] += 1
+            await original(request)  # applied ...
+            return httpx.Response(502, json={})  # ... but answered with an error
+        return await original(request)
+
+    fake.handler = flaky
+    client = make_client(fake)
+    with patch("bot.notion.client.asyncio.sleep", new=AsyncMock()):
+        await client.write_booking("evt", 1, None, [], "E", 0, dj_name="DJ Rayla")
+    assert len(fake.patches) == 1
+    assert props.plain_text(fake.page["properties"]["22:00 - 23:00"]) == "DJ Rayla"
+
+
+@pytest.mark.asyncio
+async def test_self_booking_refused_when_the_event_left_planning() -> None:
+    from bot.notion.client import NotionNotBookableError
+
+    fake = FakePlan()
+    fake.page["properties"]["Status"]["status"]["name"] = "CANCLED"
+    with pytest.raises(NotionNotBookableError):
+        await make_client(fake).write_booking(
+            "evt", 1, None, [], "E", 0, dj_name="DJ Rayla", require_bookable=True
+        )
     assert fake.patches == []
 
 
@@ -224,6 +261,7 @@ async def test_reconcile_reports_a_booking_missing_from_the_plan_not_hand_entrie
 
     event = plan_event({"21:00 - 22:00": "DJ Nova", "22:00 - 23:00": ""})
     with patch("bot.reconcile.get_booked_slots", new=AsyncMock(return_value={"evt": {1: 42}})), \
+         patch("bot.reconcile.get_plan_texts", new=AsyncMock(return_value={})), \
          patch("bot.reconcile.get_dj_names", new=AsyncMock(return_value={42: "DJ Rayla"})):
         found = await find_mismatches(MagicMock(), [event])
     assert found == [{"event": "Casual Event", "missing_in_notion": ["slot 2: DJ Rayla"],
@@ -236,7 +274,21 @@ async def test_reconcile_is_quiet_when_plan_and_bookings_agree() -> None:
 
     event = plan_event({"22:00 - 23:00": "DJ Rayla", "01:00 - 02:00": "Lumen"})
     with patch("bot.reconcile.get_booked_slots", new=AsyncMock(return_value={"evt": {1: 42}})), \
+         patch("bot.reconcile.get_plan_texts", new=AsyncMock(return_value={})), \
          patch("bot.reconcile.get_dj_names", new=AsyncMock(return_value={42: "DJ Rayla"})):
+        assert await find_mismatches(MagicMock(), [event]) == []
+
+
+@pytest.mark.asyncio
+async def test_reconcile_compares_with_the_text_the_bot_wrote() -> None:
+    """After a rename the plan still shows the old text the bot wrote: no false alarm."""
+    from bot.reconcile import find_mismatches
+
+    event = plan_event({"22:00 - 23:00": "Old Name"})
+    with patch("bot.reconcile.get_booked_slots", new=AsyncMock(return_value={"evt": {1: 42}})), \
+         patch("bot.reconcile.get_plan_texts",
+               new=AsyncMock(return_value={("evt", 1): "Old Name"})), \
+         patch("bot.reconcile.get_dj_names", new=AsyncMock(return_value={42: "New Name"})):
         assert await find_mismatches(MagicMock(), [event]) == []
 
 
@@ -280,9 +332,42 @@ def test_layout_and_statuses_come_from_the_environment(monkeypatch: pytest.Monke
         monkeypatch.setenv(key, value)
     monkeypatch.setenv("NOTION_LAYOUT", "TDS")
     monkeypatch.setenv("NOTION_BOOKABLE_STATUSES", "Planing-stage, Not started,Requires Host")
+    monkeypatch.setenv("NOTION_CANCELLED_STATUSES", "CANCLED, CANCLED (moved)")
     config = Config.from_env()
     assert config.notion_layout == "tds"
     assert config.notion_bookable_statuses == ("Planing-stage", "Not started", "Requires Host")
+    assert config.notion_cancelled_statuses == ("CANCLED", "CANCLED (moved)")
     monkeypatch.setenv("NOTION_LAYOUT", "sheet")
     with pytest.raises(SystemExit):
         Config.from_env()
+
+
+@pytest.mark.asyncio
+async def test_misspelt_status_names_are_reported_at_startup() -> None:
+    fake = FakePlan()
+
+    async def schema(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"properties": {"Status": {"type": "status", "status": {
+            "options": [{"name": "Planing-stage"}, {"name": "CANCLED"}]}}}})
+
+    fake.handler = schema
+    client = make_client(fake)
+    await client.validate_status_names(["Planning-stage", "CANCLED"])
+    client._log.post_error.assert_awaited_once()
+    assert "Planning-stage" in client._log.post_error.call_args.kwargs["trigger"]
+    client._log.post_error.reset_mock()
+    await client.validate_status_names(["Planing-stage", "CANCLED"])
+    client._log.post_error.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_schema_check_ignores_whitespace_like_the_writes() -> None:
+    fake = FakePlan()
+
+    async def schema(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"properties": {"21:00-22:00": {"type": "rich_text"}}})
+
+    fake.handler = schema
+    client = make_client(fake)
+    await client.validate_schema(["21:00 - 22:00"])
+    client._log.post_error.assert_not_awaited()

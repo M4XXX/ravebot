@@ -203,6 +203,8 @@ class MissionOverviewEmbed(disnake.Embed):
                 time_str = "TBD"
             if i in st.names:  # tds layout: the name in the plan, also when typed by hand
                 status = f"✓ {st.names[i]}"
+            elif i in st.unavailable:
+                status = "No column in the plan"
             else:
                 status = "✓ Confirmed" if i in st.booked else "Open"
             self.add_field(

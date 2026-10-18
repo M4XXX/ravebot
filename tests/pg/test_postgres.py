@@ -37,6 +37,33 @@ async def test_two_djs_racing_for_one_slot_get_exactly_one_lock(pool) -> None:
     assert sorted(results) == [False, True]
 
 
+async def test_plan_text_lives_and_dies_with_the_booking(pool) -> None:
+    from bot.db.bookings import (
+        acquire_slot_lock,
+        admin_force_book_slot,
+        get_plan_text,
+        get_plan_texts,
+        hand_back_slot,
+        init_event_slots,
+        release_slot_lock,
+        set_plan_text,
+    )
+
+    await init_event_slots(pool, "evt", 6)
+    assert await acquire_slot_lock(pool, "evt", 1, 111)
+    await set_plan_text(pool, "evt", 1, 999, "Not the holder")  # ignored
+    assert await get_plan_text(pool, "evt", 1) is None
+    await set_plan_text(pool, "evt", 1, 111, "DJ One")
+    assert await get_plan_texts(pool, ["evt"]) == {("evt", 1): "DJ One"}
+    await admin_force_book_slot(pool, "evt", 1, 222)  # a new holder starts without text
+    assert await get_plan_text(pool, "evt", 1) is None
+    assert await hand_back_slot(pool, "evt", 1, 222, 111, plan_text="DJ One")
+    assert await get_plan_text(pool, "evt", 1) == "DJ One"
+    assert await release_slot_lock(pool, "evt", 1, 111)
+    assert await get_plan_text(pool, "evt", 1) is None
+    assert await get_plan_texts(pool, ["evt"]) == {}
+
+
 async def test_booked_slots_query_and_release(pool) -> None:
     from bot.db.bookings import (
         acquire_slot_lock,

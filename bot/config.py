@@ -32,6 +32,8 @@ class Config:
     # Status names DJs may book in, in the order given (empty: every event is bookable).
     # The first one is set on events the bot creates in the tds layout.
     notion_bookable_statuses: tuple[str, ...] = ()
+    # Status names that mean an event was called off (no reminders, not in the lineup)
+    notion_cancelled_statuses: tuple[str, ...] = ()
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -71,9 +73,11 @@ class Config:
         notion_layout = os.getenv("NOTION_LAYOUT", "classic").strip().lower() or "classic"
         if notion_layout not in ("classic", "tds"):
             sys.exit("NOTION_LAYOUT must be 'classic' or 'tds'")
-        bookable = tuple(
-            s.strip() for s in os.getenv("NOTION_BOOKABLE_STATUSES", "").split(",") if s.strip()
-        )
+        def names(key: str) -> tuple[str, ...]:
+            return tuple(s.strip() for s in os.getenv(key, "").split(",") if s.strip())
+
+        bookable = names("NOTION_BOOKABLE_STATUSES")
+        cancelled = names("NOTION_CANCELLED_STATUSES")
 
         return cls(
             discord_bot_token=discord_bot_token,
@@ -87,4 +91,5 @@ class Config:
             guild_id=int(raw_guild_id) if raw_guild_id else None,
             notion_layout=notion_layout,
             notion_bookable_statuses=bookable,
+            notion_cancelled_statuses=cancelled,
         )

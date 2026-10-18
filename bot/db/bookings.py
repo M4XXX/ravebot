@@ -63,7 +63,7 @@ async def acquire_slot_lock(
             await conn.execute(
                 """
                 UPDATE slot_locks
-                SET discord_user_id = $3, booked_at = NOW()
+                SET discord_user_id = $3, booked_at = NOW(), plan_text = NULL
                 WHERE event_id = $1 AND slot_index = $2
                 """,
                 event_id,
@@ -120,7 +120,7 @@ async def release_slot_lock(
     status = await pool.execute(
         """
         UPDATE slot_locks
-        SET discord_user_id = NULL, booked_at = NULL
+        SET discord_user_id = NULL, booked_at = NULL, plan_text = NULL
         WHERE event_id = $1 AND slot_index = $2
           AND discord_user_id IS NOT NULL
           AND ($3::bigint IS NULL OR discord_user_id = $3)
@@ -191,7 +191,7 @@ async def admin_force_book_slot(
         INSERT INTO slot_locks (event_id, slot_index, discord_user_id, booked_at)
         VALUES ($1, $2, $3, NOW())
         ON CONFLICT (event_id, slot_index) DO UPDATE
-            SET discord_user_id = $3, booked_at = NOW()
+            SET discord_user_id = $3, booked_at = NOW(), plan_text = NULL
         """,
         event_id,
         slot_index,
@@ -205,6 +205,7 @@ async def hand_back_slot(
     slot_index: int,
     from_user_id: int,
     to_user_id: int,
+    plan_text: str | None = None,
 ) -> bool:
     """Give a slot back from one DJ to another, only if the first still holds it.
 
@@ -215,13 +216,14 @@ async def hand_back_slot(
     status = await pool.execute(
         """
         UPDATE slot_locks
-        SET discord_user_id = $4, booked_at = NOW()
+        SET discord_user_id = $4, booked_at = NOW(), plan_text = $5
         WHERE event_id = $1 AND slot_index = $2 AND discord_user_id = $3
         """,
         event_id,
         slot_index,
         from_user_id,
         to_user_id,
+        plan_text,
     )
     return status != "UPDATE 0"
 
@@ -310,3 +312,48 @@ async def get_booked_slots(pool: asyncpg.Pool, event_ids: list[str]) -> dict[str
     for row in rows:
         result.setdefault(row["event_id"], {})[row["slot_index"]] = row["discord_user_id"]
     return result
+
+
+async def set_plan_text(
+    pool: asyncpg.Pool, event_id: str, slot_index: int, discord_user_id: int, text: str
+) -> None:
+    """Record the text the bot wrote into the slot's plan column (tds layout).
+
+    Only while the slot is still this DJ's: a booking undone meanwhile records nothing.
+    """
+    await pool.execute(
+        """
+        UPDATE slot_locks SET plan_text = $4
+        WHERE event_id = $1 AND slot_index = $2 AND discord_user_id = $3
+        """,
+        event_id,
+        slot_index,
+        discord_user_id,
+        text,
+    )
+
+
+async def get_plan_text(pool: asyncpg.Pool, event_id: str, slot_index: int) -> str | None:
+    """The text the bot wrote into the slot's plan column, or None if it wrote none."""
+    return await pool.fetchval(
+        "SELECT plan_text FROM slot_locks WHERE event_id = $1 AND slot_index = $2",
+        event_id,
+        slot_index,
+    )
+
+
+async def get_plan_texts(
+    pool: asyncpg.Pool, event_ids: list[str]
+) -> dict[tuple[str, int], str]:
+    """Recorded plan texts of booked slots: {(event_id, slot_index): text}."""
+    if not event_ids:
+        return {}
+    rows = await pool.fetch(
+        """
+        SELECT event_id, slot_index, plan_text FROM slot_locks
+        WHERE event_id = ANY($1::text[]) AND discord_user_id IS NOT NULL
+          AND plan_text IS NOT NULL
+        """,
+        event_ids,
+    )
+    return {(row["event_id"], row["slot_index"]): row["plan_text"] for row in rows}

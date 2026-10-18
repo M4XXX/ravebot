@@ -261,10 +261,13 @@ class OutreachService:
 
         await slots.annotate(self.db, guild_id, [event])
         already_booked = set(slots.state(event).booked.values())
+        # tds layout: a DJ an organizer typed into the plan already plays that night
+        in_plan = {text.casefold() for text in slots.state(event).names.values()}
         eligible = [
             dj for dj in all_active
             if dj["discord_user_id"] not in already_contacted
             and dj["discord_user_id"] not in already_booked
+            and str(dj.get("dj_name") or "").casefold() not in in_plan
         ]
 
         # Story 6.2 AC6: DJs under admin intervention are skipped — move on to the next one

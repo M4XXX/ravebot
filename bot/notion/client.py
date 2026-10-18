@@ -73,6 +73,14 @@ class NotionSlotTakenError(NotionWriteError):
         self.current = current
 
 
+class NotionNotBookableError(NotionWriteError):
+    """Raised when the event left the bookable statuses before the name was written (tds)."""
+
+    def __init__(self, status: str | None) -> None:
+        super().__init__(f"Event status {status!r} is not open for booking")
+        self.status = status
+
+
 class NotionDeletionBlockedError(Exception):
     """Raised when a request would delete or trash Notion content.
 
@@ -236,8 +244,10 @@ class NotionClient:
         )
         raise NotionWriteError(f"Could not read event page: {context}") from last_exc
 
-    async def _slot_column(self, event_id: str, slot_index: int, context: str) -> tuple[str, str]:
-        """(real column name, current text) of the slot's column on the fresh event page."""
+    async def _slot_column(
+        self, event_id: str, slot_index: int, context: str
+    ) -> tuple[str, str, dict[str, Any]]:
+        """(real column name, current text, page) of the slot's column, read fresh."""
         page = await self._read_page(event_id, context)
         wanted = slots.column_name(slot_index)
         found = props.find_property(page, wanted)
@@ -252,7 +262,7 @@ class NotionClient:
                 ),
             )
             raise NotionWriteError(f"No column {wanted!r}: {context}")
-        return found[0], props.plain_text(found[1])
+        return found[0], props.plain_text(found[1]), page
 
     async def close(self) -> None:
         """Close the underlying httpx client. Call in bot shutdown."""
@@ -421,7 +431,7 @@ class NotionClient:
 
         existing_properties: set[str] = set(data.get("properties", {}).keys())
         for prop in required_properties:
-            if prop not in existing_properties:
+            if props.find_property(data, prop) is None:
                 logger.error(
                     "Notion database is missing required property: %r (found: %s)",
                     prop,
@@ -435,6 +445,39 @@ class NotionClient:
                     ),
                     manual_action=f"Add property '{prop}' to the Notion database schema.",
                 )
+
+    async def validate_status_names(self, names: list[str]) -> None:
+        """Report configured status names the database's Status property does not offer.
+
+        A misspelt name (e.g. "Planning-stage" for "Planing-stage") would silently make
+        every event unbookable, and events the bot creates would be rejected by Notion.
+        """
+        if not names:
+            return
+        try:
+            response = await self._client.get(f"/databases/{self._database_id}")
+            response.raise_for_status()
+            found = props.find_property(response.json(), "Status")
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.error("Could not read the Status options: %s", exc)
+            return
+        if found is None:
+            return  # validate_schema reports the missing property
+        kind = found[1].get("type", "")
+        options = {o.get("name") for o in found[1].get(kind, {}).get("options", [])}
+        unknown = [n for n in names if n not in options]
+        if unknown:
+            logger.error("Status names not in the database: %s (offered: %s)",
+                         unknown, sorted(options))
+            await self._log.post_error(
+                error_code=ErrorCode.ERR_NOTION_WRITE,
+                trigger=f"Status names the Notion database does not offer: {', '.join(unknown)}",
+                action_taken="Events with these statuses are never matched.",
+                manual_action=(
+                    "Check NOTION_BOOKABLE_STATUSES and NOTION_CANCELLED_STATUSES against the "
+                    "Status options in Notion (exact spelling and case)."
+                ),
+            )
 
     async def poll_events(self) -> list[dict[str, Any]]:
         """Fetch all future events from Notion sorted by date ascending.
@@ -541,13 +584,15 @@ class NotionClient:
         slot_unix: int,
         dj_name: str | None = None,
         replaces: str | None = None,
+        require_bookable: bool = False,
     ) -> None:
         """Add a DJ to the event's DJs relation in Notion.
 
         In the tds layout the DJ's name is written into the slot's column instead, after a
-        fresh read: an empty cell is filled, a cell already holding this name is left as is,
-        and any other text raises NotionSlotTakenError — except `replaces`, the name of a DJ
-        an organizer displaced with /admin book, which is overwritten.
+        fresh read. The cell must be empty, or hold `replaces` (the text the bot wrote for a
+        DJ an organizer displaced with /admin book); anything else raises
+        NotionSlotTakenError, even the same name typed in by hand. With require_bookable the
+        fresh page must also still be in a bookable status (NotionNotBookableError).
 
         The relation is re-read from Notion under a per-event lock right before every PATCH
         attempt and only this DJ's page is added. A PATCH replaces the whole relation, so building
@@ -568,7 +613,9 @@ class NotionClient:
         slot_display = f"<t:{slot_unix}:f>" if slot_unix else "TBD"
         context = f"booking slot {slot_index + 1} in event '{event_name}' at {slot_display}"
         if self.layout == slots.TDS:
-            await self._write_slot_name(event_id, slot_index, dj_name, replaces, context)
+            await self._write_slot_name(
+                event_id, slot_index, dj_name, replaces, require_bookable, context
+            )
             return
         if dj_notion_page_id is None:
             return
@@ -645,18 +692,24 @@ class NotionClient:
         slot_index: int,
         dj_name: str | None,
         replaces: str | None,
+        require_bookable: bool,
         context: str,
     ) -> None:
         """Write dj_name into the slot's column (tds layout), see write_booking."""
         if not dj_name:
             raise NotionWriteError(f"No DJ name to write: {context}")
+        sent = False  # a PATCH went out; its name in the cell may be our own then
 
         async def payload() -> dict[str, Any] | None:
-            column, current = await self._slot_column(event_id, slot_index, context)
-            if current == dj_name:
-                return None  # already there (an earlier attempt went through)
+            nonlocal sent
+            column, current, page = await self._slot_column(event_id, slot_index, context)
+            if sent and current == dj_name:
+                return None  # an earlier attempt went through after all
             if current and current != replaces:
                 raise NotionSlotTakenError(column, current)
+            if require_bookable and not slots.is_bookable(page):
+                raise NotionNotBookableError(props.status_name(page))
+            sent = True
             return {"properties": {column: {
                 "rich_text": [{"type": "text", "text": {"content": dj_name}}]
             }}}
@@ -672,7 +725,7 @@ class NotionClient:
         """Empty the slot's column if it still says dj_name (tds layout), see delete_booking."""
 
         async def payload() -> dict[str, Any] | None:
-            column, current = await self._slot_column(event_id, slot_index, context)
+            column, current, _ = await self._slot_column(event_id, slot_index, context)
             if current != dj_name:
                 if current:
                     logger.info(

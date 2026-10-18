@@ -55,6 +55,7 @@ class LineupService:
         if guild_id is None:
             return False
 
+        events = slots.active(events)  # nights called off in Notion are left out
         # AC4 — channel must be configured
         await slots.annotate(self.db, guild_id, events)
         dj_channel_id = await get_value(self.db, guild_id, "dj_channel")

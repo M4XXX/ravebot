@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 import disnake
 
-from bot import loops, schedule
+from bot import loops, schedule, slots
 from bot.db.bookings import get_booked_djs_for_event
 from bot.db.interventions import is_under_intervention
 from bot.db.reminders import has_reminder_been_sent, record_reminder_sent
@@ -148,7 +148,8 @@ class RemindersService:
 
         # Step 2: filter to 20-28h window (compute 'now' once for the whole cycle)
         now = _now if _now is not None else datetime.datetime.now(UTC)
-        upcoming = [e for e in events if self._is_in_reminder_window(e, now)]
+        # A night called off in Notion (NOTION_CANCELLED_STATUSES) gets no reminders
+        upcoming = [e for e in slots.active(events) if self._is_in_reminder_window(e, now)]
         if not upcoming:
             return
 

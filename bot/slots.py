@@ -28,13 +28,20 @@ TDS = "tds"
 
 _layout = CLASSIC
 _bookable_statuses: frozenset[str] = frozenset()
+_cancelled_statuses: frozenset[str] = frozenset()
 
 
-def configure(layout: str, bookable_statuses: frozenset[str] = frozenset()) -> None:
-    """Set the Notion layout and the statuses DJs may book (empty = no status filter)."""
-    global _layout, _bookable_statuses
+def configure(
+    layout: str,
+    bookable_statuses: frozenset[str] = frozenset(),
+    cancelled_statuses: frozenset[str] = frozenset(),
+) -> None:
+    """Set the Notion layout, the statuses DJs may book (empty = no status filter) and the
+    statuses that mean an event was called off."""
+    global _layout, _bookable_statuses, _cancelled_statuses
     _layout = layout
     _bookable_statuses = frozenset(bookable_statuses)
+    _cancelled_statuses = frozenset(cancelled_statuses)
 
 
 def layout() -> str:
@@ -85,9 +92,23 @@ async def required_properties(pool: Any, guild_id: int | None) -> list[str]:
         await schedule.refresh(pool, guild_id)  # the slot columns follow start time + length
     total = await total_for(pool, guild_id)
     required = ["Date"] + [column_name(i) for i in range(total)]
-    if _bookable_statuses:
+    if _bookable_statuses or _cancelled_statuses:
         required.append("Status")
     return required
+
+
+def is_cancelled(event: dict) -> bool:
+    """True if the event's status says it was called off (NOTION_CANCELLED_STATUSES).
+
+    Organizers mark a cancelled night instead of deleting it; such an event gets no
+    reminders, is left out of the lineup and does not count as the night's event.
+    """
+    return bool(_cancelled_statuses) and props.status_name(event) in _cancelled_statuses
+
+
+def active(events: list[dict]) -> list[dict]:
+    """The events that were not called off."""
+    return [e for e in events if not is_cancelled(e)]
 
 
 def is_bookable(event: dict) -> bool:
@@ -104,12 +125,16 @@ class SlotState:
     # tds layout: what each filled slot column says (a hand entry is booked with user id 0)
     names: dict[int, str] = field(default_factory=dict)
     bookable: bool = True
+    # tds layout: slots whose column is missing from the plan (e.g. start 20:00, no 20-21)
+    unavailable: frozenset[int] = frozenset()
 
     @property
     def open_indices(self) -> list[int]:
         if not self.bookable:
             return []
-        return [i for i in range(self.total) if i not in self.booked]
+        return [
+            i for i in range(self.total) if i not in self.booked and i not in self.unavailable
+        ]
 
     @property
     def booked_count(self) -> int:
@@ -136,11 +161,16 @@ async def annotate(pool: Any, guild_id: int | None, events: list[dict]) -> list[
         locks = booked.get(event.get("id", ""), {})
         if _layout == TDS:
             names = {i: t for i in range(default_total) if (t := cell_text(event, i))}
+            missing = frozenset(
+                i for i in range(default_total)
+                if props.find_property(event, column_name(i)) is None
+            )
             event[_KEY] = SlotState(
                 total=default_total,
                 booked={**{i: 0 for i in names}, **locks},
                 names=names,
-                bookable=is_bookable(event),
+                bookable=is_bookable(event) and not is_cancelled(event),
+                unavailable=missing,
             )
             continue
         own = notion_slots(event)

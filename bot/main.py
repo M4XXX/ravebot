@@ -99,7 +99,11 @@ async def main() -> None:
     ctx.log_service = AdminLogService(bot=bot, db=ctx.db)
 
     # Story 1.5: init NotionClient after log_service is ready
-    slots.configure(config.notion_layout, frozenset(config.notion_bookable_statuses))
+    slots.configure(
+        config.notion_layout,
+        frozenset(config.notion_bookable_statuses),
+        frozenset(config.notion_cancelled_statuses),
+    )
     ctx.notion_client = NotionClient(
         api_key=config.notion_api_key,
         database_id=config.notion_database_id,
@@ -179,8 +183,14 @@ async def main() -> None:
 
             async def validate_notion() -> None:
                 # The required columns depend on the layout (tds: one per slot)
-                required = await slots.required_properties(ctx.db, gid)
-                await notion.validate_schema(required_properties=required)
+                try:
+                    required = await slots.required_properties(ctx.db, gid)
+                    await notion.validate_schema(required_properties=required)
+                    await notion.validate_status_names(
+                        [*config.notion_bookable_statuses, *config.notion_cancelled_statuses]
+                    )
+                except Exception:  # a task that dies here would skip the check silently
+                    logger.exception("Notion schema check failed")
 
             bot.loop.create_task(validate_notion())
 

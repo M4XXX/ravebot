@@ -1102,6 +1102,10 @@ class AdminCog(commands.Cog):
             )
             return
 
+        events = slots.active(events)  # a night called off is not the next event
+        if not events:
+            await reply(inter, "No upcoming events found in Notion.", ephemeral=True)
+            return
         event = events[0]
         event_id = event["id"]
 
@@ -1118,11 +1122,16 @@ class AdminCog(commands.Cog):
         # Get slots_per_event from config (default 6)
         assert inter.guild_id is not None
         await slots.annotate(self.ctx.db, inter.guild_id, [event])
-        slots_per_event = slots.state(event).total
+        st = slots.state(event)
+        slots_per_event = st.total
 
-        # Get booked slots from DB
+        # Get booked slots from DB; in the tds layout the plan also has names typed in by hand
         booked = await get_booked_djs_for_event(self.ctx.db, event_id)
         booked_by_slot: dict[int, str] = {b["slot_index"]: b["dj_name"] for b in booked}
+        for index, text in st.names.items():
+            booked_by_slot.setdefault(index, text)
+        for index in st.unavailable:
+            booked_by_slot.setdefault(index, "No column in the plan")
 
         # Build embed
         embed = disnake.Embed(
@@ -1132,8 +1141,9 @@ class AdminCog(commands.Cog):
         date_display = f"<t:{event_unix}:f>" if event_unix else "Unknown"
         embed.add_field(name="Event Date", value=date_display, inline=False)
         embed.add_field(name="Total Slots", value=str(slots_per_event), inline=True)
-        embed.add_field(name="Booked", value=str(len(booked_by_slot)), inline=True)
-        embed.add_field(name="Open", value=str(slots_per_event - len(booked_by_slot)), inline=True)
+        filled = len([i for i in booked_by_slot if i not in st.unavailable])
+        embed.add_field(name="Booked", value=str(filled), inline=True)
+        embed.add_field(name="Open", value=str(len(st.open_indices)), inline=True)
 
         for slot_index in range(slots_per_event):
             if event_start is not None:
@@ -1255,7 +1265,7 @@ class AdminCog(commands.Cog):
             )
             return
         same_day = [
-            e for e in upcoming
+            e for e in slots.active(upcoming)  # a night called off may get a new event
             if str(e.get("properties", {}).get("Date", {}).get("date", {}).get("start", ""))[:10]
             == event_date.isoformat()
         ]

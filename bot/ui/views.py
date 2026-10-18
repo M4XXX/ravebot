@@ -92,9 +92,10 @@ async def open_onboarding_form(
 
     Discord does not tell the bot when a DJ closes a form, so the form's lock is only freed
     by its timeout (10 minutes) — until then [Go Active] answered "flow already open" with
-    no way out. A DJ without a finished profile cannot be in any other flow (booking and
-    outreach need a profile), so a lock held for them can only be such a form's: take it
-    over. A registered DJ may be mid-booking, so they get the Start over button instead.
+    no way out. A DJ without a finished profile is almost always in that form: booking and
+    outreach need a profile. (The cancel menu does not check it, but taking its lock over
+    only makes its buttons stale, as the release goes by generation.) So the lock is taken
+    over; a registered DJ may be mid-booking and gets the Start over button instead.
     """
     lock = ctx.get_user_lock(inter.author.id)
     if lock.locked():
@@ -1044,6 +1045,7 @@ class FallbackMenuView(ActiveOnlyView, persistent=True):
             )
             return
 
+        events = slots.active(events)  # a night called off is not the next event
         if not events:
             await reply(inter, 
                 "There are no upcoming events right now. Check back soon!",
@@ -1419,9 +1421,13 @@ class BookingConfirmView(ActiveOnlyView):
         [Source: architecture.md#Slot Booking Atomicity: SELECT...FOR UPDATE in Transaction]
         [Source: architecture.md#Gap Analysis — PG lock vs Notion write boundary]
         """
-        from bot.db.bookings import acquire_slot_lock, release_slot_lock
+        from bot.db.bookings import acquire_slot_lock, release_slot_lock, set_plan_text
         from bot.db.djs import get_notion_dj_page_id
-        from bot.notion.client import NotionSlotTakenError, NotionWriteError
+        from bot.notion.client import (
+            NotionNotBookableError,
+            NotionSlotTakenError,
+            NotionWriteError,
+        )
         from bot.ui.embeds import BookingConfirmedEmbed
 
         # Guard: DB must be available (AC6)
@@ -1566,12 +1572,17 @@ class BookingConfirmView(ActiveOnlyView):
                 event_name=event_name,
                 slot_unix=self._slot_unix,
                 dj_name=dj_name,
+                require_bookable=True,
             )
-        except NotionSlotTakenError as exc:
+        except NotionSlotTakenError:
+            # Not the cell's text: it may be an organizer's note
             await self._undo_slot_claim(
-                inter,
-                event_id,
-                f"That slot was just filled in the plan ({exc.current}). Please pick another one.",
+                inter, event_id, "That slot was just filled in the plan. Please pick another one."
+            )
+            return
+        except NotionNotBookableError:
+            await self._undo_slot_claim(
+                inter, event_id, "This event isn't open for booking anymore."
             )
             return
         except Exception as exc:
@@ -1579,6 +1590,15 @@ class BookingConfirmView(ActiveOnlyView):
                 logger.exception("BookingConfirmView: unexpected error writing the booking")
             await self._undo_slot_claim(inter, event_id)
             return
+
+        # tds layout: remember the text written, cancelling clears only exactly that
+        if dj_name is not None:
+            try:
+                await set_plan_text(
+                    self._ctx.db, event_id, self._slot_index, self._user_id, dj_name
+                )
+            except Exception:
+                logger.exception("BookingConfirmView: could not record the plan text")
 
         # Send booking confirmed embed (AC3)
         embed = BookingConfirmedEmbed(event_name=event_name, slot_unix=self._slot_unix)
@@ -1823,7 +1843,7 @@ class CancelConfirmView(ActiveOnlyView):
         [Source: architecture.md#Slot Booking Atomicity]
         [Source: architecture.md#Gap Analysis — PG lock vs Notion write boundary]
         """
-        from bot.db.bookings import holds_slot_in_event, release_slot_lock
+        from bot.db.bookings import get_plan_text, holds_slot_in_event, release_slot_lock
         from bot.db.djs import get_notion_dj_page_id
         from bot.notion.client import NotionWriteError
 
@@ -1852,8 +1872,12 @@ class CancelConfirmView(ActiveOnlyView):
         per_slot = self._ctx.notion_client.per_slot is True  # tds layout: one column per slot
         dj_name = None
         if per_slot:
-            dj = await get_dj_by_discord_id(self._ctx.db, self._user_id)
-            dj_name = dj["dj_name"] if dj is not None else None
+            # The text the bot wrote; read before the release below forgets it. Bookings
+            # from before it was recorded fall back to the profile name.
+            dj_name = await get_plan_text(self._ctx.db, event_id, self._slot_index)
+            if dj_name is None:
+                dj = await get_dj_by_discord_id(self._ctx.db, self._user_id)
+                dj_name = dj["dj_name"] if dj is not None else None
 
         # Get event name for messages and admin log
         try:

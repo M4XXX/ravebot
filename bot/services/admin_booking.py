@@ -14,13 +14,16 @@ from typing import TYPE_CHECKING
 
 import disnake
 
-from bot import schedule
+from bot import guild as served
+from bot import schedule, slots
 from bot.db.bookings import (
     admin_force_book_slot,
+    get_plan_text,
     get_slot_lock_holder,
     hand_back_slot,
     holds_slot_in_event,
     release_slot_lock,
+    set_plan_text,
 )
 from bot.db.djs import get_dj_by_discord_id, get_notion_dj_page_id, update_active_booking
 from bot.notion import props
@@ -87,12 +90,14 @@ class AdminBookingService:
             matches = [e for e in events if self._get_event_name(e).lower() == query.lower()]
         if not matches:
             return None, f"Event '{query}' not found in Notion."
+        if len(matches) > 1 and len(slots.active(matches)) == 1:
+            return slots.active(matches)[0], ""  # the others were called off
         if len(matches) > 1:
             if day is not None:
                 names = ", ".join(self._get_event_name(e) or "?" for e in matches)
                 return None, (
                     f"{len(matches)} events on {day.isoformat()} ({names}). "
-                    "Please remove the duplicate in Notion first."
+                    "Please fix the duplicate in Notion first."
                 )
             dates = ", ".join(d.isoformat() for e in matches if (d := _event_day(e)))
             return None, (
@@ -100,6 +105,20 @@ class AdminBookingService:
                 f"Please give the date instead ({dates})."
             )
         return matches[0], ""
+
+    async def _slot_out_of_range(self, event: dict, event_name: str, slot_num: int) -> str:
+        """An error text if the event has no slot slot_num, else "".
+
+        Slot 7 of a 6-slot night is the plan's open-decks column (03:00 - 04:00), which the
+        bot must never write into.
+        """
+        await slots.annotate(self.db, served.resolve(self.bot), [event])
+        total = slots.state(event).total
+        if 1 <= slot_num <= total:
+            return ""
+        if total:
+            return f"'{event_name}' has slots 1 to {total}."
+        return f"'{event_name}' has no slots."
 
     async def _cell_name(self, dj_id: int | None) -> str | None:
         """The DJ's name as written into the plan (tds layout), or None."""
@@ -164,6 +183,9 @@ class AdminBookingService:
         if event is None:
             return False, problem
         event_name = self._get_event_name(event) or event_name
+        problem = await self._slot_out_of_range(event, event_name, slot_num)
+        if problem:
+            return False, problem
 
         event_id = event["id"]
         slot_index = slot_num - 1  # convert to 0-based
@@ -186,10 +208,14 @@ class AdminBookingService:
         except Exception:
             logger.warning("admin book: get_notion_dj_page_id failed for %s", dj_id)
             dj_notion_page_id = None
-        # tds layout: the plan gets the DJ's name; a displaced DJ's name is overwritten
+        # tds layout: the plan gets the DJ's name; the displaced DJ's entry, exactly as the
+        # bot wrote it, is overwritten
         try:
-            cell_name = await self._cell_name(dj_id)
-            replaces = await self._cell_name(displaced)
+            cell_name = await self._cell_name(dj_id)  # None outside the tds layout
+            recorded = replaces = None
+            if cell_name is not None and displaced is not None:
+                recorded = await get_plan_text(self.db, event_id, slot_index)
+                replaces = recorded or await self._cell_name(displaced)
         except Exception:
             logger.exception("admin book: reading DJ names failed")
             return False, "Database error while reading the DJ. Please try again."
@@ -222,7 +248,7 @@ class AdminBookingService:
                     await release_slot_lock(self.db, event_id, slot_index, dj_id)
                 elif displaced is not None:
                     undone = await hand_back_slot(
-                        self.db, event_id, slot_index, dj_id, displaced
+                        self.db, event_id, slot_index, dj_id, displaced, plan_text=recorded
                     )
             except Exception:
                 logger.exception("admin book: could not undo the slot claim after Notion error")
@@ -238,6 +264,12 @@ class AdminBookingService:
                     "overwrites what was typed in by hand, so please clear it in Notion first."
                 )
             return False, "Notion could not be updated after 3 attempts. Please try again."
+
+        if cell_name is not None:  # tds layout: cancelling later clears exactly this text
+            try:
+                await set_plan_text(self.db, event_id, slot_index, dj_id, cell_name)
+            except Exception:
+                logger.exception("admin book: could not record the plan text")
 
         slot_display = f"<t:{slot_unix}:f>" if slot_unix else "your slot"
 
@@ -324,6 +356,9 @@ class AdminBookingService:
         if event is None:
             return False, problem
         event_name = self._get_event_name(event) or event_name
+        problem = await self._slot_out_of_range(event, event_name, slot_num)
+        if problem:
+            return False, problem
 
         event_id = event["id"]
         slot_index = slot_num - 1
@@ -340,6 +375,17 @@ class AdminBookingService:
 
         # Step 4: compute slot unix
         slot_unix = self._get_slot_unix(event, slot_index)
+
+        # tds layout: the text the bot wrote, read before the release forgets it
+        try:
+            plan_text = (
+                await get_plan_text(self.db, event_id, slot_index)
+                if self.notion_client.per_slot is True else None
+            )
+            plan_text = plan_text or await self._cell_name(dj_id)
+        except Exception:
+            logger.exception("admin cancel: reading the plan text failed")
+            return False, "Database error while checking the slot. Please try again."
 
         # Step 5: free the slot, but only if it is still this DJ's (it may have changed
         # hands since the check above)
@@ -365,7 +411,7 @@ class AdminBookingService:
                     event_name,
                     slot_unix,
                     slot_index=slot_index,
-                    dj_name=await self._cell_name(dj_id),
+                    dj_name=plan_text,
                 )
         except Exception as exc:
             logger.error("admin cancel: Notion unlink failed: %s", exc)
