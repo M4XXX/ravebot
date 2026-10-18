@@ -116,7 +116,7 @@ A live lineup post in your DJ channel updates automatically whenever Notion chan
 
 ## Quick Links
 
-[User Guide →](docs/user-guide.md) | [Developer Guide →](docs/developer-guide.md)
+[User Guide →](docs/user-guide.md) | [Developer Guide →](docs/developer-guide.md) | [Changelog →](CHANGELOG.md)
 
 ---
 

@@ -1131,6 +1131,8 @@ class AdminCog(commands.Cog):
         booked = await get_booked_djs_for_event(self.ctx.db, event_id)
         booked_by_slot: dict[int, str] = {b["slot_index"]: b["dj_name"] for b in booked}
         for index, text in st.names.items():
+            if index in st.hand_entries:  # typed in by an organizer, not booked via the bot
+                text = f"{text} (typed in the plan)"
             booked_by_slot.setdefault(index, text)
         for index in st.unavailable:
             booked_by_slot.setdefault(index, "No column in the plan")

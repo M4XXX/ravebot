@@ -424,6 +424,14 @@ class AdminBookingService:
             logger.exception("admin cancel: get_slot_lock_holder failed")
             return False, "Database error while checking the slot. Please try again."
 
+        if holder is None and self.notion_client.per_slot is True:
+            typed = slots.cell_text(event, slot_index)
+            if typed:  # tds: text in the plan without a booking in the bot (typed in by hand)
+                return False, (
+                    f"Slot {slot_num} of '{event_name}' has no booking in the bot, but the plan "
+                    f"says '{typed}' (filled in by hand). The bot only clears names it wrote; "
+                    "please clear it in Notion."
+                )
         if holder != dj_id:
             return False, f"No booking found for @{dj_name} in that slot."
 
