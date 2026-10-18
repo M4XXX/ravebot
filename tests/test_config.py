@@ -135,3 +135,21 @@ class TestConfigParsing:
         with pytest.raises(SystemExit) as exc:
             Config.from_env()
         assert "ADMIN_USER_IDS" in str(exc.value)
+
+
+def test_repr_hides_secrets():
+    from bot.config import Config
+
+    cfg = Config(
+        discord_bot_token="tok-discord-1",
+        postgres_url="postgresql://u:pw-secret-2@h/db",
+        notion_api_key="secret_notion_3",
+        notion_database_id="db-id",
+        admin_user_ids=frozenset({1}),
+        log_level="INFO",
+        db_pool_min=1,
+        db_pool_max=2,
+    )
+    text = repr(cfg)
+    for secret in ("tok-discord-1", "pw-secret-2", "secret_notion_3"):
+        assert secret not in text

@@ -23,6 +23,8 @@ from typing import TYPE_CHECKING
 
 import asyncpg
 
+from bot import redact
+
 if TYPE_CHECKING:
     from bot.config import Config
 
@@ -65,8 +67,11 @@ async def run_migrations(postgres_url: str) -> None:
         env=env,
     )
     if result.returncode != 0:
-        error_detail = result.stderr.strip() or result.stdout.strip()
-        logger.error("Migration failed:\nstdout: %s\nstderr: %s", result.stdout, result.stderr)
+        secrets = redact.secret_values(postgres_url)
+        stdout = redact.redact(result.stdout or "", secrets)
+        stderr = redact.redact(result.stderr or "", secrets)
+        error_detail = stderr.strip() or stdout.strip()
+        logger.error("Migration failed:\nstdout: %s\nstderr: %s", stdout, stderr)
         sys.exit(
             f"Database migration failed — is PostgreSQL reachable?\n"
             f"Check POSTGRES_URL and ensure the database exists.\n"
@@ -103,11 +108,16 @@ async def create_pool(config: "Config") -> asyncpg.Pool:
             min_size=config.db_pool_min,
             max_size=config.db_pool_max,
         )
-    except (OSError, asyncpg.PostgresConnectionError, asyncpg.InvalidCatalogNameError) as exc:
+    except (
+        OSError,
+        ValueError,  # malformed DSN
+        asyncpg.PostgresConnectionError,
+        asyncpg.PostgresError,  # e.g. InvalidPasswordError, InvalidCatalogNameError
+    ) as exc:
         sys.exit(
             f"Failed to connect to PostgreSQL — cannot start bot.\n"
             f"Check POSTGRES_URL (host {_safe_target(config.postgres_url)})\n"
-            f"Error: {exc}"
+            f"Error: {redact.redact(str(exc), redact.secret_values(config.postgres_url))}"
         )
     if pool is None:
         sys.exit(

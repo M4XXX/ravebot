@@ -20,12 +20,13 @@ Future stories extend the sequence:
 import asyncio
 import logging
 import signal
+from collections.abc import Iterable
 
 import disnake
 from disnake.ext import commands
 from dotenv import load_dotenv
 
-from bot import active, selfcheck, slots
+from bot import active, redact, selfcheck, slots
 from bot import guild as served
 from bot.config import Config
 from bot.context import BotContext
@@ -36,11 +37,16 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 
-def _setup_logging(level: str) -> None:
+def _setup_logging(level: str, secrets: Iterable[str] = ()) -> None:
+    log_format = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
     logging.basicConfig(
         level=getattr(logging, level.upper(), logging.INFO),
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        format=log_format,
     )
+    # Safety net: mask known secrets in every log line and traceback
+    formatter = redact.RedactingFormatter(secrets, log_format)
+    for handler in logging.getLogger().handlers:
+        handler.setFormatter(formatter)
 
 
 def create_bot() -> commands.Bot:
@@ -77,7 +83,10 @@ async def main() -> None:
     """Async entry point — configure, run migrations, open pool, start bot."""
     config = Config.from_env()
     served.configure(config.guild_id)
-    _setup_logging(config.log_level)
+    _setup_logging(
+        config.log_level,
+        redact.secret_values(config.postgres_url, config.notion_api_key, config.discord_bot_token),
+    )
 
     ctx = BotContext(config=config)
 

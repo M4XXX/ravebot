@@ -6,7 +6,7 @@ All secrets (token, API key, DB URL) come exclusively from env vars — never fr
 """
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -17,9 +17,9 @@ class Config:
     Optional fields use safe defaults.
     """
 
-    discord_bot_token: str
-    postgres_url: str
-    notion_api_key: str
+    discord_bot_token: str = field(repr=False)
+    postgres_url: str = field(repr=False)
+    notion_api_key: str = field(repr=False)
     notion_database_id: str
     admin_user_ids: frozenset[int]
     log_level: str
