@@ -352,7 +352,7 @@ While the database connection was down, a second instance started and took the l
 
 ### Admin log channel shows a Notion schema warning on startup
 
-The startup validation found a missing database property (`Name`, `Date`, `Slots`, `DJs`, `Discord ID`). Add the missing property to your Notion database (see [section 2.4](#24-required-database-properties)) and restart the bot.
+The startup validation found a missing database property (`Name`, `Date`, `Slots`, `DJs`, `Discord ID`), a property of the wrong type (for example `Slots` as Text instead of Number), or a `DJs` relation that points to another database. The message names the property, the type it has and the type it needs. Fix it in your Notion database (see [section 2.4](#24-required-database-properties), or [2.6](#26-using-an-existing-event-plan-notion_layouttds) for the plan layout, where every slot column must be Text) and restart the bot.
 
 ### "Could not fetch Notion database schema"
 

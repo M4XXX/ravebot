@@ -13,7 +13,7 @@ import contextlib
 import datetime
 import json
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -48,6 +48,18 @@ def _retry_after(response: httpx.Response, default: float) -> float:
     except (TypeError, ValueError):
         return default
     return min(wait, _RETRY_AFTER_CAP)
+
+
+# How the Notion UI names the property types the bot checks (validate_schema messages)
+_NOTION_TYPE_LABELS = {
+    "title": "Title",
+    "rich_text": "Text",
+    "number": "Number",
+    "date": "Date",
+    "relation": "Relation",
+    "status": "Status",
+    "select": "Select",
+}
 
 
 def _same_page(a: str, b: str) -> bool:
@@ -420,19 +432,33 @@ class NotionClient:
         )
         raise NotionWriteError(f"Could not read DJs relation: {context}") from last_exc
 
-    async def validate_schema(self, required_properties: list[str]) -> None:
-        """Check that the Notion database has all required properties.
+    def relation_targets(self) -> dict[str, str]:
+        """Relation properties and the database they must point to (validate_schema).
 
-        Fetches the database metadata via GET /databases/{id}.
-        For each property in required_properties that is absent from the
-        database, logs a descriptive error and posts ERR_NOTION_WRITE to
-        the admin log channel.
+        classic: the DJs relation links DJ pages, which write_dj_record() creates in this
+        database (self-relation, docs/user-guide.md 2.4). tds: no relations are used.
+        """
+        return {} if self.layout == slots.TDS else {"DJs": self._database_id}
+
+    async def validate_schema(
+        self,
+        required_properties: Mapping[str, Sequence[str]],
+        relation_targets: Mapping[str, str] | None = None,
+    ) -> None:
+        """Check that the Notion database has all required properties, of the right type.
+
+        Fetches the database metadata via GET /databases/{id}. required_properties maps
+        each name to its allowed Notion types (bot/slots.py required_properties()). Each
+        property that is absent, or present with another type, is logged and posted as
+        one ERR_NOTION_WRITE to the admin log channel, naming the fix. A relation named in
+        relation_targets must also point to that database (else bookings fail with 400).
 
         This is called once at bot startup (inside on_ready) so that the
         admin log channel is already configured before errors are posted.
 
         [Source: epics.md#Story 1.5 AC5]
         [Source: architecture.md — NFR13: Notion schema validation on startup]
+        [Source: epics.md#Story 8.4]
         """
         try:
             response = await self._client.get(f"/databases/{self._database_id}")
@@ -452,8 +478,9 @@ class NotionClient:
             return
 
         existing_properties: set[str] = set(data.get("properties", {}).keys())
-        for prop in required_properties:
-            if props.find_property(data, prop) is None:
+        for prop, allowed in required_properties.items():
+            found = props.find_property(data, prop)
+            if found is None:
                 logger.error(
                     "Notion database is missing required property: %r (found: %s)",
                     prop,
@@ -467,6 +494,50 @@ class NotionClient:
                     ),
                     manual_action=f"Add property '{prop}' to the Notion database schema.",
                 )
+                continue
+            real_name, schema = found
+            if schema.get("type") not in allowed:
+                await self._report_wrong_type(prop, real_name, schema.get("type"), allowed)
+                continue
+            target = (relation_targets or {}).get(prop)
+            linked = (schema.get("relation") or {}).get("database_id")
+            if target and schema.get("type") == "relation" and not (
+                linked and _same_page(linked, target)
+            ):
+                logger.error(
+                    "Notion relation %r points to database %s, expected %s",
+                    real_name, linked, target,
+                )
+                await self._log.post_error(
+                    error_code=ErrorCode.ERR_NOTION_WRITE,
+                    trigger=(
+                        f"Notion relation '{real_name}' points to another database "
+                        f"({linked}), expected {target}"
+                    ),
+                    action_taken="Bookings will fail to link DJs in Notion.",
+                    manual_action=(
+                        f"Edit '{real_name}' in Notion so it relates to the database the bot "
+                        "keeps DJ pages in (see docs/user-guide.md 2.4)."
+                    ),
+                )
+
+    async def _report_wrong_type(
+        self, name: str, real_name: str, actual: Any, allowed: Sequence[str]
+    ) -> None:
+        expected = " or ".join(allowed)
+        shown = " or ".join(f'"{_NOTION_TYPE_LABELS.get(t, t)}"' for t in allowed)
+        logger.error(
+            "Notion property %r has type %r, expected %s", real_name, actual, expected
+        )
+        await self._log.post_error(
+            error_code=ErrorCode.ERR_NOTION_WRITE,
+            trigger=f"Notion property '{real_name}' has type '{actual}', expected {expected}",
+            action_taken="Bot will continue but features depending on this property will fail.",
+            manual_action=(
+                f"Change the type of '{real_name}' in Notion to {shown}, or rename it and "
+                f"add a new {shown} property named '{name}'."
+            ),
+        )
 
     async def validate_status_names(self, names: list[str]) -> None:
         """Report configured status names the database's Status property does not offer.

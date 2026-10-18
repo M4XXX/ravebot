@@ -103,3 +103,16 @@ async def test_create_event_writes_slot_count() -> None:
     await client.create_event("Rave", datetime.date(2026, 10, 24), slots=6)
     payload = client._write_with_retry.call_args.kwargs["payload"]
     assert payload["properties"]["Slots"] == {"number": 6}
+
+
+@pytest.mark.asyncio
+async def test_classic_required_properties_are_the_one_constant() -> None:
+    """Story 8.4: the classic name -> type map lives in slots.CLASSIC_PROPERTIES."""
+    slots.configure(slots.CLASSIC)
+    required = await slots.required_properties(None, None)
+    assert required == slots.CLASSIC_PROPERTIES
+    assert required is not slots.CLASSIC_PROPERTIES  # callers get a copy
+    assert required == {
+        "Name": ("title",), "Date": ("date",), "Slots": ("number",),
+        "DJs": ("relation",), "Discord ID": ("rich_text",),
+    }

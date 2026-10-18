@@ -251,8 +251,35 @@ async def test_new_event_uses_the_plans_title_and_starts_in_planning() -> None:
 @pytest.mark.asyncio
 async def test_required_columns_for_the_plan() -> None:
     required = await slots.required_properties(None, None)
-    assert required == ["Date", "21:00 - 22:00", "22:00 - 23:00", "23:00 - 24:00",
-                        "24:00 - 01:00", "01:00 - 02:00", "02:00 - 03:00", "Status"]
+    assert list(required) == ["Date", "21:00 - 22:00", "22:00 - 23:00", "23:00 - 24:00",
+                              "24:00 - 01:00", "01:00 - 02:00", "02:00 - 03:00", "Status"]
+    assert required["Date"] == ("date",)
+    assert required["21:00 - 22:00"] == ("rich_text",)
+    assert required["Status"] == ("status", "select")
+
+
+@pytest.mark.asyncio
+async def test_required_columns_without_status_filters_have_no_status() -> None:
+    slots.configure(slots.TDS)
+    required = await slots.required_properties(None, None)
+    assert "Status" not in required
+
+
+@pytest.mark.asyncio
+async def test_schema_check_reports_a_slot_column_of_the_wrong_type() -> None:
+    fake = FakePlan()
+
+    async def schema(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"properties": {
+            "Date": {"type": "date"}, "21:00 - 22:00": {"type": "number"},
+        }})
+
+    fake.handler = schema
+    client = make_client(fake)
+    await client.validate_schema({"Date": ("date",), "21:00 - 22:00": ("rich_text",)})
+    client._log.post_error.assert_awaited_once()
+    trigger = client._log.post_error.call_args.kwargs["trigger"]
+    assert "'21:00 - 22:00'" in trigger and "'number'" in trigger
 
 
 @pytest.mark.asyncio
@@ -369,5 +396,5 @@ async def test_schema_check_ignores_whitespace_like_the_writes() -> None:
 
     fake.handler = schema
     client = make_client(fake)
-    await client.validate_schema(["21:00 - 22:00"])
+    await client.validate_schema({"21:00 - 22:00": ("rich_text",)})
     client._log.post_error.assert_not_awaited()

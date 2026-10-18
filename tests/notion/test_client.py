@@ -83,12 +83,14 @@ async def test_validate_schema_all_present_no_error() -> None:
     client = make_client(log)
     mock_response = MagicMock()
     mock_response.raise_for_status = MagicMock()
-    mock_response.json = MagicMock(
-        return_value={"properties": {"Name": {}, "Date": {}, "Slots": {}}}
-    )
+    mock_response.json = MagicMock(return_value={"properties": {
+        "Name": {"type": "title"}, "Date": {"type": "date"}, "Slots": {"type": "number"},
+    }})
     client._client.get = AsyncMock(return_value=mock_response)
 
-    await client.validate_schema(["Name", "Date", "Slots"])
+    await client.validate_schema(
+        {"Name": ("title",), "Date": ("date",), "Slots": ("number",)}
+    )
 
     log.post_error.assert_not_called()
 
@@ -100,10 +102,12 @@ async def test_validate_schema_missing_property_posts_error_per_missing() -> Non
     client = make_client(log)
     mock_response = MagicMock()
     mock_response.raise_for_status = MagicMock()
-    mock_response.json = MagicMock(return_value={"properties": {"Name": {}}})
+    mock_response.json = MagicMock(return_value={"properties": {"Name": {"type": "title"}}})
     client._client.get = AsyncMock(return_value=mock_response)
 
-    await client.validate_schema(["Name", "Date", "Slots"])
+    await client.validate_schema(
+        {"Name": ("title",), "Date": ("date",), "Slots": ("number",)}
+    )
 
     assert log.post_error.await_count == 2  # Date and Slots are missing
     codes = [c.kwargs["error_code"] for c in log.post_error.call_args_list]
@@ -117,7 +121,7 @@ async def test_validate_schema_fetch_error_posts_single_error() -> None:
     client = make_client(log)
     client._client.get = AsyncMock(side_effect=httpx.RequestError("connection refused"))
 
-    await client.validate_schema(["Name", "Date"])
+    await client.validate_schema({"Name": ("title",), "Date": ("date",)})
 
     log.post_error.assert_awaited_once()
     assert log.post_error.call_args.kwargs["error_code"] == ErrorCode.ERR_NOTION_WRITE
@@ -429,3 +433,101 @@ async def test_delete_booking_without_page_writes_nothing_and_logs_nothing() -> 
     client._client.get.assert_not_called()
     client._client.post.assert_not_called()
     log.post_error.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Story 8.4: property types
+# ---------------------------------------------------------------------------
+
+
+def _schema_client(properties: dict) -> tuple[NotionClient, MagicMock]:
+    log = make_mock_log()
+    client = make_client(log)
+    response = MagicMock()
+    response.raise_for_status = MagicMock()
+    response.json = MagicMock(return_value={"properties": properties})
+    client._client.get = AsyncMock(return_value=response)
+    return client, log
+
+
+@pytest.mark.asyncio
+async def test_validate_schema_classic_map_with_correct_types_posts_nothing() -> None:
+    from bot.slots import CLASSIC_PROPERTIES
+
+    client, log = _schema_client(
+        {name: {"type": types[0]} for name, types in CLASSIC_PROPERTIES.items()}
+    )
+    await client.validate_schema(CLASSIC_PROPERTIES)
+    log.post_error.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_validate_schema_wrong_type_names_property_types_and_fix() -> None:
+    client, log = _schema_client({"Slots": {"type": "rich_text"}})
+    await client.validate_schema({"Slots": ("number",)})
+    log.post_error.assert_awaited_once()
+    kwargs = log.post_error.call_args.kwargs
+    assert kwargs["error_code"] == ErrorCode.ERR_NOTION_WRITE
+    assert "'Slots'" in kwargs["trigger"]
+    assert "'rich_text'" in kwargs["trigger"] and "expected number" in kwargs["trigger"]
+    assert 'to "Number"' in kwargs["manual_action"]
+
+
+@pytest.mark.asyncio
+async def test_validate_schema_reports_each_wrong_and_missing_property() -> None:
+    client, log = _schema_client({
+        "Name": {"type": "rich_text"},   # wrong
+        "Date": {"type": "date"},        # ok
+        "DJs": {"type": "multi_select"},  # wrong
+    })
+    await client.validate_schema(
+        {"Name": ("title",), "Date": ("date",), "DJs": ("relation",), "Slots": ("number",)}
+    )
+    triggers = [c.kwargs["trigger"] for c in log.post_error.call_args_list]
+    assert len(triggers) == 3
+    assert any("'Name'" in t and "rich_text" in t for t in triggers)
+    assert any("'DJs'" in t and "multi_select" in t for t in triggers)
+    assert any("missing required property: 'Slots'" in t for t in triggers)
+
+
+@pytest.mark.asyncio
+async def test_validate_schema_accepts_any_allowed_type() -> None:
+    client, log = _schema_client({"Status": {"type": "select"}})
+    await client.validate_schema({"Status": ("status", "select")})
+    log.post_error.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_validate_schema_uses_the_real_property_name() -> None:
+    client, log = _schema_client({"Discord  ID": {"type": "number"}})
+    await client.validate_schema({"Discord ID": ("rich_text",)})
+    kwargs = log.post_error.call_args.kwargs
+    assert "'Discord  ID'" in kwargs["trigger"]
+    assert "named 'Discord ID'" in kwargs["manual_action"]
+
+
+@pytest.mark.asyncio
+async def test_validate_schema_relation_to_another_database_is_reported() -> None:
+    client, log = _schema_client(
+        {"DJs": {"type": "relation", "relation": {"database_id": "other-db-0000"}}}
+    )
+    await client.validate_schema({"DJs": ("relation",)}, relation_targets={"DJs": "test-db-id"})
+    log.post_error.assert_awaited_once()
+    kwargs = log.post_error.call_args.kwargs
+    assert "'DJs'" in kwargs["trigger"] and "other-db-0000" in kwargs["trigger"]
+
+
+@pytest.mark.asyncio
+async def test_validate_schema_self_relation_with_dashes_is_accepted() -> None:
+    client, log = _schema_client(
+        {"DJs": {"type": "relation", "relation": {"database_id": "ab12-cd34"}}}
+    )
+    await client.validate_schema({"DJs": ("relation",)}, relation_targets={"DJs": "AB12CD34"})
+    log.post_error.assert_not_called()
+
+
+def test_relation_targets_per_layout() -> None:
+    classic = make_client()
+    assert classic.relation_targets() == {"DJs": "test-db-id"}
+    tds = NotionClient(api_key="k", database_id="db", log_service=make_mock_log(), layout="tds")
+    assert tds.relation_targets() == {}

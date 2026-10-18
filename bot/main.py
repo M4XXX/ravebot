@@ -205,7 +205,9 @@ async def main() -> None:
                 # The required columns depend on the layout (tds: one per slot)
                 try:
                     required = await slots.required_properties(ctx.db, gid)
-                    await notion.validate_schema(required_properties=required)
+                    await notion.validate_schema(
+                        required_properties=required, relation_targets=notion.relation_targets()
+                    )
                     await notion.validate_status_names(
                         [*config.notion_bookable_statuses, *config.notion_cancelled_statuses]
                     )
