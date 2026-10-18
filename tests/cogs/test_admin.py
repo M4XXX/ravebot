@@ -250,12 +250,40 @@ async def test_intervene_end_calls_service_and_replies() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _dj_row(ctx: MagicMock, onboarding_complete: bool | None) -> None:
+    """Let get_dj_by_discord_id find the DJ (None = no row at all)."""
+    row = None if onboarding_complete is None else {"onboarding_complete": onboarding_complete}
+    ctx.db.fetchrow = AsyncMock(return_value=row)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("onboarding_complete", [None, False])
+async def test_admin_book_refuses_member_without_profile(onboarding_complete: bool | None) -> None:
+    """A member who never finished onboarding is not booked: they could not manage the slot."""
+    from bot.cogs.admin import AdminCog
+
+    ctx = make_mock_ctx(frozenset({1}))
+    ctx.admin_booking_service = MagicMock()
+    ctx.admin_booking_service.book_slot_override = AsyncMock(return_value=(True, ""))
+    _dj_row(ctx, onboarding_complete)
+
+    cog = AdminCog(ctx)
+    inter = make_mock_inter(user_id=1)
+    await cog.admin_book.callback(cog, inter, make_mock_member(user_id=42), "Rave Night #12", 2)
+
+    ctx.admin_booking_service.book_slot_override.assert_not_awaited()
+    call_args = inter.response.send_message.call_args
+    assert "/admin onboard" in call_args[0][0]
+    assert call_args[1].get("ephemeral") is True
+
+
 @pytest.mark.asyncio
 async def test_admin_book_calls_service_and_replies() -> None:
     """admin_book calls book_slot_override and sends success reply on (True, '')."""
     from bot.cogs.admin import AdminCog
 
     ctx = make_mock_ctx(frozenset({1}))
+    _dj_row(ctx, True)
     ctx.admin_booking_service = MagicMock()
     ctx.admin_booking_service.book_slot_override = AsyncMock(return_value=(True, ""))
 
@@ -284,6 +312,7 @@ async def test_admin_book_service_returns_error_replies_with_error() -> None:
     from bot.cogs.admin import AdminCog
 
     ctx = make_mock_ctx(frozenset({1}))
+    _dj_row(ctx, True)
     ctx.admin_booking_service = MagicMock()
     ctx.admin_booking_service.book_slot_override = AsyncMock(
         return_value=(False, "Event 'Ghost' not found in Notion.")

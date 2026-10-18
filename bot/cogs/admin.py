@@ -857,9 +857,19 @@ class AdminCog(commands.Cog):
         """
         if await self._refuse_if_passive(inter):
             return
-        if self.ctx.admin_booking_service is None:
-            await reply(inter, 
+        if self.ctx.admin_booking_service is None or self.ctx.db is None:
+            await reply(inter,
                 "Bot is not ready — please try again.", ephemeral=True
+            )
+            return
+        # A member without a finished profile could be booked, but then only got the
+        # onboarding intro when they DMed about it, and could not cancel their own slot.
+        dj_row = await get_dj_by_discord_id(self.ctx.db, dj.id)
+        if dj_row is None or not dj_row["onboarding_complete"]:
+            await reply(inter,
+                f"{dj.mention} hasn't finished onboarding yet — invite them with "
+                "`/admin onboard` first, then book them.",
+                ephemeral=True,
             )
             return
         success, msg = await self.ctx.admin_booking_service.book_slot_override(
