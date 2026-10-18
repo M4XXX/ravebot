@@ -295,6 +295,7 @@ class NotionClient:
         payload: dict[str, Any] | Callable[[], Awaitable[dict[str, Any] | None]],
         context: str,
         find_existing: Callable[[], Awaitable[dict[str, Any] | None]] | None = None,
+        manual_action: str | None = None,
     ) -> dict[str, Any]:
         """Execute a Notion write, retrying only where a retry is safe and can help.
 
@@ -312,7 +313,7 @@ class NotionClient:
         each retry so a page that was in fact created is returned instead of created twice.
 
         After the last failure posts ERR_NOTION_WRITE with context to the admin log and
-        raises NotionWriteError.
+        raises NotionWriteError. manual_action, if given, replaces the default hint there.
 
         [Source: architecture.md#Notion Client: exponential back-off (3 retries)]
         [Source: epics.md#Story 1.5 AC2]
@@ -364,7 +365,8 @@ class NotionClient:
             error_code=ErrorCode.ERR_NOTION_WRITE,
             trigger=f"Notion write failed: {context}",
             action_taken="Bot aborted the write operation.",
-            manual_action=f"Check Notion API key and database permissions. Context: {context}",
+            manual_action=manual_action
+            or f"Check Notion API key and database permissions. Context: {context}",
         )
         raise NotionWriteError(f"Notion write failed: {context}") from last_exc
 
@@ -549,8 +551,18 @@ class NotionClient:
 
         return all_results
 
-    async def write_dj_record(self, discord_user_id: int, dj_name: str) -> str | None:
-        """Create a DJ page in the Notion database. Returns the new page's Notion ID.
+    async def write_dj_record(
+        self,
+        discord_user_id: int,
+        dj_name: str,
+        context: str | None = None,
+        manual_action: str | None = None,
+    ) -> str | None:
+        """Find or create the DJ's page in the Notion database. Returns its Notion ID.
+
+        An existing page with this Discord ID is returned instead of creating another one
+        (a resubmitted profile or a booking must not duplicate it). If that lookup fails
+        the page is created anyway — a rare duplicate is better than no page.
 
         In the tds layout DJ profiles live only in the bot's database and nothing is
         written (returns None): the plan holds events, the DJs appear as names in slots.
@@ -563,7 +575,9 @@ class NotionClient:
         set_notion_dj_page_id() so BookingConfirmView can later look it up when
         writing a booking to the event's DJs relation.
 
-        Called from OnboardingModal.callback after successful DB insert (Story 2.3).
+        Called from OnboardingModal.callback after successful DB insert (Story 2.3), and
+        through ensure_dj_page() when a DJ without a page books (Story 8.3); context and
+        manual_action then name the event in the admin log entry.
         Caller catches the exception and continues — Notion sync is best-effort.
 
         [Source: epics.md#Story 2.3 AC2, AC3]
@@ -572,6 +586,13 @@ class NotionClient:
         """
         if self.layout == slots.TDS:
             return None
+        try:
+            existing = await self._find_dj_page(discord_user_id)
+        except Exception as exc:  # best-effort, like find_existing below
+            logger.warning("Looking up the Notion page of %s failed: %s", dj_name, exc)
+            existing = None
+        if existing is not None:
+            return existing["id"]
         payload: dict[str, Any] = {
             "parent": {"database_id": self._database_id},
             "properties": {
@@ -587,12 +608,53 @@ class NotionClient:
             method="POST",
             endpoint="/pages",
             payload=payload,
-            context=f"DJ record for {dj_name} (discord_user_id={discord_user_id})",
-            find_existing=lambda: self._find_page(
-                {"property": "Discord ID", "rich_text": {"equals": str(discord_user_id)}}
-            ),
+            context=context or f"DJ record for {dj_name} (discord_user_id={discord_user_id})",
+            find_existing=lambda: self._find_dj_page(discord_user_id),
+            manual_action=manual_action,
         )
         return result["id"]
+
+    def _find_dj_page(self, discord_user_id: int) -> Awaitable[dict[str, Any] | None]:
+        return self._find_page(
+            {"property": "Discord ID", "rich_text": {"equals": str(discord_user_id)}}
+        )
+
+    async def ensure_dj_page(
+        self, discord_user_id: int, dj_name: str, event_name: str
+    ) -> str | None:
+        """The DJ's Notion page ID for a booking: found by Discord ID, else created.
+
+        tds layout: None without any request (no DJ pages, the plan holds names).
+        Returns None if the page can neither be found nor created; exactly one
+        ERR_NOTION_WRITE then names the DJ and the event. Never raises.
+
+        [Source: epics.md#Story 8.3]
+        """
+        if self.layout == slots.TDS:
+            return None
+        context = (
+            f"DJ page for {dj_name} (discord_user_id={discord_user_id}), "
+            f"needed for the booking in '{event_name}'"
+        )
+        manual_action = (
+            f"Create a page for {dj_name} in Notion and add it to the DJs of "
+            f"'{event_name}'. The booking itself is saved."
+        )
+        try:
+            return await self.write_dj_record(
+                discord_user_id, dj_name, context=context, manual_action=manual_action
+            )
+        except NotionWriteError:
+            return None  # _write_with_retry has posted the error
+        except Exception as exc:  # an unexpected answer; nothing was posted yet
+            logger.warning("Finding or creating the Notion page of %s failed: %s", dj_name, exc)
+            await self._log.post_error(
+                error_code=ErrorCode.ERR_NOTION_WRITE,
+                trigger=f"Notion write failed: {context}",
+                action_taken="Booking kept without a link in Notion.",
+                manual_action=manual_action,
+            )
+            return None
 
     async def write_booking(
         self,

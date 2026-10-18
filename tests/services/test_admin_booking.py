@@ -38,6 +38,7 @@ def _make_service(**overrides):
     notion_client.poll_events = AsyncMock(return_value=[_make_event()])
     notion_client.write_booking = AsyncMock()
     notion_client.delete_booking = AsyncMock()
+    notion_client.ensure_dj_page = AsyncMock(return_value="dj-page-new")  # Story 8.3
 
     log_service = MagicMock()
     log_service.post_admin_override = AsyncMock()
@@ -592,3 +593,152 @@ async def test_book_slot_override_says_so_when_the_displaced_dj_could_not_be_unl
     assert success is True
     assert "check it there" in msg
     svc.notion_client.delete_booking.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Story 8.3: DJ without a Notion page ID (classic layout)
+# ---------------------------------------------------------------------------
+
+
+def _patch_book(monkeypatch, page_id, dj_row):
+    store = AsyncMock()
+    monkeypatch.setattr("bot.services.admin_booking.admin_force_book_slot", AsyncMock())
+    monkeypatch.setattr(
+        "bot.services.admin_booking.get_slot_lock_holder", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(
+        "bot.services.admin_booking.get_notion_dj_page_id", AsyncMock(return_value=page_id)
+    )
+    monkeypatch.setattr(
+        "bot.services.admin_booking.get_dj_by_discord_id", AsyncMock(return_value=dj_row)
+    )
+    monkeypatch.setattr("bot.notion.dj_pages.set_notion_dj_page_id", store)
+    return store
+
+
+@pytest.mark.asyncio
+async def test_admin_book_creates_missing_dj_page_and_stores_it(monkeypatch):
+    svc = _make_service()
+    svc.notion_client.per_slot = False
+    store = _patch_book(monkeypatch, None, {"dj_name": "Nova"})
+
+    success, msg = await svc.book_slot_override(
+        admin_name="Admin", dj_id=42, dj_name="nova#1", event_name="Rave Night #12", slot_num=1
+    )
+
+    assert success is True and msg == ""
+    svc.notion_client.ensure_dj_page.assert_awaited_once_with(42, "Nova", "Rave Night #12")
+    store.assert_awaited_once_with(svc.db, 42, "dj-page-new")
+    assert svc.notion_client.write_booking.call_args[0][2] == "dj-page-new"
+
+
+@pytest.mark.asyncio
+async def test_admin_book_keeps_booking_when_no_dj_page_can_be_made(monkeypatch):
+    svc = _make_service()
+    svc.notion_client.per_slot = False
+    svc.notion_client.ensure_dj_page = AsyncMock(return_value=None)
+    store = _patch_book(monkeypatch, None, None)  # no profile: display name is used
+
+    success, msg = await svc.book_slot_override(
+        admin_name="Admin", dj_id=42, dj_name="nova#1", event_name="Rave Night #12", slot_num=1
+    )
+
+    assert success is True
+    assert "not linked" in msg and "Rave Night #12" in msg
+    svc.notion_client.ensure_dj_page.assert_awaited_once_with(42, "nova#1", "Rave Night #12")
+    store.assert_not_awaited()
+    svc.log_service.post_admin_override.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_admin_book_with_stored_page_does_not_look_it_up(monkeypatch):
+    svc = _make_service()
+    svc.notion_client.per_slot = False
+    _patch_book(monkeypatch, "dj-page-stored", {"dj_name": "Nova"})
+
+    await svc.book_slot_override(
+        admin_name="Admin", dj_id=42, dj_name="nova#1", event_name="Rave Night #12", slot_num=1
+    )
+
+    svc.notion_client.ensure_dj_page.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_admin_book_tds_never_looks_up_a_dj_page(monkeypatch):
+    svc = _make_service()
+    svc.notion_client.per_slot = True
+    _patch_book(monkeypatch, None, {"dj_name": "Nova"})
+    monkeypatch.setattr("bot.services.admin_booking.set_plan_text", AsyncMock())
+
+    await svc.book_slot_override(
+        admin_name="Admin", dj_id=42, dj_name="nova#1", event_name="Rave Night #12", slot_num=1
+    )
+
+    svc.notion_client.ensure_dj_page.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_admin_cancel_without_dj_page_creates_none(monkeypatch):
+    """Cancelling a DJ without a Notion page never creates one (Story 8.3 AC3)."""
+    svc = _make_service()
+    svc.notion_client.per_slot = False
+    monkeypatch.setattr(
+        "bot.services.admin_booking.get_slot_lock_holder", AsyncMock(return_value=42)
+    )
+    monkeypatch.setattr(
+        "bot.services.admin_booking.release_slot_lock", AsyncMock(return_value=True)
+    )
+    monkeypatch.setattr(
+        "bot.services.admin_booking.holds_slot_in_event", AsyncMock(return_value=False)
+    )
+    monkeypatch.setattr(
+        "bot.services.admin_booking.get_notion_dj_page_id", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr("bot.services.admin_booking.get_plan_text", AsyncMock(return_value=None))
+
+    ok, msg = await svc.cancel_slot_override("Admin", 42, "DJ X", "Rave Night #12", 1)
+
+    assert ok, msg
+    svc.notion_client.ensure_dj_page.assert_not_awaited()
+    assert svc.notion_client.delete_booking.call_args[0][1] is None
+
+
+@pytest.mark.asyncio
+async def test_admin_book_creates_no_dj_page_when_saving_the_slot_fails(monkeypatch):
+    """The page is only looked up once the slot is saved (Story 8.3 review)."""
+    svc = _make_service()
+    svc.notion_client.per_slot = False
+    _patch_book(monkeypatch, None, {"dj_name": "Nova"})
+    monkeypatch.setattr(
+        "bot.services.admin_booking.admin_force_book_slot",
+        AsyncMock(side_effect=RuntimeError("db down")),
+    )
+
+    ok, msg = await svc.book_slot_override(
+        admin_name="Admin", dj_id=42, dj_name="nova#1", event_name="Rave Night #12", slot_num=1
+    )
+
+    assert ok is False and "Database error" in msg
+    svc.notion_client.ensure_dj_page.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_admin_book_looks_up_the_page_after_saving_the_slot(monkeypatch):
+    svc = _make_service()
+    svc.notion_client.per_slot = False
+    order: list[str] = []
+    _patch_book(monkeypatch, None, {"dj_name": "Nova"})
+    monkeypatch.setattr(
+        "bot.services.admin_booking.admin_force_book_slot",
+        AsyncMock(side_effect=lambda *a: order.append("saved")),
+    )
+
+    async def ensure(*args):
+        order.append("page")
+        return "dj-page-new"
+
+    svc.notion_client.ensure_dj_page = AsyncMock(side_effect=ensure)
+    await svc.book_slot_override(
+        admin_name="Admin", dj_id=42, dj_name="nova#1", event_name="Rave Night #12", slot_num=1
+    )
+    assert order == ["saved", "page"]

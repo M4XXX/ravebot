@@ -337,3 +337,67 @@ def test_texts_use_the_bots_own_discord_name() -> None:
         assert BookingConfirmedEmbed("Casual Event", 0).footer.text.startswith("TDS DJ Bot")
     finally:
         served._name = "RaveBot"
+
+
+# Story 8.3: the tds layout needs no DJ pages — none is looked up or created, no error
+
+
+def _no_dj_page_calls(client):
+    from contextlib import ExitStack
+
+    stack = ExitStack()
+    write = stack.enter_context(
+        patch.object(client, "write_dj_record", wraps=client.write_dj_record)
+    )
+    find = stack.enter_context(patch.object(client, "_find_dj_page", wraps=client._find_dj_page))
+    return stack, write, find
+
+
+@pytest.mark.asyncio
+async def test_dm_booking_and_cancel_create_no_dj_page() -> None:
+    from bot.ui.views import CancelConfirmView
+
+    fake = FakePlan()
+    ctx, _, view = await _booking(fake)
+    client = ctx.notion_client
+    stack, write, find = _no_dj_page_calls(client)
+    with stack, _apply(_db_patches()):
+        await view._handle_confirm(_inter())
+    assert cell(fake) == "DJ Rayla"
+
+    lock = ctx.get_user_lock(42)
+    await lock.acquire()
+    cancel = CancelConfirmView(ctx=ctx, event=dict(fake.page), slot_index=1, slot_unix=0,
+                               lock=lock, user_id=42)
+    mocks = {
+        "bot.db.bookings.release_slot_lock": AsyncMock(return_value=True),
+        "bot.db.bookings.holds_slot_in_event": AsyncMock(return_value=False),
+        "bot.db.bookings.get_plan_text": AsyncMock(return_value="DJ Rayla"),
+        "bot.db.djs.get_notion_dj_page_id": AsyncMock(return_value=None),
+    }
+    stack2, write2, find2 = _no_dj_page_calls(client)
+    with stack2, _apply(mocks):
+        await cancel._handle_confirm(_inter())
+    assert cell(fake) == ""
+    for mock in (write, find, write2, find2):
+        mock.assert_not_called()
+    client._log.post_error.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_admin_book_creates_no_dj_page() -> None:
+    fake = QueryablePlan()
+    svc = _service(fake)
+    stack, write, find = _no_dj_page_calls(svc.notion_client)
+    with stack, \
+         patch(AB + "get_slot_lock_holder", new=AsyncMock(return_value=None)), \
+         patch(AB + "get_dj_by_discord_id", new=_names({42: "DJ Rayla"})), \
+         patch(AB + "admin_force_book_slot", new=AsyncMock()), \
+         patch(AB + "set_plan_text", new=AsyncMock()), \
+         patch(AB + "get_notion_dj_page_id", new=AsyncMock(return_value=None)):
+        ok, msg = await svc.book_slot_override("Admin", 42, "DJ", "2026-10-24", 2)
+    assert ok, msg
+    assert cell(fake) == "DJ Rayla"
+    write.assert_not_called()
+    find.assert_not_called()
+    svc.notion_client._log.post_error.assert_not_awaited()

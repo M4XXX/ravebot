@@ -26,7 +26,7 @@ from bot.db.bookings import (
     set_plan_text,
 )
 from bot.db.djs import get_dj_by_discord_id, get_notion_dj_page_id, update_active_booking
-from bot.notion import props
+from bot.notion import dj_pages, props
 from bot.notion.client import NotionSlotTakenError, NotionWriteError
 
 if TYPE_CHECKING:
@@ -126,6 +126,21 @@ class AdminBookingService:
             return None
         dj = await get_dj_by_discord_id(self.db, dj_id)
         return dj["dj_name"] if dj is not None else None
+
+    async def _ensure_dj_page(self, dj_id: int, dj_name: str, event_name: str) -> str | None:
+        """Find or create the DJ's Notion page (classic layout) and store its ID.
+
+        Uses the profile name, falling back to the display name. None if it fails;
+        ensure_dj_page() has then posted ERR_NOTION_WRITE. [Source: epics.md#Story 8.3]
+        """
+        assert self.notion_client is not None
+        try:
+            dj = await get_dj_by_discord_id(self.db, dj_id)
+        except Exception:
+            logger.exception("admin book: reading the DJ profile failed")
+            dj = None
+        name = dj["dj_name"] if dj is not None else dj_name
+        return await dj_pages.ensure_and_store(self.notion_client, self.db, dj_id, name, event_name)
 
     async def _dm_dj(self, dj_id: int, text: str) -> None:
         """Send a DM to the DJ. Swallows Forbidden/NotFound — DM failure is non-fatal."""
@@ -227,6 +242,17 @@ class AdminBookingService:
             logger.exception("admin book: admin_force_book_slot failed")
             return False, "Database error while saving the slot. Please try again."
 
+        # Story 8.3 (classic layout): now that the slot is saved, a DJ without a Notion page
+        # gets one, so the booking shows in the event's DJs; if that fails it stays booked
+        unlinked_note = ""
+        if dj_notion_page_id is None and self.notion_client.per_slot is not True:
+            dj_notion_page_id = await self._ensure_dj_page(dj_id, dj_name, event_name)
+            if dj_notion_page_id is None:
+                unlinked_note = (
+                    f"@{dj_name} is not linked to '{event_name}' in Notion: their Notion page "
+                    "could not be created. Please add them to the event's DJs there."
+                )
+
         # Step 6: write to Notion (retry x3 built into write_booking)
         try:
             await self.notion_client.write_booking(
@@ -316,7 +342,7 @@ class AdminBookingService:
             )
             await self.log_service.post_admin_override(msg)
 
-        return True, note
+        return True, "\n".join(n for n in (unlinked_note, note) if n)
 
     async def cancel_slot_override(
         self,

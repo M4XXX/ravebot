@@ -22,7 +22,7 @@ import disnake
 from bot import active, schedule, slots
 from bot import guild as served
 from bot.db.djs import get_dj_by_discord_id, insert_dj, set_notion_dj_page_id, update_active_booking
-from bot.notion import props
+from bot.notion import dj_pages, props
 from bot.ui.ack import auto_ack, reply
 from bot.ui.embeds import ErrorCode
 
@@ -1414,6 +1414,27 @@ class BookingConfirmView(ActiveOnlyView):
         self._release_lock()
         await reply(inter, text, ephemeral=True)
 
+    async def _ensure_dj_page(self, dj_name: str | None, event_name: str) -> str | None:
+        """Find or create the DJ's Notion page (classic layout) and remember its ID.
+
+        None if there is none; ensure_dj_page() has then posted ERR_NOTION_WRITE.
+        A DJ without a profile row gets no page either (one error entry as well).
+        [Source: epics.md#Story 8.3]
+        """
+        assert self._ctx.notion_client is not None
+        if dj_name is None:
+            if self._ctx.log_service is not None:
+                await self._ctx.log_service.post_error(
+                    error_code=ErrorCode.ERR_NOTION_WRITE,
+                    trigger=f"No DJ profile for user {self._user_id}, booking in '{event_name}'",
+                    action_taken="Booking kept without a link in Notion.",
+                    manual_action=f"Add the DJ to the DJs of '{event_name}' in Notion by hand.",
+                )
+            return None
+        return await dj_pages.ensure_and_store(
+            self._ctx.notion_client, self._ctx.db, self._user_id, dj_name, event_name
+        )
+
     async def _handle_cancel(self, inter: disnake.MessageInteraction) -> None:
         """[✖ Cancel] — release per-user lock and respond warmly. (AC4)"""
         self._release_lock()
@@ -1543,19 +1564,36 @@ class BookingConfirmView(ActiveOnlyView):
             )
             return
 
+        # Get event name for embed + admin log
+        try:
+            event_name = props.title_text(self._event)
+        except (KeyError, IndexError):
+            event_name = "Unknown Event"
+
         # From here on the slot is ours in slot_locks: every failure must give it back,
         # or it stays booked without the DJ knowing.
+        per_slot = self._ctx.notion_client.per_slot is True  # tds layout: the plan shows names
         try:
             # Get DJ's Notion page ID (may be None for DJs onboarded before Story 4.2)
             dj_notion_page_id = await get_notion_dj_page_id(self._ctx.db, self._user_id)
             dj_name = None
-            if self._ctx.notion_client.per_slot is True:  # tds layout: the plan shows names
+            if per_slot or dj_notion_page_id is None:
                 dj = await get_dj_by_discord_id(self._ctx.db, self._user_id)
                 dj_name = dj["dj_name"] if dj is not None else None
         except Exception:
             logger.exception("BookingConfirmView: reading the DJ's Notion page failed")
             await self._undo_slot_claim(inter, event_id)
             return
+
+        # Story 8.3 (classic layout): a DJ without a Notion page gets one now, so the
+        # booking shows in the event's DJs. If that fails the booking is kept; the client
+        # has told the admins to link the DJ by hand.
+        notion_linked = True
+        if not per_slot and dj_notion_page_id is None:
+            dj_notion_page_id = await self._ensure_dj_page(dj_name, event_name)
+            notion_linked = dj_notion_page_id is not None
+        if not per_slot:
+            dj_name = None  # classic: write_booking links the page, it writes no name
 
         # Extract current DJs relation IDs from the event (so we don't overwrite them)
         try:
@@ -1564,12 +1602,6 @@ class BookingConfirmView(ActiveOnlyView):
             ]
         except (KeyError, TypeError):
             current_dj_ids = []
-
-        # Get event name for embed + admin log
-        try:
-            event_name = props.title_text(self._event)
-        except (KeyError, IndexError):
-            event_name = "Unknown Event"
 
         # Write booking to Notion (AC2–AC3); notion_client is guaranteed non-None by guard above
         try:
@@ -1625,10 +1657,13 @@ class BookingConfirmView(ActiveOnlyView):
         if self._ctx.log_service is not None:
             try:
                 slot_display = f"<t:{self._slot_unix}:f>" if self._slot_unix else "TBD"
+                outcome = f"Slot {self._slot_index + 1} confirmed"
+                if not notion_linked:
+                    outcome += " — not linked in Notion (link the DJ manually)"
                 await self._ctx.log_service.post_interaction(
                     dj_name=str(inter.author),
                     action_type="Booking",
-                    outcome=f"Slot {self._slot_index + 1} confirmed",
+                    outcome=outcome,
                     event=f"{event_name} \u00b7 {slot_display}",
                 )
             except Exception:

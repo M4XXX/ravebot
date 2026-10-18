@@ -225,7 +225,8 @@ async def test_write_dj_record_posts_correct_payload() -> None:
     log = make_mock_log()
     client = make_client(log)
 
-    with patch.object(client, "_write_with_retry", new=AsyncMock()) as mock_write:
+    with patch.object(client, "_find_dj_page", new=AsyncMock(return_value=None)), \
+         patch.object(client, "_write_with_retry", new=AsyncMock()) as mock_write:
         await client.write_dj_record(discord_user_id=12345, dj_name="TestDJ")
 
     mock_write.assert_awaited_once()
@@ -284,3 +285,147 @@ async def test_create_event_propagates_notion_write_error() -> None:
     ):
         with pytest.raises(NotionWriteError):
             await client.create_event("Rave Night 01 Sep 2026", datetime.date(2026, 9, 1))
+
+
+# ---------------------------------------------------------------------------
+# Story 8.3: ensure_dj_page and manual_action
+# ---------------------------------------------------------------------------
+
+
+def _response(status: int, body: dict) -> httpx.Response:
+    return httpx.Response(status, json=body, request=httpx.Request("POST", "https://x"))
+
+
+@pytest.mark.asyncio
+async def test_write_with_retry_uses_given_manual_action() -> None:
+    log = make_mock_log()
+    client = make_client(log)
+    client._client.request = AsyncMock(return_value=_response(400, {}))
+    with pytest.raises(NotionWriteError):
+        await client._write_with_retry("POST", "/pages", {}, "ctx", manual_action="Do X.")
+    assert log.post_error.call_args.kwargs["manual_action"] == "Do X."
+
+
+@pytest.mark.asyncio
+async def test_write_with_retry_default_manual_action_unchanged() -> None:
+    log = make_mock_log()
+    client = make_client(log)
+    client._client.request = AsyncMock(return_value=_response(400, {}))
+    with pytest.raises(NotionWriteError):
+        await client._write_with_retry("POST", "/pages", {}, "ctx")
+    assert log.post_error.call_args.kwargs["manual_action"] == (
+        "Check Notion API key and database permissions. Context: ctx"
+    )
+
+
+@pytest.mark.asyncio
+async def test_ensure_dj_page_tds_makes_no_request() -> None:
+    log = make_mock_log()
+    client = NotionClient(api_key="k", database_id="db", log_service=log, layout="tds")
+    client._client.post = AsyncMock()
+    client._client.request = AsyncMock()
+    assert await client.ensure_dj_page(1, "DJ", "Rave") is None
+    client._client.post.assert_not_called()
+    client._client.request.assert_not_called()
+    log.post_error.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_ensure_dj_page_returns_existing_page_without_creating() -> None:
+    log = make_mock_log()
+    client = make_client(log)
+    client._client.post = AsyncMock(return_value=_response(200, {"results": [{"id": "pg-1"}]}))
+    client._client.request = AsyncMock()
+    assert await client.ensure_dj_page(42, "DJ", "Rave") == "pg-1"
+    query = client._client.post.call_args.kwargs["json"]["filter"]
+    assert query == {"property": "Discord ID", "rich_text": {"equals": "42"}}
+    client._client.request.assert_not_called()  # no POST /pages
+    log.post_error.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_ensure_dj_page_creates_missing_page_with_event_context() -> None:
+    log = make_mock_log()
+    client = make_client(log)
+    client._client.post = AsyncMock(return_value=_response(200, {"results": []}))
+    with patch.object(
+        client, "_write_with_retry", new=AsyncMock(return_value={"id": "pg-new"})
+    ) as write:
+        assert await client.ensure_dj_page(42, "DJ Nova", "Rave Night") == "pg-new"
+    kwargs = write.call_args.kwargs
+    assert kwargs["endpoint"] == "/pages"
+    assert "DJ Nova" in kwargs["context"] and "Rave Night" in kwargs["context"]
+    assert "Rave Night" in kwargs["manual_action"]
+
+
+@pytest.mark.asyncio
+async def test_ensure_dj_page_create_failure_posts_one_error_naming_dj_and_event() -> None:
+    log = make_mock_log()
+    client = make_client(log)
+    client._client.post = AsyncMock(return_value=_response(200, {"results": []}))
+    client._client.request = AsyncMock(return_value=_response(400, {}))
+    assert await client.ensure_dj_page(42, "DJ Nova", "Rave Night") is None
+    log.post_error.assert_awaited_once()
+    kwargs = log.post_error.call_args.kwargs
+    assert kwargs["error_code"] == ErrorCode.ERR_NOTION_WRITE
+    assert "DJ Nova" in kwargs["trigger"] and "Rave Night" in kwargs["trigger"]
+    assert "add it to the DJs of 'Rave Night'" in kwargs["manual_action"]
+
+
+@pytest.mark.asyncio
+async def test_failed_lookup_still_creates_the_page_without_error() -> None:
+    log = make_mock_log()
+    client = make_client(log)
+    client._client.post = AsyncMock(side_effect=httpx.ConnectError("down"))  # the query
+    client._client.request = AsyncMock(return_value=_response(200, {"id": "pg-new"}))
+    assert await client.ensure_dj_page(42, "DJ Nova", "Rave Night") == "pg-new"
+    log.post_error.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_failed_lookup_and_failed_create_post_one_error() -> None:
+    log = make_mock_log()
+    client = make_client(log)
+    client._client.post = AsyncMock(side_effect=httpx.ConnectError("down"))
+    client._client.request = AsyncMock(return_value=_response(400, {}))
+    assert await client.ensure_dj_page(42, "DJ Nova", "Rave Night") is None
+    log.post_error.assert_awaited_once()
+    kwargs = log.post_error.call_args.kwargs
+    assert "DJ Nova" in kwargs["trigger"] and "Rave Night" in kwargs["trigger"]
+
+
+@pytest.mark.asyncio
+async def test_unexpected_answer_posts_one_error() -> None:
+    log = make_mock_log()
+    client = make_client(log)
+    client._client.post = AsyncMock(return_value=_response(200, {"results": []}))
+    client._client.request = AsyncMock(return_value=_response(200, {"no": "id"}))
+    assert await client.ensure_dj_page(42, "DJ Nova", "Rave Night") is None
+    log.post_error.assert_awaited_once()
+    assert "Rave Night" in log.post_error.call_args.kwargs["manual_action"]
+
+
+@pytest.mark.asyncio
+async def test_write_dj_record_returns_existing_page_for_resubmitted_profile() -> None:
+    """Onboarding again must not create a second DJ page (Story 8.3 review)."""
+    log = make_mock_log()
+    client = make_client(log)
+    client._client.post = AsyncMock(return_value=_response(200, {"results": [{"id": "pg-1"}]}))
+    client._client.request = AsyncMock()
+    assert await client.write_dj_record(discord_user_id=42, dj_name="DJ") == "pg-1"
+    client._client.request.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_delete_booking_without_page_writes_nothing_and_logs_nothing() -> None:
+    """Classic cancel of a DJ without a Notion page: no request, no error (Story 8.3 AC3)."""
+    log = make_mock_log()
+    client = make_client(log)
+    client._client.request = AsyncMock()
+    client._client.get = AsyncMock()
+    client._client.post = AsyncMock()
+    await client.delete_booking("evt", None, [], "Rave", 0)
+    client._client.request.assert_not_called()
+    client._client.get.assert_not_called()
+    client._client.post.assert_not_called()
+    log.post_error.assert_not_called()
