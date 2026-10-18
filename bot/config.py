@@ -6,7 +6,7 @@ All secrets (token, API key, DB URL) come exclusively from env vars — never fr
 """
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -17,9 +17,9 @@ class Config:
     Optional fields use safe defaults.
     """
 
-    discord_bot_token: str
-    postgres_url: str
-    notion_api_key: str
+    discord_bot_token: str = field(repr=False)
+    postgres_url: str = field(repr=False)
+    notion_api_key: str = field(repr=False)
     notion_database_id: str
     admin_user_ids: frozenset[int]
     log_level: str
@@ -34,6 +34,9 @@ class Config:
     notion_bookable_statuses: tuple[str, ...] = ()
     # Status names that mean an event was called off (no reminders, not in the lineup)
     notion_cancelled_statuses: tuple[str, ...] = ()
+    # Optional separate Notion database for DJ profile pages (classic layout); None: the
+    # events database holds them as well (docs/user-guide.md 2.4)
+    notion_dj_database_id: str | None = None
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -92,4 +95,5 @@ class Config:
             notion_layout=notion_layout,
             notion_bookable_statuses=bookable,
             notion_cancelled_statuses=cancelled,
+            notion_dj_database_id=os.getenv("NOTION_DJ_DATABASE_ID", "").strip() or None,
         )

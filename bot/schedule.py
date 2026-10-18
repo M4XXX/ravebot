@@ -40,6 +40,16 @@ def current() -> Schedule:
     return _current
 
 
+def today(sched: Schedule | None = None) -> dt.date:
+    """Today's date in the configured time zone (/config set timezone; UTC until refresh()).
+
+    Use this instead of the stdlib date.today, which is the server's date: around midnight the two
+    differ, and events would vanish from the lineup or be refused a few hours early.
+    [Source: epics.md#Story 8.7]
+    """
+    return dt.datetime.now((sched or current()).tz).date()
+
+
 def parse_timezone(name: str | None) -> ZoneInfo | None:
     """Return the ZoneInfo for an IANA name like 'Europe/Berlin', or None if unknown."""
     if not name:

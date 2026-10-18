@@ -73,6 +73,7 @@ from bot.context import BotContext
 from bot.db import config as db_config
 from bot.db.bookings import get_booked_djs_for_event
 from bot.db.djs import get_all_djs, get_dj_by_discord_id
+from bot.errors import NOTION_READ_ERRORS
 from bot.notion import props
 from bot.notion.client import NotionWriteError
 from bot.ui.ack import auto_ack, reply
@@ -1090,7 +1091,7 @@ class AdminCog(commands.Cog):
 
         try:
             events = await self.ctx.notion_client.poll_events()
-        except Exception:
+        except NOTION_READ_ERRORS:
             logger.exception("status_cmd: poll_events() failed")
             await reply(inter, 
                 "Could not load the events from Notion. Please try again.", ephemeral=True
@@ -1248,7 +1249,7 @@ class AdminCog(commands.Cog):
             )
             return
 
-        if event_date <= date.today():
+        if event_date <= schedule.today():  # the organizers' date, not the server's
             await reply(inter, 
                 "Invalid date. Please give a future date as YYYY-MM-DD.",
                 ephemeral=True,
@@ -1259,7 +1260,7 @@ class AdminCog(commands.Cog):
         # date alone decides whether it already exists
         try:
             upcoming = await self.ctx.notion_client.poll_events()
-        except Exception:
+        except NOTION_READ_ERRORS:
             logger.exception("add_event: poll_events() failed")
             await reply(inter,
                 "Could not load the events from Notion. Please try again.", ephemeral=True

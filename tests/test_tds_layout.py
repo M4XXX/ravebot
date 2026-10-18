@@ -151,7 +151,7 @@ async def test_bot_booking_and_hand_entry_together() -> None:
 @pytest.mark.asyncio
 async def test_booking_writes_the_name_into_an_empty_slot() -> None:
     fake = FakePlan()
-    await make_client(fake).write_booking("evt", 1, None, [], "Casual Event", 0, dj_name="DJ Rayla")
+    await make_client(fake).write_booking("evt", 1, None, "Casual Event", 0, dj_name="DJ Rayla")
     assert fake.patches == [{"properties": {"22:00 - 23:00": {
         "rich_text": [{"type": "text", "text": {"content": "DJ Rayla"}}]
     }}}]
@@ -161,7 +161,7 @@ async def test_booking_writes_the_name_into_an_empty_slot() -> None:
 async def test_booking_never_overwrites_a_name_typed_in_by_hand() -> None:
     fake = FakePlan({"22:00 - 23:00": "Echo Fox"})
     with pytest.raises(NotionSlotTakenError) as caught:
-        await make_client(fake).write_booking("evt", 1, None, [], "E", 0, dj_name="DJ Rayla")
+        await make_client(fake).write_booking("evt", 1, None, "E", 0, dj_name="DJ Rayla")
     assert caught.value.current == "Echo Fox"
     assert fake.patches == []
 
@@ -171,7 +171,7 @@ async def test_the_same_name_typed_in_by_hand_is_not_taken_over() -> None:
     """Treating it as the bot's own entry would let a later cancel empty the organizer's text."""
     fake = FakePlan({"22:00 - 23:00": "DJ Rayla"})
     with pytest.raises(NotionSlotTakenError):
-        await make_client(fake).write_booking("evt", 1, None, [], "E", 0, dj_name="DJ Rayla")
+        await make_client(fake).write_booking("evt", 1, None, "E", 0, dj_name="DJ Rayla")
     assert fake.patches == []
 
 
@@ -192,7 +192,7 @@ async def test_a_retry_after_an_applied_patch_does_not_write_twice() -> None:
     fake.handler = flaky
     client = make_client(fake)
     with patch("bot.notion.client.asyncio.sleep", new=AsyncMock()):
-        await client.write_booking("evt", 1, None, [], "E", 0, dj_name="DJ Rayla")
+        await client.write_booking("evt", 1, None, "E", 0, dj_name="DJ Rayla")
     assert len(fake.patches) == 1
     assert props.plain_text(fake.page["properties"]["22:00 - 23:00"]) == "DJ Rayla"
 
@@ -205,7 +205,7 @@ async def test_self_booking_refused_when_the_event_left_planning() -> None:
     fake.page["properties"]["Status"]["status"]["name"] = "CANCLED"
     with pytest.raises(NotionNotBookableError):
         await make_client(fake).write_booking(
-            "evt", 1, None, [], "E", 0, dj_name="DJ Rayla", require_bookable=True
+            "evt", 1, None, "E", 0, dj_name="DJ Rayla", require_bookable=True
         )
     assert fake.patches == []
 
@@ -214,7 +214,7 @@ async def test_self_booking_refused_when_the_event_left_planning() -> None:
 async def test_admin_book_replaces_only_the_displaced_dj() -> None:
     fake = FakePlan({"22:00 - 23:00": "Old DJ"})
     await make_client(fake).write_booking(
-        "evt", 1, None, [], "E", 0, dj_name="New DJ", replaces="Old DJ"
+        "evt", 1, None, "E", 0, dj_name="New DJ", replaces="Old DJ"
     )
     assert props.plain_text(fake.page["properties"]["22:00 - 23:00"]) == "New DJ"
 
@@ -223,8 +223,8 @@ async def test_admin_book_replaces_only_the_displaced_dj() -> None:
 async def test_cancel_clears_only_the_bots_own_name() -> None:
     fake = FakePlan({"22:00 - 23:00": "DJ Rayla", "23:00 - 24:00": "DJ Rayla (b2b Alex)"})
     client = make_client(fake)
-    await client.delete_booking("evt", None, [], "E", 0, slot_index=1, dj_name="DJ Rayla")
-    await client.delete_booking("evt", None, [], "E", 0, slot_index=2, dj_name="DJ Rayla")
+    await client.delete_booking("evt", None, "E", 0, slot_index=1, dj_name="DJ Rayla")
+    await client.delete_booking("evt", None, "E", 0, slot_index=2, dj_name="DJ Rayla")
     assert props.plain_text(fake.page["properties"]["22:00 - 23:00"]) == ""
     # changed by an organizer: stays
     assert props.plain_text(fake.page["properties"]["23:00 - 24:00"]) == "DJ Rayla (b2b Alex)"
@@ -251,8 +251,35 @@ async def test_new_event_uses_the_plans_title_and_starts_in_planning() -> None:
 @pytest.mark.asyncio
 async def test_required_columns_for_the_plan() -> None:
     required = await slots.required_properties(None, None)
-    assert required == ["Date", "21:00 - 22:00", "22:00 - 23:00", "23:00 - 24:00",
-                        "24:00 - 01:00", "01:00 - 02:00", "02:00 - 03:00", "Status"]
+    assert list(required) == ["Date", "21:00 - 22:00", "22:00 - 23:00", "23:00 - 24:00",
+                              "24:00 - 01:00", "01:00 - 02:00", "02:00 - 03:00", "Status"]
+    assert required["Date"] == ("date",)
+    assert required["21:00 - 22:00"] == ("rich_text",)
+    assert required["Status"] == ("status", "select")
+
+
+@pytest.mark.asyncio
+async def test_required_columns_without_status_filters_have_no_status() -> None:
+    slots.configure(slots.TDS)
+    required = await slots.required_properties(None, None)
+    assert "Status" not in required
+
+
+@pytest.mark.asyncio
+async def test_schema_check_reports_a_slot_column_of_the_wrong_type() -> None:
+    fake = FakePlan()
+
+    async def schema(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"properties": {
+            "Date": {"type": "date"}, "21:00 - 22:00": {"type": "number"},
+        }})
+
+    fake.handler = schema
+    client = make_client(fake)
+    await client.validate_schema({"Date": ("date",), "21:00 - 22:00": ("rich_text",)})
+    client._log.post_error.assert_awaited_once()
+    trigger = client._log.post_error.call_args.kwargs["trigger"]
+    assert "'21:00 - 22:00'" in trigger and "'number'" in trigger
 
 
 @pytest.mark.asyncio
@@ -369,5 +396,5 @@ async def test_schema_check_ignores_whitespace_like_the_writes() -> None:
 
     fake.handler = schema
     client = make_client(fake)
-    await client.validate_schema(["21:00 - 22:00"])
+    await client.validate_schema({"21:00 - 22:00": ("rich_text",)})
     client._log.post_error.assert_not_awaited()

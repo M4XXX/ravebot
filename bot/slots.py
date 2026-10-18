@@ -26,6 +26,26 @@ _KEY = "_ravebot_slots"
 CLASSIC = "classic"
 TDS = "tds"
 
+# Notion properties checked at startup: name -> allowed Notion property types.
+# classic: the bot's own events database (docs/user-guide.md 2.4)
+CLASSIC_EVENT_PROPERTIES: dict[str, tuple[str, ...]] = {
+    "Name": ("title",),
+    "Date": ("date",),
+    "Slots": ("number",),
+    "DJs": ("relation",),
+}
+# DJ profile pages: in their own database (NOTION_DJ_DATABASE_ID) or in the events database
+DJ_PROPERTIES: dict[str, tuple[str, ...]] = {
+    "Name": ("title",),
+    "Discord ID": ("rich_text",),
+}
+# classic with DJ pages in the events database: both sets on one database
+CLASSIC_PROPERTIES: dict[str, tuple[str, ...]] = {**CLASSIC_EVENT_PROPERTIES, **DJ_PROPERTIES}
+# tds: an organizers' plan (2.6); the slot columns follow the configured start time
+TDS_DATE_TYPES: tuple[str, ...] = ("date",)
+TDS_SLOT_TYPES: tuple[str, ...] = ("rich_text",)
+TDS_STATUS_TYPES: tuple[str, ...] = ("status", "select")
+
 _layout = CLASSIC
 _bookable_statuses: frozenset[str] = frozenset()
 _cancelled_statuses: frozenset[str] = frozenset()
@@ -84,16 +104,22 @@ async def total_for(pool: Any, guild_id: int | None) -> int:
     return DEFAULT_SLOTS
 
 
-async def required_properties(pool: Any, guild_id: int | None) -> list[str]:
-    """Notion columns the bot needs, checked at startup."""
+async def required_properties(
+    pool: Any, guild_id: int | None, separate_dj_database: bool = False
+) -> dict[str, tuple[str, ...]]:
+    """Notion columns of the events database and their allowed types, checked at startup.
+
+    classic with a separate DJ database: the DJ columns are checked there instead.
+    """
     if _layout != TDS:
-        return ["Name", "Date", "Slots", "DJs", "Discord ID"]
+        return dict(CLASSIC_EVENT_PROPERTIES if separate_dj_database else CLASSIC_PROPERTIES)
     if pool is not None and guild_id is not None:
         await schedule.refresh(pool, guild_id)  # the slot columns follow start time + length
     total = await total_for(pool, guild_id)
-    required = ["Date"] + [column_name(i) for i in range(total)]
+    required = {"Date": TDS_DATE_TYPES}
+    required.update({column_name(i): TDS_SLOT_TYPES for i in range(total)})
     if _bookable_statuses or _cancelled_statuses:
-        required.append("Status")
+        required["Status"] = TDS_STATUS_TYPES
     return required
 
 

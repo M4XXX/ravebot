@@ -71,6 +71,24 @@ class TestRunMigrations:
             assert "migration" in msg.lower() or "PostgreSQL" in msg
 
     @pytest.mark.asyncio
+    async def test_masks_credentials_in_failure_output(self, caplog):
+        """DSN and password never reach the exit message or log records."""
+        dsn = "postgresql://ravebot:S3cr3t%40Pw@db.example:5432/ravebot"
+        failed = MagicMock()
+        failed.returncode = 1
+        failed.stderr = f"connection to {dsn} refused (password S3cr3t@Pw)"
+        failed.stdout = f"url={dsn} pw=S3cr3t%40Pw"
+        with caplog.at_level("DEBUG"):
+            with patch("subprocess.run", return_value=failed):
+                with pytest.raises(SystemExit) as exc_info:
+                    await run_migrations(dsn)
+        msg = str(exc_info.value)
+        assert "Database migration failed" in msg
+        for text in (msg, caplog.text):
+            assert "S3cr3t" not in text
+            assert dsn not in text
+
+    @pytest.mark.asyncio
     async def test_succeeds_on_zero_returncode(self, mock_config):
         """Zero returncode means migrations ran without error — no exception raised (AC: 1)."""
         success = MagicMock()
@@ -92,3 +110,45 @@ class TestRunMigrations:
             env_passed = call_kwargs.kwargs.get("env") or call_kwargs[1].get("env")
             assert env_passed is not None
             assert env_passed["POSTGRES_URL"] == mock_config.postgres_url
+
+
+class TestCreatePoolMasking:
+    @pytest.mark.asyncio
+    async def test_connection_error_is_masked(self, mock_config):
+        from dataclasses import replace
+
+        config = replace(
+            mock_config, postgres_url="postgresql://ravebot:S3cr3t%40Pw@db.example:5432/ravebot"
+        )
+        err = OSError("cannot reach postgresql://ravebot:S3cr3t%40Pw@db.example:5432/ravebot")
+        with patch("asyncpg.create_pool", side_effect=err):
+            with pytest.raises(SystemExit) as exc_info:
+                await create_pool(config)
+        assert "S3cr3t" not in str(exc_info.value)
+        assert "db.example:5432/ravebot" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_invalid_password_error_is_masked(self, mock_config):
+        """Auth failures (PostgresError, not a connection error) exit with masked text."""
+        import asyncpg
+        from dataclasses import replace
+
+        config = replace(mock_config, postgres_url="postgresql://ravebot:S3cr3tPw@db.example/rb")
+        err = asyncpg.InvalidPasswordError('password authentication failed for user "ravebot"')
+        with patch("asyncpg.create_pool", side_effect=err):
+            with pytest.raises(SystemExit) as exc_info:
+                await create_pool(config)
+        msg = str(exc_info.value)
+        assert "Failed to connect to PostgreSQL" in msg
+        assert 'for user "***"' in msg
+
+    @pytest.mark.asyncio
+    async def test_malformed_dsn_value_error_is_masked(self, mock_config):
+        from dataclasses import replace
+
+        dsn = "postgresql://ravebot:S3cr3tPw@db.example:notaport/rb"
+        config = replace(mock_config, postgres_url=dsn)
+        with patch("asyncpg.create_pool", side_effect=ValueError(f"invalid port in {dsn}")):
+            with pytest.raises(SystemExit) as exc_info:
+                await create_pool(config)
+        assert "S3cr3tPw" not in str(exc_info.value)

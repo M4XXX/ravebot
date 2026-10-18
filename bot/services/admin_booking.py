@@ -26,8 +26,10 @@ from bot.db.bookings import (
     set_plan_text,
 )
 from bot.db.djs import get_dj_by_discord_id, get_notion_dj_page_id, update_active_booking
-from bot.notion import props
+from bot.errors import DB_ERRORS, NOTION_READ_ERRORS
+from bot.notion import dj_pages, props
 from bot.notion.client import NotionSlotTakenError, NotionWriteError
+from bot.ui.embeds import ErrorCode
 
 if TYPE_CHECKING:
     import asyncpg
@@ -127,6 +129,21 @@ class AdminBookingService:
         dj = await get_dj_by_discord_id(self.db, dj_id)
         return dj["dj_name"] if dj is not None else None
 
+    async def _ensure_dj_page(self, dj_id: int, dj_name: str, event_name: str) -> str | None:
+        """Find or create the DJ's Notion page (classic layout) and store its ID.
+
+        Uses the profile name, falling back to the display name. None if it fails;
+        ensure_dj_page() has then posted ERR_NOTION_WRITE. [Source: epics.md#Story 8.3]
+        """
+        assert self.notion_client is not None
+        try:
+            dj = await get_dj_by_discord_id(self.db, dj_id)
+        except DB_ERRORS:
+            logger.exception("admin book: reading the DJ profile failed")
+            dj = None
+        name = dj["dj_name"] if dj is not None else dj_name
+        return await dj_pages.ensure_and_store(self.notion_client, self.db, dj_id, name, event_name)
+
     async def _dm_dj(self, dj_id: int, text: str) -> None:
         """Send a DM to the DJ. Swallows Forbidden/NotFound — DM failure is non-fatal."""
         try:
@@ -174,7 +191,7 @@ class AdminBookingService:
         # Step 1: fetch future events
         try:
             events = await self.notion_client.poll_events()
-        except Exception:
+        except NOTION_READ_ERRORS:
             logger.exception("admin book: poll_events failed")
             return False, "Could not load the events from Notion. Please try again."
 
@@ -197,7 +214,7 @@ class AdminBookingService:
         # new booking is written, and gets the slot back if that write fails.
         try:
             previous_holder = await get_slot_lock_holder(self.db, event_id, slot_index)
-        except Exception:
+        except DB_ERRORS:
             logger.exception("admin book: get_slot_lock_holder failed")
             return False, "Database error while checking the slot. Please try again."
         displaced = previous_holder if previous_holder not in (None, dj_id) else None
@@ -205,8 +222,8 @@ class AdminBookingService:
         # Step 4: get DJ's Notion page ID (None is acceptable — best-effort)
         try:
             dj_notion_page_id = await get_notion_dj_page_id(self.db, dj_id)
-        except Exception:
-            logger.warning("admin book: get_notion_dj_page_id failed for %s", dj_id)
+        except DB_ERRORS:
+            logger.exception("admin book: get_notion_dj_page_id failed for %s", dj_id)
             dj_notion_page_id = None
         # tds layout: the plan gets the DJ's name; the displaced DJ's entry, exactly as the
         # bot wrote it, is overwritten
@@ -216,26 +233,42 @@ class AdminBookingService:
             if cell_name is not None and displaced is not None:
                 recorded = await get_plan_text(self.db, event_id, slot_index)
                 replaces = recorded or await self._cell_name(displaced)
-        except Exception:
+        except DB_ERRORS:
             logger.exception("admin book: reading DJ names failed")
             return False, "Database error while reading the DJ. Please try again."
 
         # Step 5: force-book in PostgreSQL slot_locks (UPSERT, bypasses race guard)
         try:
             await admin_force_book_slot(self.db, event_id, slot_index, dj_id)
-        except Exception:
+        except DB_ERRORS:
             logger.exception("admin book: admin_force_book_slot failed")
             return False, "Database error while saving the slot. Please try again."
+
+        # Story 8.3 (classic layout): now that the slot is saved, a DJ without a Notion page
+        # gets one, so the booking shows in the event's DJs; if that fails it stays booked
+        unlinked_note = ""
+        if (  # Story 8.5: a page ID from before NOTION_DJ_DATABASE_ID was set is replaced
+            dj_notion_page_id is not None
+            and self.notion_client.separate_dj_database is True
+            and not await self.notion_client.dj_page_in_dj_database(dj_notion_page_id)
+        ):
+            dj_notion_page_id = None
+        if dj_notion_page_id is None and self.notion_client.per_slot is not True:
+            dj_notion_page_id = await self._ensure_dj_page(dj_id, dj_name, event_name)
+            if dj_notion_page_id is None:
+                unlinked_note = (
+                    f"@{dj_name} is not linked to '{event_name}' in Notion: their Notion page "
+                    "could not be created. Please add them to the event's DJs there."
+                )
 
         # Step 6: write to Notion (retry x3 built into write_booking)
         try:
             await self.notion_client.write_booking(
-                event_id,
-                slot_index,
-                dj_notion_page_id,
-                [],
-                event_name,
-                slot_unix,
+                event_id=event_id,
+                slot_index=slot_index,
+                dj_notion_page_id=dj_notion_page_id,
+                event_name=event_name,
+                slot_unix=slot_unix,
                 dj_name=cell_name,
                 replaces=replaces,
             )
@@ -250,9 +283,20 @@ class AdminBookingService:
                     undone = await hand_back_slot(
                         self.db, event_id, slot_index, dj_id, displaced, plan_text=recorded
                     )
-            except Exception:
+            except Exception:  # any failure: PostgreSQL and Notion now disagree
                 logger.exception("admin book: could not undo the slot claim after Notion error")
                 undone = False
+            if not undone and self.log_service is not None:
+                await self.log_service.post_error(
+                    error_code=ErrorCode.ERR_DB_UNAVAILABLE,
+                    trigger=(
+                        f"Admin booking of @{dj_name} into slot {slot_num} of '{event_name}': "
+                        "Notion failed and the slot could not be given back"
+                    ),
+                    action_taken="The slot is booked in the database for the new DJ only.",
+                    manual_action="Check the slot with /ravebot-status and fix it with "
+                    "/admin book or /admin cancel.",
+                )
             if not undone:
                 return False, (
                     "Notion could not be updated, and the slot could not be given back to the DJ "
@@ -268,8 +312,19 @@ class AdminBookingService:
         if cell_name is not None:  # tds layout: cancelling later clears exactly this text
             try:
                 await set_plan_text(self.db, event_id, slot_index, dj_id, cell_name)
-            except Exception:
+            except Exception:  # booked and written; only the record for cancelling is missing
                 logger.exception("admin book: could not record the plan text")
+                if self.log_service is not None:
+                    await self.log_service.post_error(
+                        error_code=ErrorCode.ERR_DB_UNAVAILABLE,
+                        trigger=(
+                            f"Could not record the plan text '{cell_name}' of slot {slot_num} "
+                            f"in '{event_name}'"
+                        ),
+                        action_taken="Booking kept.",
+                        manual_action="If this slot is cancelled, check that its cell in the "
+                        "plan was emptied.",
+                    )
 
         slot_display = f"<t:{slot_unix}:f>" if slot_unix else "your slot"
 
@@ -282,11 +337,10 @@ class AdminBookingService:
                     self.db, event_id, displaced
                 ):
                     await self.notion_client.delete_booking(
-                        event_id,
-                        await get_notion_dj_page_id(self.db, displaced),
-                        [],
-                        event_name,
-                        slot_unix,
+                        event_id=event_id,
+                        dj_notion_page_id=await get_notion_dj_page_id(self.db, displaced),
+                        event_name=event_name,
+                        slot_unix=slot_unix,
                     )
             except Exception:
                 logger.exception(
@@ -316,7 +370,7 @@ class AdminBookingService:
             )
             await self.log_service.post_admin_override(msg)
 
-        return True, note
+        return True, "\n".join(n for n in (unlinked_note, note) if n)
 
     async def cancel_slot_override(
         self,
@@ -347,7 +401,7 @@ class AdminBookingService:
         # Step 1: fetch future events
         try:
             events = await self.notion_client.poll_events()
-        except Exception:
+        except NOTION_READ_ERRORS:
             logger.exception("admin cancel: poll_events failed")
             return False, "Could not load the events from Notion. Please try again."
 
@@ -366,7 +420,7 @@ class AdminBookingService:
         # Step 3: verify this DJ holds the slot (AC3)
         try:
             holder = await get_slot_lock_holder(self.db, event_id, slot_index)
-        except Exception:
+        except DB_ERRORS:
             logger.exception("admin cancel: get_slot_lock_holder failed")
             return False, "Database error while checking the slot. Please try again."
 
@@ -383,7 +437,7 @@ class AdminBookingService:
                 if self.notion_client.per_slot is True else None
             )
             plan_text = plan_text or await self._cell_name(dj_id)
-        except Exception:
+        except DB_ERRORS:
             logger.exception("admin cancel: reading the plan text failed")
             return False, "Database error while checking the slot. Please try again."
 
@@ -391,7 +445,7 @@ class AdminBookingService:
         # hands since the check above)
         try:
             freed = await release_slot_lock(self.db, event_id, slot_index, dj_id)
-        except Exception:
+        except DB_ERRORS:
             logger.exception("admin cancel: release_slot_lock failed")
             return False, "Database error while releasing the slot. Please try again."
         if not freed:
@@ -405,16 +459,18 @@ class AdminBookingService:
                 self.db, event_id, dj_id
             ):
                 await self.notion_client.delete_booking(
-                    event_id,
-                    await get_notion_dj_page_id(self.db, dj_id),
-                    [],
-                    event_name,
-                    slot_unix,
+                    event_id=event_id,
+                    dj_notion_page_id=await get_notion_dj_page_id(self.db, dj_id),
+                    event_name=event_name,
+                    slot_unix=slot_unix,
                     slot_index=slot_index,
                     dj_name=plan_text,
                 )
-        except Exception as exc:
-            logger.error("admin cancel: Notion unlink failed: %s", exc)
+        except Exception as exc:  # reported to the admin below; the slot is already free
+            if isinstance(exc, NotionWriteError):  # the client has posted ERR_NOTION_WRITE
+                logger.error("admin cancel: Notion unlink failed: %s", exc)
+            else:
+                logger.exception("admin cancel: Notion unlink failed")
             notion_error = exc
 
         # Step 7: DM the DJ (non-fatal)

@@ -9,15 +9,16 @@ Full read_slots(), write_booking(), delete_booking() are Story 3.x scope.
 [Source: architecture.md#Error Routing: Centralized AdminLogService]
 """
 import asyncio
+import contextlib
 import datetime
 import json
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 import httpx
 
-from bot import slots
+from bot import schedule, slots
 from bot.notion import props
 from bot.ui.embeds import ErrorCode
 
@@ -47,6 +48,30 @@ def _retry_after(response: httpx.Response, default: float) -> float:
     except (TypeError, ValueError):
         return default
     return min(wait, _RETRY_AFTER_CAP)
+
+
+# How the Notion UI names the property types the bot checks (validate_schema messages)
+_NOTION_TYPE_LABELS = {
+    "title": "Title",
+    "rich_text": "Text",
+    "number": "Number",
+    "date": "Date",
+    "relation": "Relation",
+    "status": "Status",
+    "select": "Select",
+}
+
+
+def _is_dj_page(page: dict[str, Any], dj_pages_here: bool) -> bool:
+    """True for a page that is not an event: no Date, or (shared database) a Discord ID."""
+    found = props.find_property(page, "Date")
+    date = (found[1].get("date") if found else None) or {}
+    if not date.get("start"):
+        return True
+    if dj_pages_here:
+        discord_id = props.find_property(page, "Discord ID")
+        return bool(discord_id and props.plain_text(discord_id[1]))
+    return False
 
 
 def _same_page(a: str, b: str) -> bool:
@@ -175,8 +200,11 @@ class NotionClient:
         log_service: "AdminLogService",
         layout: str = slots.CLASSIC,
         new_event_status: str | None = None,
+        dj_database_id: str | None = None,
     ) -> None:
         self._database_id = database_id
+        # DJ profile pages (classic layout): their own database, or the events database
+        self._dj_database_id = dj_database_id or database_id
         self._log = log_service
         self.layout = layout
         self._new_event_status = new_event_status
@@ -192,8 +220,32 @@ class NotionClient:
             event_hooks={"request": [_refuse_deletion]},
         )
         # Serialises read-modify-write of each event's DJs relation. Only within this
-        # process: the deployment must run one instance (docs/user-guide.md, section 3).
+        # process; the single-instance lock (bot/db/instance_lock.py) keeps a second
+        # process away. Entries are counted and dropped once no writer holds or awaits them.
         self._event_locks: dict[str, asyncio.Lock] = {}
+        self._event_lock_users: dict[str, int] = {}
+
+    @contextlib.asynccontextmanager
+    async def _event_lock(self, event_id: str) -> AsyncIterator[None]:
+        """Hold the per-event write lock; the entry is removed when nobody uses it."""
+        # Counted before awaiting, so a waiting writer keeps the lock alive
+        self._event_lock_users[event_id] = self._event_lock_users.get(event_id, 0) + 1
+        lock = self._event_locks.setdefault(event_id, asyncio.Lock())
+        try:
+            async with lock:
+                yield
+        finally:
+            remaining = self._event_lock_users[event_id] - 1
+            if remaining:
+                self._event_lock_users[event_id] = remaining
+            else:
+                del self._event_lock_users[event_id]
+                del self._event_locks[event_id]
+
+    @property
+    def separate_dj_database(self) -> bool:
+        """True when DJ pages live in their own database (NOTION_DJ_DATABASE_ID)."""
+        return not _same_page(self._dj_database_id, self._database_id)
 
     @property
     def per_slot(self) -> bool:
@@ -275,6 +327,7 @@ class NotionClient:
         payload: dict[str, Any] | Callable[[], Awaitable[dict[str, Any] | None]],
         context: str,
         find_existing: Callable[[], Awaitable[dict[str, Any] | None]] | None = None,
+        manual_action: str | None = None,
     ) -> dict[str, Any]:
         """Execute a Notion write, retrying only where a retry is safe and can help.
 
@@ -292,7 +345,7 @@ class NotionClient:
         each retry so a page that was in fact created is returned instead of created twice.
 
         After the last failure posts ERR_NOTION_WRITE with context to the admin log and
-        raises NotionWriteError.
+        raises NotionWriteError. manual_action, if given, replaces the default hint there.
 
         [Source: architecture.md#Notion Client: exponential back-off (3 retries)]
         [Source: epics.md#Story 1.5 AC2]
@@ -344,14 +397,17 @@ class NotionClient:
             error_code=ErrorCode.ERR_NOTION_WRITE,
             trigger=f"Notion write failed: {context}",
             action_taken="Bot aborted the write operation.",
-            manual_action=f"Check Notion API key and database permissions. Context: {context}",
+            manual_action=manual_action
+            or f"Check Notion API key and database permissions. Context: {context}",
         )
         raise NotionWriteError(f"Notion write failed: {context}") from last_exc
 
-    async def _find_page(self, notion_filter: dict[str, Any]) -> dict[str, Any] | None:
-        """First page of the database matching notion_filter, or None."""
+    async def _find_page(
+        self, notion_filter: dict[str, Any], database_id: str | None = None
+    ) -> dict[str, Any] | None:
+        """First page of the database (default: events) matching notion_filter, or None."""
         response = await self._client.post(
-            f"/databases/{self._database_id}/query",
+            f"/databases/{database_id or self._database_id}/query",
             json={"filter": notion_filter, "page_size": 1},
         )
         response.raise_for_status()
@@ -398,40 +454,63 @@ class NotionClient:
         )
         raise NotionWriteError(f"Could not read DJs relation: {context}") from last_exc
 
-    async def validate_schema(self, required_properties: list[str]) -> None:
-        """Check that the Notion database has all required properties.
+    def relation_targets(self) -> dict[str, str]:
+        """Relation properties and the database they must point to (validate_schema).
 
-        Fetches the database metadata via GET /databases/{id}.
-        For each property in required_properties that is absent from the
-        database, logs a descriptive error and posts ERR_NOTION_WRITE to
-        the admin log channel.
+        classic: the DJs relation links DJ pages, which write_dj_record() creates in the DJ
+        database (the events database itself unless NOTION_DJ_DATABASE_ID is set,
+        docs/user-guide.md 2.4). tds: no relations are used.
+        """
+        return {} if self.layout == slots.TDS else {"DJs": self._dj_database_id}
+
+    async def validate_schema(
+        self,
+        required_properties: Mapping[str, Sequence[str]],
+        relation_targets: Mapping[str, str] | None = None,
+        database_id: str | None = None,
+    ) -> None:
+        """Check that the Notion database has all required properties, of the right type.
+
+        Fetches the database metadata via GET /databases/{id}. required_properties maps
+        each name to its allowed Notion types (bot/slots.py required_properties()). Each
+        property that is absent, or present with another type, is logged and posted as
+        one ERR_NOTION_WRITE to the admin log channel, naming the fix. A relation named in
+        relation_targets must also point to that database (else bookings fail with 400).
+        database_id selects the database (default: the events database); messages name it.
 
         This is called once at bot startup (inside on_ready) so that the
         admin log channel is already configured before errors are posted.
 
         [Source: epics.md#Story 1.5 AC5]
         [Source: architecture.md — NFR13: Notion schema validation on startup]
+        [Source: epics.md#Story 8.4]
         """
+        database_id = database_id or self._database_id
+        where = (
+            "DJ database" if _same_page(database_id, self._dj_database_id)
+            and self.separate_dj_database else "events database"
+        )
         try:
-            response = await self._client.get(f"/databases/{self._database_id}")
+            response = await self._client.get(f"/databases/{database_id}")
             response.raise_for_status()
             data = response.json()
         except (httpx.HTTPStatusError, httpx.RequestError) as exc:
             logger.error("Failed to fetch Notion database schema: %s", exc)
             await self._log.post_error(
                 error_code=ErrorCode.ERR_NOTION_WRITE,
-                trigger=f"Could not fetch Notion database schema on startup: {exc}",
+                trigger=f"Could not fetch the Notion {where} schema on startup: {exc}",
                 action_taken="Schema validation skipped.",
                 manual_action=(
-                    "Check NOTION_API_KEY and NOTION_DATABASE_ID. "
+                    "Check NOTION_API_KEY, NOTION_DATABASE_ID and NOTION_DJ_DATABASE_ID. "
                     "Ensure the integration is shared with the database."
                 ),
             )
             return
 
         existing_properties: set[str] = set(data.get("properties", {}).keys())
-        for prop in required_properties:
-            if props.find_property(data, prop) is None:
+        for prop, allowed in required_properties.items():
+            found = props.find_property(data, prop)
+            if found is None:
                 logger.error(
                     "Notion database is missing required property: %r (found: %s)",
                     prop,
@@ -439,12 +518,72 @@ class NotionClient:
                 )
                 await self._log.post_error(
                     error_code=ErrorCode.ERR_NOTION_WRITE,
-                    trigger=f"Notion database missing required property: '{prop}'",
+                    trigger=f"Notion {where} missing required property: '{prop}'",
                     action_taken=(
                         "Bot will continue but features depending on this property will fail."
                     ),
-                    manual_action=f"Add property '{prop}' to the Notion database schema.",
+                    manual_action=f"Add property '{prop}' to the Notion {where}.",
                 )
+                continue
+            real_name, schema = found
+            if schema.get("type") not in allowed:
+                await self._report_wrong_type(
+                    prop, real_name, schema.get("type"), allowed, where
+                )
+                continue
+            target = (relation_targets or {}).get(prop)
+            linked = (schema.get("relation") or {}).get("database_id")
+            if target and schema.get("type") == "relation" and not (
+                linked and _same_page(linked, target)
+            ):
+                logger.error(
+                    "Notion relation %r points to database %s, expected %s",
+                    real_name, linked, target,
+                )
+                await self._log.post_error(
+                    error_code=ErrorCode.ERR_NOTION_WRITE,
+                    trigger=(
+                        f"Notion relation '{real_name}' points to another database "
+                        f"({linked}), expected {target}"
+                    ),
+                    action_taken="Bookings will fail to link DJs in Notion.",
+                    manual_action=(
+                        f"Edit '{real_name}' in Notion so it relates to the database the bot "
+                        "keeps DJ pages in (see docs/user-guide.md 2.4)."
+                    ),
+                )
+
+    async def validate_dj_schema(self) -> None:
+        """Check the separate DJ database (Name, Discord ID); nothing to do in shared mode."""
+        if self.layout != slots.TDS and self.separate_dj_database:
+            await self.validate_schema(slots.DJ_PROPERTIES, database_id=self._dj_database_id)
+
+    async def _report_wrong_type(
+        self,
+        name: str,
+        real_name: str,
+        actual: Any,
+        allowed: Sequence[str],
+        where: str = "events database",
+    ) -> None:
+        expected = " or ".join(allowed)
+        shown = " or ".join(f'"{_NOTION_TYPE_LABELS.get(t, t)}"' for t in allowed)
+        logger.error(
+            "Notion property %r has type %r, expected %s", real_name, actual, expected
+        )
+        await self._log.post_error(
+            error_code=ErrorCode.ERR_NOTION_WRITE,
+            trigger=(
+                f"Notion property '{real_name}' in the {where} has type '{actual}', "
+                f"expected {expected}"
+            ),
+            action_taken="Bot will continue but features depending on this property will fail.",
+            manual_action=(
+                f"Change the type of '{real_name}' in the Notion {where} to {shown}, or "
+                f"rename it and "
+                f"add a new {shown} property named '{name}'."
+            ),
+        )
 
     async def validate_status_names(self, names: list[str]) -> None:
         """Report configured status names the database's Status property does not offer.
@@ -491,14 +630,22 @@ class NotionClient:
         If a later page fails mid-pagination, the exception is raised and the caller
         treats the whole cycle as failed — no partial snapshot update occurs.
 
+        DJ profile pages are never events: pages without a Date are dropped, and when DJ
+        pages share the events database (classic layout, no NOTION_DJ_DATABASE_ID) so
+        are pages with a Discord ID — in the query and again here.
+
         [Source: epics.md#Story 3.1 AC1, AC4]
+        [Source: epics.md#Story 8.5]
         """
-        today = datetime.date.today().isoformat()
+        today = schedule.today().isoformat()
+        date_filter = {"property": "Date", "date": {"on_or_after": today}}
+        # Only filter on Discord ID where it exists: a filter on a missing property is a 400
+        shared = self._dj_pages_in_events_database()
         base_payload: dict[str, Any] = {
-            "filter": {
-                "property": "Date",
-                "date": {"on_or_after": today},
-            },
+            "filter": (
+                {"and": [date_filter, {"property": "Discord ID", "rich_text": {"is_empty": True}}]}
+                if shared else date_filter
+            ),
             "sorts": [{"property": "Date", "direction": "ascending"}],
         }
 
@@ -527,10 +674,26 @@ class NotionClient:
             else:
                 break
 
-        return all_results
+        events = [p for p in all_results if not _is_dj_page(p, shared)]
+        if len(events) != len(all_results):
+            logger.debug("poll_events dropped %d non-event pages", len(all_results) - len(events))
+        return events
 
-    async def write_dj_record(self, discord_user_id: int, dj_name: str) -> str | None:
-        """Create a DJ page in the Notion database. Returns the new page's Notion ID.
+    def _dj_pages_in_events_database(self) -> bool:
+        return self.layout != slots.TDS and not self.separate_dj_database
+
+    async def write_dj_record(
+        self,
+        discord_user_id: int,
+        dj_name: str,
+        context: str | None = None,
+        manual_action: str | None = None,
+    ) -> str | None:
+        """Find or create the DJ's page in the Notion database. Returns its Notion ID.
+
+        An existing page with this Discord ID is returned instead of creating another one
+        (a resubmitted profile or a booking must not duplicate it). If that lookup fails
+        the page is created anyway — a rare duplicate is better than no page.
 
         In the tds layout DJ profiles live only in the bot's database and nothing is
         written (returns None): the plan holds events, the DJs appear as names in slots.
@@ -543,7 +706,9 @@ class NotionClient:
         set_notion_dj_page_id() so BookingConfirmView can later look it up when
         writing a booking to the event's DJs relation.
 
-        Called from OnboardingModal.callback after successful DB insert (Story 2.3).
+        Called from OnboardingModal.callback after successful DB insert (Story 2.3), and
+        through ensure_dj_page() when a DJ without a page books (Story 8.3); context and
+        manual_action then name the event in the admin log entry.
         Caller catches the exception and continues — Notion sync is best-effort.
 
         [Source: epics.md#Story 2.3 AC2, AC3]
@@ -552,8 +717,15 @@ class NotionClient:
         """
         if self.layout == slots.TDS:
             return None
+        try:
+            existing = await self._find_dj_page(discord_user_id)
+        except Exception as exc:  # best-effort, like find_existing below
+            logger.warning("Looking up the Notion page of %s failed: %s", dj_name, exc)
+            existing = None
+        if existing is not None:
+            return existing["id"]
         payload: dict[str, Any] = {
-            "parent": {"database_id": self._database_id},
+            "parent": {"database_id": self._dj_database_id},
             "properties": {
                 "Name": {
                     "title": [{"type": "text", "text": {"content": dj_name}}]
@@ -567,19 +739,81 @@ class NotionClient:
             method="POST",
             endpoint="/pages",
             payload=payload,
-            context=f"DJ record for {dj_name} (discord_user_id={discord_user_id})",
-            find_existing=lambda: self._find_page(
-                {"property": "Discord ID", "rich_text": {"equals": str(discord_user_id)}}
-            ),
+            context=context or f"DJ record for {dj_name} (discord_user_id={discord_user_id})",
+            find_existing=lambda: self._find_dj_page(discord_user_id),
+            manual_action=manual_action,
         )
         return result["id"]
+
+    async def dj_page_in_dj_database(self, page_id: str) -> bool:
+        """False if a stored DJ page ID is not in the DJ database (e.g. a page from before
+        NOTION_DJ_DATABASE_ID was set, or a deleted one): linking it would fail with 400.
+
+        Shared mode: True without a request. A failed lookup also answers True — the write
+        that follows reports a real problem itself. [Source: story 8.5 review]
+        """
+        if not self.separate_dj_database:
+            return True
+        try:
+            response = await self._client.get(f"/pages/{page_id}")
+            if response.status_code == 404:
+                return False
+            response.raise_for_status()
+            parent = response.json().get("parent", {})
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.warning("Could not check the Notion page %s of a DJ: %s", page_id, exc)
+            return True
+        linked = parent.get("database_id")
+        return bool(linked) and _same_page(linked, self._dj_database_id)
+
+    def _find_dj_page(self, discord_user_id: int) -> Awaitable[dict[str, Any] | None]:
+        return self._find_page(
+            {"property": "Discord ID", "rich_text": {"equals": str(discord_user_id)}},
+            database_id=self._dj_database_id,
+        )
+
+    async def ensure_dj_page(
+        self, discord_user_id: int, dj_name: str, event_name: str
+    ) -> str | None:
+        """The DJ's Notion page ID for a booking: found by Discord ID, else created.
+
+        tds layout: None without any request (no DJ pages, the plan holds names).
+        Returns None if the page can neither be found nor created; exactly one
+        ERR_NOTION_WRITE then names the DJ and the event. Never raises.
+
+        [Source: epics.md#Story 8.3]
+        """
+        if self.layout == slots.TDS:
+            return None
+        context = (
+            f"DJ page for {dj_name} (discord_user_id={discord_user_id}), "
+            f"needed for the booking in '{event_name}'"
+        )
+        manual_action = (
+            f"Create a page for {dj_name} in Notion and add it to the DJs of "
+            f"'{event_name}'. The booking itself is saved."
+        )
+        try:
+            return await self.write_dj_record(
+                discord_user_id, dj_name, context=context, manual_action=manual_action
+            )
+        except NotionWriteError:
+            return None  # _write_with_retry has posted the error
+        except Exception as exc:  # an unexpected answer; nothing was posted yet
+            logger.warning("Finding or creating the Notion page of %s failed: %s", dj_name, exc)
+            await self._log.post_error(
+                error_code=ErrorCode.ERR_NOTION_WRITE,
+                trigger=f"Notion write failed: {context}",
+                action_taken="Booking kept without a link in Notion.",
+                manual_action=manual_action,
+            )
+            return None
 
     async def write_booking(
         self,
         event_id: str,
         slot_index: int,
         dj_notion_page_id: str | None,
-        current_dj_ids: list[str],
         event_name: str,
         slot_unix: int,
         dj_name: str | None = None,
@@ -596,10 +830,10 @@ class NotionClient:
 
         The relation is re-read from Notion under a per-event lock right before every PATCH
         attempt and only this DJ's page is added. A PATCH replaces the whole relation, so building
-        it from a stale copy (current_dj_ids, kept for call compatibility and ignored)
-        silently dropped other DJs who booked meanwhile or were added by hand.
+        it from a stale copy would silently drop other DJs who booked meanwhile or were added
+        by hand.
 
-        If dj_notion_page_id is None (DJ onboarded before Story 4.2) nothing is written.
+        If dj_notion_page_id is None (no DJ page, see ensure_dj_page) nothing is written.
         The slot_locks DB row remains the authoritative lock.
 
         Uses _write_with_retry — raises NotionWriteError after 3 failed attempts.
@@ -627,7 +861,7 @@ class NotionClient:
             new_djs.append(dj_notion_page_id)
             return {"properties": {"DJs": {"relation": [{"id": pid} for pid in new_djs]}}}
 
-        async with self._event_locks.setdefault(event_id, asyncio.Lock()):
+        async with self._event_lock(event_id):
             await self._write_with_retry(
                 method="PATCH",
                 endpoint=f"/pages/{event_id}",
@@ -639,7 +873,6 @@ class NotionClient:
         self,
         event_id: str,
         dj_notion_page_id: str | None,
-        current_dj_ids: list[str],
         event_name: str,
         slot_unix: int,
         slot_index: int | None = None,
@@ -651,8 +884,8 @@ class NotionClient:
         exactly this DJ's name; anything an organizer changed it to stays.
 
         Re-reads the relation under the per-event lock before every attempt and PATCHes it
-        without this DJ's page; every other entry stays. current_dj_ids is kept for call
-        compatibility and ignored. If dj_notion_page_id is None nothing is written. The
+        without this DJ's page; every other entry stays. If dj_notion_page_id is None nothing
+        is written. The
         slot_locks DB row is the authoritative cancellation record.
 
         Uses _write_with_retry — raises NotionWriteError after 3 failed attempts.
@@ -678,7 +911,7 @@ class NotionClient:
                 return None  # already gone
             return {"properties": {"DJs": {"relation": [{"id": pid} for pid in new_djs]}}}
 
-        async with self._event_locks.setdefault(event_id, asyncio.Lock()):
+        async with self._event_lock(event_id):
             await self._write_with_retry(
                 method="PATCH",
                 endpoint=f"/pages/{event_id}",
@@ -714,7 +947,7 @@ class NotionClient:
                 "rich_text": [{"type": "text", "text": {"content": dj_name}}]
             }}}
 
-        async with self._event_locks.setdefault(event_id, asyncio.Lock()):
+        async with self._event_lock(event_id):
             await self._write_with_retry(
                 method="PATCH", endpoint=f"/pages/{event_id}", payload=payload, context=context
             )
@@ -735,7 +968,7 @@ class NotionClient:
                 return None
             return {"properties": {column: {"rich_text": []}}}
 
-        async with self._event_locks.setdefault(event_id, asyncio.Lock()):
+        async with self._event_lock(event_id):
             await self._write_with_retry(
                 method="PATCH", endpoint=f"/pages/{event_id}", payload=payload, context=context
             )

@@ -4,15 +4,13 @@ Startup sequence:
   1. Load config from env vars (exits with descriptive error if any required var missing)
   2. Configure logging
   3. Create BotContext with config
+  3a. Take the single-instance lock (exits if another instance runs against this DB)
   4. Run Alembic migrations (subprocess: alembic upgrade head) — exits on failure
   5. Open asyncpg pool — exits if PostgreSQL unreachable
   6. Assign pool to BotContext.db
   7. Create disnake Bot with correct intents
   8. Start bot (Discord connects only AFTER DB is ready)
-  9. On shutdown: close pool gracefully
-
-Future stories extend the sequence:
-  - Story 3.x: add Notion poll(), read_slots(), write_booking() to NotionClient
+  9. On shutdown: close pool gracefully, release the single-instance lock
 
 [Source: architecture.md#Implementation Sequence]
 [Source: architecture.md#Decision Impact Analysis]
@@ -20,15 +18,18 @@ Future stories extend the sequence:
 import asyncio
 import logging
 import signal
+import sys
+from collections.abc import Iterable
 
 import disnake
 from disnake.ext import commands
 from dotenv import load_dotenv
 
-from bot import active, selfcheck, slots
+from bot import active, redact, selfcheck, slots
 from bot import guild as served
 from bot.config import Config
 from bot.context import BotContext
+from bot.db.instance_lock import LOST_TO_OTHER, acquire_instance_lock
 from bot.db.pool import create_pool, run_migrations
 
 load_dotenv()
@@ -36,11 +37,16 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 
-def _setup_logging(level: str) -> None:
+def _setup_logging(level: str, secrets: Iterable[str] = ()) -> None:
+    log_format = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
     logging.basicConfig(
         level=getattr(logging, level.upper(), logging.INFO),
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        format=log_format,
     )
+    # Safety net: mask known secrets in every log line and traceback
+    formatter = redact.RedactingFormatter(secrets, log_format)
+    for handler in logging.getLogger().handlers:
+        handler.setFormatter(formatter)
 
 
 def create_bot() -> commands.Bot:
@@ -73,17 +79,38 @@ async def graceful_shutdown(bot: commands.Bot, ctx: BotContext) -> None:
     await bot.close()
 
 
+def _log_dj_database_setting(config: Config) -> None:
+    """Story 8.5: DJ pages next to the events still work, but a DJ database is recommended."""
+    if config.notion_layout != slots.TDS and config.notion_dj_database_id is None:
+        logger.warning(
+            "NOTION_DJ_DATABASE_ID is not set: DJ profile pages are kept in the events "
+            "database. A separate DJ database is recommended (docs/user-guide.md 2.4)."
+        )
+    elif config.notion_layout == slots.TDS and config.notion_dj_database_id is not None:
+        logger.info("NOTION_DJ_DATABASE_ID is ignored in the tds layout (no DJ pages)")
+
+
 async def main() -> None:
     """Async entry point — configure, run migrations, open pool, start bot."""
     config = Config.from_env()
     served.configure(config.guild_id)
-    _setup_logging(config.log_level)
+    _setup_logging(
+        config.log_level,
+        redact.secret_values(config.postgres_url, config.notion_api_key, config.discord_bot_token),
+    )
 
     ctx = BotContext(config=config)
 
+    # Story 8.2: refuse to start next to another instance (before migrations, too)
+    instance_lock = await acquire_instance_lock(config.postgres_url)
+
     # Story 1.2: run migrations then open DB pool before Discord connects
-    await run_migrations(config.postgres_url)
-    ctx.db = await create_pool(config)
+    try:
+        await run_migrations(config.postgres_url)
+        ctx.db = await create_pool(config)
+    except BaseException:
+        await instance_lock.release()
+        raise
 
     bot = create_bot()
 
@@ -110,7 +137,9 @@ async def main() -> None:
         log_service=ctx.log_service,
         layout=config.notion_layout,
         new_event_status=(config.notion_bookable_statuses or (None,))[0],
+        dj_database_id=config.notion_dj_database_id,
     )
+    _log_dj_database_setting(config)
 
     # Story 3.2: init LineupService after DB and log_service are ready
     from bot.services.lineup import LineupService
@@ -185,8 +214,13 @@ async def main() -> None:
             async def validate_notion() -> None:
                 # The required columns depend on the layout (tds: one per slot)
                 try:
-                    required = await slots.required_properties(ctx.db, gid)
-                    await notion.validate_schema(required_properties=required)
+                    required = await slots.required_properties(
+                        ctx.db, gid, separate_dj_database=notion.separate_dj_database
+                    )
+                    await notion.validate_schema(
+                        required_properties=required, relation_targets=notion.relation_targets()
+                    )
+                    await notion.validate_dj_schema()
                     await notion.validate_status_names(
                         [*config.notion_bookable_statuses, *config.notion_cancelled_statuses]
                     )
@@ -200,17 +234,25 @@ async def main() -> None:
     loop = asyncio.get_running_loop()
     shutdown_tasks: set[asyncio.Task[None]] = set()
 
-    def _on_signal(sig: signal.Signals) -> None:
-        logger.info("%s received — shutting down", sig.name)
+    def _start_shutdown() -> None:
+        if shutdown_tasks:
+            return  # already shutting down
         task = loop.create_task(graceful_shutdown(bot, ctx))
         shutdown_tasks.add(task)
         task.add_done_callback(shutdown_tasks.discard)
+
+    def _on_signal(sig: signal.Signals) -> None:
+        logger.info("%s received — shutting down", sig.name)
+        _start_shutdown()
 
     for sig in (signal.SIGTERM, signal.SIGINT):
         try:
             loop.add_signal_handler(sig, _on_signal, sig)
         except NotImplementedError:  # Windows event loops have no signal handlers
             pass
+
+    # Heartbeat; after a lost connection take the lock again, or stop if another instance has it
+    lock_watch = loop.create_task(instance_lock.watch(on_conflict=_start_shutdown))
 
     try:
         await bot.start(config.discord_bot_token)
@@ -227,6 +269,11 @@ async def main() -> None:
         if ctx.notion_client is not None:
             await ctx.notion_client.close()
             logger.info("NotionClient closed.")
+        lock_watch.cancel()
+        await asyncio.gather(lock_watch, return_exceptions=True)
+        await instance_lock.release()
+        if instance_lock.conflict:
+            sys.exit(LOST_TO_OTHER)  # non-zero, so restart-on-failure policies apply
 
 
 if __name__ == "__main__":

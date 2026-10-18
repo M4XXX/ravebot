@@ -132,7 +132,7 @@ class EventsCog(commands.Cog):
         slots_per_event = int(raw_slots) if raw_slots else 6
 
         # Find latest event date; events are sorted ascending by poll_events()
-        latest_date: datetime.date = datetime.date.today()
+        latest_date: datetime.date = schedule.today()
         if events:
             try:
                 date_str = events[-1]["properties"]["Date"]["date"]["start"]

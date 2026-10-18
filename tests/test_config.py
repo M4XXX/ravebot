@@ -135,3 +135,36 @@ class TestConfigParsing:
         with pytest.raises(SystemExit) as exc:
             Config.from_env()
         assert "ADMIN_USER_IDS" in str(exc.value)
+
+
+def test_repr_hides_secrets():
+    from bot.config import Config
+
+    cfg = Config(
+        discord_bot_token="tok-discord-1",
+        postgres_url="postgresql://u:pw-secret-2@h/db",
+        notion_api_key="secret_notion_3",
+        notion_database_id="db-id",
+        admin_user_ids=frozenset({1}),
+        log_level="INFO",
+        db_pool_min=1,
+        db_pool_max=2,
+    )
+    text = repr(cfg)
+    for secret in ("tok-discord-1", "pw-secret-2", "secret_notion_3"):
+        assert secret not in text
+
+
+@pytest.mark.parametrize(("raw", "expected"), [(None, None), ("", None), ("  ", None),
+                                               (" dj-db-id ", "dj-db-id")])
+def test_notion_dj_database_id(monkeypatch: pytest.MonkeyPatch, raw, expected) -> None:
+    """Story 8.5: optional NOTION_DJ_DATABASE_ID; empty means the events database."""
+    for key, value in (("DISCORD_BOT_TOKEN", "tok"), ("POSTGRES_URL", "postgresql://h/db"),
+                       ("NOTION_API_KEY", "secret_key"), ("NOTION_DATABASE_ID", "events-db"),
+                       ("ADMIN_USER_IDS", "1")):
+        monkeypatch.setenv(key, value)
+    if raw is None:
+        monkeypatch.delenv("NOTION_DJ_DATABASE_ID", raising=False)
+    else:
+        monkeypatch.setenv("NOTION_DJ_DATABASE_ID", raw)
+    assert _fresh_config(monkeypatch).from_env().notion_dj_database_id == expected

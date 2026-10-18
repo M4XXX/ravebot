@@ -5,14 +5,13 @@ Handles FR10 — lineup post construction, daily cap, and edit-in-place deduplic
 [Source: epics.md#Story 3.2]
 [Source: architecture.md#Repository Pattern]
 """
-import datetime
 import logging
 from typing import TYPE_CHECKING, Any
 
 import disnake
 
 from bot import guild as served
-from bot import loops, slots
+from bot import loops, schedule, slots
 from bot.db.config import get_value, set_value
 from bot.ui.embeds import ErrorCode, MissionRosterEmbed
 
@@ -84,7 +83,7 @@ class LineupService:
             return False
 
         embed = MissionRosterEmbed(events)
-        today = datetime.date.today().isoformat()
+        today = schedule.today().isoformat()
 
         # AC3 — edit-in-place (no daily cap)
         msg_id_str = await get_value(self.db, guild_id, "lineup_post_message_id")
