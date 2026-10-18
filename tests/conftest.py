@@ -30,6 +30,22 @@ def _fresh_loop_state() -> None:
     loops._last_ok.clear()
 
 
+@pytest.fixture(autouse=True)
+def _default_layout_and_schedule():
+    """bot.slots and bot.schedule keep module state (set once at startup in production).
+
+    Every test starts and ends with the classic layout, no status filters and the default
+    schedule, so a test that changes them cannot leak into later ones (Story 9.1).
+    """
+    from bot import schedule, slots
+
+    slots.configure(slots.CLASSIC)
+    schedule._current = schedule.DEFAULT_SCHEDULE
+    yield
+    slots.configure(slots.CLASSIC)
+    schedule._current = schedule.DEFAULT_SCHEDULE
+
+
 @pytest.fixture
 def mock_config() -> Config:
     """Minimal valid Config for unit tests — no real DB or Discord connections."""

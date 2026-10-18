@@ -442,3 +442,55 @@ async def test_admin_book_reports_an_unrecorded_plan_text() -> None:
     assert ok, msg
     log.post_error.assert_awaited_once()
     assert log.post_error.call_args.kwargs["error_code"] == "ERR_DB_UNAVAILABLE"
+
+
+# Story 9.1: hand-typed names are shown and handled as such
+
+
+@pytest.mark.asyncio
+@pytest.mark.real_slots
+async def test_hand_entries_are_told_apart_from_bot_bookings() -> None:
+    from tests.test_tds_layout import plan_event
+
+    event = plan_event({"21:00 - 22:00": "Alex (hand)", COL: "DJ Rayla"})
+    with patch("bot.slots.get_booked_slots", new=AsyncMock(return_value={"evt": {1: 42}})):
+        await slots.annotate(MagicMock(), None, [event])
+    st = slots.state(event)
+    assert st.hand_entries == frozenset({0})  # slot 2 is the bot's booking of user 42
+    assert st.booked == {0: 0, 1: 42}
+
+
+@pytest.mark.asyncio
+@pytest.mark.real_slots
+async def test_status_marks_hand_entries_and_skips_a_night_called_off() -> None:
+    from bot.cogs.admin import AdminCog
+    from tests.test_tds_layout import plan_event
+
+    called_off = plan_event({COL: "Nobody"}, status="CANCLED", event_id="off")
+    live = plan_event({"21:00 - 22:00": "Alex", COL: "DJ Rayla"}, event_id="evt")
+    ctx = MagicMock()
+    ctx.db = MagicMock()
+    ctx.notion_client = MagicMock(poll_events=AsyncMock(return_value=[called_off, live]))
+    cog = AdminCog(ctx)
+    inter = _inter(1)
+    inter.guild_id = 111
+    rows = [{"slot_index": 1, "dj_name": "DJ Rayla", "discord_user_id": 42, "event_id": "evt"}]
+    with patch("bot.slots.get_booked_slots", new=AsyncMock(return_value={"evt": {1: 42}})), \
+         patch("bot.slots.get_value", new=AsyncMock(return_value=None)), \
+         patch("bot.cogs.admin.get_booked_djs_for_event", new=AsyncMock(return_value=rows)):
+        await cog.status_cmd.callback(cog, inter)
+    embed = inter.response.send_message.call_args.kwargs["embed"]
+    values = [f.value for f in embed.fields]
+    assert "Alex (typed in the plan)" in values
+    assert "DJ Rayla" in values and "Nobody" not in values
+
+
+@pytest.mark.asyncio
+async def test_admin_cancel_of_a_hand_entry_says_to_clear_it_in_notion() -> None:
+    fake = QueryablePlan({COL: "Alex (hand)"})
+    svc = _service(fake)
+    with patch(AB + "get_slot_lock_holder", new=AsyncMock(return_value=None)):
+        ok, msg = await svc.cancel_slot_override("Admin", 42, "DJ", "2026-10-24", 2)
+    assert not ok
+    assert "filled in by hand" in msg and "Alex (hand)" in msg and "clear it in Notion" in msg
+    assert cell(fake) == "Alex (hand)" and fake.patches == []

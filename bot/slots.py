@@ -163,6 +163,11 @@ class SlotState:
         ]
 
     @property
+    def hand_entries(self) -> frozenset[int]:
+        """tds layout: slots booked by a name typed into the plan, not by the bot (user 0)."""
+        return frozenset(i for i, uid in self.booked.items() if uid == 0 and i in self.names)
+
+    @property
     def booked_count(self) -> int:
         return len([i for i in self.booked if i < self.total])
 
