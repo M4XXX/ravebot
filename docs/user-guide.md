@@ -129,7 +129,7 @@ Copy `.env.example` to `.env` and fill in your values. **Never commit `.env` to 
 
 **Finding your Notion database ID:** See [section 2.5](#25-finding-your-database-id) above.
 
-**Run exactly one instance.** Two bookings for the same event are written to Notion one after the other by a lock inside the bot process. A second container against the same Notion database and PostgreSQL (for example a copy started for testing with the same `.env`) does not share that lock and can drop a DJ from an event's lineup. Restarting or updating is safe: Unraid, Docker Compose and Podman stop the old container before starting the new one. If it happens anyway, the reconcile check reports the difference in the log channel.
+**Run exactly one instance.** Two bookings for the same event are written to Notion one after the other by a lock inside the bot process. A second instance would not share that lock and could drop a DJ from an event's lineup, so the bot enforces this: at startup it takes a lock in PostgreSQL, and a second instance against the same database (for example a copy started for testing with the same `.env`) exits with "Another RaveBot instance is already running against this database". Restarting or updating is safe: Unraid, Docker Compose and Podman stop the old container before starting the new one, which releases the lock. If PostgreSQL restarts or the network drops, the bot keeps running and takes the lock again once the database is back; it only stops (with an error exit code) if another instance got the lock in the meantime. After a crash of the bot's container PostgreSQL may keep the old session for a while; until it notices, a restarted container is refused and the restart policy keeps retrying.
 
 ---
 
@@ -337,6 +337,18 @@ The bot cannot connect to PostgreSQL at startup. Check:
 ### "Failed to connect to PostgreSQL — cannot start bot"
 
 Same as above — the asyncpg pool could not be opened. Fix the connection string and restart.
+
+### "Another RaveBot instance is already running against this database"
+
+A second bot uses the same PostgreSQL database. Stop the other container (check for an old copy or a test container with the same `.env`). Right after a crash or network outage this can also mean PostgreSQL has not yet noticed the old connection is gone; with `restart: unless-stopped` the bot retries on its own and starts once the old session has ended.
+
+### "Lost the database connection holding the single-instance lock — retrying until PostgreSQL is back"
+
+The connection that holds the instance lock dropped (PostgreSQL restarted or the network failed). The bot keeps running, retries every few seconds (up to once a minute) and logs "Single-instance lock re-acquired." when the database is back. No action is needed unless the database stays unreachable.
+
+### "Another RaveBot instance took the single-instance lock while the database connection was lost — shutting down"
+
+While the database connection was down, a second instance started and took the lock. This bot stops with an error exit code so it never runs next to the other one. Stop whichever instance should not be running.
 
 ### Admin log channel shows a Notion schema warning on startup
 

@@ -16,7 +16,7 @@ import asyncio
 
 import pytest
 
-from tests.pg import SKIP_WITHOUT_URL, run_alembic
+from tests.pg import SKIP_WITHOUT_URL, URL, run_alembic
 
 pytestmark = [pytest.mark.pg, SKIP_WITHOUT_URL]
 
@@ -178,3 +178,78 @@ async def test_hand_back_only_while_the_forced_dj_still_holds_the_slot(pool) -> 
     assert await acquire_slot_lock(pool, "evt", 0, 333)   # and C books
     assert await hand_back_slot(pool, "evt", 0, 222, 111) is False
     assert await get_slot_lock_holder(pool, "evt", 0) == 333
+
+
+async def test_second_instance_is_refused_until_the_first_lets_go() -> None:
+    from bot.db.instance_lock import acquire_instance_lock
+
+    assert URL is not None
+    first = await acquire_instance_lock(URL)
+    with pytest.raises(SystemExit, match="Another RaveBot instance"):
+        await acquire_instance_lock(URL)
+    await first.release()
+
+    second = await acquire_instance_lock(URL)
+    await second._conn.close()  # a lost session releases the lock as well
+    third = await acquire_instance_lock(URL)
+    await third.release()
+
+
+async def test_lost_lock_connection_is_taken_again(monkeypatch) -> None:
+    import asyncpg
+
+    from bot.db import instance_lock
+
+    assert URL is not None
+    monkeypatch.setattr(instance_lock, "HEARTBEAT_SECONDS", 0.05)
+    lock = await instance_lock.acquire_instance_lock(URL)
+    old_conn = lock._conn
+    task = asyncio.create_task(lock.watch(on_conflict=lambda: None))
+    admin = await asyncpg.connect(URL)
+    try:
+        await admin.execute("SELECT pg_terminate_backend($1)", old_conn.get_server_pid())
+        for _ in range(100):
+            if lock._conn is not old_conn and not lock._conn.is_closed():
+                break
+            await asyncio.sleep(0.05)
+        assert lock._conn is not old_conn
+        with pytest.raises(SystemExit):  # held again, by the new session
+            await instance_lock.acquire_instance_lock(URL)
+        assert lock.conflict is False
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await lock.release()
+        await admin.close()
+
+
+async def test_stale_own_session_is_replaced() -> None:
+    """Our client lost its connection, but the server still has the old session holding
+    the lock (half-open TCP). The bot must recognise its own session, not see a rival."""
+    import asyncpg
+
+    from bot.db import instance_lock
+
+    assert URL is not None
+    lock = await instance_lock.acquire_instance_lock(URL)
+    stale = lock._conn  # stays open on both sides: the server-side session we "lost"
+    stale_pid = stale.get_server_pid()
+    lock._conn.remove_termination_listener(lock._on_terminated)
+    lock._conn = await asyncpg.connect(URL)  # what the client still points at; dropped first
+    lock._lost.set()
+    task = asyncio.create_task(lock.watch(on_conflict=lambda: None))
+    try:
+        for _ in range(100):
+            if lock._pid != stale_pid:  # set once the lock is held on a new connection
+                break
+            await asyncio.sleep(0.05)
+        await asyncio.sleep(0.1)
+        assert lock.conflict is False
+        assert stale.is_closed()  # terminated by pg_terminate_backend
+        with pytest.raises(SystemExit):  # the lock is held again, by the new session
+            await instance_lock.acquire_instance_lock(URL)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await lock.release()
+        stale.terminate()

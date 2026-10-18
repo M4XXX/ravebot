@@ -9,10 +9,11 @@ Full read_slots(), write_booking(), delete_booking() are Story 3.x scope.
 [Source: architecture.md#Error Routing: Centralized AdminLogService]
 """
 import asyncio
+import contextlib
 import datetime
 import json
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -192,8 +193,27 @@ class NotionClient:
             event_hooks={"request": [_refuse_deletion]},
         )
         # Serialises read-modify-write of each event's DJs relation. Only within this
-        # process: the deployment must run one instance (docs/user-guide.md, section 3).
+        # process; the single-instance lock (bot/db/instance_lock.py) keeps a second
+        # process away. Entries are counted and dropped once no writer holds or awaits them.
         self._event_locks: dict[str, asyncio.Lock] = {}
+        self._event_lock_users: dict[str, int] = {}
+
+    @contextlib.asynccontextmanager
+    async def _event_lock(self, event_id: str) -> AsyncIterator[None]:
+        """Hold the per-event write lock; the entry is removed when nobody uses it."""
+        # Counted before awaiting, so a waiting writer keeps the lock alive
+        self._event_lock_users[event_id] = self._event_lock_users.get(event_id, 0) + 1
+        lock = self._event_locks.setdefault(event_id, asyncio.Lock())
+        try:
+            async with lock:
+                yield
+        finally:
+            remaining = self._event_lock_users[event_id] - 1
+            if remaining:
+                self._event_lock_users[event_id] = remaining
+            else:
+                del self._event_lock_users[event_id]
+                del self._event_locks[event_id]
 
     @property
     def per_slot(self) -> bool:
@@ -627,7 +647,7 @@ class NotionClient:
             new_djs.append(dj_notion_page_id)
             return {"properties": {"DJs": {"relation": [{"id": pid} for pid in new_djs]}}}
 
-        async with self._event_locks.setdefault(event_id, asyncio.Lock()):
+        async with self._event_lock(event_id):
             await self._write_with_retry(
                 method="PATCH",
                 endpoint=f"/pages/{event_id}",
@@ -678,7 +698,7 @@ class NotionClient:
                 return None  # already gone
             return {"properties": {"DJs": {"relation": [{"id": pid} for pid in new_djs]}}}
 
-        async with self._event_locks.setdefault(event_id, asyncio.Lock()):
+        async with self._event_lock(event_id):
             await self._write_with_retry(
                 method="PATCH",
                 endpoint=f"/pages/{event_id}",
@@ -714,7 +734,7 @@ class NotionClient:
                 "rich_text": [{"type": "text", "text": {"content": dj_name}}]
             }}}
 
-        async with self._event_locks.setdefault(event_id, asyncio.Lock()):
+        async with self._event_lock(event_id):
             await self._write_with_retry(
                 method="PATCH", endpoint=f"/pages/{event_id}", payload=payload, context=context
             )
@@ -735,7 +755,7 @@ class NotionClient:
                 return None
             return {"properties": {column: {"rich_text": []}}}
 
-        async with self._event_locks.setdefault(event_id, asyncio.Lock()):
+        async with self._event_lock(event_id):
             await self._write_with_retry(
                 method="PATCH", endpoint=f"/pages/{event_id}", payload=payload, context=context
             )

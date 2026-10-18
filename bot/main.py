@@ -4,12 +4,13 @@ Startup sequence:
   1. Load config from env vars (exits with descriptive error if any required var missing)
   2. Configure logging
   3. Create BotContext with config
+  3a. Take the single-instance lock (exits if another instance runs against this DB)
   4. Run Alembic migrations (subprocess: alembic upgrade head) — exits on failure
   5. Open asyncpg pool — exits if PostgreSQL unreachable
   6. Assign pool to BotContext.db
   7. Create disnake Bot with correct intents
   8. Start bot (Discord connects only AFTER DB is ready)
-  9. On shutdown: close pool gracefully
+  9. On shutdown: close pool gracefully, release the single-instance lock
 
 Future stories extend the sequence:
   - Story 3.x: add Notion poll(), read_slots(), write_booking() to NotionClient
@@ -20,6 +21,7 @@ Future stories extend the sequence:
 import asyncio
 import logging
 import signal
+import sys
 from collections.abc import Iterable
 
 import disnake
@@ -30,6 +32,7 @@ from bot import active, redact, selfcheck, slots
 from bot import guild as served
 from bot.config import Config
 from bot.context import BotContext
+from bot.db.instance_lock import LOST_TO_OTHER, acquire_instance_lock
 from bot.db.pool import create_pool, run_migrations
 
 load_dotenv()
@@ -90,9 +93,16 @@ async def main() -> None:
 
     ctx = BotContext(config=config)
 
+    # Story 8.2: refuse to start next to another instance (before migrations, too)
+    instance_lock = await acquire_instance_lock(config.postgres_url)
+
     # Story 1.2: run migrations then open DB pool before Discord connects
-    await run_migrations(config.postgres_url)
-    ctx.db = await create_pool(config)
+    try:
+        await run_migrations(config.postgres_url)
+        ctx.db = await create_pool(config)
+    except BaseException:
+        await instance_lock.release()
+        raise
 
     bot = create_bot()
 
@@ -209,17 +219,25 @@ async def main() -> None:
     loop = asyncio.get_running_loop()
     shutdown_tasks: set[asyncio.Task[None]] = set()
 
-    def _on_signal(sig: signal.Signals) -> None:
-        logger.info("%s received — shutting down", sig.name)
+    def _start_shutdown() -> None:
+        if shutdown_tasks:
+            return  # already shutting down
         task = loop.create_task(graceful_shutdown(bot, ctx))
         shutdown_tasks.add(task)
         task.add_done_callback(shutdown_tasks.discard)
+
+    def _on_signal(sig: signal.Signals) -> None:
+        logger.info("%s received — shutting down", sig.name)
+        _start_shutdown()
 
     for sig in (signal.SIGTERM, signal.SIGINT):
         try:
             loop.add_signal_handler(sig, _on_signal, sig)
         except NotImplementedError:  # Windows event loops have no signal handlers
             pass
+
+    # Heartbeat; after a lost connection take the lock again, or stop if another instance has it
+    lock_watch = loop.create_task(instance_lock.watch(on_conflict=_start_shutdown))
 
     try:
         await bot.start(config.discord_bot_token)
@@ -236,6 +254,11 @@ async def main() -> None:
         if ctx.notion_client is not None:
             await ctx.notion_client.close()
             logger.info("NotionClient closed.")
+        lock_watch.cancel()
+        await asyncio.gather(lock_watch, return_exceptions=True)
+        await instance_lock.release()
+        if instance_lock.conflict:
+            sys.exit(LOST_TO_OTHER)  # non-zero, so restart-on-failure policies apply
 
 
 if __name__ == "__main__":
