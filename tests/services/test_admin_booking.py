@@ -42,6 +42,7 @@ def _make_service(**overrides):
 
     log_service = MagicMock()
     log_service.post_admin_override = AsyncMock()
+    log_service.post_error = AsyncMock()
 
     defaults = {
         "bot": bot,
@@ -187,6 +188,9 @@ async def test_book_slot_override_rollback_tells_admin_when_the_slot_changed_han
 
     assert success is False
     assert "could not be given back" in msg
+    # Story 8.6: PostgreSQL and Notion disagree now — the log channel hears about it too
+    svc.log_service.post_error.assert_awaited_once()
+    assert svc.log_service.post_error.call_args.kwargs["error_code"] == "ERR_DB_UNAVAILABLE"
 
 
 @pytest.mark.asyncio
@@ -711,7 +715,7 @@ async def test_admin_book_creates_no_dj_page_when_saving_the_slot_fails(monkeypa
     _patch_book(monkeypatch, None, {"dj_name": "Nova"})
     monkeypatch.setattr(
         "bot.services.admin_booking.admin_force_book_slot",
-        AsyncMock(side_effect=RuntimeError("db down")),
+        AsyncMock(side_effect=OSError("db down")),
     )
 
     ok, msg = await svc.book_slot_override(

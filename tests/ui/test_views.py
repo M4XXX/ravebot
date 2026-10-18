@@ -2,6 +2,7 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import disnake
+import httpx
 import pytest
 
 from tests.conftest import make_real_ctx
@@ -474,7 +475,7 @@ async def test_show_lineup_handles_poll_exception() -> None:
 
     ctx = make_real_ctx(db=MagicMock())
     notion_client = MagicMock()
-    notion_client.poll_events = AsyncMock(side_effect=Exception("Notion down"))
+    notion_client.poll_events = AsyncMock(side_effect=httpx.ConnectError("Notion down"))
     ctx.notion_client = notion_client
     view = FallbackMenuView(ctx)
 
@@ -563,7 +564,7 @@ async def test_book_slot_poll_events_raises_releases_lock(registered_dj) -> None
 
     ctx = make_real_ctx(db=MagicMock())
     notion_client = MagicMock()
-    notion_client.poll_events = AsyncMock(side_effect=Exception("Notion down"))
+    notion_client.poll_events = AsyncMock(side_effect=httpx.ConnectError("Notion down"))
     ctx.notion_client = notion_client
     view = FallbackMenuView(ctx)
 
@@ -1123,7 +1124,7 @@ async def test_booking_confirm_pg_failure_releases_lock() -> None:
 
     with patch(
         "bot.db.bookings.acquire_slot_lock",
-        new=AsyncMock(side_effect=Exception("pg connection lost")),
+        new=AsyncMock(side_effect=ConnectionResetError("pg connection lost")),
     ):
         await view._handle_confirm(inter)
 
@@ -1386,7 +1387,7 @@ async def test_cancel_slot_poll_events_failure_releases_lock() -> None:
 
     ctx = make_real_ctx(db=MagicMock())
     ctx.notion_client = MagicMock()
-    ctx.notion_client.poll_events = AsyncMock(side_effect=RuntimeError("network error"))
+    ctx.notion_client.poll_events = AsyncMock(side_effect=httpx.ReadTimeout("network error"))
     view = FallbackMenuView(ctx)
 
     inter = MagicMock(spec=disnake.MessageInteraction)
@@ -1616,3 +1617,119 @@ async def test_page_id_in_the_dj_database_is_kept() -> None:
     await _confirm_classic(ctx, 40008, page_id="pg-ok")
     ctx.notion_client.ensure_dj_page.assert_not_awaited()
     assert ctx.notion_client.write_booking.call_args.kwargs["dj_notion_page_id"] == "pg-ok"
+
+
+# ---------------------------------------------------------------------------
+# Story 8.6: narrowed handlers and consistency alerts
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_unexpected_error_in_a_narrowed_handler_reaches_on_error() -> None:
+    """A bug (not a Notion outage) is not turned into 'couldn't load' — on_error handles it."""
+    from bot.ui.views import FallbackMenuView
+
+    ctx = make_real_ctx(db=MagicMock())
+    ctx.notion_client = MagicMock()
+    ctx.notion_client.poll_events = AsyncMock(side_effect=KeyError("bug"))
+    view = FallbackMenuView(ctx)
+    inter = MagicMock(spec=disnake.MessageInteraction)
+    inter.response.send_message = AsyncMock()
+    with pytest.raises(KeyError):
+        await view.show_lineup.callback(inter)
+
+
+@pytest.mark.asyncio
+async def test_failed_undo_of_a_slot_claim_posts_db_unavailable() -> None:
+    from bot.notion.client import NotionWriteError
+
+    ctx = _classic_booking_ctx(40010, ensure_returns=None)
+    ctx.notion_client.write_booking = AsyncMock(side_effect=NotionWriteError("down"))
+    lock = ctx.get_user_lock(40010)
+    await lock.acquire()
+    view = _make_booking_confirm_view(ctx, lock, user_id=40010, slot_index=1)
+    inter = MagicMock(spec=disnake.MessageInteraction)
+    inter.author = MagicMock()
+    inter.response.send_message = AsyncMock()
+    with patch("bot.db.bookings.acquire_slot_lock", new=AsyncMock(return_value=True)), \
+         patch("bot.db.bookings.release_slot_lock", new=AsyncMock(side_effect=OSError("db"))), \
+         patch("bot.db.djs.get_notion_dj_page_id", new=AsyncMock(return_value="pg")):
+        await view._handle_confirm(inter)
+    ctx.log_service.post_error.assert_awaited_once()
+    kwargs = ctx.log_service.post_error.call_args.kwargs
+    assert kwargs["error_code"] == "ERR_DB_UNAVAILABLE"
+    assert "/admin cancel" in kwargs["manual_action"]
+    assert not lock.locked()
+
+
+@pytest.mark.asyncio
+async def test_cancel_that_cannot_check_other_slots_keeps_the_link_and_alerts() -> None:
+    from bot.ui.views import CancelConfirmView
+
+    ctx = make_real_ctx(db=MagicMock())
+    ctx.notion_client = MagicMock()
+    ctx.notion_client.per_slot = False
+    ctx.notion_client.delete_booking = AsyncMock()
+    ctx.log_service = MagicMock()
+    ctx.log_service.post_error = AsyncMock()
+    ctx.log_service.post_interaction = AsyncMock()
+    ctx.lineup_service = None
+    lock = ctx.get_user_lock(40011)
+    await lock.acquire()
+    view = CancelConfirmView(ctx, event=_make_event(event_id="evt-86", djs_booked=1),
+                             slot_index=0, slot_unix=0, lock=lock, user_id=40011)
+    inter = MagicMock(spec=disnake.MessageInteraction)
+    inter.author = MagicMock()
+    inter.response.send_message = AsyncMock()
+    with patch("bot.db.djs.get_notion_dj_page_id", new=AsyncMock(return_value="pg")), \
+         patch("bot.db.bookings.holds_slot_in_event", new=AsyncMock(side_effect=OSError("db"))), \
+         patch("bot.db.bookings.release_slot_lock", new=AsyncMock(return_value=True)):
+        await view._handle_confirm(inter)
+    ctx.notion_client.delete_booking.assert_not_awaited()
+    ctx.log_service.post_error.assert_awaited_once()
+    assert ctx.log_service.post_error.call_args.kwargs["error_code"] == "ERR_DB_UNAVAILABLE"
+
+
+@pytest.mark.asyncio
+async def test_unexpected_error_in_book_slot_frees_the_flow_lock_via_on_error(
+    registered_dj,
+) -> None:
+    """Story 8.6 review: narrowed handler → on_error answers and frees this click's lock."""
+    from bot.ui.views import FLOW_FAILED_TEXT, FallbackMenuView
+
+    ctx = make_real_ctx(db=MagicMock())
+    ctx.notion_client = MagicMock()
+    ctx.notion_client.poll_events = AsyncMock(side_effect=KeyError("bug"))
+    view = FallbackMenuView(ctx)
+    inter = MagicMock(spec=disnake.MessageInteraction)
+    inter.author.id = 33334
+    inter.response.is_done = MagicMock(return_value=False)
+    inter.response.send_message = AsyncMock()
+    assert await view.interaction_check(inter) is True
+    with pytest.raises(KeyError) as exc_info:
+        await view.book_slot.callback(inter)
+    assert ctx.get_user_lock(33334).locked()  # taken by this click, not yet freed
+    await view.on_error(exc_info.value, MagicMock(), inter)  # what disnake does next
+    assert not ctx.get_user_lock(33334).locked()
+    inter.response.send_message.assert_awaited_with(FLOW_FAILED_TEXT, ephemeral=True)
+
+
+@pytest.mark.asyncio
+async def test_failed_undo_answers_the_dj_before_alerting_admins() -> None:
+    from bot.notion.client import NotionWriteError
+
+    order: list[str] = []
+    ctx = _classic_booking_ctx(40012, ensure_returns=None)
+    ctx.notion_client.write_booking = AsyncMock(side_effect=NotionWriteError("down"))
+    ctx.log_service.post_error = AsyncMock(side_effect=lambda **k: order.append("alert"))
+    lock = ctx.get_user_lock(40012)
+    await lock.acquire()
+    view = _make_booking_confirm_view(ctx, lock, user_id=40012, slot_index=1)
+    inter = MagicMock(spec=disnake.MessageInteraction)
+    inter.author = MagicMock()
+    inter.response.send_message = AsyncMock(side_effect=lambda *a, **k: order.append("reply"))
+    with patch("bot.db.bookings.acquire_slot_lock", new=AsyncMock(return_value=True)), \
+         patch("bot.db.bookings.release_slot_lock", new=AsyncMock(side_effect=OSError("db"))), \
+         patch("bot.db.djs.get_notion_dj_page_id", new=AsyncMock(return_value="pg")):
+        await view._handle_confirm(inter)
+    assert order == ["reply", "alert"]

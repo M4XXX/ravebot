@@ -401,3 +401,44 @@ async def test_admin_book_creates_no_dj_page() -> None:
     write.assert_not_called()
     find.assert_not_called()
     svc.notion_client._log.post_error.assert_not_awaited()
+
+
+# Story 8.6: a plan text that cannot be recorded is reported (cancelling relies on it)
+
+
+@pytest.mark.asyncio
+async def test_dm_booking_reports_an_unrecorded_plan_text() -> None:
+    fake = FakePlan()
+    ctx, lock, view = await _booking(fake)
+    ctx.log_service = MagicMock()
+    ctx.log_service.post_error = AsyncMock()
+    ctx.log_service.post_interaction = AsyncMock()
+    mocks = _db_patches(**{"bot.db.bookings.set_plan_text": AsyncMock(side_effect=OSError("db"))})
+    with _apply(mocks):
+        await view._handle_confirm(_inter())
+    assert cell(fake) == "DJ Rayla"  # the booking stands
+    mocks["bot.db.bookings.release_slot_lock"].assert_not_awaited()
+    ctx.log_service.post_error.assert_awaited_once()
+    kwargs = ctx.log_service.post_error.call_args.kwargs
+    assert kwargs["error_code"] == "ERR_DB_UNAVAILABLE" and "DJ Rayla" in kwargs["trigger"]
+
+
+@pytest.mark.asyncio
+async def test_admin_book_reports_an_unrecorded_plan_text() -> None:
+    from bot.services.admin_booking import AdminBookingService
+
+    fake = QueryablePlan()
+    log = MagicMock()
+    log.post_error = AsyncMock()
+    log.post_admin_override = AsyncMock()
+    svc = AdminBookingService(bot=MagicMock(), db=MagicMock(), notion_client=make_client(fake),
+                              log_service=log)
+    with patch(AB + "get_slot_lock_holder", new=AsyncMock(return_value=None)), \
+         patch(AB + "get_dj_by_discord_id", new=_names({42: "DJ Rayla"})), \
+         patch(AB + "get_notion_dj_page_id", new=AsyncMock(return_value=None)), \
+         patch(AB + "admin_force_book_slot", new=AsyncMock()), \
+         patch(AB + "set_plan_text", new=AsyncMock(side_effect=OSError("db"))):
+        ok, msg = await svc.book_slot_override("Admin", 42, "DJ", "2026-10-24", 2)
+    assert ok, msg
+    log.post_error.assert_awaited_once()
+    assert log.post_error.call_args.kwargs["error_code"] == "ERR_DB_UNAVAILABLE"

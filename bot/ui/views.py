@@ -22,6 +22,7 @@ import disnake
 from bot import active, schedule, slots
 from bot import guild as served
 from bot.db.djs import get_dj_by_discord_id, insert_dj, set_notion_dj_page_id, update_active_booking
+from bot.errors import DB_ERRORS, NOTION_READ_ERRORS
 from bot.notion import dj_pages, props
 from bot.ui.ack import auto_ack, reply
 from bot.ui.embeds import ErrorCode
@@ -695,7 +696,7 @@ class FallbackMenuView(ActiveOnlyView, persistent=True):
 
         try:
             events = await self.ctx.notion_client.poll_events()
-        except Exception:
+        except NOTION_READ_ERRORS:
             logger.exception("book_slot: poll_events() failed")
             lock.release()
             await reply(inter, 
@@ -800,7 +801,7 @@ class FallbackMenuView(ActiveOnlyView, persistent=True):
         # Query DJ's current slot locks (authoritative source)
         try:
             slot_lock_rows = await get_dj_slot_locks(self.ctx.db, user_id)
-        except Exception:
+        except DB_ERRORS:
             logger.exception("cancel_slot: get_dj_slot_locks failed")
             lock.release()
             await reply(inter, 
@@ -820,7 +821,7 @@ class FallbackMenuView(ActiveOnlyView, persistent=True):
         # Fetch Notion events to get names and slot times
         try:
             events = await self.ctx.notion_client.poll_events()
-        except Exception:
+        except NOTION_READ_ERRORS:
             logger.exception("cancel_slot: poll_events() failed")
             lock.release()
             await reply(inter, 
@@ -1046,7 +1047,7 @@ class FallbackMenuView(ActiveOnlyView, persistent=True):
 
         try:
             events = await self.ctx.notion_client.poll_events()
-        except Exception:
+        except NOTION_READ_ERRORS:
             logger.exception("show_lineup: poll_events() failed")
             await reply(inter, 
                 "I couldn't load the lineup. Please try again in a moment.",
@@ -1409,10 +1410,22 @@ class BookingConfirmView(ActiveOnlyView):
 
         try:
             await release_slot_lock(self._ctx.db, event_id, self._slot_index, self._user_id)
-        except Exception:
+            freed = True
+        except Exception:  # any failure: the slot stays booked without a Notion entry
             logger.exception("BookingConfirmView: could not give the slot back")
+            freed = False
         self._release_lock()
-        await reply(inter, text, ephemeral=True)
+        await reply(inter, text, ephemeral=True)  # the DJ first, then the admins
+        if not freed and self._ctx.log_service is not None:
+            await self._ctx.log_service.post_error(
+                error_code=ErrorCode.ERR_DB_UNAVAILABLE,
+                trigger=(
+                    f"Booking of user {self._user_id} failed, and slot "
+                    f"{self._slot_index + 1} of event {event_id} could not be freed again"
+                ),
+                action_taken="The slot stays booked in the database without a Notion entry.",
+                manual_action="Free the slot with /admin cancel once the database is back.",
+            )
 
     async def _ensure_dj_page(self, dj_name: str | None, event_name: str) -> str | None:
         """Find or create the DJ's Notion page (classic layout) and remember its ID.
@@ -1489,7 +1502,7 @@ class BookingConfirmView(ActiveOnlyView):
                 self._slot_index,
                 self._user_id,
             )
-        except Exception:
+        except DB_ERRORS:
             logger.exception(
                 "BookingConfirmView: acquire_slot_lock raised — transaction rolled back"
             )
@@ -1505,7 +1518,6 @@ class BookingConfirmView(ActiveOnlyView):
             if self._ctx.log_service is not None:
                 try:
                     from bot.db.bookings import get_slot_lock_holder
-                    from bot.ui.embeds import ErrorCode
                     winner_id = await get_slot_lock_holder(
                         self._ctx.db, event_id, self._slot_index
                     )
@@ -1533,7 +1545,7 @@ class BookingConfirmView(ActiveOnlyView):
                         if fresh_event.get("id") == event_id:
                             event_for_refresh = fresh_event
                             break
-                except Exception:
+                except NOTION_READ_ERRORS:
                     logger.exception(
                         "BookingConfirmView: failed to refresh events for slot conflict view"
                     )
@@ -1646,8 +1658,21 @@ class BookingConfirmView(ActiveOnlyView):
                 await set_plan_text(
                     self._ctx.db, event_id, self._slot_index, self._user_id, dj_name
                 )
-            except Exception:
+            except Exception:  # booked and written; only the record for cancelling is missing
                 logger.exception("BookingConfirmView: could not record the plan text")
+                if self._ctx.log_service is not None:
+                    await self._ctx.log_service.post_error(
+                        error_code=ErrorCode.ERR_DB_UNAVAILABLE,
+                        trigger=(
+                            f"Could not record the plan text '{dj_name}' of slot "
+                            f"{self._slot_index + 1} in '{event_name}'"
+                        ),
+                        action_taken="Booking kept.",
+                        manual_action=(
+                            "If the DJ cancels this slot, check that its cell in the plan "
+                            "was emptied."
+                        ),
+                    )
 
         # Send booking confirmed embed (AC3)
         embed = BookingConfirmedEmbed(event_name=event_name, slot_unix=self._slot_unix)
@@ -1956,9 +1981,20 @@ class CancelConfirmView(ActiveOnlyView):
             unlink = per_slot or not await holds_slot_in_event(
                 self._ctx.db, event_id, self._user_id
             )
-        except Exception:
+        except Exception:  # keeping the link is the safe side; tell the admins
             logger.exception("CancelConfirmView: could not check other slots — keeping Notion link")
             unlink = False
+            if self._ctx.log_service is not None:
+                await self._ctx.log_service.post_error(
+                    error_code=ErrorCode.ERR_DB_UNAVAILABLE,
+                    trigger=(
+                        f"Cancellation of user {self._user_id} in '{event_name}': could not "
+                        "check the DJ's other slots"
+                    ),
+                    action_taken="Slot freed; the DJ stays linked to the event in Notion.",
+                    manual_action="Remove the DJ from the event's DJs in Notion if they hold "
+                    "no other slot of it.",
+                )
 
         if unlink:
             try:
@@ -2046,7 +2082,6 @@ class OutreachView(ActiveOnlyView, single_use=False):
         [Source: architecture.md#Error Routing: Centralized AdminLogService]
         """
         from bot.db.outreach import update_outreach_contact_status
-        from bot.ui.embeds import ErrorCode
 
         event_id = self._event.get("id", "")
         if self._ctx.db is not None and event_id:
@@ -2054,10 +2089,8 @@ class OutreachView(ActiveOnlyView, single_use=False):
                 await update_outreach_contact_status(
                     self._ctx.db, event_id, self._discord_user_id, "timeout"
                 )
-            except Exception as exc:
-                logger.warning(
-                    "OutreachView.on_timeout: failed to update contact status: %s", exc
-                )
+            except DB_ERRORS:
+                logger.exception("OutreachView.on_timeout: failed to update contact status")
 
         if self._ctx.log_service is not None:
             try:
@@ -2121,8 +2154,8 @@ class OutreachView(ActiveOnlyView, single_use=False):
                 await update_outreach_contact_status(
                     self._ctx.db, event_id, self._discord_user_id, "accepted"
                 )
-            except Exception as exc:
-                logger.warning("OutreachView.accept: DB update failed: %s", exc)
+            except DB_ERRORS:
+                logger.exception("OutreachView.accept: DB update failed")
 
         # Fetch fresh event data; fall back to cached if Notion unavailable
         event = self._event
@@ -2132,7 +2165,7 @@ class OutreachView(ActiveOnlyView, single_use=False):
                 fresh = next((e for e in events if e.get("id") == event_id), None)
                 if fresh is not None:
                     event = fresh
-            except Exception as exc:
+            except NOTION_READ_ERRORS as exc:  # the cached event still works
                 logger.warning("OutreachView.accept: poll_events failed: %s", exc)
 
         # Compute open slot indices from slot_locks (bot.slots)
@@ -2188,8 +2221,8 @@ class OutreachView(ActiveOnlyView, single_use=False):
                 await update_outreach_contact_status(
                     self._ctx.db, event_id, self._discord_user_id, "declined"
                 )
-            except Exception as exc:
-                logger.warning("OutreachView.decline: DB update failed: %s", exc)
+            except DB_ERRORS:
+                logger.exception("OutreachView.decline: DB update failed")
 
         decline_text = "No worries, I'll ask again next time!"
         await reply(inter, decline_text)
