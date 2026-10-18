@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 import disnake
 
+from bot import loops, schedule, slots
 from bot.db.config import get_value
 from bot.db.djs import get_active_booking_djs
 from bot.db.djs import update_last_contacted_at as update_dj_last_contacted_at
@@ -29,6 +30,7 @@ from bot.db.outreach import (
     update_outreach_contact_status,
     upsert_sequence,
 )
+from bot.ui.embeds import ErrorCode
 
 if TYPE_CHECKING:
     from bot.log import AdminLogService
@@ -93,11 +95,16 @@ class OutreachService:
             cooldown_hours = _DEFAULT_COOLDOWN_HOURS
 
         # Fetch all future events from Notion (AC1)
+        # A Notion outage fails the cycle, so /config show does not report it as OK
         try:
             events = await self.notion_client.poll_events()
         except Exception as exc:
-            logger.warning("OutreachService.run_gap_detection: poll_events failed: %s", exc)
-            return []
+            raise loops.CycleFailed(
+                f"Notion poll_events() raised during outreach: {exc}",
+                error_code=ErrorCode.ERR_NOTION_WRITE,
+                manual_action="Check NOTION_API_KEY, NOTION_DATABASE_ID, and Notion API status.",
+            ) from exc
+        await slots.annotate(self.db, guild_id, events)
 
         now_utc = datetime.datetime.now(datetime.timezone.utc)
         window_end = now_utc + datetime.timedelta(days=outreach_days)
@@ -109,30 +116,15 @@ class OutreachService:
                 continue
 
             # Parse event date — skip if missing or outside window (AC1)
-            try:
-                date_str = event["properties"]["Date"]["date"]["start"]
-                event_dt = datetime.datetime.fromisoformat(date_str)
-                if event_dt.tzinfo is None:
-                    event_dt = event_dt.replace(tzinfo=datetime.timezone.utc)
-            except (KeyError, TypeError, ValueError):
+            event_dt = schedule.event_start(event)
+            if event_dt is None:
                 continue
 
             if not (now_utc <= event_dt <= window_end):
                 continue
 
-            # Compute open slots — mirrors _filter_events_with_open_slots in views.py
-            # [Source: bot/ui/views.py:728–749]
-            try:
-                raw_slots = event["properties"]["Slots"]["number"]
-                slots_total = max(1, int(raw_slots) if raw_slots is not None else 6)
-            except (KeyError, TypeError, ValueError):
-                slots_total = 6
-            try:
-                djs_booked = len(event["properties"]["DJs"]["relation"])
-            except (KeyError, TypeError):
-                djs_booked = 0
-
-            open_slots = slots_total - djs_booked
+            # Open slots from slot_locks (bot.slots), same as the booking views
+            open_slots = len(slots.state(event).open_indices)
 
             # AC4: all slots filled — mark active sequence complete
             if open_slots <= 0:
@@ -266,33 +258,40 @@ class OutreachService:
             logger.warning("OutreachService.contact_next_dj: DB error: %s", exc)
             return False
 
-        eligible = [dj for dj in all_active if dj["discord_user_id"] not in already_contacted]
-        if not eligible:
+        await slots.annotate(self.db, guild_id, [event])
+        already_booked = set(slots.state(event).booked.values())
+        eligible = [
+            dj for dj in all_active
+            if dj["discord_user_id"] not in already_contacted
+            and dj["discord_user_id"] not in already_booked
+        ]
+
+        # Story 6.2 AC6: DJs under admin intervention are skipped — move on to the next one
+        dj = None
+        for candidate in eligible:
+            try:
+                if await is_under_intervention(self.db, candidate["discord_user_id"]):
+                    logger.info(
+                        "OutreachService.contact_next_dj: skipping DJ %s — under intervention",
+                        candidate["discord_user_id"],
+                    )
+                    continue
+            except Exception as exc:
+                logger.warning(
+                    "OutreachService.contact_next_dj: intervention check failed for %s: %s",
+                    candidate["discord_user_id"],
+                    exc,
+                )
+            dj = candidate
+            break
+        if dj is None:
             logger.info(
-                "OutreachService.contact_next_dj: no eligible DJs for event %s — all contacted",
-                event_id,
+                "OutreachService.contact_next_dj: no eligible DJs for event %s", event_id
             )
             return False
 
-        dj = eligible[0]
         discord_user_id = dj["discord_user_id"]
         dj_name = dj.get("dj_name", str(discord_user_id))
-
-        # Story 6.2 AC6: skip DJs under admin intervention silently
-        try:
-            if await is_under_intervention(self.db, discord_user_id):
-                logger.info(
-                    "OutreachService.contact_next_dj: skipping DJ %s (%s) — under admin intervention",
-                    dj_name,
-                    discord_user_id,
-                )
-                return True
-        except Exception as exc:
-            logger.warning(
-                "OutreachService.contact_next_dj: intervention check failed for %s: %s",
-                discord_user_id,
-                exc,
-            )
 
         # Record contact attempt BEFORE sending (idempotent if this cycle retries)
         try:
@@ -406,17 +405,9 @@ class OutreachService:
         if seq is None or seq["status"] != "active":
             return  # Already exhausted, complete, or no sequence
 
-        # Compute open slots (same formula as run_gap_detection)
-        try:
-            raw_slots = event["properties"]["Slots"]["number"]
-            slots_total = max(1, int(raw_slots) if raw_slots is not None else 6)
-        except (KeyError, TypeError, ValueError):
-            slots_total = 6
-        try:
-            djs_booked = len(event["properties"]["DJs"]["relation"])
-        except (KeyError, TypeError):
-            djs_booked = 0
-        open_slots = slots_total - djs_booked
+        # Open slots from slot_locks (bot.slots), same as run_gap_detection
+        await slots.annotate(self.db, guild_id, [event])
+        open_slots = len(slots.state(event).open_indices)
 
         if open_slots <= 0:
             # Race: slots filled between contact_next_dj call and here — no alert needed
@@ -446,14 +437,8 @@ class OutreachService:
             event_name = event["properties"]["Name"]["title"][0]["plain_text"]
         except (KeyError, IndexError):
             event_name = event_id
-        try:
-            date_str = event["properties"]["Date"]["date"]["start"]
-            unix_ts = int(
-                datetime.datetime.fromisoformat(date_str).timestamp()
-            )
-            date_display = f"<t:{unix_ts}:f>"
-        except (KeyError, TypeError, ValueError):
-            date_display = "TBD"
+        start = schedule.event_start(event)
+        date_display = f"<t:{int(start.timestamp())}:f>" if start is not None else "TBD"
 
         # Post ERR_OUTREACH_EXHAUSTED to admin log (AC1)
         if self.log_service is not None:

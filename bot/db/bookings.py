@@ -99,26 +99,55 @@ async def release_slot_lock(
     pool: asyncpg.Pool,
     event_id: str,
     slot_index: int,
-) -> None:
+    discord_user_id: int | None = None,
+) -> bool:
     """Release a previously claimed slot lock — sets discord_user_id back to NULL.
 
     Called when:
       - The Notion booking write fails after a successful acquire_slot_lock()
       - A DJ self-cancels (Story 4.4)
 
+    With discord_user_id only that DJ's own booking is freed: a stale cancel button or
+    a rollback can never free a slot another DJ booked in the meantime. Without it the
+    slot is freed whoever holds it (admin cancel).
+
     Idempotent: safe to call even if the row does not exist or is already NULL.
+    Returns True if a booking was actually freed.
 
     [Source: epics.md#Story 4.2 AC3 (rollback on Notion failure)]
     [Source: epics.md#Story 4.4 (cancellation flow)]
     """
-    await pool.execute(
+    status = await pool.execute(
         """
         UPDATE slot_locks
         SET discord_user_id = NULL, booked_at = NULL
         WHERE event_id = $1 AND slot_index = $2
+          AND discord_user_id IS NOT NULL
+          AND ($3::bigint IS NULL OR discord_user_id = $3)
         """,
         event_id,
         slot_index,
+        discord_user_id,
+    )
+    return status != "UPDATE 0"
+
+
+async def holds_slot_in_event(
+    pool: asyncpg.Pool,
+    event_id: str,
+    discord_user_id: int,
+) -> bool:
+    """True if this DJ still holds any slot of the event.
+
+    The Notion DJs relation has one entry per DJ, not per slot, so a DJ is only
+    unlinked from the event once this returns False.
+    """
+    return bool(
+        await pool.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM slot_locks WHERE event_id = $1 AND discord_user_id = $2)",
+            event_id,
+            discord_user_id,
+        )
     )
 
 
@@ -168,6 +197,33 @@ async def admin_force_book_slot(
         slot_index,
         discord_user_id,
     )
+
+
+async def hand_back_slot(
+    pool: asyncpg.Pool,
+    event_id: str,
+    slot_index: int,
+    from_user_id: int,
+    to_user_id: int,
+) -> bool:
+    """Give a slot back from one DJ to another, only if the first still holds it.
+
+    Undoes an admin force-book whose Notion write failed. Between the force-book and the
+    undo the slot may have been cancelled and booked by someone else; that booking stays.
+    Returns True if the slot was handed back.
+    """
+    status = await pool.execute(
+        """
+        UPDATE slot_locks
+        SET discord_user_id = $4, booked_at = NOW()
+        WHERE event_id = $1 AND slot_index = $2 AND discord_user_id = $3
+        """,
+        event_id,
+        slot_index,
+        from_user_id,
+        to_user_id,
+    )
+    return status != "UPDATE 0"
 
 
 async def init_event_slots(
@@ -233,3 +289,24 @@ async def get_booked_djs_for_event(
         }
         for row in rows
     ]
+
+
+async def get_booked_slots(pool: asyncpg.Pool, event_ids: list[str]) -> dict[str, dict[int, int]]:
+    """Booked slot indices per event in one query: {event_id: {slot_index: discord_user_id}}.
+
+    Events without bookings are absent from the result.
+    """
+    if not event_ids:
+        return {}
+    rows = await pool.fetch(
+        """
+        SELECT event_id, slot_index, discord_user_id
+        FROM slot_locks
+        WHERE event_id = ANY($1::text[]) AND discord_user_id IS NOT NULL
+        """,
+        event_ids,
+    )
+    result: dict[str, dict[int, int]] = {}
+    for row in rows:
+        result.setdefault(row["event_id"], {})[row["slot_index"]] = row["discord_user_id"]
+    return result

@@ -8,6 +8,16 @@ from bot.ui.embeds import ErrorCode
 from tests.conftest import make_real_ctx
 
 
+@pytest.fixture
+def registered_dj():
+    """The DM author finished onboarding — they get the booking menu."""
+    with patch(
+        "bot.cogs.onboarding.get_dj_by_discord_id",
+        new=AsyncMock(return_value={"onboarding_complete": True}),
+    ):
+        yield
+
+
 def make_role(name: str) -> MagicMock:
     role = MagicMock(spec=disnake.Role)
     role.name = name
@@ -36,7 +46,7 @@ async def test_on_member_update_ignores_no_new_roles() -> None:
     """No DM sent when the member update has no new roles added."""
     from bot.cogs.onboarding import OnboardingCog
 
-    cog = OnboardingCog(make_ctx())
+    cog = OnboardingCog(make_ctx(), MagicMock())
     role = make_role("DJ")
     before = make_member()
     before.roles = [role]
@@ -53,7 +63,7 @@ async def test_on_member_update_ignores_non_dj_role() -> None:
     """No DM sent when a non-DJ role is newly assigned."""
     from bot.cogs.onboarding import OnboardingCog
 
-    cog = OnboardingCog(make_ctx())
+    cog = OnboardingCog(make_ctx(), MagicMock())
     before = make_member()
     before.roles = []
     after = make_member()
@@ -70,7 +80,7 @@ async def test_on_member_update_skips_existing_dj() -> None:
     from bot.cogs.onboarding import OnboardingCog
 
     ctx = make_ctx(db=MagicMock())
-    cog = OnboardingCog(ctx)
+    cog = OnboardingCog(ctx, MagicMock())
     before = make_member()
     before.roles = []
     after = make_member()
@@ -92,7 +102,7 @@ async def test_on_member_update_sends_dm_to_new_dj() -> None:
     from bot.cogs.onboarding import OnboardingCog
 
     ctx = make_ctx(db=MagicMock())
-    cog = OnboardingCog(ctx)
+    cog = OnboardingCog(ctx, MagicMock())
     before = make_member()
     before.roles = []
     after = make_member()
@@ -118,7 +128,7 @@ async def test_on_member_update_posts_error_on_dm_failure() -> None:
     log = MagicMock()
     log.post_error = AsyncMock()
     ctx = make_ctx(db=MagicMock(), log=log)
-    cog = OnboardingCog(ctx)
+    cog = OnboardingCog(ctx, MagicMock())
     before = make_member()
     before.roles = []
     after = make_member()
@@ -199,7 +209,7 @@ async def test_on_member_update_passes_guild_id_to_intro_view() -> None:
     from bot.ui.views import OnboardingIntroView
 
     ctx = make_real_ctx(db=MagicMock())
-    cog = OnboardingCog(ctx)
+    cog = OnboardingCog(ctx, MagicMock())
 
     dj_role = make_role("DJ")
     before = make_member()
@@ -226,7 +236,9 @@ async def test_on_member_update_passes_guild_id_to_intro_view() -> None:
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_on_message_dm_sends_fallback_menu(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_on_message_dm_sends_fallback_menu(
+    registered_dj, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Free-text DM outside active flow sends FallbackMenuView."""
     from bot.cogs.onboarding import OnboardingCog
     from bot.ui.views import FallbackMenuView
@@ -237,7 +249,7 @@ async def test_on_message_dm_sends_fallback_menu(monkeypatch: pytest.MonkeyPatch
     )
 
     ctx = make_real_ctx(db=MagicMock())
-    cog = OnboardingCog(ctx)
+    cog = OnboardingCog(ctx, MagicMock())
 
     message = MagicMock(spec=disnake.Message)
     message.guild = None
@@ -258,7 +270,7 @@ async def test_on_message_guild_message_ignored() -> None:
     from bot.cogs.onboarding import OnboardingCog
 
     ctx = make_real_ctx(db=MagicMock())
-    cog = OnboardingCog(ctx)
+    cog = OnboardingCog(ctx, MagicMock())
 
     message = MagicMock(spec=disnake.Message)
     message.guild = MagicMock()  # guild message
@@ -277,7 +289,7 @@ async def test_on_message_bot_message_ignored() -> None:
     from bot.cogs.onboarding import OnboardingCog
 
     ctx = make_real_ctx(db=MagicMock())
-    cog = OnboardingCog(ctx)
+    cog = OnboardingCog(ctx, MagicMock())
 
     message = MagicMock(spec=disnake.Message)
     message.guild = None
@@ -291,7 +303,9 @@ async def test_on_message_bot_message_ignored() -> None:
 
 
 @pytest.mark.asyncio
-async def test_on_message_skips_during_active_flow(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_on_message_offers_start_over_during_active_flow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """FallbackMenuView NOT shown when user has an active flow (lock held)."""
     from bot.cogs.onboarding import OnboardingCog
 
@@ -301,7 +315,7 @@ async def test_on_message_skips_during_active_flow(monkeypatch: pytest.MonkeyPat
     )
 
     ctx = make_real_ctx(db=MagicMock())
-    cog = OnboardingCog(ctx)
+    cog = OnboardingCog(ctx, MagicMock())
 
     await ctx.get_user_lock(44444).acquire()
 
@@ -313,11 +327,15 @@ async def test_on_message_skips_during_active_flow(monkeypatch: pytest.MonkeyPat
 
     await cog.on_message(message)
 
-    message.channel.send.assert_not_called()
+    message.channel.send.assert_awaited_once()
+    from bot.ui.views import StartOverView
+
+    assert isinstance(message.channel.send.call_args.kwargs["view"], StartOverView)
 
 
 @pytest.mark.asyncio
 async def test_on_message_dm_logs_transcript_for_incoming_and_outgoing(
+    registered_dj,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Story 6.1 AC2 + AC1: incoming DM and fallback menu response are both transcribed."""
@@ -341,7 +359,7 @@ async def test_on_message_dm_logs_transcript_for_incoming_and_outgoing(
     message.content = "hello bot"
     message.channel.send = AsyncMock()
 
-    cog = OnboardingCog(ctx)
+    cog = OnboardingCog(ctx, MagicMock())
     await cog.on_message(message)
 
     # AC2: incoming message logged first; AC1: outgoing fallback menu logged second
@@ -388,7 +406,7 @@ async def test_on_message_under_intervention_forwards_to_admin_no_fallback(
     message.content = "I need help"
     message.channel.send = AsyncMock()
 
-    cog = OnboardingCog(ctx)
+    cog = OnboardingCog(ctx, MagicMock())
     await cog.on_message(message)
 
     # Transcript was still logged (6.1 hook fires before intervention check)
@@ -428,7 +446,7 @@ async def test_on_message_under_intervention_suppresses_even_when_log_service_no
     message.content = "any message"
     message.channel.send = AsyncMock()
 
-    cog = OnboardingCog(ctx)
+    cog = OnboardingCog(ctx, MagicMock())
     await cog.on_message(message)
 
     # No FallbackMenuView despite log_service being None
@@ -437,6 +455,7 @@ async def test_on_message_under_intervention_suppresses_even_when_log_service_no
 
 @pytest.mark.asyncio
 async def test_on_message_not_under_intervention_shows_fallback(
+    registered_dj,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """DJ NOT under intervention → normal FallbackMenuView shown."""
@@ -458,7 +477,7 @@ async def test_on_message_not_under_intervention_shows_fallback(
     message.content = "hello"
     message.channel.send = AsyncMock()
 
-    cog = OnboardingCog(ctx)
+    cog = OnboardingCog(ctx, MagicMock())
     await cog.on_message(message)
 
     message.channel.send.assert_awaited_once()

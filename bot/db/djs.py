@@ -37,7 +37,10 @@ async def insert_dj(
     stream_url_primary: str | None,
     stream_url_backup: str | None,
 ) -> None:
-    """Insert a new DJ profile row with onboarding completed.
+    """Insert or update a DJ profile row with onboarding completed.
+
+    Re-submitting the form (e.g. via an old onboarding DM) updates the row instead of
+    failing on the primary key.
 
     Sets active_booking=true, onboarding_complete=true, onboarding_step=0.
     Called on successful OnboardingModal submission (Story 2.2).
@@ -57,6 +60,15 @@ async def insert_dj(
             active_booking, onboarding_complete, onboarding_step
         )
         VALUES ($1, $2, $3, $4, $5, $6, true, true, 0)
+        ON CONFLICT (discord_user_id) DO UPDATE SET
+            dj_name = EXCLUDED.dj_name,
+            vrchat_name = EXCLUDED.vrchat_name,
+            logo_url = EXCLUDED.logo_url,
+            stream_url_primary = EXCLUDED.stream_url_primary,
+            stream_url_backup = EXCLUDED.stream_url_backup,
+            active_booking = true,
+            onboarding_complete = true,
+            onboarding_step = 0
         """,
         discord_user_id,
         dj_name,
@@ -157,7 +169,8 @@ async def get_all_djs(pool: asyncpg.Pool) -> list[dict]:
     [Source: architecture.md#Repository Pattern]
     """
     rows = await pool.fetch(
-        "SELECT discord_user_id, dj_name, active_booking FROM djs ORDER BY dj_name ASC"
+        "SELECT discord_user_id, dj_name, active_booking, onboarding_complete FROM djs "
+        "ORDER BY dj_name ASC"
     )
     return [dict(row) for row in rows]
 
@@ -183,3 +196,15 @@ async def update_active_booking(
         discord_user_id,
     )
     return result == "UPDATE 1"
+
+
+async def get_notion_page_ids(pool: asyncpg.Pool, discord_user_ids: list[int]) -> dict[int, str]:
+    """Notion DJ page IDs for the given DJs (DJs without a page are absent)."""
+    if not discord_user_ids:
+        return {}
+    rows = await pool.fetch(
+        "SELECT discord_user_id, notion_dj_page_id FROM djs "
+        "WHERE discord_user_id = ANY($1::bigint[]) AND notion_dj_page_id IS NOT NULL",
+        discord_user_ids,
+    )
+    return {row["discord_user_id"]: row["notion_dj_page_id"] for row in rows}

@@ -19,11 +19,14 @@ Future stories extend the sequence:
 """
 import asyncio
 import logging
+import signal
 
 import disnake
 from disnake.ext import commands
 from dotenv import load_dotenv
 
+from bot import active, selfcheck
+from bot import guild as served
 from bot.config import Config
 from bot.context import BotContext
 from bot.db.pool import create_pool, run_migrations
@@ -47,12 +50,33 @@ def create_bot() -> commands.Bot:
     """
     intents = disnake.Intents.default()
     intents.members = True  # Required for on_member_update (FR1 — DJ role detection)
-    return commands.Bot(command_prefix="!", intents=intents)
+    # Never ping from bot messages: mirrored DMs may contain @everyone or role mentions
+    return commands.Bot(
+        command_prefix=commands.when_mentioned,  # no prefix commands; silences the intent warning
+        intents=intents,
+        allowed_mentions=disnake.AllowedMentions.none(),
+    )
+
+
+TRANSCRIPT_FLUSH_SECONDS = 5.0
+
+
+async def graceful_shutdown(bot: commands.Bot, ctx: BotContext) -> None:
+    """Post the queued DM transcripts while Discord is still reachable, then disconnect."""
+    if ctx.log_service is not None:
+        try:
+            await asyncio.wait_for(
+                ctx.log_service.flush_transcripts(), timeout=TRANSCRIPT_FLUSH_SECONDS
+            )
+        except Exception:
+            logger.warning("Shutting down with DM transcripts still queued", exc_info=True)
+    await bot.close()
 
 
 async def main() -> None:
     """Async entry point — configure, run migrations, open pool, start bot."""
     config = Config.from_env()
+    served.configure(config.guild_id)
     _setup_logging(config.log_level)
 
     ctx = BotContext(config=config)
@@ -118,28 +142,69 @@ async def main() -> None:
         log_service=ctx.log_service,
     )
 
-    bot.add_cog(OnboardingCog(ctx))
+    bot.add_cog(OnboardingCog(ctx, bot))
     bot.add_cog(BookingCog(ctx))
-    bot.add_cog(OutreachCog(ctx))
+    bot.add_cog(OutreachCog(ctx, bot))
     bot.add_cog(AdminCog(ctx))
-    bot.add_cog(EventsCog(ctx))
+    bot.add_cog(EventsCog(ctx, bot))
+
+    # Buttons in DMs sent before a restart keep working (static custom_ids, timeout=None)
+    from bot.ui.views import FallbackMenuView, OnboardingIntroView, StartOverView
+
+    bot.add_view(FallbackMenuView(ctx))
+    bot.add_view(OnboardingIntroView(ctx, user_id=0, guild_id=0))
+    bot.add_view(StartOverView(ctx))
 
     @bot.event
     async def on_ready() -> None:  # noqa: RUF029
         logger.info("Bot ready")
+        gid = served.resolve(bot)
+        if gid is None:
+            logger.error(
+                "Serving no server (member of %d, GUILD_ID=%s) — staying idle",
+                len(bot.guilds),
+                config.guild_id,
+            )
+        else:
+            mode = "ACTIVE" if await active.is_active(ctx.db, gid) else "PASSIVE"
+            logger.info("Serving guild %s in %s mode", gid, mode)
+            bot.loop.create_task(selfcheck.run(bot, ctx, gid))
         # Story 1.5: validate Notion schema now that Discord is connected
         # (admin log channel may already be configured for error posting)
         if ctx.notion_client is not None:
             bot.loop.create_task(
                 ctx.notion_client.validate_schema(
                     # Minimum required Notion database properties — extend in Story 3.x
-                    required_properties=["Name", "Date", "Slots"],
+                    required_properties=["Name", "Date", "Slots", "DJs", "Discord ID"],
                 )
             )
+
+    # In the container the bot is PID 1, which ignores SIGTERM unless it has a handler:
+    # docker stop then killed it after 10 s, skipping the cleanup below.
+    loop = asyncio.get_running_loop()
+    shutdown_tasks: set[asyncio.Task[None]] = set()
+
+    def _on_signal(sig: signal.Signals) -> None:
+        logger.info("%s received — shutting down", sig.name)
+        task = loop.create_task(graceful_shutdown(bot, ctx))
+        shutdown_tasks.add(task)
+        task.add_done_callback(shutdown_tasks.discard)
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(sig, _on_signal, sig)
+        except NotImplementedError:  # Windows event loops have no signal handlers
+            pass
 
     try:
         await bot.start(config.discord_bot_token)
     finally:
+        # bot.start() returns as soon as the gateway is closed, while graceful_shutdown is
+        # still closing the HTTP session; asyncio.run would cancel it half-way.
+        if shutdown_tasks:
+            await asyncio.gather(*shutdown_tasks, return_exceptions=True)
+        elif not bot.is_closed():
+            await bot.close()
         if ctx.db is not None:
             await ctx.db.close()
             logger.info("asyncpg pool closed.")

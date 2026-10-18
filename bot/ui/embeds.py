@@ -14,9 +14,11 @@ Classes:
     ProactiveOutreachEmbed — Deep Space Blue outreach invitation embed (Story 5.2)
 """
 import enum
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import disnake
+
+from bot import schedule, slots
 
 
 class EmbedColors(enum.IntEnum):
@@ -46,6 +48,8 @@ class ErrorCode(enum.StrEnum):
     ERR_BUTTON_TIMEOUT = "ERR_BUTTON_TIMEOUT"
     ERR_DB_UNAVAILABLE = "ERR_DB_UNAVAILABLE"
     ERR_OUTREACH_EXHAUSTED = "ERR_OUTREACH_EXHAUSTED"
+    ERR_BACKGROUND_TASK = "ERR_BACKGROUND_TASK"
+    ERR_DATA_MISMATCH = "ERR_DATA_MISMATCH"
 
 
 class ErrorEmbed(disnake.Embed):
@@ -138,23 +142,10 @@ class MissionRosterEmbed(disnake.Embed):
                 name = event["properties"]["Name"]["title"][0]["plain_text"]
             except (KeyError, IndexError):
                 name = "Unnamed Event"
-            try:
-                date_str = event["properties"]["Date"]["date"]["start"]
-                unix_ts = int(datetime.fromisoformat(date_str).timestamp())
-                date_field = f"<t:{unix_ts}:f>"
-            except (KeyError, TypeError, ValueError):
-                date_field = "TBD"
-            try:
-                raw_slots = event["properties"]["Slots"]["number"]
-                slots_total = int(raw_slots) if raw_slots is not None else 6
-            except (KeyError, TypeError, ValueError):
-                slots_total = 6
-            try:
-                djs_booked = len(event["properties"]["DJs"]["relation"])
-            except (KeyError, TypeError):
-                djs_booked = 0
-            slots_open = max(0, slots_total - djs_booked)
-            field_value = f"{date_field}\n{djs_booked} confirmed · {slots_open} open"
+            start = schedule.event_start(event)
+            date_field = f"<t:{int(start.timestamp())}:f>" if start is not None else "TBD"
+            st = slots.state(event)
+            field_value = f"{date_field}\n{st.booked_count} confirmed · {len(st.open_indices)} open"
             self.add_field(name=name, value=field_value, inline=False)
         self.set_footer(text="RaveBot")
 
@@ -186,25 +177,11 @@ class MissionOverviewEmbed(disnake.Embed):
         self.title = f"\U0001f6f0\ufe0f {name}"  # 🛰️
 
         # Parse event start time for slot time computation
-        try:
-            date_str = event["properties"]["Date"]["date"]["start"]
-            event_start = datetime.fromisoformat(date_str)
-            if event_start.tzinfo is None:
-                event_start = event_start.replace(tzinfo=UTC)
-        except (KeyError, TypeError, ValueError):
-            event_start = None
+        event_start = schedule.event_start(event)
 
-        # Parse slot counts
-        try:
-            raw_slots = event["properties"]["Slots"]["number"]
-            slots_total = max(1, int(raw_slots) if raw_slots is not None else 6)
-        except (KeyError, TypeError, ValueError):
-            slots_total = 6
-        try:
-            djs_booked = len(event["properties"]["DJs"]["relation"])
-        except (KeyError, TypeError):
-            djs_booked = 0
-        slots_open = max(0, slots_total - djs_booked)
+        # Slot counts and booked indices (bot.slots: Postgres slot_locks)
+        st = slots.state(event)
+        slots_total, djs_booked, slots_open = st.total, st.booked_count, len(st.open_indices)
 
         date_display = (
             f"<t:{int(event_start.timestamp())}:f>" if event_start is not None else "TBD"
@@ -217,12 +194,11 @@ class MissionOverviewEmbed(disnake.Embed):
 
         for i in range(slots_total):
             if event_start is not None:
-                slot_dt = event_start + timedelta(minutes=60 * i)
-                unix_ts = int(slot_dt.timestamp())
+                unix_ts = schedule.slot_unix(event, i)
                 time_str = f"<t:{unix_ts}:R>"
             else:
                 time_str = "TBD"
-            status = "✓ Confirmed" if i < djs_booked else "Open"
+            status = "✓ Confirmed" if i in st.booked else "Open"
             self.add_field(
                 name=f"Slot {i + 1}",
                 value=f"{status} · {time_str}",
@@ -305,22 +281,10 @@ class ProactiveOutreachEmbed(disnake.Embed):
             name = event["properties"]["Name"]["title"][0]["plain_text"]
         except (KeyError, IndexError):
             name = "Upcoming Event"
-        try:
-            date_str = event["properties"]["Date"]["date"]["start"]
-            unix_ts = int(datetime.fromisoformat(date_str).timestamp())
-            date_display = f"<t:{unix_ts}:f>"
-        except (KeyError, TypeError, ValueError):
-            date_display = "TBD"
-        try:
-            raw_slots = event["properties"]["Slots"]["number"]
-            slots_total = max(1, int(raw_slots) if raw_slots is not None else 6)
-        except (KeyError, TypeError, ValueError):
-            slots_total = 6
-        try:
-            djs_booked = len(event["properties"]["DJs"]["relation"])
-        except (KeyError, TypeError):
-            djs_booked = 0
-        open_slots = max(0, slots_total - djs_booked)
+        start = schedule.event_start(event)
+        date_display = f"<t:{int(start.timestamp())}:f>" if start is not None else "TBD"
+        st = slots.state(event)
+        slots_total, open_slots = st.total, len(st.open_indices)
 
         self.add_field(name="Event", value=name, inline=True)
         self.add_field(name="Date", value=date_display, inline=True)

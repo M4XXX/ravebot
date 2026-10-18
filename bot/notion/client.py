@@ -10,7 +10,9 @@ Full read_slots(), write_booking(), delete_booking() are Story 3.x scope.
 """
 import asyncio
 import datetime
+import json
 import logging
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -28,9 +30,111 @@ NOTION_BASE_URL = "https://api.notion.com/v1"
 # Retry delays in seconds: attempt 1 → wait 1s, attempt 2 → wait 2s, attempt 3 → fail
 _RETRY_DELAYS = (1.0, 2.0)
 
+# Longest Retry-After the bot honours. A DJ is waiting on the answer, and every attempt
+# re-reads what it writes, so retrying a little early costs at most one more 429.
+_RETRY_AFTER_CAP = 10.0
+
+# Failures where the request never reached Notion: always safe to retry.
+_NOT_SENT_ERRORS = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
+
+
+def _retry_after(response: httpx.Response, default: float) -> float:
+    """Seconds to wait before retrying a 429, from Notion's Retry-After header."""
+    try:
+        wait = max(default, float(response.headers.get("Retry-After", default)))
+    except (TypeError, ValueError):
+        return default
+    return min(wait, _RETRY_AFTER_CAP)
+
+
+def _same_page(a: str, b: str) -> bool:
+    """Notion page IDs compare equal with or without dashes."""
+    return a.replace("-", "").lower() == b.replace("-", "").lower()
+
+# Body keys Notion reads to move a page, block or database to the trash.
+_TRASH_KEYS = ("archived", "in_trash", "is_archived")
+
 
 class NotionWriteError(Exception):
     """Raised when a Notion write fails after all retry attempts."""
+
+
+class NotionDeletionBlockedError(Exception):
+    """Raised when a request would delete or trash Notion content.
+
+    The bot never deletes anything in Notion — removing content is left to a human.
+    """
+
+
+def _sets_trash_flag(value: Any) -> bool:
+    """True if any nested dict sets one of the trash keys to True."""
+    if isinstance(value, dict):
+        return any(
+            (key in _TRASH_KEYS and item is True) or _sets_trash_flag(item)
+            for key, item in value.items()
+        )
+    if isinstance(value, list):
+        return any(_sets_trash_flag(item) for item in value)
+    return False
+
+
+def _removed_content(method: str, path: str, payload: Any) -> str | None:
+    """What a PATCH would wipe besides trashing, or None (creating a page removes nothing).
+
+    Dropping a database property (setting it to null) deletes that column with all its
+    values, and an empty title blanks a page or database name. Emptying a relation is
+    allowed: it is how the last DJ of an event is unlinked, and the bot only ever removes
+    its own entry from a freshly read relation.
+    """
+    if method != "PATCH" or not isinstance(payload, dict):
+        return None
+    is_database = "/databases/" in path
+    if is_database and payload.get("title") == []:
+        return "blanks the database title"
+    props = payload.get("properties")
+    if not isinstance(props, dict):
+        return None
+    for name, value in props.items():
+        if value is None and is_database:
+            return f"drops the database property {name!r}"
+        if isinstance(value, dict) and value.get("title") == []:
+            return f"blanks the title {name!r}"
+    return None
+
+
+async def _refuse_deletion(request: httpx.Request) -> None:
+    """httpx request hook: block DELETE and archive/trash writes before they are sent.
+
+    Registered on the client itself, so it also covers code paths added later.
+    """
+    if request.method == "DELETE":
+        logger.error("Blocked Notion DELETE %s — deletion is human-only", request.url.path)
+        raise NotionDeletionBlockedError(f"DELETE {request.url.path} blocked")
+    body = await request.aread()
+    if not body:
+        return
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        return
+    if _sets_trash_flag(payload):
+        logger.error(
+            "Blocked Notion %s %s that would trash content — deletion is human-only",
+            request.method,
+            request.url.path,
+        )
+        raise NotionDeletionBlockedError(
+            f"{request.method} {request.url.path} would trash content"
+        )
+    removed = _removed_content(request.method, request.url.path, payload)
+    if removed is not None:
+        logger.error(
+            "Blocked Notion %s %s that %s — deletion is human-only",
+            request.method,
+            request.url.path,
+            removed,
+        )
+        raise NotionDeletionBlockedError(f"{request.method} {request.url.path} {removed}")
 
 
 class NotionClient:
@@ -58,7 +162,11 @@ class NotionClient:
                 "Content-Type": "application/json",
             },
             timeout=10.0,
+            event_hooks={"request": [_refuse_deletion]},
         )
+        # Serialises read-modify-write of each event's DJs relation. Only within this
+        # process: the deployment must run one instance (docs/user-guide.md, section 3).
+        self._event_locks: dict[str, asyncio.Lock] = {}
 
     async def close(self) -> None:
         """Close the underlying httpx client. Call in bot shutdown."""
@@ -68,52 +176,131 @@ class NotionClient:
         self,
         method: str,
         endpoint: str,
-        payload: dict[str, Any],
+        payload: dict[str, Any] | Callable[[], Awaitable[dict[str, Any] | None]],
         context: str,
+        find_existing: Callable[[], Awaitable[dict[str, Any] | None]] | None = None,
     ) -> dict[str, Any]:
-        """Execute a Notion write with exponential backoff.
+        """Execute a Notion write, retrying only where a retry is safe and can help.
 
-        Attempts up to 3 times. Delays between retries: 1s, then 2s.
-        On 3rd failure posts ERR_NOTION_WRITE with context to admin log
-        and raises NotionWriteError.
+        Up to 3 attempts with 1 s / 2 s backoff. Retried: rate limits (429, honouring
+        Retry-After), Notion server errors (5xx) and network errors. Not retried: other
+        4xx responses, which a retry cannot fix.
 
-        Args:
-            method: HTTP method ("POST", "PATCH").
-            endpoint: Notion API endpoint path (e.g. "/pages").
-            payload: JSON body.
-            context: Human-readable description of what was being written
-                     (e.g. "booking slot 2026-06-01 20:00 for DJ Axel").
+        payload may be an async builder instead of a dict. It is called before every
+        attempt, so a retry never re-sends data read before the wait (a relation edited by
+        hand meanwhile would be overwritten). A builder returning None means there is
+        nothing left to write, e.g. because an earlier attempt was applied after all.
+
+        A timeout or a 5xx after the request was sent may mean Notion already applied it.
+        For non-idempotent POSTs the caller passes find_existing; it is consulted before
+        each retry so a page that was in fact created is returned instead of created twice.
+
+        After the last failure posts ERR_NOTION_WRITE with context to the admin log and
+        raises NotionWriteError.
 
         [Source: architecture.md#Notion Client: exponential back-off (3 retries)]
         [Source: epics.md#Story 1.5 AC2]
         """
         last_exc: Exception | None = None
         for attempt in range(1, 4):  # attempts 1, 2, 3
+            delay = _RETRY_DELAYS[attempt - 1] if attempt < 3 else 0.0
+            may_be_applied = False
             try:
-                response = await self._client.request(method, endpoint, json=payload)
+                body = await payload() if callable(payload) else payload
+                if body is None:
+                    return {}
+                response = await self._client.request(method, endpoint, json=body)
                 response.raise_for_status()
                 return response.json()
-            except (httpx.HTTPStatusError, httpx.RequestError) as exc:
+            except httpx.HTTPStatusError as exc:
                 last_exc = exc
-                logger.warning(
-                    "Notion write attempt %d/3 failed for %r: %s",
-                    attempt,
-                    context,
-                    exc,
-                )
-                if attempt < 3:
-                    await asyncio.sleep(_RETRY_DELAYS[attempt - 1])
+                status = exc.response.status_code
+                if status != 429 and status < 500:
+                    logger.warning("Notion write for %r rejected (%d): %s", context, status, exc)
+                    break  # a client error does not go away by retrying
+                if status == 429:
+                    delay = _retry_after(exc.response, delay)
+                else:
+                    may_be_applied = True  # a 502/504 can arrive after the write went through
+            except httpx.RequestError as exc:
+                last_exc = exc
+                may_be_applied = not isinstance(exc, _NOT_SENT_ERRORS)
+            if may_be_applied and find_existing is not None:
+                try:
+                    existing = await find_existing()
+                except Exception:  # lookup is best-effort; fall back to retrying
+                    logger.exception("Notion lookup after failed write raised")
+                    existing = None
+                if existing is not None:
+                    logger.info("Notion write for %r had already been applied", context)
+                    return existing
+            logger.warning(
+                "Notion write attempt %d/3 failed for %r: %s",
+                attempt,
+                context,
+                last_exc,
+            )
+            if attempt < 3:
+                await asyncio.sleep(delay)
 
-        # All 3 attempts failed — post to admin log and raise
+        # All attempts failed (or a non-retryable error) — post to admin log and raise
         await self._log.post_error(
             error_code=ErrorCode.ERR_NOTION_WRITE,
-            trigger=f"Notion write failed after 3 attempts: {context}",
+            trigger=f"Notion write failed: {context}",
             action_taken="Bot aborted the write operation.",
             manual_action=f"Check Notion API key and database permissions. Context: {context}",
         )
-        raise NotionWriteError(
-            f"Notion write failed after 3 attempts: {context}"
-        ) from last_exc
+        raise NotionWriteError(f"Notion write failed: {context}") from last_exc
+
+    async def _find_page(self, notion_filter: dict[str, Any]) -> dict[str, Any] | None:
+        """First page of the database matching notion_filter, or None."""
+        response = await self._client.post(
+            f"/databases/{self._database_id}/query",
+            json={"filter": notion_filter, "page_size": 1},
+        )
+        response.raise_for_status()
+        results = response.json().get("results", [])
+        return results[0] if results else None
+
+    async def _relation_ids(self, event_id: str, context: str) -> list[str]:
+        """Current DJs relation of an event, read fresh from Notion (all pages of it).
+
+        Retries reads like writes; raises NotionWriteError if the relation cannot be read,
+        because writing without it would overwrite other DJs' bookings.
+        """
+        last_exc: Exception | None = None
+        for attempt in range(1, 4):
+            try:
+                response = await self._client.get(f"/pages/{event_id}")
+                response.raise_for_status()
+                prop = response.json()["properties"]["DJs"]
+                if not prop.get("has_more"):
+                    return [r["id"] for r in prop.get("relation", [])]
+                ids: list[str] = []
+                cursor: str | None = None
+                while True:
+                    params = {"start_cursor": cursor} if cursor else None
+                    page = await self._client.get(
+                        f"/pages/{event_id}/properties/{prop['id']}", params=params
+                    )
+                    page.raise_for_status()
+                    data = page.json()
+                    ids += [item["relation"]["id"] for item in data.get("results", [])]
+                    if not data.get("has_more"):
+                        return ids
+                    cursor = data.get("next_cursor")
+            except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
+                last_exc = exc
+                logger.warning("Reading DJs of event %s failed (%d/3): %s", event_id, attempt, exc)
+                if attempt < 3:
+                    await asyncio.sleep(_RETRY_DELAYS[attempt - 1])
+        await self._log.post_error(
+            error_code=ErrorCode.ERR_NOTION_WRITE,
+            trigger=f"Could not read the DJs relation before writing: {context}",
+            action_taken="Bot aborted the write so other bookings are not overwritten.",
+            manual_action="Check Notion API status and the event page.",
+        )
+        raise NotionWriteError(f"Could not read DJs relation: {context}") from last_exc
 
     async def validate_schema(self, required_properties: list[str]) -> None:
         """Check that the Notion database has all required properties.
@@ -247,6 +434,9 @@ class NotionClient:
             endpoint="/pages",
             payload=payload,
             context=f"DJ record for {dj_name} (discord_user_id={discord_user_id})",
+            find_existing=lambda: self._find_page(
+                {"property": "Discord ID", "rich_text": {"equals": str(discord_user_id)}}
+            ),
         )
         return result["id"]
 
@@ -259,15 +449,15 @@ class NotionClient:
         event_name: str,
         slot_unix: int,
     ) -> None:
-        """Append a DJ to the event's DJs relation in Notion.
+        """Add a DJ to the event's DJs relation in Notion.
 
-        Builds the new DJs list as current_dj_ids + dj_notion_page_id (if not None),
-        then PATCHes the event page. This REPLACES the entire relation — including
-        existing IDs is mandatory to avoid overwriting prior bookings.
+        The relation is re-read from Notion under a per-event lock right before every PATCH
+        attempt and only this DJ's page is added. A PATCH replaces the whole relation, so building
+        it from a stale copy (current_dj_ids, kept for call compatibility and ignored)
+        silently dropped other DJs who booked meanwhile or were added by hand.
 
-        If dj_notion_page_id is None (DJ onboarded before Story 4.2), the PATCH still
-        fires with only the existing IDs. The slot_locks DB row remains the authoritative
-        lock; Notion reflects reality minus the late DJ's page reference.
+        If dj_notion_page_id is None (DJ onboarded before Story 4.2) nothing is written.
+        The slot_locks DB row remains the authoritative lock.
 
         Uses _write_with_retry — raises NotionWriteError after 3 failed attempts.
         Caller (BookingConfirmView._handle_confirm) must call release_slot_lock() on
@@ -277,23 +467,25 @@ class NotionClient:
         [Source: architecture.md#Notion Client: Raw httpx (async, HTTPS/SSL)]
         [Source: architecture.md#Gap Analysis — PG lock vs Notion write boundary]
         """
-        new_djs = list(current_dj_ids)
-        if dj_notion_page_id is not None:
-            new_djs.append(dj_notion_page_id)
-        payload: dict[str, Any] = {
-            "properties": {
-                "DJs": {
-                    "relation": [{"id": pid} for pid in new_djs]
-                }
-            }
-        }
         slot_display = f"<t:{slot_unix}:f>" if slot_unix else "TBD"
-        await self._write_with_retry(
-            method="PATCH",
-            endpoint=f"/pages/{event_id}",
-            payload=payload,
-            context=f"booking slot {slot_index + 1} in event '{event_name}' at {slot_display}",
-        )
+        context = f"booking slot {slot_index + 1} in event '{event_name}' at {slot_display}"
+        if dj_notion_page_id is None:
+            return
+
+        async def payload() -> dict[str, Any] | None:
+            new_djs = await self._relation_ids(event_id, context)
+            if any(_same_page(pid, dj_notion_page_id) for pid in new_djs):
+                return None  # already linked
+            new_djs.append(dj_notion_page_id)
+            return {"properties": {"DJs": {"relation": [{"id": pid} for pid in new_djs]}}}
+
+        async with self._event_locks.setdefault(event_id, asyncio.Lock()):
+            await self._write_with_retry(
+                method="PATCH",
+                endpoint=f"/pages/{event_id}",
+                payload=payload,
+                context=context,
+            )
 
     async def delete_booking(
         self,
@@ -303,12 +495,12 @@ class NotionClient:
         event_name: str,
         slot_unix: int,
     ) -> None:
-        """Remove a DJ from the event's DJs relation in Notion.
+        """Remove this DJ (and only this DJ) from the event's DJs relation in Notion.
 
-        Builds a new DJs list excluding dj_notion_page_id, then PATCHes the event page.
-        If dj_notion_page_id is None (DJ has no Notion page), the PATCH fires with
-        current_dj_ids unchanged — best-effort; the slot_locks DB row is the authoritative
-        cancellation record.
+        Re-reads the relation under the per-event lock before every attempt and PATCHes it
+        without this DJ's page; every other entry stays. current_dj_ids is kept for call
+        compatibility and ignored. If dj_notion_page_id is None nothing is written. The
+        slot_locks DB row is the authoritative cancellation record.
 
         Uses _write_with_retry — raises NotionWriteError after 3 failed attempts.
         Caller (CancelConfirmView._handle_confirm) MUST call release_slot_lock()
@@ -317,29 +509,31 @@ class NotionClient:
         [Source: epics.md#Story 4.4 AC4]
         [Source: architecture.md#Notion Client: Raw httpx (async, HTTPS/SSL)]
         """
-        if dj_notion_page_id is not None:
-            new_djs = [pid for pid in current_dj_ids if pid != dj_notion_page_id]
-        else:
-            new_djs = list(current_dj_ids)
-        payload: dict[str, Any] = {
-            "properties": {
-                "DJs": {
-                    "relation": [{"id": pid} for pid in new_djs]
-                }
-            }
-        }
         slot_display = f"<t:{slot_unix}:f>" if slot_unix else "TBD"
-        await self._write_with_retry(
-            method="PATCH",
-            endpoint=f"/pages/{event_id}",
-            payload=payload,
-            context=f"cancellation of slot in event '{event_name}' at {slot_display}",
-        )
+        context = f"cancellation of slot in event '{event_name}' at {slot_display}"
+        if dj_notion_page_id is None:
+            return  # nothing of ours to remove; never rewrite other DJs' entries
+
+        async def payload() -> dict[str, Any] | None:
+            current = await self._relation_ids(event_id, context)
+            new_djs = [pid for pid in current if not _same_page(pid, dj_notion_page_id)]
+            if len(new_djs) == len(current):
+                return None  # already gone
+            return {"properties": {"DJs": {"relation": [{"id": pid} for pid in new_djs]}}}
+
+        async with self._event_locks.setdefault(event_id, asyncio.Lock()):
+            await self._write_with_retry(
+                method="PATCH",
+                endpoint=f"/pages/{event_id}",
+                payload=payload,
+                context=context,
+            )
 
     async def create_event(
         self,
         event_name: str,
         event_date: datetime.date,
+        slots: int | None = None,
     ) -> str:
         """Create a new event page in the Notion events database.
 
@@ -368,10 +562,16 @@ class NotionClient:
                 },
             },
         }
+        if slots is not None:
+            payload["properties"]["Slots"] = {"number": slots}
         result = await self._write_with_retry(
             method="POST",
             endpoint="/pages",
             payload=payload,
             context=f"auto event creation for {event_name} on {event_date.isoformat()}",
+            find_existing=lambda: self._find_page({"and": [
+                {"property": "Name", "title": {"equals": event_name}},
+                {"property": "Date", "date": {"equals": event_date.isoformat()}},
+            ]}),
         )
         return result["id"]

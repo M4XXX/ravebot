@@ -66,12 +66,15 @@ def _active_seq(last_contact_at=None) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_run_gap_detection_returns_empty_on_notion_failure():
+async def test_run_gap_detection_fails_the_cycle_on_notion_failure():
+    """A Notion outage must not look like 'no gaps': the outreach cycle fails."""
+    from bot.loops import CycleFailed
+
     svc = _make_service()
     svc.notion_client.poll_events = AsyncMock(side_effect=Exception("Notion down"))
-    with patch("bot.services.outreach.get_value", new=AsyncMock(return_value=None)):
-        result = await svc.run_gap_detection(guild_id=1)
-    assert result == []
+    with patch("bot.services.outreach.get_value", new=AsyncMock(return_value=None)), \
+         pytest.raises(CycleFailed, match="Notion down"):
+        await svc.run_gap_detection(guild_id=1)
 
 
 @pytest.mark.asyncio

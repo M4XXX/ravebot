@@ -21,6 +21,15 @@ def make_real_ctx(db: object = None) -> object:
     return BotContext(config=cfg, db=db)
 
 
+@pytest.fixture(autouse=True)
+def _fresh_loop_state() -> None:
+    """Alert rate limits and last-OK times are module state; every test starts clean."""
+    from bot import loops
+
+    loops._last_alert.clear()
+    loops._last_ok.clear()
+
+
 @pytest.fixture
 def mock_config() -> Config:
     """Minimal valid Config for unit tests — no real DB or Discord connections."""
@@ -34,3 +43,37 @@ def mock_config() -> Config:
         db_pool_min=2,
         db_pool_max=5,
     )
+
+
+@pytest.fixture(autouse=True)
+def _bot_active_and_serving(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Most tests exercise the active bot in its one served guild.
+
+    Tests marked @pytest.mark.passive skip this and use the real switch and guild lookup
+    (default: passive, see bot/active.py and bot/guild.py).
+    """
+    if request.node.get_closest_marker("passive"):
+        return
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr("bot.active.is_active", AsyncMock(return_value=True))
+    monkeypatch.setattr("bot.guild.serves", lambda bot, guild_id: True)
+
+
+@pytest.fixture(autouse=True)
+def _slot_state_from_notion_count(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Older tests describe bookings only through the Notion DJs relation.
+
+    Leaving events un-annotated makes bot.slots.state() fall back to that count, i.e. these
+    tests run as if slot_locks agreed with Notion. Tests marked @pytest.mark.real_slots use
+    the real annotate() against a mocked pool.
+    """
+    if request.node.get_closest_marker("real_slots"):
+        return
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr("bot.slots.annotate", AsyncMock(side_effect=lambda pool, gid, ev: ev))

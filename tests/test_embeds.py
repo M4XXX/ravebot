@@ -36,8 +36,8 @@ class TestEmbedColors:
 
 
 class TestErrorCode:
-    def test_all_six_codes_defined(self) -> None:
-        """All six error codes are defined."""
+    def test_all_error_codes_defined(self) -> None:
+        """All error codes are defined."""
         names = {c.name for c in ErrorCode}
         assert names == {
             "ERR_DM_FAILED",
@@ -46,6 +46,8 @@ class TestErrorCode:
             "ERR_BUTTON_TIMEOUT",
             "ERR_DB_UNAVAILABLE",
             "ERR_OUTREACH_EXHAUSTED",
+            "ERR_BACKGROUND_TASK",
+            "ERR_DATA_MISMATCH",
         }
 
     def test_error_code_is_str(self) -> None:

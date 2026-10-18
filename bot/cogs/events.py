@@ -18,6 +18,8 @@ from datetime import timedelta
 import asyncpg
 from disnake.ext import commands, tasks
 
+from bot import active, loops, reconcile, schedule
+from bot import guild as served
 from bot.context import BotContext
 from bot.db.bookings import init_event_slots
 from bot.db.config import get_value, set_value
@@ -30,8 +32,9 @@ logger = logging.getLogger(__name__)
 class EventsCog(commands.Cog):
     """Notion polling, lineup post updates, and reminder scheduling."""
 
-    def __init__(self, ctx: BotContext) -> None:
+    def __init__(self, ctx: BotContext, bot: commands.Bot) -> None:
         self.ctx = ctx
+        self.bot = bot
 
     def cog_load(self) -> None:
         self._poll_notion.start()
@@ -45,14 +48,15 @@ class EventsCog(commands.Cog):
         """Return True if DB is available; post ERR_DB_UNAVAILABLE and return False if not.
 
         Call at the start of every scheduled task that requires DB access.
-        On False: caller must return immediately — loop will retry next cycle.
+        On False the caller raises loops.CycleSkipped — the loop retries next cycle, the
+        cycle does not count as OK, and the alert is posted at most once an hour.
 
         [Source: epics.md#Story 1.5 AC1]
         [Source: architecture.md#Error Routing: Centralized AdminLogService]
         """
         if self.ctx.db is None:
             logger.warning("DB pool not available during %s — skipping cycle", operation)
-            if self.ctx.log_service is not None:
+            if self.ctx.log_service is not None and loops.alert_due(f"db:{operation}"):
                 await self.ctx.log_service.post_error(
                     error_code=ErrorCode.ERR_DB_UNAVAILABLE,
                     trigger=f"DB pool is None at start of {operation}",
@@ -65,7 +69,7 @@ class EventsCog(commands.Cog):
             return True
         except (asyncpg.PostgresConnectionError, OSError) as exc:
             logger.warning("DB unavailable during %s: %s", operation, exc)
-            if self.ctx.log_service is not None:
+            if self.ctx.log_service is not None and loops.alert_due(f"db:{operation}"):
                 await self.ctx.log_service.post_error(
                     error_code=ErrorCode.ERR_DB_UNAVAILABLE,
                     trigger=f"PostgreSQL connection failed during {operation}: {exc}",
@@ -90,19 +94,16 @@ class EventsCog(commands.Cog):
         return json.dumps(entries)
 
     def _get_guild_id(self) -> int | None:
-        """Return the first guild's ID, or None if the bot has no guilds yet.
-
-        [Source: epics.md#Story 3.1 AC1]
-        """
-        if not self.bot.guilds:
-            logger.warning("_get_guild_id: bot has no guilds — skipping poll cycle")
-            return None
-        return self.bot.guilds[0].id
+        """Return the served guild ID (bot.guild), or None if the bot serves none."""
+        guild_id = served.resolve(self.bot)
+        if guild_id is None:
+            logger.warning("_get_guild_id: no served guild — skipping poll cycle")
+        return guild_id
 
     async def _auto_create_events(self, events: list[dict], guild_id: int) -> None:
         """Create Notion events to maintain the configured look-ahead count.
 
-        Reads event_lookahead_count (default 6), event_interval_days (default 7),
+        Reads event_lookahead_count (default 0 = off), event_interval_days (default 7),
         and slots_per_event (default 6) from config. Finds the latest existing event
         date and creates new events spaced by interval_days until the count reaches
         the look-ahead target. After each successful Notion write, pre-initializes
@@ -117,7 +118,9 @@ class EventsCog(commands.Cog):
         [Source: epics.md#Story 7.1 AC1-AC4]
         """
         raw_lookahead = await get_value(self.ctx.db, guild_id, "event_lookahead_count")
-        lookahead = int(raw_lookahead) if raw_lookahead else 6
+        lookahead = int(raw_lookahead) if raw_lookahead else 0
+        if lookahead <= 0:
+            return  # auto-creation is off (default): events come from /add-event or Notion
 
         if len(events) >= lookahead:
             return  # AC4: already at or above target, no action
@@ -142,7 +145,9 @@ class EventsCog(commands.Cog):
             new_date = latest_date + timedelta(days=interval_days * i)
             event_name = f"Rave Night {new_date.strftime('%d %b %Y')}"
             try:
-                event_id = await self.ctx.notion_client.create_event(event_name, new_date)
+                event_id = await self.ctx.notion_client.create_event(
+                    event_name, new_date, slots=slots_per_event
+                )
                 logger.info(
                     "Auto-created Notion event: %r on %s", event_name, new_date.isoformat()
                 )
@@ -162,18 +167,21 @@ class EventsCog(commands.Cog):
                     new_date.isoformat(),
                 )
 
-    async def _trigger_lineup_update(self, events: list[dict]) -> None:
+    async def _trigger_lineup_update(self, events: list[dict]) -> bool:
         """Trigger lineup channel post update via LineupService.
 
         [Source: epics.md#Story 3.2]
         """
         if self.ctx.lineup_service is None:
             logger.warning("lineup_service not available — skipping lineup update")
-            return
-        await self.ctx.lineup_service.post_update(events)
+            return False
+        return bool(await self.ctx.lineup_service.post_update(events))
 
     @tasks.loop(minutes=5)
     async def _poll_notion(self) -> None:
+        await loops.guarded("notion_poll", self._poll_notion_once, self.ctx.log_service)
+
+    async def _poll_notion_once(self) -> None:
         """Notion event polling — fetches future events, compares snapshot, triggers lineup update.
 
         On DB unavailability: skips cycle (guard handles logging).
@@ -185,27 +193,30 @@ class EventsCog(commands.Cog):
         [Source: architecture.md#Scheduled Work: disnake tasks.loop]
         """
         if not await self._guard_db("notion_poll"):
-            return
+            raise loops.CycleSkipped
 
         guild_id = self._get_guild_id()
         if guild_id is None:
             return
+        await schedule.refresh(self.ctx.db, guild_id)
+        if not await active.is_active(self.ctx.db, guild_id):
+            return  # passive: no lineup posts, no auto-created events
 
         # Fetch events from Notion (AC1, AC4)
         try:
             events = await self.ctx.notion_client.poll_events()
         except Exception as exc:
-            logger.warning("Notion poll failed — skipping cycle: %s", exc)
-            if self.ctx.log_service is not None:
-                await self.ctx.log_service.post_error(
-                    error_code=ErrorCode.ERR_NOTION_WRITE,
-                    trigger=f"Notion poll_events() raised during notion_poll: {exc}",
-                    action_taken="Skipped this cycle — will retry on next scheduled run.",
-                    manual_action=(
-                        "Check NOTION_API_KEY, NOTION_DATABASE_ID, and Notion API status."
-                    ),
-                )
-            return
+            raise loops.CycleFailed(
+                f"Notion poll_events() raised during notion_poll: {exc}",
+                error_code=ErrorCode.ERR_NOTION_WRITE,
+                manual_action="Check NOTION_API_KEY, NOTION_DATABASE_ID, and Notion API status.",
+            ) from exc
+
+        # Read-only: report drift between Notion and slot_locks (never writes either)
+        try:
+            await reconcile.report(self.ctx.db, guild_id, events, self.ctx.log_service)
+        except Exception:
+            logger.exception("Reconciliation check failed")
 
         # Story 7.1: auto-create events to maintain look-ahead count (AC1-AC4)
         await self._auto_create_events(events, guild_id)
@@ -217,25 +228,34 @@ class EventsCog(commands.Cog):
         if new_snapshot == stored_snapshot:
             return  # AC3: no change, no action
 
-        # AC2: change detected — trigger lineup post then persist new snapshot
-        await self._trigger_lineup_update(events)
-        await set_value(self.ctx.db, guild_id, "lineup_snapshot", new_snapshot)
+        # AC2: change detected — persist the snapshot only once the lineup shows it,
+        # so a failed or capped post is retried on the next cycle
+        if await self._trigger_lineup_update(events):
+            await set_value(self.ctx.db, guild_id, "lineup_snapshot", new_snapshot)
 
     @tasks.loop(hours=1)
     async def _check_reminders(self) -> None:
+        await loops.guarded("reminders", self._check_reminders_once, self.ctx.log_service)
+
+    async def _check_reminders_once(self) -> None:
         """Day-before reminder scheduler loop — full implementation in Story 3.x.
 
         Guard ensures DB is available before any DB-dependent work.
         """
         if not await self._guard_db("reminder_check"):
-            return
+            raise loops.CycleSkipped
         guild_id = self._get_guild_id()
         if guild_id is None:
             return
+        if not await active.is_active(self.ctx.db, guild_id):
+            return  # passive: no reminder DMs
         if self.ctx.reminders_service is None:
             logger.warning("_check_reminders: reminders_service not available — skipping")
             return
-        try:
-            await self.ctx.reminders_service.send_reminders(guild_id, self.ctx)
-        except Exception as exc:
-            logger.warning("_check_reminders: send_reminders raised: %s", exc)
+        await self.ctx.reminders_service.send_reminders(guild_id, self.ctx)
+
+    @_poll_notion.before_loop
+    @_check_reminders.before_loop
+    async def _wait_until_ready(self) -> None:
+        """Start the loops only once the gateway knows the guilds."""
+        await self.bot.wait_until_ready()

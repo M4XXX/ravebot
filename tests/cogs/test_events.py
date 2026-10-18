@@ -5,7 +5,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import asyncpg
 import pytest
 
+from bot import schedule
 from bot.ui.embeds import ErrorCode
+
+
+@pytest.fixture(autouse=True)
+def _schedule_without_db(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The schedule cache refresh reads the config table; these tests use a mocked pool."""
+    monkeypatch.setattr("bot.schedule.refresh", AsyncMock(return_value=schedule.DEFAULT_SCHEDULE))
 
 
 def make_ctx(db: object = None, log: object = None) -> MagicMock:
@@ -23,7 +30,7 @@ async def test_guard_db_returns_false_and_posts_error_when_db_none() -> None:
     log = MagicMock()
     log.post_error = AsyncMock()
     ctx = make_ctx(db=None, log=log)
-    cog = EventsCog(ctx)
+    cog = EventsCog(ctx, MagicMock())
 
     result = await cog._guard_db("test_op")
 
@@ -42,7 +49,7 @@ async def test_guard_db_returns_false_and_posts_error_on_connection_error() -> N
     mock_pool = MagicMock()
     mock_pool.fetchval = AsyncMock(side_effect=asyncpg.PostgresConnectionError("lost"))
     ctx = make_ctx(db=mock_pool, log=log)
-    cog = EventsCog(ctx)
+    cog = EventsCog(ctx, MagicMock())
 
     result = await cog._guard_db("test_op")
 
@@ -59,7 +66,7 @@ async def test_guard_db_returns_true_when_db_healthy() -> None:
     mock_pool = MagicMock()
     mock_pool.fetchval = AsyncMock(return_value=1)
     ctx = make_ctx(db=mock_pool, log=None)
-    cog = EventsCog(ctx)
+    cog = EventsCog(ctx, MagicMock())
 
     result = await cog._guard_db("test_op")
 
@@ -72,7 +79,7 @@ async def test_guard_db_no_log_service_does_not_crash_when_db_none() -> None:
     from bot.cogs.events import EventsCog
 
     ctx = make_ctx(db=None, log=None)
-    cog = EventsCog(ctx)
+    cog = EventsCog(ctx, MagicMock())
 
     result = await cog._guard_db("test_op")
 
@@ -105,7 +112,7 @@ def _make_cog_with_bot(guilds: list = None) -> "EventsCog":
     ctx.log_service = log
     ctx.notion_client = notion
 
-    cog = EventsCog(ctx)
+    cog = EventsCog(ctx, MagicMock())
     mock_bot = MagicMock()
     mock_bot.guilds = guilds if guilds is not None else [MagicMock(id=99999)]
     # disnake sets .bot as a plain attribute via _inject; set directly on the instance
@@ -206,9 +213,9 @@ async def test_poll_notion_change_triggers_update() -> None:
 @pytest.mark.asyncio
 async def test_poll_notion_notion_failure_no_snapshot_update() -> None:
     """_poll_notion: when poll_events raises, snapshot is NOT updated and ERR is posted."""
-    from bot.cogs.events import EventsCog
-
     import httpx
+
+    from bot.cogs.events import EventsCog
     cog = _make_cog_with_bot()
     cog.ctx.notion_client.poll_events = AsyncMock(side_effect=httpx.RequestError("timeout"))
 
@@ -347,13 +354,16 @@ async def test_auto_create_events_skips_when_at_lookahead() -> None:
 async def test_auto_create_events_uses_interval_from_config() -> None:
     """_auto_create_events schedules new events at configured interval after latest."""
     import datetime
+
     from bot.cogs.events import EventsCog
 
     cog = _make_cog_with_bot()
     events = [_make_event_with_date("page-a", "2026-06-07")]  # 1 event, lookahead=3
     created_dates: list[datetime.date] = []
 
-    async def capture_create(event_name: str, event_date: datetime.date) -> str:
+    async def capture_create(
+        event_name: str, event_date: datetime.date, slots: int | None = None
+    ) -> str:
         created_dates.append(event_date)
         return "new-id"
 
@@ -380,7 +390,7 @@ async def test_auto_create_events_continues_on_notion_write_error() -> None:
     events = [_make_event_with_date("page-a", "2026-06-07")]  # lookahead=3 → 2 to create
     call_count = 0
 
-    async def flaky_create(event_name: str, event_date: object) -> str:
+    async def flaky_create(event_name: str, event_date: object, slots: int | None = None) -> str:
         nonlocal call_count
         call_count += 1
         if call_count == 1:

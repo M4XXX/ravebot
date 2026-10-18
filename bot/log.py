@@ -11,16 +11,21 @@ Never raises — errors in the log service must not crash the bot.
 [Source: architecture.md#Error Routing: Centralized AdminLogService]
 [Source: epics.md#FR47, NFR11]
 """
+import asyncio
 import logging
 
 import asyncpg
 import disnake
 from disnake.ext import commands
 
+from bot import guild as served
 from bot.db import config as db_config
 from bot.ui.embeds import AdminLogEmbed, ErrorCode, ErrorEmbed
 
 logger = logging.getLogger(__name__)
+
+# Discord rejects messages over 2000 characters; leave room for the "[@name → BOT] " prefix.
+TRANSCRIPT_MAX_CHARS = 1800
 
 
 class AdminLogService:
@@ -36,6 +41,8 @@ class AdminLogService:
     def __init__(self, bot: commands.Bot, db: asyncpg.Pool) -> None:
         self._bot = bot
         self._db = db
+        self._transcripts: asyncio.Queue[tuple[str, str, str]] = asyncio.Queue()
+        self._transcript_worker: asyncio.Task[None] | None = None
 
     async def _get_log_channel(self) -> disnake.TextChannel | None:
         """Look up the configured admin log channel.
@@ -47,9 +54,9 @@ class AdminLogService:
           - stored value is not a valid integer
           - channel not found or not a TextChannel
         """
-        if not self._bot.guilds:
+        guild_id = served.resolve(self._bot)
+        if guild_id is None:
             return None
-        guild_id = self._bot.guilds[0].id
         try:
             raw = await db_config.get_value(self._db, guild_id, "log_channel")
         except Exception as exc:  # asyncpg errors when DB is unavailable
@@ -164,6 +171,17 @@ class AdminLogService:
         except disnake.DiscordException as exc:
             logger.error("Failed to post intervention log: %s", exc)
 
+    async def post_notice(self, content: str) -> None:
+        """Post a plain informational message (e.g. the startup self-check). Never raises."""
+        channel = await self._get_log_channel()
+        if channel is None:
+            logger.warning("Notice (no log channel): %s", content)
+            return
+        try:
+            await channel.send(content)
+        except disnake.DiscordException as exc:
+            logger.error("Failed to post notice: %s", exc)
+
     async def post_admin_override(self, content: str) -> None:
         """Post an admin override action line to the admin log channel.
 
@@ -191,6 +209,36 @@ class AdminLogService:
         direction: str,
         content: str,
     ) -> None:
+        """Queue a DM transcript entry for the admin log channel and return at once.
+
+        Callers mirror a DJ's click before answering it. Posting inline put a config read
+        and a channel send (rate-limited to a few messages per second) in front of the
+        answer, and Discord drops interactions not answered within 3 seconds. One
+        background task posts the queued entries in order.
+        """
+        self._transcripts.put_nowait((dj_name, direction, content))
+        if self._transcript_worker is None or self._transcript_worker.done():
+            self._transcript_worker = asyncio.create_task(self._drain_transcripts())
+
+    async def _drain_transcripts(self) -> None:
+        while not self._transcripts.empty():
+            entry = self._transcripts.get_nowait()
+            try:
+                await self._send_dm_transcript(*entry)
+            except Exception:
+                logger.exception("Posting a DM transcript entry failed")
+
+    async def flush_transcripts(self) -> None:
+        """Wait until every queued transcript entry has been posted."""
+        if self._transcript_worker is not None:
+            await self._transcript_worker
+
+    async def _send_dm_transcript(
+        self,
+        dj_name: str,
+        direction: str,
+        content: str,
+    ) -> None:
         """Post a raw DM transcript entry to the admin log channel.
 
         Formats:
@@ -204,6 +252,15 @@ class AdminLogService:
         [Source: epics.md#Story 6.1 AC1–AC4]
         [Source: epics.md#FR31 — every interaction mirrored to admin log]
         """
+        guild_id = served.resolve(self._bot)
+        if guild_id is not None and self._db is not None:
+            try:
+                if await db_config.get_value(self._db, guild_id, "dm_log") == "off":
+                    return
+            except Exception as exc:  # asyncpg errors when DB is unavailable
+                logger.warning("Failed to read dm_log from config table: %s", exc)
+        if len(content) > TRANSCRIPT_MAX_CHARS:
+            content = content[:TRANSCRIPT_MAX_CHARS] + " …[truncated]"
         if direction == "BOT":
             entry = f"[BOT \u2192 @{dj_name}] {content}"
         else:

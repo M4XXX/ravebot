@@ -11,6 +11,8 @@ import logging
 import asyncpg
 from disnake.ext import commands, tasks
 
+from bot import active, loops
+from bot import guild as served
 from bot.context import BotContext
 from bot.ui.embeds import ErrorCode
 
@@ -20,8 +22,9 @@ logger = logging.getLogger(__name__)
 class OutreachCog(commands.Cog):
     """Hosts the proactive outreach scheduler loop."""
 
-    def __init__(self, ctx: BotContext) -> None:
+    def __init__(self, ctx: BotContext, bot: commands.Bot) -> None:
         self.ctx = ctx
+        self.bot = bot
 
     def cog_load(self) -> None:
         self._outreach_check.start()
@@ -33,14 +36,15 @@ class OutreachCog(commands.Cog):
         """Return True if DB is available; post ERR_DB_UNAVAILABLE and return False if not.
 
         Call at the start of every scheduled task that requires DB access.
-        On False: caller must return immediately — loop will retry next cycle.
+        On False the caller raises loops.CycleSkipped — the loop retries next cycle, the
+        cycle does not count as OK, and the alert is posted at most once an hour.
 
         [Source: epics.md#Story 1.5 AC1]
         [Source: architecture.md#Error Routing: Centralized AdminLogService]
         """
         if self.ctx.db is None:
             logger.warning("DB pool not available during %s — skipping cycle", operation)
-            if self.ctx.log_service is not None:
+            if self.ctx.log_service is not None and loops.alert_due(f"db:{operation}"):
                 await self.ctx.log_service.post_error(
                     error_code=ErrorCode.ERR_DB_UNAVAILABLE,
                     trigger=f"DB pool is None at start of {operation}",
@@ -53,7 +57,7 @@ class OutreachCog(commands.Cog):
             return True
         except (asyncpg.PostgresConnectionError, OSError) as exc:
             logger.warning("DB unavailable during %s: %s", operation, exc)
-            if self.ctx.log_service is not None:
+            if self.ctx.log_service is not None and loops.alert_due(f"db:{operation}"):
                 await self.ctx.log_service.post_error(
                     error_code=ErrorCode.ERR_DB_UNAVAILABLE,
                     trigger=f"PostgreSQL connection failed during {operation}: {exc}",
@@ -63,17 +67,17 @@ class OutreachCog(commands.Cog):
             return False
 
     def _get_guild_id(self) -> int | None:
-        """Return the first guild's ID, or None if the bot has no guilds yet.
-
-        [Source: bot/cogs/events.py#_get_guild_id — mirrors this exact pattern]
-        """
-        if not self.bot.guilds:
-            logger.warning("OutreachCog._get_guild_id: bot has no guilds — skipping cycle")
-            return None
-        return self.bot.guilds[0].id
+        """Return the served guild ID (bot.guild), or None if the bot serves none."""
+        guild_id = served.resolve(self.bot)
+        if guild_id is None:
+            logger.warning("OutreachCog._get_guild_id: no served guild — skipping cycle")
+        return guild_id
 
     @tasks.loop(minutes=30)
     async def _outreach_check(self) -> None:
+        await loops.guarded("outreach", self._outreach_check_once, self.ctx.log_service)
+
+    async def _outreach_check_once(self) -> None:
         """Outreach gap detection — find events with open slots, manage sequences.
 
         Story 5.1: gap detection + sequence lifecycle (upsert, complete, cooldown).
@@ -84,11 +88,13 @@ class OutreachCog(commands.Cog):
         [Source: architecture.md#Scheduled Work: disnake tasks.loop(minutes=30)]
         """
         if not await self._guard_db("outreach_check"):
-            return
+            raise loops.CycleSkipped
 
         guild_id = self._get_guild_id()
         if guild_id is None:
             return
+        if not await active.is_active(self.ctx.db, guild_id):
+            return  # passive: no outreach DMs
 
         if self.ctx.notion_client is None:
             logger.warning(
@@ -122,3 +128,8 @@ class OutreachCog(commands.Cog):
             dm_attempts,
             exhaustion_checks,
         )
+
+    @_outreach_check.before_loop
+    async def _wait_until_ready(self) -> None:
+        """Start the loop only once the gateway knows the guilds."""
+        await self.bot.wait_until_ready()

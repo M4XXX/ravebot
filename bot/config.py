@@ -25,6 +25,7 @@ class Config:
     log_level: str
     db_pool_min: int
     db_pool_max: int
+    guild_id: int | None = None
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -57,6 +58,10 @@ class Config:
         if not admin_ids:
             sys.exit("ADMIN_USER_IDS must contain at least one valid integer Discord user ID")
 
+        raw_guild_id = os.getenv("GUILD_ID", "").strip()
+        if raw_guild_id and not raw_guild_id.isdigit():
+            sys.exit("GUILD_ID must be a numeric Discord server ID")
+
         return cls(
             discord_bot_token=discord_bot_token,
             postgres_url=postgres_url,
@@ -66,4 +71,5 @@ class Config:
             log_level=os.getenv("LOG_LEVEL", "INFO"),
             db_pool_min=int(os.getenv("DB_POOL_MIN", "5")),
             db_pool_max=int(os.getenv("DB_POOL_MAX", "20")),
+            guild_id=int(raw_guild_id) if raw_guild_id else None,
         )

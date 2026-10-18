@@ -26,7 +26,7 @@ Before each event, RaveBot scans for open slots and DMs eligible DJs who haven't
 
 ### Step 4 — Admin sees everything
 
-A live lineup post in your DJ channel updates automatically whenever Notion changes. Use `/status` for a quick embed showing slot assignments for the next event. Every bot↔DJ DM is mirrored to an admin log channel. For edge cases, admins can take over a DM conversation or force-book any slot.
+A live lineup post in your DJ channel updates automatically whenever Notion changes. Use `/ravebot-status` for a quick embed showing slot assignments for the next event. Every bot↔DJ DM is mirrored to an admin log channel. For edge cases, admins can take over a DM conversation or force-book any slot.
 
 ---
 
@@ -59,16 +59,25 @@ A live lineup post in your DJ channel updates automatically whenever Notion chan
 - `/intervene` to take over any DJ DM conversation
 - `/admin book` and `/admin cancel` to force-manage any slot
 - `/admin dj set-active` to add/remove DJs from the booking pool
-- `/status` for next-event overview (date, slots, DJ assignments)
+- `/ravebot-status` for next-event overview (date, slots, DJ assignments)
+- `/admin onboard` to invite a DJ who already had the role; `/admin onboard-preview` lists who is not registered yet
 - `/list-djs` for full DJ roster with active/inactive status
-- `/config` with 11 sub-commands to tune every bot behaviour
+- `/config` with 14 settings to tune every bot behaviour, including the passive/active switch
 - `/add-event` to manually create a Notion event
 
 **Automation**
-- Auto-creates future events in Notion on a configurable schedule (default: every 7 days, 6 events look-ahead)
+- Optionally auto-creates future events in Notion (off by default; set a look-ahead count to enable)
+- Every night starts at a configurable local time in a configurable time zone, all year round; its slots follow one after another, each exactly one slot duration long
 - Auto-posts and updates the lineup embed whenever Notion changes
 - Proactive outreach to fill open slots before each event
 - Alembic database migrations run automatically at container start
+
+**Safety defaults**
+- Starts in **passive mode**: joins your server without contacting anyone until an organizer runs `/config set active on`
+- Serves exactly one server (`GUILD_ID`); never deletes or archives anything in Notion
+- Admin commands are hidden from members without Manage Server; mirrored DMs can never ping
+- Startup setup check posts missing roles, role order and channel permissions to the log channel
+- Reports (but never auto-fixes) drift between Notion and the booking database
 
 ---
 
@@ -78,23 +87,28 @@ A live lineup post in your DJ channel updates automatically whenever Notion chan
 |---|---|---|
 | `/config set dj-channel` | Admin | Channel where lineup posts are sent |
 | `/config set log-channel` | Admin | Channel for admin alerts and DM transcripts |
-| `/config set slots-per-event` | Admin | Slots per auto-created event (default: 6) |
+| `/config set slots-per-event` | Admin | Slots of every event whose Notion `Slots` is empty, and of events the bot creates (default: 6) |
 | `/config set event-interval-days` | Admin | Days between auto-created events (default: 7) |
-| `/config set lookahead-count` | Admin | Future events to maintain in Notion (default: 6) |
-| `/config set start-time` | Admin | Default event start time in HH:MM UTC (default: 20:00) |
+| `/config set lookahead-count` | Admin | Future events to keep in Notion; 0 = automatic creation off (default: 0) |
+| `/config set start-time` | Admin | First slot start time HH:MM in the configured time zone (default: 20:00) |
+| `/config set timezone` | Admin | IANA time zone for the start time, e.g. Europe/Berlin (default: UTC) |
 | `/config set slot-duration` | Admin | Slot length in minutes (default: 60) |
 | `/config set outreach-days-before` | Admin | Days before event to begin outreach (default: 14) |
 | `/config set outreach-cooldown-hours` | Admin | Hours between contacts per DJ (default: 12) |
 | `/config set outreach-max` | Admin | Max DJs contacted per outreach cycle (default: unlimited) |
-| `/config set event-schedule` | Admin | Cron expression for future automated scheduling |
-| `/config show` | Admin | Display all 11 current config values |
+| `/config set event-schedule` | Admin | Cron expression, stored for a future scheduler (not used yet) |
+| `/config set active` | Admin | `on` = contact DJs, run outreach/reminders/lineup; `off` = passive (default) |
+| `/config set dm-log` | Admin | Mirror DJ DMs into the log channel (`on`, default) or keep them private (`off`) |
+| `/config show` | Admin | All current settings and when each background loop last completed |
 | `/intervene start` | Admin | Take over a DJ's DM conversation |
 | `/intervene send` | Admin | Send a message as the bot in an active intervention |
 | `/intervene end` | Admin | Return DM control to the bot |
 | `/admin book` | Admin | Force-book a slot for any DJ |
 | `/admin cancel` | Admin | Force-cancel any booking |
 | `/admin dj set-active` | Admin | Toggle a DJ's active/inactive status |
-| `/status` | Admin | Embed showing next event: slots, date, DJ assignments |
+| `/admin onboard` | Admin | Send the onboarding DM to one member with the DJ role |
+| `/admin onboard-preview` | Admin | List members with the DJ role who are not registered (sends nothing) |
+| `/ravebot-status` | Admin | Embed showing next event: slots, date, DJ assignments |
 | `/list-djs` | Admin | Embed listing all registered DJs with status |
 | `/add-event` | Admin | Manually create a Notion event for a specific date |
 

@@ -29,6 +29,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+
+def _safe_target(dsn: str) -> str:
+    """host:port/dbname of a DSN — never the user or password."""
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit(dsn)
+        return f"{parts.hostname}:{parts.port or 5432}{parts.path}"
+    except ValueError:
+        return "(unparseable)"
+
 async def run_migrations(postgres_url: str) -> None:
     """Run Alembic migrations via subprocess before the asyncpg pool is opened.
 
@@ -95,7 +106,7 @@ async def create_pool(config: "Config") -> asyncpg.Pool:
     except (OSError, asyncpg.PostgresConnectionError, asyncpg.InvalidCatalogNameError) as exc:
         sys.exit(
             f"Failed to connect to PostgreSQL — cannot start bot.\n"
-            f"Check POSTGRES_URL: {config.postgres_url}\n"
+            f"Check POSTGRES_URL (host {_safe_target(config.postgres_url)})\n"
             f"Error: {exc}"
         )
     if pool is None:

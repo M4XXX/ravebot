@@ -18,9 +18,9 @@ import pytest
 from bot.services.reminders import RemindersService
 from bot.ui.embeds import ErrorCode
 
-# Fixed reference: 2026-05-21 02:00 UTC
-# "2026-05-22" midnight = 22h away → squarely in the 20-28h window
-FIXED_NOW = datetime.datetime(2026, 5, 21, 2, 0, 0, tzinfo=UTC)
+# Fixed reference: 2026-05-21 22:00 UTC
+# "2026-05-22" starts 20:00 UTC (default schedule) = 22h away → squarely in the 20-28h window
+FIXED_NOW = datetime.datetime(2026, 5, 21, 22, 0, 0, tzinfo=UTC)
 
 
 # ---------------------------------------------------------------------------
@@ -60,19 +60,19 @@ def _make_service(poll_events_result: list | None = None) -> RemindersService:
 
 
 def test_is_in_reminder_window_true_for_22h_ahead():
-    """event_date '2026-05-22' midnight = 22h from FIXED_NOW → True."""
+    """event_date '2026-05-22' starts 20:00 UTC = 22h from FIXED_NOW → True."""
     event = _make_event(event_date="2026-05-22")
     assert RemindersService._is_in_reminder_window(event, FIXED_NOW) is True
 
 
 def test_is_in_reminder_window_false_for_46h_ahead():
-    """event_date '2026-05-23' midnight = 46h from FIXED_NOW → False (> 28h)."""
+    """event_date '2026-05-23' starts 20:00 UTC = 46h from FIXED_NOW → False (> 28h)."""
     event = _make_event(event_date="2026-05-23")
     assert RemindersService._is_in_reminder_window(event, FIXED_NOW) is False
 
 
 def test_is_in_reminder_window_false_for_past_event():
-    """event_date '2026-05-21' midnight is 2h in the past → False."""
+    """event_date '2026-05-21' started 20:00 UTC, 2h in the past → False."""
     event = _make_event(event_date="2026-05-21")
     assert RemindersService._is_in_reminder_window(event, FIXED_NOW) is False
 
@@ -90,11 +90,14 @@ def test_is_in_reminder_window_false_for_malformed_date():
 
 @pytest.mark.asyncio
 async def test_send_reminders_skips_on_notion_failure():
-    """Notion poll raises → no crash, no reminders sent."""
+    """Notion poll raises → the cycle fails (not 'last OK'), no reminders sent."""
+    from bot.loops import CycleFailed
+
     svc = _make_service()
     svc.notion_client.poll_events = AsyncMock(side_effect=Exception("API down"))
 
-    with patch("bot.services.reminders.get_booked_djs_for_event", new=AsyncMock()) as mock_get:
+    with patch("bot.services.reminders.get_booked_djs_for_event", new=AsyncMock()) as mock_get, \
+         pytest.raises(CycleFailed, match="API down"):
         await svc.send_reminders(guild_id=1, ctx=MagicMock(), _now=FIXED_NOW)
 
     mock_get.assert_not_awaited()
@@ -139,7 +142,7 @@ async def test_send_reminders_sends_dm_and_records_sent():
         "bot.services.reminders.record_reminder_sent",
         new=AsyncMock(),
     ) as mock_record, patch(
-        "bot.services.reminders.get_value",
+        "bot.schedule.get_value",
         new=AsyncMock(return_value=None),
     ):
         await svc.send_reminders(guild_id=1, ctx=MagicMock(), _now=FIXED_NOW)
@@ -219,7 +222,7 @@ async def test_send_reminders_handles_dm_forbidden():
         "bot.services.reminders.record_reminder_sent",
         new=AsyncMock(),
     ) as mock_record, patch(
-        "bot.services.reminders.get_value",
+        "bot.schedule.get_value",
         new=AsyncMock(return_value=None),
     ):
         await svc.send_reminders(guild_id=1, ctx=MagicMock(), _now=FIXED_NOW)
@@ -260,7 +263,7 @@ async def test_send_reminders_skips_user_not_in_cache():
         "bot.services.reminders.record_reminder_sent",
         new=AsyncMock(),
     ) as mock_record, patch(
-        "bot.services.reminders.get_value",
+        "bot.schedule.get_value",
         new=AsyncMock(return_value=None),
     ):
         await svc.send_reminders(guild_id=1, ctx=MagicMock(), _now=FIXED_NOW)

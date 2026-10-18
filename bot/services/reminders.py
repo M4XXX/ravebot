@@ -13,8 +13,8 @@ from typing import TYPE_CHECKING, Any
 
 import disnake
 
+from bot import loops, schedule
 from bot.db.bookings import get_booked_djs_for_event
-from bot.db.config import get_value
 from bot.db.interventions import is_under_intervention
 from bot.db.reminders import has_reminder_been_sent, record_reminder_sent
 from bot.ui.embeds import ErrorCode
@@ -71,7 +71,7 @@ class RemindersService:
         event: dict,
         now: datetime.datetime,
     ) -> bool:
-        """Return True if event midnight UTC is 20-28 hours from now.
+        """Return True if the event start is 20-28 hours from now.
 
         The 8-hour window ensures the hourly task fires at least once per event
         while keeping reminders in the 'day before' range.
@@ -81,7 +81,7 @@ class RemindersService:
 
         [Source: epics.md#Story 5.4 AC1]
         """
-        event_dt = RemindersService._event_midnight_utc(event)
+        event_dt = schedule.event_start(event)
         if event_dt is None:
             return False
         delta = event_dt - now
@@ -95,8 +95,8 @@ class RemindersService:
     ) -> int:
         """Compute the unix timestamp for a specific slot.
 
-        Uses event date + config default_start_time + slot_index * slot_duration_minutes.
-        Fallbacks: default_start_time='20:00', slot_duration_minutes=60.
+        Delegates to bot.schedule: event date + start time in the configured time zone
+        + slot_index * slot_duration_minutes. Fallbacks: UTC, '20:00', 60.
 
         These config keys are set via /config commands (Epic 7). Until then, the
         fallback values produce a reasonable 8-PM-based slot time.
@@ -104,26 +104,11 @@ class RemindersService:
         [Source: epics.md#Story 5.4 AC2 — <t:{unix}:f> in reminder DM]
         [Source: architecture.md#Config Storage: PostgreSQL Config Table]
         """
-        event_dt = self._event_midnight_utc(event)
-        if event_dt is None:
+        sched = await schedule.refresh(self.db, guild_id)
+        start = schedule.slot_start(event, slot_index, sched)
+        if start is None:
             return int(datetime.datetime.now(UTC).timestamp())
-
-        start_time_str = await get_value(self.db, guild_id, "default_start_time") or "20:00"
-        slot_dur_str = await get_value(self.db, guild_id, "slot_duration_minutes") or "60"
-
-        try:
-            hour, minute = (int(x) for x in start_time_str.split(":"))
-        except (ValueError, AttributeError):
-            hour, minute = 20, 0
-
-        try:
-            slot_duration = int(slot_dur_str)
-        except (ValueError, TypeError):
-            slot_duration = 60
-
-        event_start = event_dt.replace(hour=hour, minute=minute)
-        slot_time = event_start + timedelta(minutes=slot_index * slot_duration)
-        return int(slot_time.timestamp())
+        return int(start.timestamp())
 
     async def send_reminders(
         self,
@@ -151,11 +136,15 @@ class RemindersService:
         [Source: architecture.md#Stateless Services: All Per-User State in PostgreSQL]
         """
         # Step 1: fetch events
+        # A Notion outage fails the cycle, so /config show does not report it as OK
         try:
             events = await self.notion_client.poll_events()
         except Exception as exc:
-            logger.warning("RemindersService.send_reminders: Notion poll failed: %s", exc)
-            return
+            raise loops.CycleFailed(
+                f"Notion poll_events() raised during reminders: {exc}",
+                error_code=ErrorCode.ERR_NOTION_WRITE,
+                manual_action="Check NOTION_API_KEY, NOTION_DATABASE_ID, and Notion API status.",
+            ) from exc
 
         # Step 2: filter to 20-28h window (compute 'now' once for the whole cycle)
         now = _now if _now is not None else datetime.datetime.now(UTC)
