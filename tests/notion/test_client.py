@@ -7,6 +7,8 @@ import pytest
 from bot.notion.client import NotionClient, NotionWriteError
 from bot.ui.embeds import ErrorCode
 
+_DATED = {"Date": {"type": "date", "date": {"start": "2026-06-14"}}}
+
 
 def make_mock_log() -> MagicMock:
     log = MagicMock()
@@ -140,8 +142,8 @@ async def test_poll_events_returns_results_list() -> None:
     """poll_events returns the 'results' list from the Notion query response."""
     client = make_client()
     pages = [
-        {"id": "page-a", "last_edited_time": "2026-06-01T00:00:00.000Z", "properties": {}},
-        {"id": "page-b", "last_edited_time": "2026-06-02T00:00:00.000Z", "properties": {}},
+        {"id": "page-a", "last_edited_time": "2026-06-01T00:00:00.000Z", "properties": _DATED},
+        {"id": "page-b", "last_edited_time": "2026-06-02T00:00:00.000Z", "properties": _DATED},
     ]
     mock_response = MagicMock()
     mock_response.raise_for_status = MagicMock()
@@ -168,8 +170,10 @@ async def test_poll_events_sends_date_filter_and_sort() -> None:
     await client.poll_events()
 
     payload = client._client.post.call_args.kwargs["json"]
-    assert payload["filter"]["property"] == "Date"
-    assert "on_or_after" in payload["filter"]["date"]
+    date_filter, dj_filter = payload["filter"]["and"]  # classic, DJ pages share the database
+    assert date_filter["property"] == "Date"
+    assert "on_or_after" in date_filter["date"]
+    assert dj_filter == {"property": "Discord ID", "rich_text": {"is_empty": True}}
     assert payload["sorts"] == [{"property": "Date", "direction": "ascending"}]
 
 
@@ -177,8 +181,8 @@ async def test_poll_events_sends_date_filter_and_sort() -> None:
 async def test_poll_events_follows_pagination() -> None:
     """poll_events fetches all pages when Notion returns has_more=True."""
     client = make_client()
-    page1 = {"id": "page-a", "last_edited_time": "2026-06-01T00:00:00.000Z"}
-    page2 = {"id": "page-b", "last_edited_time": "2026-06-02T00:00:00.000Z"}
+    page1 = {"id": "page-a", "last_edited_time": "2026-06-01T00:00:00.000Z", "properties": _DATED}
+    page2 = {"id": "page-b", "last_edited_time": "2026-06-02T00:00:00.000Z", "properties": _DATED}
 
     resp1 = MagicMock()
     resp1.raise_for_status = MagicMock()
@@ -531,3 +535,136 @@ def test_relation_targets_per_layout() -> None:
     assert classic.relation_targets() == {"DJs": "test-db-id"}
     tds = NotionClient(api_key="k", database_id="db", log_service=make_mock_log(), layout="tds")
     assert tds.relation_targets() == {}
+
+
+# ---------------------------------------------------------------------------
+# Story 8.5: separate DJ database (NOTION_DJ_DATABASE_ID)
+# ---------------------------------------------------------------------------
+
+
+def _client_with_dj_db(log: MagicMock | None = None, layout: str = "classic") -> NotionClient:
+    return NotionClient(api_key="k", database_id="events-db", log_service=log or make_mock_log(),
+                        layout=layout, dj_database_id="dj-db")
+
+
+def _event(page_id: str, date: str | None, discord_id: str = "") -> dict:
+    props_ = {"Date": {"type": "date", "date": {"start": date} if date else None}}
+    if discord_id is not None:
+        props_["Discord ID"] = {
+            "type": "rich_text", "rich_text": [{"plain_text": discord_id}] if discord_id else []
+        }
+    return {"id": page_id, "properties": props_}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("separate", [False, True])
+async def test_dj_pages_are_written_and_found_in_the_dj_database(separate: bool) -> None:
+    client = _client_with_dj_db() if separate else make_client()
+    dj_db = "dj-db" if separate else "test-db-id"
+    client._client.post = AsyncMock(return_value=_response(200, {"results": []}))
+    with patch.object(
+        client, "_write_with_retry", new=AsyncMock(return_value={"id": "pg"})
+    ) as write:
+        await client.write_dj_record(discord_user_id=7, dj_name="Nova")
+    assert client._client.post.call_args.args[0] == f"/databases/{dj_db}/query"
+    assert write.call_args.kwargs["payload"]["parent"] == {"database_id": dj_db}
+    assert client.separate_dj_database is separate
+    assert client.relation_targets() == {"DJs": dj_db}
+
+
+@pytest.mark.asyncio
+async def test_events_stay_in_the_events_database_with_a_dj_database() -> None:
+    import datetime
+
+    client = _client_with_dj_db()
+    with patch.object(
+        client, "_write_with_retry", new=AsyncMock(return_value={"id": "evt"})
+    ) as write:
+        await client.create_event("Rave", datetime.date(2026, 6, 14))
+    assert write.call_args.kwargs["payload"]["parent"] == {"database_id": "events-db"}
+
+
+@pytest.mark.asyncio
+async def test_poll_events_shared_database_drops_dj_pages() -> None:
+    client = make_client()
+    pages = [_event("evt", "2026-06-14"), _event("dj", "2026-06-14", "123"),
+             _event("undated", None)]
+    client._client.post = AsyncMock(
+        return_value=_response(200, {"results": pages, "has_more": False})
+    )
+    assert [p["id"] for p in await client.poll_events()] == ["evt"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("layout", ["classic", "tds"])
+async def test_poll_events_without_dj_pages_uses_the_date_filter_only(layout: str) -> None:
+    client = (_client_with_dj_db(layout="classic") if layout == "classic" else
+              NotionClient(api_key="k", database_id="events-db", log_service=make_mock_log(),
+                           layout="tds"))
+    pages = [_event("evt", "2026-06-14", "not a DJ marker here"), _event("undated", None)]
+    client._client.post = AsyncMock(
+        return_value=_response(200, {"results": pages, "has_more": False})
+    )
+    result = await client.poll_events()
+    assert [p["id"] for p in result] == ["evt"]  # undated pages are never events
+    payload = client._client.post.call_args.kwargs["json"]
+    assert payload["filter"]["property"] == "Date" and "and" not in payload["filter"]
+
+
+@pytest.mark.asyncio
+async def test_validate_dj_schema_checks_the_dj_database() -> None:
+    log = make_mock_log()
+    client = _client_with_dj_db(log)
+    response = MagicMock()
+    response.raise_for_status = MagicMock()
+    response.json = MagicMock(return_value={"properties": {
+        "Name": {"type": "title"}, "Discord ID": {"type": "number"},
+    }})
+    client._client.get = AsyncMock(return_value=response)
+    await client.validate_dj_schema()
+    assert client._client.get.call_args.args[0] == "/databases/dj-db"
+    log.post_error.assert_awaited_once()
+    trigger = log.post_error.call_args.kwargs["trigger"]
+    assert "'Discord ID' in the DJ database" in trigger and "'number'" in trigger
+
+
+@pytest.mark.asyncio
+async def test_validate_dj_schema_does_nothing_in_shared_mode_or_tds() -> None:
+    for client in (make_client(), _client_with_dj_db(layout="tds")):
+        client._client.get = AsyncMock()
+        await client.validate_dj_schema()
+        client._client.get.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_events_database_messages_name_the_events_database() -> None:
+    client, log = _schema_client({})
+    await client.validate_schema({"Slots": ("number",)})
+    assert "Notion events database missing required property: 'Slots'" in (
+        log.post_error.call_args.kwargs["trigger"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_dj_page_check_needs_no_request_in_shared_mode() -> None:
+    client = make_client()
+    client._client.get = AsyncMock()
+    assert await client.dj_page_in_dj_database("pg") is True
+    client._client.get.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("answer", "expected"), [
+    (_response(200, {"parent": {"type": "database_id", "database_id": "d-j-db"}}), True),
+    (_response(200, {"parent": {"type": "database_id", "database_id": "events-db"}}), False),
+    (_response(404, {}), False),
+    (httpx.ConnectError("down"), True),  # unknown: the write reports a real problem itself
+])
+async def test_dj_page_check_in_separate_mode(answer, expected) -> None:
+    client = _client_with_dj_db()
+    client._client.get = AsyncMock(
+        side_effect=answer if isinstance(answer, Exception) else None,
+        return_value=None if isinstance(answer, Exception) else answer,
+    )
+    assert await client.dj_page_in_dj_database("pg") is expected
+    assert client._client.get.call_args.args[0] == "/pages/pg"

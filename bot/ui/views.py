@@ -1576,6 +1576,14 @@ class BookingConfirmView(ActiveOnlyView):
         try:
             # Get DJ's Notion page ID (may be None for DJs onboarded before Story 4.2)
             dj_notion_page_id = await get_notion_dj_page_id(self._ctx.db, self._user_id)
+            # Story 8.5: a page ID from before NOTION_DJ_DATABASE_ID was set is not usable
+            if (
+                not per_slot
+                and dj_notion_page_id is not None
+                and self._ctx.notion_client.separate_dj_database is True
+                and not await self._ctx.notion_client.dj_page_in_dj_database(dj_notion_page_id)
+            ):
+                dj_notion_page_id = None
             dj_name = None
             if per_slot or dj_notion_page_id is None:
                 dj = await get_dj_by_discord_id(self._ctx.db, self._user_id)

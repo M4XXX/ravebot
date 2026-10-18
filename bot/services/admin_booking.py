@@ -245,6 +245,12 @@ class AdminBookingService:
         # Story 8.3 (classic layout): now that the slot is saved, a DJ without a Notion page
         # gets one, so the booking shows in the event's DJs; if that fails it stays booked
         unlinked_note = ""
+        if (  # Story 8.5: a page ID from before NOTION_DJ_DATABASE_ID was set is replaced
+            dj_notion_page_id is not None
+            and self.notion_client.separate_dj_database is True
+            and not await self.notion_client.dj_page_in_dj_database(dj_notion_page_id)
+        ):
+            dj_notion_page_id = None
         if dj_notion_page_id is None and self.notion_client.per_slot is not True:
             dj_notion_page_id = await self._ensure_dj_page(dj_id, dj_name, event_name)
             if dj_notion_page_id is None:

@@ -82,6 +82,17 @@ async def graceful_shutdown(bot: commands.Bot, ctx: BotContext) -> None:
     await bot.close()
 
 
+def _log_dj_database_setting(config: Config) -> None:
+    """Story 8.5: DJ pages next to the events still work, but a DJ database is recommended."""
+    if config.notion_layout != slots.TDS and config.notion_dj_database_id is None:
+        logger.warning(
+            "NOTION_DJ_DATABASE_ID is not set: DJ profile pages are kept in the events "
+            "database. A separate DJ database is recommended (docs/user-guide.md 2.4)."
+        )
+    elif config.notion_layout == slots.TDS and config.notion_dj_database_id is not None:
+        logger.info("NOTION_DJ_DATABASE_ID is ignored in the tds layout (no DJ pages)")
+
+
 async def main() -> None:
     """Async entry point — configure, run migrations, open pool, start bot."""
     config = Config.from_env()
@@ -129,7 +140,9 @@ async def main() -> None:
         log_service=ctx.log_service,
         layout=config.notion_layout,
         new_event_status=(config.notion_bookable_statuses or (None,))[0],
+        dj_database_id=config.notion_dj_database_id,
     )
+    _log_dj_database_setting(config)
 
     # Story 3.2: init LineupService after DB and log_service are ready
     from bot.services.lineup import LineupService
@@ -204,10 +217,13 @@ async def main() -> None:
             async def validate_notion() -> None:
                 # The required columns depend on the layout (tds: one per slot)
                 try:
-                    required = await slots.required_properties(ctx.db, gid)
+                    required = await slots.required_properties(
+                        ctx.db, gid, separate_dj_database=notion.separate_dj_database
+                    )
                     await notion.validate_schema(
                         required_properties=required, relation_targets=notion.relation_targets()
                     )
+                    await notion.validate_dj_schema()
                     await notion.validate_status_names(
                         [*config.notion_bookable_statuses, *config.notion_cancelled_statuses]
                     )

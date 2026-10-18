@@ -1592,3 +1592,27 @@ async def test_classic_cancel_without_page_writes_nothing_and_logs_no_error() ->
         method.assert_not_called()
     log.post_error.assert_not_awaited()
     assert "canceled" in inter.response.send_message.call_args[0][0]
+
+
+@pytest.mark.asyncio
+async def test_page_id_from_before_the_dj_database_is_replaced() -> None:
+    """Story 8.5 review: an old page in the events database would make the link fail."""
+    ctx = _classic_booking_ctx(40007, ensure_returns="pg-in-dj-db")
+    ctx.notion_client.separate_dj_database = True
+    ctx.notion_client.dj_page_in_dj_database = AsyncMock(return_value=False)
+    _, rel, stored, _ = await _confirm_classic(ctx, 40007, page_id="pg-old")
+    ctx.notion_client.dj_page_in_dj_database.assert_awaited_once_with("pg-old")
+    ctx.notion_client.ensure_dj_page.assert_awaited_once_with(40007, "DJ Nova", "Test Rave")
+    assert ctx.notion_client.write_booking.call_args.kwargs["dj_notion_page_id"] == "pg-in-dj-db"
+    stored.assert_awaited_once_with(ctx.db, 40007, "pg-in-dj-db")
+    rel.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_page_id_in_the_dj_database_is_kept() -> None:
+    ctx = _classic_booking_ctx(40008, ensure_returns="unused")
+    ctx.notion_client.separate_dj_database = True
+    ctx.notion_client.dj_page_in_dj_database = AsyncMock(return_value=True)
+    await _confirm_classic(ctx, 40008, page_id="pg-ok")
+    ctx.notion_client.ensure_dj_page.assert_not_awaited()
+    assert ctx.notion_client.write_booking.call_args.kwargs["dj_notion_page_id"] == "pg-ok"

@@ -153,3 +153,18 @@ def test_repr_hides_secrets():
     text = repr(cfg)
     for secret in ("tok-discord-1", "pw-secret-2", "secret_notion_3"):
         assert secret not in text
+
+
+@pytest.mark.parametrize(("raw", "expected"), [(None, None), ("", None), ("  ", None),
+                                               (" dj-db-id ", "dj-db-id")])
+def test_notion_dj_database_id(monkeypatch: pytest.MonkeyPatch, raw, expected) -> None:
+    """Story 8.5: optional NOTION_DJ_DATABASE_ID; empty means the events database."""
+    for key, value in (("DISCORD_BOT_TOKEN", "tok"), ("POSTGRES_URL", "postgresql://h/db"),
+                       ("NOTION_API_KEY", "secret_key"), ("NOTION_DATABASE_ID", "events-db"),
+                       ("ADMIN_USER_IDS", "1")):
+        monkeypatch.setenv(key, value)
+    if raw is None:
+        monkeypatch.delenv("NOTION_DJ_DATABASE_ID", raising=False)
+    else:
+        monkeypatch.setenv("NOTION_DJ_DATABASE_ID", raw)
+    assert _fresh_config(monkeypatch).from_env().notion_dj_database_id == expected

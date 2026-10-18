@@ -742,3 +742,22 @@ async def test_admin_book_looks_up_the_page_after_saving_the_slot(monkeypatch):
         admin_name="Admin", dj_id=42, dj_name="nova#1", event_name="Rave Night #12", slot_num=1
     )
     assert order == ["saved", "page"]
+
+
+@pytest.mark.asyncio
+async def test_admin_book_replaces_a_page_id_from_before_the_dj_database(monkeypatch):
+    """Story 8.5 review."""
+    svc = _make_service()
+    svc.notion_client.per_slot = False
+    svc.notion_client.separate_dj_database = True
+    svc.notion_client.dj_page_in_dj_database = AsyncMock(return_value=False)
+    store = _patch_book(monkeypatch, "pg-old", {"dj_name": "Nova"})
+
+    ok, _ = await svc.book_slot_override(
+        admin_name="Admin", dj_id=42, dj_name="nova#1", event_name="Rave Night #12", slot_num=1
+    )
+
+    assert ok
+    svc.notion_client.ensure_dj_page.assert_awaited_once_with(42, "Nova", "Rave Night #12")
+    store.assert_awaited_once_with(svc.db, 42, "dj-page-new")
+    assert svc.notion_client.write_booking.call_args[0][2] == "dj-page-new"

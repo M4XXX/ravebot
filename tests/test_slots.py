@@ -116,3 +116,13 @@ async def test_classic_required_properties_are_the_one_constant() -> None:
         "Name": ("title",), "Date": ("date",), "Slots": ("number",),
         "DJs": ("relation",), "Discord ID": ("rich_text",),
     }
+
+
+@pytest.mark.asyncio
+async def test_separate_dj_database_moves_the_dj_columns_out_of_the_events_check() -> None:
+    """Story 8.5: with NOTION_DJ_DATABASE_ID the events database needs no Discord ID."""
+    slots.configure(slots.CLASSIC)
+    required = await slots.required_properties(None, None, separate_dj_database=True)
+    assert required == slots.CLASSIC_EVENT_PROPERTIES
+    assert "Discord ID" not in required
+    assert slots.CLASSIC_PROPERTIES == {**slots.CLASSIC_EVENT_PROPERTIES, **slots.DJ_PROPERTIES}

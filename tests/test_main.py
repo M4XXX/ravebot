@@ -33,3 +33,23 @@ def test_setup_logging_installs_redacting_formatter(capsys):
     finally:
         root.handlers = saved_handlers
         root.setLevel(saved_level)
+
+
+def test_dj_database_warning_only_in_classic_without_it(caplog):
+    """Story 8.5: startup warning when DJ pages share the events database."""
+    from dataclasses import replace
+
+    from bot.config import Config
+    from bot.main import _log_dj_database_setting
+
+    base = Config(discord_bot_token="t", postgres_url="postgresql://h/db", notion_api_key="k",
+                  notion_database_id="events", admin_user_ids=frozenset({1}), log_level="INFO",
+                  db_pool_min=1, db_pool_max=2)
+    caplog.set_level("INFO")
+    _log_dj_database_setting(base)
+    assert "NOTION_DJ_DATABASE_ID is not set" in caplog.text
+    caplog.clear()
+    _log_dj_database_setting(replace(base, notion_dj_database_id="djs"))
+    assert caplog.text == ""
+    _log_dj_database_setting(replace(base, notion_layout="tds"))
+    assert "not set" not in caplog.text

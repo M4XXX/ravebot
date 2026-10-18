@@ -43,11 +43,11 @@ RaveBot uses a **single Notion database** for both event pages and DJ profile pa
 
 ### 2.2 Create the Events + DJs Database
 
-Create a new full-page database in Notion. This single database will hold both your rave event pages and your DJ profile pages.
+Create a new full-page database in Notion for your rave event pages. DJ profile pages can live in the same database (the default) or in a separate DJ database (recommended, see "Option B" in 2.4).
 
 ### 2.3 Share the Database with Your Integration
 
-Open the database page in Notion, click the `...` menu (top right), select **Add connections**, and choose your integration.
+Open the database page in Notion, click the `...` menu (top right), select **Add connections**, and choose your integration. With a separate DJ database, share that one too.
 
 ### 2.4 Required Database Properties
 
@@ -61,13 +61,22 @@ Add the following properties to your database:
 | `DJs` | Relation | Self-relation within this same database. Links event pages to DJ profile pages. When creating, select the same database as the related database. |
 | `Discord ID` | Text (Rich Text) | Stored on DJ profile pages to link Discord accounts. |
 
-**How the dual-purpose pattern works:** Event pages populate `Date`, `Slots`, and `DJs`. DJ profile pages populate `Discord ID`. Each page type simply leaves the other properties empty.
+**How the dual-purpose pattern works:** Event pages populate `Date`, `Slots`, and `DJs`. DJ profile pages populate `Discord ID`. Each page type simply leaves the other properties empty. The bot never treats a page with a `Discord ID` or without a `Date` as an event. At startup it logs a warning recommending a separate DJ database.
 
-**About `Slots`:** The slot count shown and offered to DJs comes from this property when set, otherwise from the `slots-per-event` setting. Which slot each DJ holds lives in the PostgreSQL `slot_locks` table; Notion only lists the linked DJs. All five properties are checked at startup and a warning is posted when one is missing.
+**Option B — separate DJ database (recommended):** Create a second database for the DJ profile pages with these properties, share it with the integration, and set `NOTION_DJ_DATABASE_ID` to its ID (see 2.5):
+
+| Property | Type | Notes |
+|---|---|---|
+| `Name` | Title | The DJ name |
+| `Discord ID` | Text (Rich Text) | Links the page to the DJ's Discord account |
+
+The events database then needs only `Name`, `Date`, `Slots` and `DJs`, and `DJs` is a relation **to the DJ database** instead of a self-relation. Both databases are checked at startup. Existing DJ pages in the events database are not moved: move them to the DJ database in Notion (or let the bot create new ones at the next booking) and update the `DJs` relation.
+
+**About `Slots`:** The slot count shown and offered to DJs comes from this property when set, otherwise from the `slots-per-event` setting. Which slot each DJ holds lives in the PostgreSQL `slot_locks` table; Notion only lists the linked DJs. All properties are checked at startup, including their types, and a warning is posted when one is missing or has the wrong type.
 
 **Nothing is ever deleted in Notion by the bot.** It only creates pages and adds or removes its own DJ links on event pages; deleting or archiving is refused in the client itself. Removing pages is left to a human.
 
-**About the `DJs` relation:** This is a self-relation. In the Notion UI, when you create a Relation property and are asked "Select a database to relate to", choose the same database you are editing. This allows event pages to link to DJ profile pages within the same database.
+**About the `DJs` relation:** Without a separate DJ database this is a self-relation. In the Notion UI, when you create a Relation property and are asked "Select a database to relate to", choose the same database you are editing. This allows event pages to link to DJ profile pages within the same database.
 
 ### 2.5 Finding Your Database ID
 
@@ -116,6 +125,7 @@ Copy `.env.example` to `.env` and fill in your values. **Never commit `.env` to 
 | `POSTGRES_URL` | Yes | — | PostgreSQL connection string: `postgresql://user:pass@host:5432/dbname` |
 | `NOTION_API_KEY` | Yes | — | Notion integration secret (starts with `secret_`) |
 | `NOTION_DATABASE_ID` | Yes | — | 32-character ID from your Notion database URL |
+| `NOTION_DJ_DATABASE_ID` | No | — | ID of a separate Notion database for DJ profile pages (classic layout, 2.4 option B). Unset: DJ pages are kept in the events database and a warning is logged at startup |
 | `ADMIN_USER_IDS` | Yes | — | Comma-separated Discord user IDs for admin slash commands |
 | `GUILD_ID` | No | — | Discord server ID the bot serves. Without it the bot serves the single server it is in, and **none** (with an error in the log) when it is in several. Set it in production. |
 | `NOTION_LAYOUT` | No | `classic` | `classic` for the database layout in 2.4, `tds` for an existing event plan with one column per slot (2.6) |
