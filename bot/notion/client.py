@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
-from bot import slots
+from bot import schedule, slots
 from bot.notion import props
 from bot.ui.embeds import ErrorCode
 
@@ -637,7 +637,7 @@ class NotionClient:
         [Source: epics.md#Story 3.1 AC1, AC4]
         [Source: epics.md#Story 8.5]
         """
-        today = datetime.date.today().isoformat()
+        today = schedule.today().isoformat()
         date_filter = {"property": "Date", "date": {"on_or_after": today}}
         # Only filter on Discord ID where it exists: a filter on a missing property is a 400
         shared = self._dj_pages_in_events_database()
@@ -814,7 +814,6 @@ class NotionClient:
         event_id: str,
         slot_index: int,
         dj_notion_page_id: str | None,
-        current_dj_ids: list[str],
         event_name: str,
         slot_unix: int,
         dj_name: str | None = None,
@@ -831,10 +830,10 @@ class NotionClient:
 
         The relation is re-read from Notion under a per-event lock right before every PATCH
         attempt and only this DJ's page is added. A PATCH replaces the whole relation, so building
-        it from a stale copy (current_dj_ids, kept for call compatibility and ignored)
-        silently dropped other DJs who booked meanwhile or were added by hand.
+        it from a stale copy would silently drop other DJs who booked meanwhile or were added
+        by hand.
 
-        If dj_notion_page_id is None (DJ onboarded before Story 4.2) nothing is written.
+        If dj_notion_page_id is None (no DJ page, see ensure_dj_page) nothing is written.
         The slot_locks DB row remains the authoritative lock.
 
         Uses _write_with_retry — raises NotionWriteError after 3 failed attempts.
@@ -874,7 +873,6 @@ class NotionClient:
         self,
         event_id: str,
         dj_notion_page_id: str | None,
-        current_dj_ids: list[str],
         event_name: str,
         slot_unix: int,
         slot_index: int | None = None,
@@ -886,8 +884,8 @@ class NotionClient:
         exactly this DJ's name; anything an organizer changed it to stays.
 
         Re-reads the relation under the per-event lock before every attempt and PATCHes it
-        without this DJ's page; every other entry stays. current_dj_ids is kept for call
-        compatibility and ignored. If dj_notion_page_id is None nothing is written. The
+        without this DJ's page; every other entry stays. If dj_notion_page_id is None nothing
+        is written. The
         slot_locks DB row is the authoritative cancellation record.
 
         Uses _write_with_retry — raises NotionWriteError after 3 failed attempts.

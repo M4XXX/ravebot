@@ -93,8 +93,8 @@ async def test_concurrent_bookings_keep_every_dj() -> None:
     fake = FakeNotion(relation=["page-admin"])
     client = make_client(fake)
     await asyncio.gather(
-        client.write_booking("evt", 0, "page-A", [], "Rave", 0),
-        client.write_booking("evt", 1, "page-B", [], "Rave", 0),
+        client.write_booking("evt", 0, "page-A", "Rave", 0),
+        client.write_booking("evt", 1, "page-B", "Rave", 0),
     )
     assert sorted(fake.relation) == ["page-A", "page-B", "page-admin"]
 
@@ -103,7 +103,7 @@ async def test_concurrent_bookings_keep_every_dj() -> None:
 async def test_cancel_removes_only_this_dj() -> None:
     fake = FakeNotion(relation=["page-A", "page-admin", "page-B"])
     client = make_client(fake)
-    await client.delete_booking("evt", "page-A", ["page-A"], "Rave", 0)
+    await client.delete_booking("evt", "page-A", "Rave", 0)
     assert fake.relation == ["page-admin", "page-B"]
 
 
@@ -112,9 +112,9 @@ async def test_dashless_ids_match_dashed_ids() -> None:
     dashed = "3fc898b5-0017-815a-b41a-de39dbf4013f"
     fake = FakeNotion(relation=[dashed])
     client = make_client(fake)
-    await client.write_booking("evt", 0, dashed.replace("-", ""), [], "Rave", 0)
+    await client.write_booking("evt", 0, dashed.replace("-", ""), "Rave", 0)
     assert fake.relation == [dashed]  # recognised as already linked, no duplicate
-    await client.delete_booking("evt", dashed.replace("-", ""), [], "Rave", 0)
+    await client.delete_booking("evt", dashed.replace("-", ""), "Rave", 0)
     assert fake.relation == []
 
 
@@ -122,7 +122,7 @@ async def test_dashless_ids_match_dashed_ids() -> None:
 async def test_long_relations_are_read_completely() -> None:
     fake = FakeNotion(relation=[f"page-{i}" for i in range(30)], page_size=25)
     client = make_client(fake)
-    await client.write_booking("evt", 0, "page-new", [], "Rave", 0)
+    await client.write_booking("evt", 0, "page-new", "Rave", 0)
     assert len(fake.relation) == 31 and fake.relation[-1] == "page-new"
 
 
@@ -142,7 +142,7 @@ async def test_client_error_is_not_retried() -> None:
     fake.status_for_patch = 400
     client = make_client(fake)
     with patch("bot.notion.client.asyncio.sleep", new=AsyncMock()), pytest.raises(NotionWriteError):
-        await client.write_booking("evt", 0, "page-A", [], "Rave", 0)
+        await client.write_booking("evt", 0, "page-A", "Rave", 0)
     assert [r[0] for r in fake.requests].count("PATCH") == 1
     client._log.post_error.assert_awaited_once()
 
@@ -155,7 +155,7 @@ async def test_rate_limit_waits_for_retry_after() -> None:
     client = make_client(fake)
     sleep = AsyncMock()
     with patch("bot.notion.client.asyncio.sleep", new=sleep), pytest.raises(NotionWriteError):
-        await client.write_booking("evt", 0, "page-A", [], "Rave", 0)
+        await client.write_booking("evt", 0, "page-A", "Rave", 0)
     assert [r[0] for r in fake.requests].count("PATCH") == 3
     assert all(call.args[0] >= 7 for call in sleep.await_args_list)
 
@@ -167,7 +167,7 @@ async def test_retry_rereads_the_relation_so_a_hand_edit_during_the_wait_survive
     fake.human_link_during_wait = "page-HUMAN"
     client = make_client(fake)
     with patch("bot.notion.client.asyncio.sleep", new=AsyncMock()):
-        await client.write_booking("evt", 0, "page-A", [], "Rave", 0)
+        await client.write_booking("evt", 0, "page-A", "Rave", 0)
     assert fake.relation == ["page-admin", "page-HUMAN", "page-A"]
 
 
@@ -179,7 +179,7 @@ async def test_long_retry_after_is_capped() -> None:
     client = make_client(fake)
     sleep = AsyncMock()
     with patch("bot.notion.client.asyncio.sleep", new=sleep), pytest.raises(NotionWriteError):
-        await client.write_booking("evt", 0, "page-A", [], "Rave", 0)
+        await client.write_booking("evt", 0, "page-A", "Rave", 0)
     assert sleep.await_args_list and all(c.args[0] <= 10 for c in sleep.await_args_list)
 
 
@@ -189,7 +189,7 @@ async def test_applied_patch_answered_with_5xx_is_not_sent_again() -> None:
     fake.applied_patches_answer = 502
     client = make_client(fake)
     with patch("bot.notion.client.asyncio.sleep", new=AsyncMock()):
-        await client.write_booking("evt", 0, "page-A", [], "Rave", 0)
+        await client.write_booking("evt", 0, "page-A", "Rave", 0)
     assert fake.relation == ["page-A"]
     assert [r[0] for r in fake.requests].count("PATCH") == 1
     client._log.post_error.assert_not_awaited()
@@ -219,12 +219,12 @@ async def test_event_locks_are_removed_after_writes() -> None:
     fake = FakeNotion(relation=["page-admin"])
     client = make_client(fake)
     await asyncio.gather(
-        client.write_booking("evt", 0, "page-A", [], "Rave", 0),
-        client.write_booking("evt", 1, "page-B", [], "Rave", 0),
+        client.write_booking("evt", 0, "page-A", "Rave", 0),
+        client.write_booking("evt", 1, "page-B", "Rave", 0),
     )
     assert sorted(fake.relation) == ["page-A", "page-B", "page-admin"]
     assert_no_event_locks(client)
-    await client.delete_booking("evt", "page-A", [], "Rave", 0)
+    await client.delete_booking("evt", "page-A", "Rave", 0)
     assert_no_event_locks(client)
 
 
@@ -285,5 +285,5 @@ async def test_failed_write_leaves_no_event_lock() -> None:
     fake.status_for_patch = 400
     client = make_client(fake)
     with pytest.raises(NotionWriteError):
-        await client.write_booking("evt", 0, "page-A", [], "Rave", 0)
+        await client.write_booking("evt", 0, "page-A", "Rave", 0)
     assert_no_event_locks(client)

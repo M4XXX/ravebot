@@ -111,3 +111,61 @@ def test_plain_label_uses_configured_zone() -> None:
     unix = int(_utc(2026, 10, 24, 19, 0).timestamp())
     assert schedule.plain_label(unix, BERLIN) == "Sat 24 Oct 21:00 CEST"
     assert "<t:" not in schedule.plain_label(unix, BERLIN)
+
+
+# Story 8.7: "today" is the organizers' date, not the server's
+
+
+def test_today_uses_the_configured_time_zone(monkeypatch) -> None:
+    import datetime as dt
+    from zoneinfo import ZoneInfo
+
+    from bot import schedule
+
+    utc_now = dt.datetime(2026, 10, 24, 23, 30, tzinfo=dt.UTC)
+
+    class Frozen(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return utc_now.astimezone(tz)
+
+    monkeypatch.setattr(schedule.dt, "datetime", Frozen)
+    ahead = schedule.Schedule(tz=ZoneInfo("Pacific/Kiritimati"), start=dt.time(21), slot_minutes=60)
+    behind = schedule.Schedule(tz=ZoneInfo("Pacific/Pago_Pago"), start=dt.time(21), slot_minutes=60)
+    assert schedule.today(ahead) == dt.date(2026, 10, 25)   # UTC+14
+    assert schedule.today(behind) == dt.date(2026, 10, 24)  # UTC-11
+    monkeypatch.setattr(schedule, "_current", ahead)
+    assert schedule.today() == dt.date(2026, 10, 25)
+
+
+def test_no_server_local_dates_left_in_the_bot() -> None:
+    """Every "today" goes through schedule.today() (poll, lineup, auto-creation, /add-event)."""
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parents[1] / "bot"
+    offenders = [
+        f"{path.relative_to(root.parent)}:{n}"
+        for path in root.rglob("*.py")
+        for n, line in enumerate(path.read_text().splitlines(), 1)
+        if re.search(r"\bdate\.today\(\)", line)
+    ]
+    assert offenders == []
+
+
+async def test_poll_events_asks_from_the_organizers_today(monkeypatch) -> None:
+    from unittest.mock import MagicMock
+
+    import httpx
+
+    from bot import schedule
+    from bot.notion.client import NotionClient
+
+    monkeypatch.setattr(schedule, "today", lambda sched=None: dt.date(2026, 10, 25))
+    client = NotionClient(api_key="k", database_id="db", log_service=MagicMock())
+    client._client.post = AsyncMock(return_value=httpx.Response(
+        200, json={"results": [], "has_more": False}, request=httpx.Request("POST", "https://x")
+    ))
+    await client.poll_events()
+    date_filter = client._client.post.call_args.kwargs["json"]["filter"]["and"][0]
+    assert date_filter["date"]["on_or_after"] == "2026-10-25"

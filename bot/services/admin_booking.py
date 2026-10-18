@@ -264,12 +264,11 @@ class AdminBookingService:
         # Step 6: write to Notion (retry x3 built into write_booking)
         try:
             await self.notion_client.write_booking(
-                event_id,
-                slot_index,
-                dj_notion_page_id,
-                [],
-                event_name,
-                slot_unix,
+                event_id=event_id,
+                slot_index=slot_index,
+                dj_notion_page_id=dj_notion_page_id,
+                event_name=event_name,
+                slot_unix=slot_unix,
                 dj_name=cell_name,
                 replaces=replaces,
             )
@@ -338,11 +337,10 @@ class AdminBookingService:
                     self.db, event_id, displaced
                 ):
                     await self.notion_client.delete_booking(
-                        event_id,
-                        await get_notion_dj_page_id(self.db, displaced),
-                        [],
-                        event_name,
-                        slot_unix,
+                        event_id=event_id,
+                        dj_notion_page_id=await get_notion_dj_page_id(self.db, displaced),
+                        event_name=event_name,
+                        slot_unix=slot_unix,
                     )
             except Exception:
                 logger.exception(
@@ -461,11 +459,10 @@ class AdminBookingService:
                 self.db, event_id, dj_id
             ):
                 await self.notion_client.delete_booking(
-                    event_id,
-                    await get_notion_dj_page_id(self.db, dj_id),
-                    [],
-                    event_name,
-                    slot_unix,
+                    event_id=event_id,
+                    dj_notion_page_id=await get_notion_dj_page_id(self.db, dj_id),
+                    event_name=event_name,
+                    slot_unix=slot_unix,
                     slot_index=slot_index,
                     dj_name=plan_text,
                 )

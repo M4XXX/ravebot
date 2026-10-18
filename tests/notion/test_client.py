@@ -432,7 +432,7 @@ async def test_delete_booking_without_page_writes_nothing_and_logs_nothing() -> 
     client._client.request = AsyncMock()
     client._client.get = AsyncMock()
     client._client.post = AsyncMock()
-    await client.delete_booking("evt", None, [], "Rave", 0)
+    await client.delete_booking("evt", None, "Rave", 0)
     client._client.request.assert_not_called()
     client._client.get.assert_not_called()
     client._client.post.assert_not_called()

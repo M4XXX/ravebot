@@ -267,7 +267,7 @@ async def test_cancel_slot_override_success(monkeypatch):
     assert success is True
     assert msg == ""
     svc.notion_client.delete_booking.assert_awaited_once()
-    assert svc.notion_client.delete_booking.call_args.args[1] == "dj-notion-id"
+    assert svc.notion_client.delete_booking.call_args.kwargs["dj_notion_page_id"] == "dj-notion-id"
     release_mock.assert_awaited_once_with(svc.db, "evt-001", 0, 42)
     svc.log_service.post_admin_override.assert_awaited_once()
     call = svc.log_service.post_admin_override.call_args[0][0]
@@ -423,9 +423,12 @@ async def test_book_slot_override_removes_displaced_dj_from_notion(monkeypatch):
     )
 
     assert success is True
-    assert svc.notion_client.write_booking.call_args.args[2] == "new-dj-notion-id"
+    assert svc.notion_client.write_booking.call_args.kwargs["dj_notion_page_id"] == "new-dj-notion-id"
     svc.notion_client.delete_booking.assert_awaited_once()
-    assert svc.notion_client.delete_booking.call_args.args[:2] == ("evt-001", "old-dj-notion-id")
+    assert svc.notion_client.delete_booking.call_args.kwargs["event_id"] == "evt-001"
+    assert svc.notion_client.delete_booking.call_args.kwargs["dj_notion_page_id"] == (
+        "old-dj-notion-id"
+    )
     told = [c.args[0] for c in svc.bot.get_user.call_args_list]
     assert 999 in told and 42 in told  # displaced DJ and new DJ both get a DM
 
@@ -633,7 +636,7 @@ async def test_admin_book_creates_missing_dj_page_and_stores_it(monkeypatch):
     assert success is True and msg == ""
     svc.notion_client.ensure_dj_page.assert_awaited_once_with(42, "Nova", "Rave Night #12")
     store.assert_awaited_once_with(svc.db, 42, "dj-page-new")
-    assert svc.notion_client.write_booking.call_args[0][2] == "dj-page-new"
+    assert svc.notion_client.write_booking.call_args.kwargs["dj_notion_page_id"] == "dj-page-new"
 
 
 @pytest.mark.asyncio
@@ -704,7 +707,7 @@ async def test_admin_cancel_without_dj_page_creates_none(monkeypatch):
 
     assert ok, msg
     svc.notion_client.ensure_dj_page.assert_not_awaited()
-    assert svc.notion_client.delete_booking.call_args[0][1] is None
+    assert svc.notion_client.delete_booking.call_args.kwargs["dj_notion_page_id"] is None
 
 
 @pytest.mark.asyncio
@@ -764,4 +767,4 @@ async def test_admin_book_replaces_a_page_id_from_before_the_dj_database(monkeyp
     assert ok
     svc.notion_client.ensure_dj_page.assert_awaited_once_with(42, "Nova", "Rave Night #12")
     store.assert_awaited_once_with(svc.db, 42, "dj-page-new")
-    assert svc.notion_client.write_booking.call_args[0][2] == "dj-page-new"
+    assert svc.notion_client.write_booking.call_args.kwargs["dj_notion_page_id"] == "dj-page-new"

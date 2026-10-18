@@ -1464,7 +1464,7 @@ class BookingConfirmView(ActiveOnlyView):
         [Source: architecture.md#Slot Booking Atomicity: SELECT...FOR UPDATE in Transaction]
         [Source: architecture.md#Gap Analysis — PG lock vs Notion write boundary]
         """
-        from bot.db.bookings import acquire_slot_lock, release_slot_lock, set_plan_text
+        from bot.db.bookings import acquire_slot_lock, set_plan_text
         from bot.db.djs import get_notion_dj_page_id
         from bot.notion.client import (
             NotionNotBookableError,
@@ -1615,21 +1615,12 @@ class BookingConfirmView(ActiveOnlyView):
         if not per_slot:
             dj_name = None  # classic: write_booking links the page, it writes no name
 
-        # Extract current DJs relation IDs from the event (so we don't overwrite them)
-        try:
-            current_dj_ids = [
-                r["id"] for r in self._event["properties"]["DJs"]["relation"]
-            ]
-        except (KeyError, TypeError):
-            current_dj_ids = []
-
         # Write booking to Notion (AC2–AC3); notion_client is guaranteed non-None by guard above
         try:
             await self._ctx.notion_client.write_booking(
                 event_id=event_id,
                 slot_index=self._slot_index,
                 dj_notion_page_id=dj_notion_page_id,
-                current_dj_ids=current_dj_ids,
                 event_name=event_name,
                 slot_unix=self._slot_unix,
                 dj_name=dj_name,
@@ -2001,7 +1992,6 @@ class CancelConfirmView(ActiveOnlyView):
                 await self._ctx.notion_client.delete_booking(
                     event_id=event_id,
                     dj_notion_page_id=dj_notion_page_id,
-                    current_dj_ids=[],
                     event_name=event_name,
                     slot_unix=self._slot_unix,
                     slot_index=self._slot_index,
@@ -2100,8 +2090,14 @@ class OutreachView(ActiveOnlyView, single_use=False):
             try:
                 await self._ctx.log_service.post_error(
                     error_code=ErrorCode.ERR_BUTTON_TIMEOUT,
-                    trigger=f"OutreachView timed out for DJ {self._discord_user_id} on event '{event_name}'",
-                    action_taken="DJ marked as non-responsive for this sequence. Outreach will proceed to next eligible DJ after cooldown.",
+                    trigger=(
+                        f"OutreachView timed out for DJ {self._discord_user_id} "
+                        f"on event '{event_name}'"
+                    ),
+                    action_taken=(
+                        "DJ marked as non-responsive for this sequence. Outreach will proceed "
+                        "to next eligible DJ after cooldown."
+                    ),
                     manual_action="No action required unless the event date is imminent.",
                 )
             except Exception:

@@ -53,3 +53,15 @@ def test_dj_database_warning_only_in_classic_without_it(caplog):
     assert caplog.text == ""
     _log_dj_database_setting(replace(base, notion_layout="tds"))
     assert "not set" not in caplog.text
+
+
+def test_create_bot_emits_no_message_content_prefix_warning():
+    """Story 8.7: no prefix commands, so disnake must not warn about the message intent."""
+    import warnings
+
+    from bot.main import create_bot
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        create_bot()
+    assert not [w for w in caught if w.category.__name__ == "MessageContentPrefixWarning"]

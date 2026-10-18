@@ -107,7 +107,7 @@ class OutreachService:
             ) from exc
         await slots.annotate(self.db, guild_id, events)
 
-        now_utc = datetime.datetime.now(datetime.timezone.utc)
+        now_utc = datetime.datetime.now(datetime.UTC)
         window_end = now_utc + datetime.timedelta(days=outreach_days)
         ready: list[dict] = []
 
@@ -211,7 +211,7 @@ class OutreachService:
             last_contact = seq.get("last_contact_at")
             if last_contact is not None:
                 if last_contact.tzinfo is None:
-                    last_contact = last_contact.replace(tzinfo=datetime.timezone.utc)
+                    last_contact = last_contact.replace(tzinfo=datetime.UTC)
                 elapsed = now_utc - last_contact
                 if elapsed < datetime.timedelta(hours=cooldown_hours):
                     continue  # within cooldown — skip this cycle
@@ -496,6 +496,11 @@ class OutreachService:
                     f"Outreach DM failed for DJ '{dj_name}' (ID: {discord_user_id})"
                     f" on event '{event_id}': {reason}"
                 ),
-                action_taken="DJ marked as unreachable for this sequence. Outreach will proceed to next eligible DJ.",
-                manual_action="Verify the DJ's Discord privacy settings or their presence in the server.",
+                action_taken=(
+                    "DJ marked as unreachable for this sequence. "
+                    "Outreach will proceed to next eligible DJ."
+                ),
+                manual_action=(
+                    "Verify the DJ's Discord privacy settings or their presence in the server."
+                ),
             )

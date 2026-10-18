@@ -12,9 +12,6 @@ Startup sequence:
   8. Start bot (Discord connects only AFTER DB is ready)
   9. On shutdown: close pool gracefully, release the single-instance lock
 
-Future stories extend the sequence:
-  - Story 3.x: add Notion poll(), read_slots(), write_booking() to NotionClient
-
 [Source: architecture.md#Implementation Sequence]
 [Source: architecture.md#Decision Impact Analysis]
 """

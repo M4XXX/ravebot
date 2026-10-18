@@ -1249,7 +1249,7 @@ class AdminCog(commands.Cog):
             )
             return
 
-        if event_date <= date.today():
+        if event_date <= schedule.today():  # the organizers' date, not the server's
             await reply(inter, 
                 "Invalid date. Please give a future date as YYYY-MM-DD.",
                 ephemeral=True,

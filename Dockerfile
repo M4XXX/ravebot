@@ -15,8 +15,9 @@ FROM python:3.13-slim AS builder
 
 WORKDIR /app
 
-# Install uv
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+# Install uv — pinned so builds are reproducible; bump together with your local uv
+# (`uv --version`) when uv.lock is regenerated
+COPY --from=ghcr.io/astral-sh/uv:0.13.1 /uv /usr/local/bin/uv
 
 # Optimise uv for Docker builds
 ENV UV_COMPILE_BYTECODE=1 \

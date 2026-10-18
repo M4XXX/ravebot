@@ -205,7 +205,8 @@ class RemindersService:
                 try:
                     if await is_under_intervention(self.db, discord_user_id):
                         logger.info(
-                            "RemindersService.send_reminders: skipping DJ %s (%s) — under admin intervention",
+                            "RemindersService.send_reminders: skipping DJ %s (%s) — "
+                            "under admin intervention",
                             dj_name,
                             discord_user_id,
                         )
