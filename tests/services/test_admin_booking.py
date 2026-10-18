@@ -130,7 +130,7 @@ async def test_book_slot_override_notion_write_fails(monkeypatch):
     )
 
     assert success is False
-    assert "notion write failed" in msg.lower()
+    assert "notion could not be updated" in msg.lower()
     release_mock.assert_awaited_once_with(svc.db, "evt-001", 0, 42)  # slot lock must be undone
     svc.log_service.post_admin_override.assert_not_awaited()  # no log on failure
 
@@ -159,7 +159,7 @@ async def test_book_slot_override_notion_failure_gives_slot_back_to_displaced_dj
 
     assert success is False
     assert "try again" in msg
-    hand_back.assert_awaited_once_with(svc.db, "evt-001", 0, 42, 999)
+    hand_back.assert_awaited_once_with(svc.db, "evt-001", 0, 42, 999, plan_text=None)
     release_mock.assert_not_awaited()
     svc.notion_client.delete_booking.assert_not_awaited()
 
@@ -267,7 +267,7 @@ async def test_cancel_slot_override_success(monkeypatch):
     svc.log_service.post_admin_override.assert_awaited_once()
     call = svc.log_service.post_admin_override.call_args[0][0]
     assert "[ADMIN OVERRIDE]" in call
-    assert "cancelled" in call
+    assert "canceled" in call
     assert "from" in call
     assert "DJ Scope" in call
     assert "Rave Night #12" in call

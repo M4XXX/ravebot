@@ -79,6 +79,31 @@ https://www.notion.so/yourworkspace/32characterhexid?v=viewid
 
 The database ID is the 32-character hex string between the last `/` and the `?v=` query parameter.
 
+### 2.6 Using an Existing Event Plan (`NOTION_LAYOUT=tds`)
+
+If your organizers already keep a planning database with one text column per hour, the bot can work in it directly instead of using the layout above. Set `NOTION_LAYOUT=tds` and point `NOTION_DATABASE_ID` at the plan (share it with the integration as in 2.3).
+
+The plan needs:
+
+| Property | Type | Notes |
+|---|---|---|
+| any title | Title | The event name; the column may be called anything (e.g. `Event`) |
+| `Date` | Date | Event date |
+| one column per slot | Text | Named by wall-clock hours, midnight written as `24:00`: with `/config set start-time 21:00`, `slot-duration 60` and `slots-per-event 6` these are `21:00 - 22:00`, `22:00 - 23:00`, `23:00 - 24:00`, `24:00 - 01:00`, `01:00 - 02:00`, `02:00 - 03:00` |
+| `Status` | Status or Select | Only needed with `NOTION_BOOKABLE_STATUSES` or `NOTION_CANCELLED_STATUSES` |
+
+How the bot behaves in this layout:
+
+- **A slot is free when its column is empty** and no DJ holds it in the bot. A name typed into the column by hand books the slot too, and so does any other text such as a dash or a note: leave a column empty to offer it. Columns outside the slot range (for example open decks after 03:00) are never touched, and `/admin book` accepts only slot numbers 1 to `slots-per-event`. A slot whose column is missing from the plan (say `start-time 20:00` with no `20:00 - 21:00` column) is never offered and is reported at startup.
+- **Booking writes the DJ's name into the slot's column** (self-booked or `/admin book`). The column is read again right before writing and must still be empty, even the same name typed in by hand counts as taken; a self-booking also checks that the event is still in a bookable status. If not, the booking is refused and the slot goes back. `/admin book` overwrites only the text the bot wrote for the DJ it displaces.
+- **The bot remembers the text it wrote** for every booked slot. Cancelling empties the column only while it still holds exactly that text, so a DJ who renamed their profile meanwhile, or a name an organizer changed, is handled correctly; whatever an organizer changed it to stays.
+- Notion has no conditional writes: if an organizer types into the very column in the second between the bot reading and writing it, the bot's name wins. The reconcile check does not see this case, so organizers should not type into a column a DJ is booking at that moment.
+- **DJ profiles stay in the bot's database.** No DJ pages are created in the plan, and the `Slots`, `DJs` and `Discord ID` properties are not used.
+- **`NOTION_BOOKABLE_STATUSES`** (comma-separated) limits self-booking and outreach to events in those statuses, e.g. `Planing-stage,Not started,Requires Host`. Other events still show in the lineup, marked as not open for booking; `/admin book` ignores the status. The first status in the list is set on events the bot creates.
+- **`NOTION_CANCELLED_STATUSES`** (comma-separated, e.g. `CANCLED,CANCLED (moved)`) marks nights that were called off: they get no reminders, are left out of the lineup and `/ravebot-status`, do not block `/add-event` for that day, and are skipped when `/admin book` finds two events on one date.
+- Status names are compared exactly, including case; names the database's Status property does not offer are reported at startup.
+- The reconcile check reports booked slots whose column does not show the text the bot wrote. Names typed in without a booking are how organizers plan and are not reported.
+
 ---
 
 ## 3. Environment Variables
@@ -93,6 +118,9 @@ Copy `.env.example` to `.env` and fill in your values. **Never commit `.env` to 
 | `NOTION_DATABASE_ID` | Yes | — | 32-character ID from your Notion database URL |
 | `ADMIN_USER_IDS` | Yes | — | Comma-separated Discord user IDs for admin slash commands |
 | `GUILD_ID` | No | — | Discord server ID the bot serves. Without it the bot serves the single server it is in, and **none** (with an error in the log) when it is in several. Set it in production. |
+| `NOTION_LAYOUT` | No | `classic` | `classic` for the database layout in 2.4, `tds` for an existing event plan with one column per slot (2.6) |
+| `NOTION_BOOKABLE_STATUSES` | No | — | Comma-separated status names DJs may book in (2.6); empty means every event is bookable |
+| `NOTION_CANCELLED_STATUSES` | No | — | Comma-separated status names that mean a night was called off (2.6) |
 | `LOG_LEVEL` | No | `INFO` | Log verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 | `DB_POOL_MIN` | No | `5` | Minimum asyncpg connection pool size |
 | `DB_POOL_MAX` | No | `20` | Maximum asyncpg connection pool size |

@@ -176,10 +176,15 @@ async def test_go_active_sends_modal() -> None:
 
 @pytest.mark.asyncio
 async def test_go_active_concurrent_guard() -> None:
-    """go_active sends ephemeral message and skips modal when lock is already held."""
+    """go_active sends ephemeral message and skips modal when a registered DJ's flow is open.
+
+    (Without a finished profile the held lock can only be a closed form's and is taken
+    over — see tests/test_onboarding_relock.py.)
+    """
     from bot.ui.views import OnboardingIntroView
 
     ctx = make_real_ctx(db=MagicMock())
+    ctx.db.fetchrow = AsyncMock(return_value={"onboarding_complete": True})
     view = OnboardingIntroView(ctx, 12345, guild_id=99999)
 
     # Pre-acquire the lock to simulate an active flow

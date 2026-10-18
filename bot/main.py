@@ -25,7 +25,7 @@ import disnake
 from disnake.ext import commands
 from dotenv import load_dotenv
 
-from bot import active, selfcheck
+from bot import active, selfcheck, slots
 from bot import guild as served
 from bot.config import Config
 from bot.context import BotContext
@@ -99,10 +99,17 @@ async def main() -> None:
     ctx.log_service = AdminLogService(bot=bot, db=ctx.db)
 
     # Story 1.5: init NotionClient after log_service is ready
+    slots.configure(
+        config.notion_layout,
+        frozenset(config.notion_bookable_statuses),
+        frozenset(config.notion_cancelled_statuses),
+    )
     ctx.notion_client = NotionClient(
         api_key=config.notion_api_key,
         database_id=config.notion_database_id,
         log_service=ctx.log_service,
+        layout=config.notion_layout,
+        new_event_status=(config.notion_bookable_statuses or (None,))[0],
     )
 
     # Story 3.2: init LineupService after DB and log_service are ready
@@ -158,6 +165,7 @@ async def main() -> None:
     @bot.event
     async def on_ready() -> None:  # noqa: RUF029
         logger.info("Bot ready")
+        served.remember_name(bot)  # texts and footers use the app's current name
         gid = served.resolve(bot)
         if gid is None:
             logger.error(
@@ -172,12 +180,20 @@ async def main() -> None:
         # Story 1.5: validate Notion schema now that Discord is connected
         # (admin log channel may already be configured for error posting)
         if ctx.notion_client is not None:
-            bot.loop.create_task(
-                ctx.notion_client.validate_schema(
-                    # Minimum required Notion database properties — extend in Story 3.x
-                    required_properties=["Name", "Date", "Slots", "DJs", "Discord ID"],
-                )
-            )
+            notion = ctx.notion_client
+
+            async def validate_notion() -> None:
+                # The required columns depend on the layout (tds: one per slot)
+                try:
+                    required = await slots.required_properties(ctx.db, gid)
+                    await notion.validate_schema(required_properties=required)
+                    await notion.validate_status_names(
+                        [*config.notion_bookable_statuses, *config.notion_cancelled_statuses]
+                    )
+                except Exception:  # a task that dies here would skip the check silently
+                    logger.exception("Notion schema check failed")
+
+            bot.loop.create_task(validate_notion())
 
     # In the container the bot is PID 1, which ignores SIGTERM unless it has a handler:
     # docker stop then killed it after 10 s, skipping the cleanup below.

@@ -104,7 +104,7 @@ async def test_two_slots_one_cancel_and_a_stale_button(pool) -> None:
     again = _inter(111)
     await first._handle_confirm(again)  # the old cancel button, tapped a second time
     assert await get_booked_slots(pool, ["evt-1"]) == {"evt-1": {0: 222, 1: 111}}
-    assert "no longer booked by you" in again.response.send_message.call_args.args[0]
+    assert "isn't booked by you anymore" in again.response.send_message.call_args.args[0]
 
     last = await _cancel_view(ctx, 111, 1)
     await last._handle_confirm(_inter(111))

@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 import disnake
 
-from bot import loops, schedule
+from bot import loops, schedule, slots
 from bot.db.bookings import get_booked_djs_for_event
 from bot.db.interventions import is_under_intervention
 from bot.db.reminders import has_reminder_been_sent, record_reminder_sent
@@ -148,7 +148,8 @@ class RemindersService:
 
         # Step 2: filter to 20-28h window (compute 'now' once for the whole cycle)
         now = _now if _now is not None else datetime.datetime.now(UTC)
-        upcoming = [e for e in events if self._is_in_reminder_window(e, now)]
+        # A night called off in Notion (NOTION_CANCELLED_STATUSES) gets no reminders
+        upcoming = [e for e in slots.active(events) if self._is_in_reminder_window(e, now)]
         if not upcoming:
             return
 
@@ -227,7 +228,7 @@ class RemindersService:
 
                 # Step 6/7: send DM
                 dm_text = (
-                    f"Heads up \u2014 you're booked tomorrow at <t:{slot_unix}:f>. "
+                    f"Heads up, you're booked tomorrow at <t:{slot_unix}:f>. "
                     "Get ready to drop some bangers! \U0001f3a7"
                 )
                 try:
@@ -247,7 +248,7 @@ class RemindersService:
                                 error_code=ErrorCode.ERR_DM_FAILED,
                                 trigger=(
                                     f"Day-before reminder DM failed for {dj_name} "
-                                    f"(ID: {discord_user_id}) \u2014 slot <t:{slot_unix}:f>"
+                                    f"(ID: {discord_user_id}), slot <t:{slot_unix}:f>"
                                 ),
                                 action_taken="Reminder not delivered. User has DMs blocked.",
                                 manual_action=(

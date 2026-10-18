@@ -37,6 +37,33 @@ async def test_two_djs_racing_for_one_slot_get_exactly_one_lock(pool) -> None:
     assert sorted(results) == [False, True]
 
 
+async def test_plan_text_lives_and_dies_with_the_booking(pool) -> None:
+    from bot.db.bookings import (
+        acquire_slot_lock,
+        admin_force_book_slot,
+        get_plan_text,
+        get_plan_texts,
+        hand_back_slot,
+        init_event_slots,
+        release_slot_lock,
+        set_plan_text,
+    )
+
+    await init_event_slots(pool, "evt", 6)
+    assert await acquire_slot_lock(pool, "evt", 1, 111)
+    await set_plan_text(pool, "evt", 1, 999, "Not the holder")  # ignored
+    assert await get_plan_text(pool, "evt", 1) is None
+    await set_plan_text(pool, "evt", 1, 111, "DJ One")
+    assert await get_plan_texts(pool, ["evt"]) == {("evt", 1): "DJ One"}
+    await admin_force_book_slot(pool, "evt", 1, 222)  # a new holder starts without text
+    assert await get_plan_text(pool, "evt", 1) is None
+    assert await hand_back_slot(pool, "evt", 1, 222, 111, plan_text="DJ One")
+    assert await get_plan_text(pool, "evt", 1) == "DJ One"
+    assert await release_slot_lock(pool, "evt", 1, 111)
+    assert await get_plan_text(pool, "evt", 1) is None
+    assert await get_plan_texts(pool, ["evt"]) == {}
+
+
 async def test_booked_slots_query_and_release(pool) -> None:
     from bot.db.bookings import (
         acquire_slot_lock,
@@ -69,6 +96,16 @@ async def test_profile_resubmission_updates_instead_of_failing(pool) -> None:
     assert row["dj_name"] == "Second Name" and row["onboarding_complete"] is True
     await set_notion_dj_page_id(pool, 7, "page-7")
     assert await get_notion_page_ids(pool, [7, 8]) == {7: "page-7"}
+
+
+async def test_dj_names_for_the_plan(pool) -> None:
+    from bot.db.djs import get_dj_names, insert_dj
+
+    for uid, name in ((7, "DJ Rayla"), (8, "Echo Fox")):
+        await insert_dj(pool, discord_user_id=uid, dj_name=name, vrchat_name=None, logo_url=None,
+                        stream_url_primary="https://example.com/a", stream_url_backup=None)
+    assert await get_dj_names(pool, [7, 8, 9]) == {7: "DJ Rayla", 8: "Echo Fox"}
+    assert await get_dj_names(pool, []) == {}
 
 
 @pytest.mark.passive  # use the real bot.active, not the conftest stub

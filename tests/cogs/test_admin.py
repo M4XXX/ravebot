@@ -250,12 +250,40 @@ async def test_intervene_end_calls_service_and_replies() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _dj_row(ctx: MagicMock, onboarding_complete: bool | None) -> None:
+    """Let get_dj_by_discord_id find the DJ (None = no row at all)."""
+    row = None if onboarding_complete is None else {"onboarding_complete": onboarding_complete}
+    ctx.db.fetchrow = AsyncMock(return_value=row)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("onboarding_complete", [None, False])
+async def test_admin_book_refuses_member_without_profile(onboarding_complete: bool | None) -> None:
+    """A member who never finished onboarding is not booked: they could not manage the slot."""
+    from bot.cogs.admin import AdminCog
+
+    ctx = make_mock_ctx(frozenset({1}))
+    ctx.admin_booking_service = MagicMock()
+    ctx.admin_booking_service.book_slot_override = AsyncMock(return_value=(True, ""))
+    _dj_row(ctx, onboarding_complete)
+
+    cog = AdminCog(ctx)
+    inter = make_mock_inter(user_id=1)
+    await cog.admin_book.callback(cog, inter, make_mock_member(user_id=42), "Rave Night #12", 2)
+
+    ctx.admin_booking_service.book_slot_override.assert_not_awaited()
+    call_args = inter.response.send_message.call_args
+    assert "/admin onboard" in call_args[0][0]
+    assert call_args[1].get("ephemeral") is True
+
+
 @pytest.mark.asyncio
 async def test_admin_book_calls_service_and_replies() -> None:
     """admin_book calls book_slot_override and sends success reply on (True, '')."""
     from bot.cogs.admin import AdminCog
 
     ctx = make_mock_ctx(frozenset({1}))
+    _dj_row(ctx, True)
     ctx.admin_booking_service = MagicMock()
     ctx.admin_booking_service.book_slot_override = AsyncMock(return_value=(True, ""))
 
@@ -284,6 +312,7 @@ async def test_admin_book_service_returns_error_replies_with_error() -> None:
     from bot.cogs.admin import AdminCog
 
     ctx = make_mock_ctx(frozenset({1}))
+    _dj_row(ctx, True)
     ctx.admin_booking_service = MagicMock()
     ctx.admin_booking_service.book_slot_override = AsyncMock(
         return_value=(False, "Event 'Ghost' not found in Notion.")
@@ -627,6 +656,7 @@ async def test_add_event_creates_event_and_replies() -> None:
     ctx = make_mock_ctx(frozenset({1}))
     ctx.notion_client = MagicMock()
     ctx.notion_client.create_event = AsyncMock(return_value="new-evt-id")
+    ctx.notion_client.poll_events = AsyncMock(return_value=[])
 
     cog = AdminCog(ctx)
     inter = make_mock_inter(user_id=1, guild_id=111)
@@ -720,6 +750,7 @@ async def test_add_event_notion_write_error_replies_error() -> None:
     ctx = make_mock_ctx(frozenset({1}))
     ctx.notion_client = MagicMock()
     ctx.notion_client.create_event = AsyncMock(side_effect=NotionWriteError("write failed"))
+    ctx.notion_client.poll_events = AsyncMock(return_value=[])
 
     cog = AdminCog(ctx)
     inter = make_mock_inter(user_id=1, guild_id=111)
@@ -1327,3 +1358,31 @@ async def test_cog_error_after_deferral_answers_by_followup() -> None:
     await cog.cog_slash_command_error(inter, RuntimeError("boom"))
     inter.followup.send.assert_awaited_once()
     inter.response.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_add_event_refuses_a_second_event_on_the_same_day() -> None:
+    """The plan names nights freely, so the date alone decides that an event already exists."""
+    from datetime import date, timedelta
+
+    from bot.cogs.admin import AdminCog
+
+    day = (date.today() + timedelta(days=10)).isoformat()
+    ctx = make_mock_ctx(frozenset({1}))
+    ctx.notion_client = MagicMock()
+    ctx.notion_client.create_event = AsyncMock()
+    ctx.notion_client.poll_events = AsyncMock(return_value=[{
+        "properties": {
+            "Event": {"type": "title", "title": [{"plain_text": "Casual Event"}]},
+            "Date": {"date": {"start": day}},
+        }
+    }])
+    cog = AdminCog(ctx)
+    inter = make_mock_inter(user_id=1)
+    cog._refuse_if_passive = AsyncMock(return_value=False)
+
+    await cog.add_event.callback(cog, inter, day)
+
+    ctx.notion_client.create_event.assert_not_awaited()
+    text = inter.response.send_message.call_args[0][0]
+    assert "Casual Event" in text and "nothing was created" in text
