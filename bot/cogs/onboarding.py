@@ -119,7 +119,7 @@ class OnboardingCog(commands.Cog):
                     error_code=ErrorCode.ERR_DM_FAILED,
                     trigger=(
                         f"Onboarding DM to {member.name} (user_id={member.id}) "
-                        "was blocked — user has DMs from server members disabled."
+                        "was blocked because they have DMs from server members turned off."
                     ),
                     action_taken="Onboarding DM skipped. DJ was not added to the booking pool.",
                     manual_action=(
@@ -172,7 +172,7 @@ class OnboardingCog(commands.Cog):
         lock = self.ctx.get_user_lock(message.author.id)
         if lock.locked():
             still_text = (
-                "You're still in the middle of something with me — finish it, or start over:"
+                "You're still in the middle of something with me. Finish it or start over:"
             )
             await message.channel.send(still_text, view=StartOverView(self.ctx))
             if self.ctx.log_service is not None:
@@ -195,7 +195,7 @@ class OnboardingCog(commands.Cog):
                     )
             return
 
-        fallback_text = "I work best with buttons — here's what I can do for you:"
+        fallback_text = "I work best with buttons. Here's what I can do for you:"
         await message.channel.send(fallback_text, view=FallbackMenuView(self.ctx))
         # Story 6.1 AC1: log outgoing fallback menu DM
         if self.ctx.log_service is not None:

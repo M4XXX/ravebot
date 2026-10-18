@@ -12,7 +12,7 @@ from bot.db.config import get_value, set_value
 CONFIG_KEY = "bot_active"
 
 PASSIVE_NOTICE = (
-    "RaveBot is in passive mode — nothing is sent to DJs. "
+    "RaveBot is in passive mode, so nothing is sent to DJs. "
     "An organizer can turn it on with /config set active on."
 )
 
@@ -27,4 +27,4 @@ async def is_active(pool: Any, guild_id: int | None) -> bool:
 async def set_active(pool: Any, guild_id: int, on: bool) -> None:
     await set_value(pool, guild_id, CONFIG_KEY, "on" if on else "off")
 
-DJ_NOTICE = "RaveBot isn't taking bookings right now — please try again later."
+DJ_NOTICE = "RaveBot isn't taking bookings right now. Please try again later."

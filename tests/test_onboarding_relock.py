@@ -110,8 +110,8 @@ async def test_menu_go_active_without_profile_starts_onboarding_for_dj_role_hold
 
 
 @pytest.mark.asyncio
-async def test_menu_go_active_without_profile_and_without_dj_role_gets_notice() -> None:
-    from bot.ui.views import NOT_REGISTERED_TEXT, FallbackMenuView
+async def test_menu_go_active_without_dj_role_gets_the_role_notice() -> None:
+    from bot.ui.views import NO_DJ_ROLE_TEXT, FallbackMenuView
 
     ctx = _ctx(None)
     guild = MagicMock(id=42)
@@ -122,7 +122,7 @@ async def test_menu_go_active_without_profile_and_without_dj_role_gets_notice() 
     ):
         await FallbackMenuView(ctx).go_active.callback(inter)
 
-    assert inter.response.send_message.call_args[0][0] == NOT_REGISTERED_TEXT
+    assert inter.response.send_message.call_args[0][0] == NO_DJ_ROLE_TEXT
 
 
 @pytest.mark.asyncio
@@ -134,3 +134,25 @@ async def test_start_over_is_mirrored_to_the_transcript() -> None:
     await StartOverView(ctx).start_over.callback(inter)  # disnake binds the button itself
     directions = [c.kwargs["direction"] for c in ctx.log_service.post_dm_transcript.await_args_list]
     assert directions == ["DJ", "BOT"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dj_row,roles,expected", [
+    ({"onboarding_complete": True}, [], "NO_DJ_ROLE_TEXT"),   # profile, role taken away
+    (None, [], "NOT_REGISTERED_TEXT"),                       # never onboarded
+    ({"onboarding_complete": False}, ["DJ"], "NOT_REGISTERED_TEXT"),
+])
+async def test_booking_refusal_says_what_is_missing(dj_row, roles, expected) -> None:
+    from bot import ui
+
+    ctx = _ctx(dj_row)
+    role_mocks = []
+    for name in roles:
+        role = MagicMock()
+        role.name = name
+        role_mocks.append(role)
+    guild = MagicMock(id=42)
+    guild.get_member = MagicMock(return_value=MagicMock(roles=role_mocks))
+    with patch("bot.ui.views.served.served_guild", return_value=guild):
+        text = await ui.views.not_registered_text(ctx, _inter())
+    assert text == getattr(ui.views, expected)

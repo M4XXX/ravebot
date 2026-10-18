@@ -327,8 +327,8 @@ class OutreachService:
         embed = ProactiveOutreachEmbed(event)
         view = OutreachView(ctx=ctx, event=event, discord_user_id=discord_user_id)
         opener = (
-            f"Hey! There's an open slot at **{event_name}** — "
-            "want to jump in? Take a look:"
+            f"Hey! There's an open slot at **{event_name}**. "
+            "Want to jump in? Take a look:"
         )
 
         # Send DM

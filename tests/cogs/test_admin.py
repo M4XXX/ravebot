@@ -1385,4 +1385,4 @@ async def test_add_event_refuses_a_second_event_on_the_same_day() -> None:
 
     ctx.notion_client.create_event.assert_not_awaited()
     text = inter.response.send_message.call_args[0][0]
-    assert "Casual Event" in text and "nothing created" in text
+    assert "Casual Event" in text and "nothing was created" in text

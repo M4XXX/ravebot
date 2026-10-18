@@ -116,7 +116,7 @@ async def report(pool: Any, guild_id: int, events: list[dict], log_service: Any)
     await log_service.post_error(
         error_code=ErrorCode.ERR_DATA_MISMATCH,
         trigger="Notion and the booking database disagree:\n" + "\n".join(lines),
-        action_taken="Nothing was changed — the bot never fixes this on its own.",
+        action_taken="Nothing was changed. The bot never fixes this on its own.",
         manual_action="Compare the event in Notion with /ravebot-status and correct it by hand.",
     )
     return mismatches

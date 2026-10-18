@@ -227,7 +227,7 @@ class RemindersService:
 
                 # Step 6/7: send DM
                 dm_text = (
-                    f"Heads up \u2014 you're booked tomorrow at <t:{slot_unix}:f>. "
+                    f"Heads up, you're booked tomorrow at <t:{slot_unix}:f>. "
                     "Get ready to drop some bangers! \U0001f3a7"
                 )
                 try:
@@ -247,7 +247,7 @@ class RemindersService:
                                 error_code=ErrorCode.ERR_DM_FAILED,
                                 trigger=(
                                     f"Day-before reminder DM failed for {dj_name} "
-                                    f"(ID: {discord_user_id}) \u2014 slot <t:{slot_unix}:f>"
+                                    f"(ID: {discord_user_id}), slot <t:{slot_unix}:f>"
                                 ),
                                 action_taken="Reminder not delivered. User has DMs blocked.",
                                 manual_action=(

@@ -40,13 +40,24 @@ def _is_valid_url(value: str) -> bool:
 
 
 ONBOARDING_INTRO_TEXT = (
-    "Hey! I'm RaveBot — I handle all DJ bookings here. Want me to add you to the booking pool?"
+    "Hey! I'm RaveBot and I handle the DJ bookings here. Want me to add you to the booking pool?"
 )
 
 NOT_REGISTERED_TEXT = (
-    "You're not set up as a DJ here yet — ask an organizer for the DJ role, "
+    "You're not set up as a DJ here yet. Ask an organizer for the DJ role, "
     "then finish the onboarding I send you."
 )
+
+NO_DJ_ROLE_TEXT = (
+    "You need the DJ role for that. Please ask an organizer to give it back to you."
+)
+
+
+def has_dj_role(inter: disnake.Interaction) -> bool:
+    """True if the user holds the DJ role (any letter case) in the served guild."""
+    guild = served.served_guild(inter.client)
+    member = guild.get_member(inter.author.id) if guild is not None else None
+    return member is not None and any(r.name.lower() == "dj" for r in member.roles)
 
 
 async def is_registered_dj(ctx: "BotContext", inter: disnake.Interaction) -> bool:
@@ -56,13 +67,22 @@ async def is_registered_dj(ctx: "BotContext", inter: disnake.Interaction) -> boo
     dj = await get_dj_by_discord_id(ctx.db, inter.author.id)
     if dj is None or not dj["onboarding_complete"]:
         return False
-    guild = served.served_guild(inter.client)
-    member = guild.get_member(inter.author.id) if guild is not None else None
-    return member is not None and any(r.name.lower() == "dj" for r in member.roles)
+    return has_dj_role(inter)
 
-STALE_MENU_TEXT = "This menu is out of date — send me any message to start over."
+
+async def not_registered_text(ctx: "BotContext", inter: disnake.Interaction) -> str:
+    """Why is_registered_dj said no: a finished profile without the DJ role, or no profile.
+
+    "You're not set up as a DJ" read wrong to a DJ whose role was only taken away.
+    """
+    dj = await get_dj_by_discord_id(ctx.db, inter.author.id) if ctx.db is not None else None
+    if dj is not None and dj["onboarding_complete"] is True and not has_dj_role(inter):
+        return NO_DJ_ROLE_TEXT
+    return NOT_REGISTERED_TEXT
+
+STALE_MENU_TEXT = "This menu is out of date. Send me any message to start over."
 NOT_YOUR_MENU_TEXT = "This menu belongs to someone else."
-FLOW_OPEN_TEXT = "Looks like you've got a flow already open — finish it, or start over:"
+FLOW_OPEN_TEXT = "You still have something open with me. Finish it or start over:"
 
 
 async def open_onboarding_form(
@@ -213,7 +233,7 @@ class ActiveOnlyView(disnake.ui.View):
 # How long a used single-use menu still answers taps with STALE_MENU_TEXT.
 USED_MENU_GRACE_SECONDS = 15 * 60
 
-FLOW_FAILED_TEXT = "Something went wrong on my side — send me any message to start over."
+FLOW_FAILED_TEXT = "Something went wrong on my side. Send me any message to start over."
 
 
 class StartOverView(ActiveOnlyView, persistent=True):
@@ -234,7 +254,7 @@ class StartOverView(ActiveOnlyView, persistent=True):
                 dj_name=inter.author.name, direction="DJ", content=f"[Button: {button.label}]"
             )
         self.ctx.get_user_lock(inter.author.id).release_if_held()
-        done_text = "Done — here's what I can do for you:"
+        done_text = "Done. Here's what I can do for you:"
         await reply(inter, done_text, view=FallbackMenuView(self.ctx))
         if self.ctx.log_service is not None:
             await self.ctx.log_service.post_dm_transcript(
@@ -311,7 +331,7 @@ class OnboardingIntroView(ActiveOnlyView, persistent=True):
                 direction="DJ",
                 content=f"[Button: {button.label}]",
             )
-        response_text = "No problem — you can always join later if you change your mind."
+        response_text = "No problem. You can join anytime if you change your mind."
         await reply(inter, response_text)
         # Story 6.1 AC1: log bot response
         if self.ctx.log_service is not None:
@@ -361,7 +381,7 @@ class OnboardingModal(disnake.ui.Modal):
                 ),
                 disnake.ui.TextInput(
                     label="VRChat Username",
-                    placeholder="Your VRChat username (optional — skip if not applicable)",
+                    placeholder="Your VRChat username (optional)",
                     custom_id="vrchat_name",
                     style=disnake.TextInputStyle.short,
                     max_length=100,
@@ -385,7 +405,7 @@ class OnboardingModal(disnake.ui.Modal):
                 ),
                 disnake.ui.TextInput(
                     label="Backup Stream URL",
-                    placeholder="https://twitch.tv/yourname (optional — skip if not applicable)",
+                    placeholder="https://twitch.tv/yourname (optional)",
                     custom_id="stream_url_backup",
                     style=disnake.TextInputStyle.short,
                     max_length=512,
@@ -445,8 +465,8 @@ class OnboardingModal(disnake.ui.Modal):
             field_list = " and ".join(invalid_fields)
             plural = "don't" if len(invalid_fields) > 1 else "doesn't"
             await reply(inter, 
-                f"Hmm, {field_list} {plural} look right — "
-                "URLs should start with https://. "
+                f"Hmm, {field_list} {plural} look right. "
+                "Links should start with https://. "
                 "Tap the button below to try again.",
                 view=RetryOnboardingModalView(self._ctx, inter.author.id, self._guild_id),
             )
@@ -464,7 +484,7 @@ class OnboardingModal(disnake.ui.Modal):
                     manual_action="Check DB pool initialisation in bot/main.py.",
                 )
             await reply(inter, 
-                "Something went wrong on our end — please try again in a moment.",
+                "Something went wrong on my side. Please try again in a moment.",
             )
             return
 
@@ -643,12 +663,12 @@ class FallbackMenuView(ActiveOnlyView, persistent=True):
                 content=f"[Button: {button.label}]",
             )
         if not await is_registered_dj(self.ctx, inter):
-            await reply(inter, NOT_REGISTERED_TEXT, ephemeral=True)
+            await reply(inter, await not_registered_text(self.ctx, inter), ephemeral=True)
             return
         lock = self.ctx.get_user_lock(inter.author.id)
         if lock.locked():
             await reply(inter, 
-                "You already have an active booking session — please complete or dismiss it first.",
+                "You already have a booking open. Please finish or dismiss it first.",
                 ephemeral=True,
             )
             return
@@ -658,7 +678,7 @@ class FallbackMenuView(ActiveOnlyView, persistent=True):
         if self.ctx.notion_client is None:
             lock.release()
             await reply(inter, 
-                "Something went wrong fetching events — try again in a moment.",
+                "I couldn't load the events. Please try again in a moment.",
                 ephemeral=True,
             )
             return
@@ -669,7 +689,7 @@ class FallbackMenuView(ActiveOnlyView, persistent=True):
             logger.exception("book_slot: poll_events() failed")
             lock.release()
             await reply(inter, 
-                "Something went wrong fetching events — try again in a moment.",
+                "I couldn't load the events. Please try again in a moment.",
                 ephemeral=True,
             )
             return
@@ -698,7 +718,7 @@ class FallbackMenuView(ActiveOnlyView, persistent=True):
                 name = "Unknown Event"
             start = schedule.event_start(event)
             date_display = f"<t:{int(start.timestamp())}:f>" if start else "(date unknown)"
-            lines.append(f"{i}. {name} — {date_display}")
+            lines.append(f"{i}. {name} · {date_display}")
 
         content = "\n".join(lines)
         view = EventSelectionView(self.ctx, events_with_open_slots, lock, inter.author.id)
@@ -743,7 +763,7 @@ class FallbackMenuView(ActiveOnlyView, persistent=True):
         # AC6: Per-user lock guard — same pattern as book_slot
         if lock.locked():
             await reply(inter, 
-                "You already have an active booking session — please complete or dismiss it first.",
+                "You already have a booking open. Please finish or dismiss it first.",
                 ephemeral=True,
             )
             return
@@ -753,7 +773,7 @@ class FallbackMenuView(ActiveOnlyView, persistent=True):
         if self.ctx.db is None:
             lock.release()
             await reply(inter, 
-                "Something went wrong on our end — please try again in a moment.",
+                "Something went wrong on my side. Please try again in a moment.",
                 ephemeral=True,
             )
             return
@@ -762,7 +782,7 @@ class FallbackMenuView(ActiveOnlyView, persistent=True):
         if self.ctx.notion_client is None:
             lock.release()
             await reply(inter, 
-                "Something went wrong on our end — please try again in a moment.",
+                "Something went wrong on my side. Please try again in a moment.",
                 ephemeral=True,
             )
             return
@@ -774,7 +794,7 @@ class FallbackMenuView(ActiveOnlyView, persistent=True):
             logger.exception("cancel_slot: get_dj_slot_locks failed")
             lock.release()
             await reply(inter, 
-                "Something went wrong fetching your bookings — try again in a moment.",
+                "I couldn't load your bookings. Please try again in a moment.",
                 ephemeral=True,
             )
             return
@@ -794,7 +814,7 @@ class FallbackMenuView(ActiveOnlyView, persistent=True):
             logger.exception("cancel_slot: poll_events() failed")
             lock.release()
             await reply(inter, 
-                "Something went wrong fetching the lineup — try again in a moment.",
+                "I couldn't load your bookings. Please try again in a moment.",
                 ephemeral=True,
             )
             return
@@ -854,9 +874,17 @@ class FallbackMenuView(ActiveOnlyView, persistent=True):
             )
         if self.ctx.db is None:
             await reply(inter, 
-                "Something went wrong on our end — please try again in a moment.",
+                "Something went wrong on my side. Please try again in a moment.",
                 ephemeral=True,
             )
+            return
+        # Without the DJ role the DJ could not book anyway; "back in the pool" would mislead
+        if not has_dj_role(inter):
+            await reply(inter, NO_DJ_ROLE_TEXT)
+            if self.ctx.log_service is not None:
+                await self.ctx.log_service.post_dm_transcript(
+                    dj_name=inter.author.name, direction="BOT", content=NO_DJ_ROLE_TEXT
+                )
             return
 
         updated = await update_active_booking(
@@ -866,20 +894,14 @@ class FallbackMenuView(ActiveOnlyView, persistent=True):
         )
 
         if not updated:
-            # No profile yet: a DJ-role holder can start the onboarding right here instead
+            # No profile yet: the DJ-role holder can start the onboarding right here instead
             # of asking an organizer to take the role away and give it back
-            guild = served.served_guild(inter.client)
-            member = guild.get_member(inter.author.id) if guild is not None else None
-            if member is not None and any(r.name.lower() == "dj" for r in member.roles):
-                await reply(inter, ONBOARDING_INTRO_TEXT,
-                            view=OnboardingIntroView(self.ctx, inter.author.id, guild.id))
-                reply_text = ONBOARDING_INTRO_TEXT
-            else:
-                await reply(inter, NOT_REGISTERED_TEXT)
-                reply_text = NOT_REGISTERED_TEXT
+            guild_id = served.resolve(inter.client) or 0
+            await reply(inter, ONBOARDING_INTRO_TEXT,
+                        view=OnboardingIntroView(self.ctx, inter.author.id, guild_id))
             if self.ctx.log_service is not None:
                 await self.ctx.log_service.post_dm_transcript(
-                    dj_name=inter.author.name, direction="BOT", content=reply_text
+                    dj_name=inter.author.name, direction="BOT", content=ONBOARDING_INTRO_TEXT
                 )
             return
 
@@ -901,7 +923,7 @@ class FallbackMenuView(ActiveOnlyView, persistent=True):
                         )
                 break
 
-        go_active_text = "You're back in the pool — I'll reach out when there's an open slot."
+        go_active_text = "You're back in the pool. I'll message you when a slot opens up."
         await reply(inter, go_active_text)
         # Story 6.1 AC1: log bot response
         if self.ctx.log_service is not None:
@@ -936,7 +958,7 @@ class FallbackMenuView(ActiveOnlyView, persistent=True):
             )
         if self.ctx.db is None:
             await reply(inter, 
-                "Something went wrong on our end — please try again in a moment.",
+                "Something went wrong on my side. Please try again in a moment.",
                 ephemeral=True,
             )
             return
@@ -965,7 +987,9 @@ class FallbackMenuView(ActiveOnlyView, persistent=True):
                         )
                 break
 
-        go_inactive_text = "Got it — I'll stop reaching out. You can still self-book anytime."
+        go_inactive_text = (
+            "Got it, I'll stop reaching out. You can still book a slot yourself anytime."
+        )
         await reply(inter, go_inactive_text)
         # Story 6.1 AC1: log bot response
         if self.ctx.log_service is not None:
@@ -1005,7 +1029,7 @@ class FallbackMenuView(ActiveOnlyView, persistent=True):
 
         if self.ctx.notion_client is None:
             await reply(inter, 
-                "Lineup data isn't available right now — check back soon!",
+                "The lineup isn't available right now. Check back soon!",
                 ephemeral=True,
             )
             return
@@ -1015,14 +1039,14 @@ class FallbackMenuView(ActiveOnlyView, persistent=True):
         except Exception:
             logger.exception("show_lineup: poll_events() failed")
             await reply(inter, 
-                "Something went wrong fetching the lineup — try again in a moment.",
+                "I couldn't load the lineup. Please try again in a moment.",
                 ephemeral=True,
             )
             return
 
         if not events:
             await reply(inter, 
-                "No upcoming events scheduled right now — check back soon!",
+                "There are no upcoming events right now. Check back soon!",
                 ephemeral=True,
             )
             return
@@ -1114,7 +1138,7 @@ class EventSelectionView(ActiveOnlyView):
         """[Never mind] — release lock and respond warmly. (AC5)"""
         self._release_lock()
         await reply(inter, 
-            "No problem — nothing was booked.",
+            "No problem, nothing was booked.",
             ephemeral=True,
         )
 
@@ -1222,7 +1246,7 @@ class SlotSelectionView(ActiveOnlyView):
         """[Never mind] — release lock and respond warmly. (AC5)"""
         self._release_lock()
         await reply(inter, 
-            "No problem — nothing was booked.",
+            "No problem, nothing was booked.",
             ephemeral=True,
         )
 
@@ -1367,7 +1391,7 @@ class BookingConfirmView(ActiveOnlyView):
         self,
         inter: disnake.MessageInteraction,
         event_id: str,
-        text: str = "Something went wrong saving your booking — please try again in a moment.",
+        text: str = "Something went wrong saving your booking. Please try again in a moment.",
     ) -> None:
         """Give the slot back after a failed booking and tell the DJ."""
         from bot.db.bookings import release_slot_lock
@@ -1383,7 +1407,7 @@ class BookingConfirmView(ActiveOnlyView):
         """[✖ Cancel] — release per-user lock and respond warmly. (AC4)"""
         self._release_lock()
         await reply(inter, 
-            "No problem — nothing was booked.",
+            "No problem, nothing was booked.",
             ephemeral=True,
         )
 
@@ -1404,7 +1428,7 @@ class BookingConfirmView(ActiveOnlyView):
         if self._ctx.db is None:
             self._release_lock()
             await reply(inter, 
-                "Something went wrong on our end — please try again in a moment.",
+                "Something went wrong on my side. Please try again in a moment.",
                 ephemeral=True,
             )
             return
@@ -1415,7 +1439,7 @@ class BookingConfirmView(ActiveOnlyView):
         if self._ctx.notion_client is None:
             self._release_lock()
             await reply(inter, 
-                "Something went wrong on our end — please try again in a moment.",
+                "Something went wrong on my side. Please try again in a moment.",
                 ephemeral=True,
             )
             return
@@ -1435,7 +1459,7 @@ class BookingConfirmView(ActiveOnlyView):
             )
             self._release_lock()
             await reply(inter, 
-                "Something went wrong — please try again.",
+                "Something went wrong. Please try again.",
                 ephemeral=True,
             )
             return
@@ -1547,7 +1571,7 @@ class BookingConfirmView(ActiveOnlyView):
             await self._undo_slot_claim(
                 inter,
                 event_id,
-                f"That slot was just filled in the plan ({exc.current}) — pick another one.",
+                f"That slot was just filled in the plan ({exc.current}). Please pick another one.",
             )
             return
         except Exception as exc:
@@ -1661,7 +1685,7 @@ class CancellationView(ActiveOnlyView):
         """[Never mind] — release lock and respond warmly."""
         self._release_lock()
         await reply(inter, 
-            "No problem — nothing was changed.",
+            "No problem, nothing was changed.",
             ephemeral=True,
         )
 
@@ -1784,7 +1808,7 @@ class CancelConfirmView(ActiveOnlyView):
     async def _handle_keep(self, inter: disnake.MessageInteraction) -> None:
         """[✖ Keep It] — release per-user lock and respond warmly. (AC5)"""
         self._release_lock()
-        keep_text = "No changes made — you're still booked."
+        keep_text = "Okay, nothing changed. You're still booked."
         await reply(inter, keep_text, ephemeral=True)
         if self._ctx.log_service is not None:
             await self._ctx.log_service.post_dm_transcript(
@@ -1809,7 +1833,7 @@ class CancelConfirmView(ActiveOnlyView):
         if self._ctx.db is None:
             self._release_lock()
             await reply(inter, 
-                "Something went wrong on our end — please try again in a moment.",
+                "Something went wrong on my side. Please try again in a moment.",
                 ephemeral=True,
             )
             return
@@ -1818,7 +1842,7 @@ class CancelConfirmView(ActiveOnlyView):
         if self._ctx.notion_client is None:
             self._release_lock()
             await reply(inter, 
-                "Something went wrong on our end — please try again in a moment.",
+                "Something went wrong on my side. Please try again in a moment.",
                 ephemeral=True,
             )
             return
@@ -1845,7 +1869,7 @@ class CancelConfirmView(ActiveOnlyView):
         if not freed:
             self._release_lock()
             await reply(inter,
-                "This slot is no longer booked by you — nothing was changed.",
+                "This slot isn't booked by you anymore, so nothing was changed.",
                 ephemeral=True,
             )
             return
@@ -1878,7 +1902,7 @@ class CancelConfirmView(ActiveOnlyView):
 
         # Confirmation message (AC4)
         await reply(inter, 
-            "Done — your slot has been cancelled. The slot is now open for others.",
+            "Done, your slot is canceled and open for other DJs now.",
         )
 
         # Trigger lineup channel post — best-effort (AC4)
@@ -1896,7 +1920,7 @@ class CancelConfirmView(ActiveOnlyView):
                 await self._ctx.log_service.post_interaction(
                     dj_name=str(inter.author),
                     action_type="Cancellation",
-                    outcome=f"Slot {self._slot_index + 1} cancelled",
+                    outcome=f"Slot {self._slot_index + 1} canceled",
                     event=f"{event_name} \u00b7 {slot_display}",
                 )
             except Exception:
@@ -1975,7 +1999,7 @@ class OutreachView(ActiveOnlyView, single_use=False):
                 logger.exception("OutreachView.on_timeout: admin log post failed")
 
     @disnake.ui.button(
-        label="🎧 Accept — Show Slots",
+        label="🎧 Yes, Show Slots",
         style=disnake.ButtonStyle.success,
         custom_id="outreach:accept",
     )
@@ -2042,7 +2066,7 @@ class OutreachView(ActiveOnlyView, single_use=False):
         if not open_slot_indices:
             lock.release()
             await reply(inter, 
-                "Looks like those slots just got filled — nothing available right now!",
+                "Looks like those slots just got filled. Nothing is open right now.",
                 ephemeral=True,
             )
             return
@@ -2091,7 +2115,7 @@ class OutreachView(ActiveOnlyView, single_use=False):
             except Exception as exc:
                 logger.warning("OutreachView.decline: DB update failed: %s", exc)
 
-        decline_text = "No worries — I'll reach out again next time!"
+        decline_text = "No worries, I'll ask again next time!"
         await reply(inter, decline_text)
         # Story 6.1 AC1: log bot response
         if self._ctx.log_service is not None:

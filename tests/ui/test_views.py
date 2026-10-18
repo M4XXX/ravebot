@@ -313,6 +313,9 @@ async def test_fallback_go_active_updates_db_assigns_role() -> None:
     role.name = "Active Booking"
     member = MagicMock(spec=disnake.Member)
     member.add_roles = AsyncMock()
+    dj_role = MagicMock(spec=disnake.Role)
+    dj_role.name = "DJ"
+    member.roles = [dj_role]  # Go Active needs the DJ role
     guild = MagicMock(spec=disnake.Guild)
     guild.get_member.return_value = member
     inter.client.guilds = [guild]
@@ -483,7 +486,7 @@ async def test_show_lineup_handles_poll_exception() -> None:
     inter.response.send_message.assert_awaited_once()
     call_args = inter.response.send_message.call_args
     msg = call_args[0][0] if call_args[0] else call_args.kwargs.get("content", "")
-    assert "something went wrong" in msg.lower() or "wrong" in msg.lower()
+    assert "couldn't load" in msg.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -1286,7 +1289,7 @@ async def test_cancel_confirm_confirm_calls_delete_booking() -> None:
     mock_release.assert_awaited_once_with(ctx.db, "evt-cancel-04", 0, 30006)
     inter.response.send_message.assert_awaited_once()
     msg = inter.response.send_message.call_args[0][0]
-    assert "cancelled" in msg.lower()
+    assert "canceled" in msg.lower()
     assert not lock.locked()  # lock released
 
 
@@ -1326,7 +1329,7 @@ async def test_cancel_confirm_notion_write_error_releases_lock() -> None:
     ctx.notion_client.delete_booking.assert_awaited_once()
     inter.response.send_message.assert_awaited_once()
     msg = inter.response.send_message.call_args[0][0]
-    assert "cancelled" in msg.lower()
+    assert "canceled" in msg.lower()
     assert not lock.locked()  # lock released
 
 
@@ -1359,7 +1362,7 @@ async def test_cancel_confirm_for_a_slot_no_longer_mine_changes_nothing() -> Non
         await view._handle_confirm(inter)
     ctx.notion_client.delete_booking.assert_not_awaited()
     msg = inter.response.send_message.call_args[0][0]
-    assert "no longer booked by you" in msg
+    assert "isn't booked by you anymore" in msg
     assert not lock.locked()
 
 
@@ -1372,7 +1375,7 @@ async def test_cancel_confirm_keeps_notion_link_while_another_slot_is_held() -> 
          patch("bot.db.bookings.release_slot_lock", new=AsyncMock(return_value=True)):
         await view._handle_confirm(inter)
     ctx.notion_client.delete_booking.assert_not_awaited()
-    assert "cancelled" in inter.response.send_message.call_args[0][0].lower()
+    assert "canceled" in inter.response.send_message.call_args[0][0].lower()
     assert not lock.locked()
 
 

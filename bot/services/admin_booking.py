@@ -91,13 +91,13 @@ class AdminBookingService:
             if day is not None:
                 names = ", ".join(self._get_event_name(e) or "?" for e in matches)
                 return None, (
-                    f"{len(matches)} events on {day.isoformat()} ({names}) — "
-                    "remove the duplicate in Notion first."
+                    f"{len(matches)} events on {day.isoformat()} ({names}). "
+                    "Please remove the duplicate in Notion first."
                 )
             dates = ", ".join(d.isoformat() for e in matches if (d := _event_day(e)))
             return None, (
-                f"{len(matches)} upcoming events are called '{query}' — "
-                f"give the date instead ({dates})."
+                f"{len(matches)} upcoming events are called '{query}'. "
+                f"Please give the date instead ({dates})."
             )
         return matches[0], ""
 
@@ -150,14 +150,14 @@ class AdminBookingService:
         [Source: epics.md#Story 6.3 AC1]
         """
         if self.notion_client is None:
-            return False, "Bot is still connecting to Notion — please try again."
+            return False, "The bot is still connecting to Notion. Please try again in a moment."
 
         # Step 1: fetch future events
         try:
             events = await self.notion_client.poll_events()
         except Exception:
             logger.exception("admin book: poll_events failed")
-            return False, "Could not fetch events from Notion — please try again."
+            return False, "Could not load the events from Notion. Please try again."
 
         # Step 2: find matching event
         event, problem = self._find_event(events, event_name)
@@ -177,7 +177,7 @@ class AdminBookingService:
             previous_holder = await get_slot_lock_holder(self.db, event_id, slot_index)
         except Exception:
             logger.exception("admin book: get_slot_lock_holder failed")
-            return False, "Database error checking slot — please try again."
+            return False, "Database error while checking the slot. Please try again."
         displaced = previous_holder if previous_holder not in (None, dj_id) else None
 
         # Step 4: get DJ's Notion page ID (None is acceptable — best-effort)
@@ -192,14 +192,14 @@ class AdminBookingService:
             replaces = await self._cell_name(displaced)
         except Exception:
             logger.exception("admin book: reading DJ names failed")
-            return False, "Database error reading the DJ — please try again."
+            return False, "Database error while reading the DJ. Please try again."
 
         # Step 5: force-book in PostgreSQL slot_locks (UPSERT, bypasses race guard)
         try:
             await admin_force_book_slot(self.db, event_id, slot_index, dj_id)
         except Exception:
             logger.exception("admin book: admin_force_book_slot failed")
-            return False, "Database error writing slot lock — please try again."
+            return False, "Database error while saving the slot. Please try again."
 
         # Step 6: write to Notion (retry x3 built into write_booking)
         try:
@@ -229,15 +229,15 @@ class AdminBookingService:
                 undone = False
             if not undone:
                 return False, (
-                    "Notion write failed, and the slot could not be given back to the DJ who "
-                    "had it — check it with /ravebot-status."
+                    "Notion could not be updated, and the slot could not be given back to the DJ "
+                    "who had it. Please check it with /ravebot-status."
                 )
             if isinstance(exc, NotionSlotTakenError):
                 return False, (
-                    f"Slot {slot_num} already says '{exc.current}' in the plan — the bot never "
-                    "overwrites what was typed in by hand. Clear it in Notion first."
+                    f"Slot {slot_num} already says '{exc.current}' in the plan. The bot never "
+                    "overwrites what was typed in by hand, so please clear it in Notion first."
                 )
-            return False, "Notion write failed after 3 attempts — please try again."
+            return False, "Notion could not be updated after 3 attempts. Please try again."
 
         slot_display = f"<t:{slot_unix}:f>" if slot_unix else "your slot"
 
@@ -261,8 +261,8 @@ class AdminBookingService:
                     "admin book: could not unlink displaced DJ %s in Notion", displaced
                 )
                 note = (
-                    "The DJ who had this slot may still be linked to the event in Notion — "
-                    "please check it there."
+                    "The DJ who had this slot may still be linked to the event in Notion. "
+                    "Please check it there."
                 )
             await self._dm_dj(
                 displaced,
@@ -310,14 +310,14 @@ class AdminBookingService:
         [Source: epics.md#Story 6.3 AC2, AC3]
         """
         if self.notion_client is None:
-            return False, "Bot is still connecting to Notion — please try again."
+            return False, "The bot is still connecting to Notion. Please try again in a moment."
 
         # Step 1: fetch future events
         try:
             events = await self.notion_client.poll_events()
         except Exception:
             logger.exception("admin cancel: poll_events failed")
-            return False, "Could not fetch events from Notion — please try again."
+            return False, "Could not load the events from Notion. Please try again."
 
         # Step 2: find matching event
         event, problem = self._find_event(events, event_name)
@@ -333,7 +333,7 @@ class AdminBookingService:
             holder = await get_slot_lock_holder(self.db, event_id, slot_index)
         except Exception:
             logger.exception("admin cancel: get_slot_lock_holder failed")
-            return False, "Database error checking slot — please try again."
+            return False, "Database error while checking the slot. Please try again."
 
         if holder != dj_id:
             return False, f"No booking found for @{dj_name} in that slot."
@@ -347,7 +347,7 @@ class AdminBookingService:
             freed = await release_slot_lock(self.db, event_id, slot_index, dj_id)
         except Exception:
             logger.exception("admin cancel: release_slot_lock failed")
-            return False, "Database error releasing slot — please try again."
+            return False, "Database error while releasing the slot. Please try again."
         if not freed:
             return False, f"No booking found for @{dj_name} in that slot."
 
@@ -375,21 +375,21 @@ class AdminBookingService:
         slot_display = f"<t:{slot_unix}:f>" if slot_unix else "your slot"
         await self._dm_dj(
             dj_id,
-            f"An organizer has cancelled your booking for {event_name} at {slot_display}.",
+            f"An organizer has canceled your booking for {event_name} at {slot_display}.",
         )
 
         # Step 8: log override to admin channel
         if self.log_service is not None:
             msg = (
-                f"[ADMIN OVERRIDE] @{admin_name} cancelled @{dj_name}"
+                f"[ADMIN OVERRIDE] @{admin_name} canceled @{dj_name}"
                 f" from {event_name} at {slot_display}"
             )
             await self.log_service.post_admin_override(msg)
 
         if notion_error is not None:
             return False, (
-                "Slot released, but Notion could not be updated — "
-                "please unlink the DJ there by hand."
+                "Slot released, but Notion could not be updated. "
+                "Please remove the DJ there by hand."
             )
         return True, ""
 
