@@ -465,3 +465,67 @@ def test_mission_roster_field_name_of_exactly_256_characters_is_kept() -> None:
     exact = "y" * 256
     embed = MissionRosterEmbed([_booked_event(exact)])
     assert embed.fields[0].name == exact
+
+
+class TestLineupUpdateEmbed:
+    def _event(self, slots, slot_count=3):
+        return make_event(
+            event_id="EV-1",
+            date=datetime.date(2026, 11, 14),
+            start=datetime.time(18, 0),
+            slot_count=slot_count,
+            slots=slots,
+        )
+
+    def test_lineup_text_exact(self) -> None:
+        from bot.ui.embeds import lineup_text
+
+        event = self._event(
+            [make_slot(1), make_slot(2, dj_page_id="d1", dj_name="Nova")]
+        )
+        assert lineup_text(event) == (
+            "Event Saturday 14.11.2026\n"
+            "Slot 1  18:00  OPEN SLOT\n"
+            "Slot 2  19:00  Nova\n"
+            "Slot 3  20:00  OPEN SLOT"
+        )
+
+    def test_name_escaped(self) -> None:
+        from bot.ui.embeds import lineup_text
+
+        event = self._event(
+            [make_slot(1, dj_page_id="d1", dj_name="**x** @everyone <@1>")], slot_count=1
+        )
+        text = lineup_text(event)
+        assert "@everyone" not in text.replace("@​everyone", "")
+        assert "<@1>" not in text
+
+    def test_dj_on_two_slots(self) -> None:
+        from bot.ui.embeds import lineup_text
+
+        event = self._event(
+            [
+                make_slot(1, dj_page_id="d1", dj_name="Nova"),
+                make_slot(3, dj_page_id="d1", dj_name="Nova"),
+            ]
+        )
+        assert lineup_text(event).count("Nova") == 2
+
+    def test_truncation(self) -> None:
+        from bot.ui.embeds import LineupUpdateEmbed
+
+        slots = [make_slot(i, dj_page_id=f"d{i}", dj_name="n" * 100) for i in range(1, 101)]
+        event = self._event(slots, slot_count=100)
+        embed = LineupUpdateEmbed(event)
+        assert embed.description is not None
+        assert len(embed.description) <= 4096
+        assert embed.description.splitlines()[-1].endswith(" slots not shown")
+
+    def test_embed_title_footer_color(self) -> None:
+        from bot.ui.embeds import LineupUpdateEmbed
+
+        embed = LineupUpdateEmbed(self._event([]))
+        assert embed.title == "Lineup Update"
+        assert embed.footer.text == "EV-1"
+        assert embed.colour is not None
+        assert embed.colour.value == EmbedColors.MISSION_GOLD

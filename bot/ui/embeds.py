@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 import disnake
 
 from bot.notion.models import EventInfo
+from bot.ui import texts
 
 
 class EmbedColors(enum.IntEnum):
@@ -325,3 +326,43 @@ class ProactiveOutreachEmbed(disnake.Embed):
             inline=True,
         )
         self.set_footer(text="RaveBot")
+
+
+_MAX_DESCRIPTION = 4096
+
+
+def lineup_text(event: EventInfo) -> str:
+    """Lineup body: event line plus one line per slot; whole lines, capped at 4096 chars."""
+    by_number = {slot.number: slot for slot in event.slots}
+    lines = [f"Event {texts.fmt_date(event)}"]
+    for index in range(event.slot_count):
+        slot = by_number.get(index + 1)
+        holder = (
+            _safe_dj_name(slot.dj_name)
+            if slot is not None and slot.dj_page_id is not None
+            else "OPEN SLOT"
+        )
+        lines.append(f"Slot {index + 1}  {texts.fmt_time(event, index)}  {holder}")
+    text = "\n".join(lines)
+    if len(text) <= _MAX_DESCRIPTION:
+        return text
+    slot_lines = lines[1:]
+    for keep in range(len(slot_lines), -1, -1):
+        hidden = len(slot_lines) - keep
+        note = f"{hidden} slots not shown"
+        candidate = "\n".join([lines[0], *slot_lines[:keep], note])
+        if len(candidate) <= _MAX_DESCRIPTION:
+            return candidate
+    return lines[0]
+
+
+class LineupUpdateEmbed(disnake.Embed):
+    """Public lineup post for one event."""
+
+    def __init__(self, event: EventInfo) -> None:
+        super().__init__(
+            title="Lineup Update",
+            description=lineup_text(event),
+            colour=EmbedColors.MISSION_GOLD,
+        )
+        self.set_footer(text=event.event_id)
