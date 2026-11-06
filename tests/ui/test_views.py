@@ -2280,3 +2280,29 @@ async def test_post_button_no_open_events_replies_privately() -> None:
     inter.author.send.assert_not_awaited()
     inter.followup.send.assert_awaited_once_with(texts.NO_EVENTS, ephemeral=True)
     assert not ctx.get_user_lock(77).locked()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("slot_count", "note"), [(25, True), (24, False), (3, False)])
+async def test_picker_note_only_when_slots_hidden(slot_count: int, note: bool) -> None:
+    from bot.ui.views import EventSelectionView, OutreachView
+
+    expected = f"{texts.PICK_SLOT}\n{texts.PICK_SLOT_TRUNCATED}" if note else texts.PICK_SLOT
+    event = make_event(page_id="evt-n", slot_count=slot_count)
+
+    ctx = make_real_ctx(db=None)
+    lock = ctx.get_user_lock(40060)
+    await lock.acquire()
+    inter = MagicMock(spec=disnake.MessageInteraction)
+    inter.response.send_message = AsyncMock()
+    await EventSelectionView(ctx, [event], lock, 40060)._handle_event(inter, event)
+    assert inter.response.send_message.call_args.kwargs["content"] == expected
+
+    ctx2 = make_real_ctx(db=None)
+    ctx2.notion_client = MagicMock()
+    ctx2.notion_client.list_events = AsyncMock(return_value=[event])
+    inter2 = MagicMock(spec=disnake.MessageInteraction)
+    inter2.author.id = 40061
+    inter2.response.send_message = AsyncMock()
+    await OutreachView(ctx=ctx2, event=event, discord_user_id=40061).accept.callback(inter2)
+    assert inter2.response.send_message.call_args.kwargs["content"] == expected

@@ -58,6 +58,7 @@ BTN_NOT_THIS_TIME = "Not this time"
 INVITE_DECLINED = "No problem. I'll ask again when another slot opens."
 INVITE_FILLED = "Those slots were just taken. Nothing is open right now."
 PICK_SLOT = "Which slot do you want?"
+PICK_SLOT_TRUNCATED = "Showing the first 24 open slots."
 BTN_NEVER_MIND = "Never mind"
 
 

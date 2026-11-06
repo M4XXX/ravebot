@@ -760,6 +760,16 @@ def _open_slot_indices(event: "EventInfo") -> list[int]:
     return [i for i in range(event.slot_count) if i + 1 not in held]
 
 
+MAX_SLOT_BUTTONS = 24  # Discord allows 25 components per message, one is Never mind
+
+
+def _pick_slot_content(open_slot_indices: list[int]) -> str:
+    """Slot picker message text; adds a note when buttons cannot show every open slot."""
+    if len(open_slot_indices) > MAX_SLOT_BUTTONS:
+        return f"{texts.PICK_SLOT}\n{texts.PICK_SLOT_TRUNCATED}"
+    return texts.PICK_SLOT
+
+
 def _filter_events_with_open_slots(events: list["EventInfo"]) -> list["EventInfo"]:
     """Return only events that have at least one open slot (see _open_slot_indices)."""
     return [event for event in events if _open_slot_indices(event)]
@@ -956,7 +966,10 @@ class EventSelectionView(disnake.ui.View):
         )
         try:
             await inter.response.send_message(
-                content=texts.PICK_SLOT, embed=embed, view=slot_view, ephemeral=True
+                content=_pick_slot_content(open_slot_indices),
+                embed=embed,
+                view=slot_view,
+                ephemeral=True,
             )
         except Exception:
             logger.exception("_handle_event: send_message failed")
@@ -1001,8 +1014,7 @@ class SlotSelectionView(disnake.ui.View):
 
         event_id = event.page_id
 
-        # Discord allows 25 components per message, one is Never mind
-        for row_idx, slot_index in enumerate(open_slot_indices[:24]):
+        for row_idx, slot_index in enumerate(open_slot_indices[:MAX_SLOT_BUTTONS]):
             btn = disnake.ui.Button(
                 label=texts.slot_button(event, slot_index),
                 style=disnake.ButtonStyle.secondary,
@@ -1891,7 +1903,9 @@ class OutreachView(disnake.ui.View):
         slot_view = SlotSelectionView(self._ctx, event, open_slot_indices, lock, inter.author.id)
         try:
             await inter.response.send_message(
-                content=texts.PICK_SLOT, embed=embed, view=slot_view
+                content=_pick_slot_content(open_slot_indices),
+                embed=embed,
+                view=slot_view,
             )
         except Exception:
             logger.exception("OutreachView.accept: send_message failed")
