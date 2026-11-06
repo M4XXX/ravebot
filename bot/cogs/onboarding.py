@@ -16,6 +16,7 @@ from disnake.ext import commands
 from bot.context import BotContext
 from bot.db.djs import get_dj_by_discord_id
 from bot.db.interventions import is_under_intervention
+from bot.ui import texts
 from bot.ui.embeds import ErrorCode
 from bot.ui.views import FallbackMenuView, OnboardingIntroView
 
@@ -143,8 +144,17 @@ class OnboardingCog(commands.Cog):
         lock = self.ctx.get_user_lock(message.author.id)
         if lock.locked():
             return
-        fallback_text = "I work best with buttons — here's what I can do for you:"
-        await message.channel.send(fallback_text, view=FallbackMenuView(self.ctx))
+        active: bool | None = None
+        if self.ctx.db is not None:
+            try:
+                dj = await get_dj_by_discord_id(self.ctx.db, message.author.id)
+            except Exception:
+                logger.exception("on_message: DJ lookup failed for %s", message.author.id)
+                dj = None
+            if dj is not None:
+                active = bool(dj["active_booking"])
+        fallback_text = texts.MENU
+        await message.channel.send(fallback_text, view=FallbackMenuView(self.ctx, active))
         # Story 6.1 AC1: log outgoing fallback menu DM
         if self.ctx.log_service is not None:
             await self.ctx.log_service.post_dm_transcript(

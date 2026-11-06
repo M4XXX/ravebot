@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import disnake
 import pytest
 
+from bot.ui import texts
 from bot.ui.embeds import ErrorCode
 from tests.conftest import make_real_ctx
 
@@ -353,7 +354,40 @@ async def test_on_message_dm_logs_transcript_for_incoming_and_outgoing(
     assert incoming["content"] == "hello bot"
     outgoing = calls[1].kwargs
     assert outgoing["direction"] == "BOT"
-    assert "buttons" in outgoing["content"].lower()
+    assert outgoing["content"] == texts.MENU
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("row", "expected"),
+    [
+        (None, texts.BTN_INVITES_ON),
+        ({"active_booking": False}, texts.BTN_INVITES_ON),
+        ({"active_booking": True}, texts.BTN_INVITES_OFF),
+    ],
+)
+async def test_on_message_menu_matches_dj_state(
+    monkeypatch: pytest.MonkeyPatch, row: object, expected: str
+) -> None:
+    from bot.cogs.onboarding import OnboardingCog
+
+    monkeypatch.setattr(
+        "bot.cogs.onboarding.is_under_intervention", AsyncMock(return_value=False)
+    )
+    monkeypatch.setattr("bot.cogs.onboarding.get_dj_by_discord_id", AsyncMock(return_value=row))
+    cog = OnboardingCog(make_real_ctx(db=MagicMock()))
+    message = MagicMock(spec=disnake.Message)
+    message.guild = None
+    message.author.id = 1
+    message.author.bot = False
+    message.channel.send = AsyncMock()
+
+    await cog.on_message(message)
+
+    view = message.channel.send.call_args.kwargs["view"]
+    labels = [c.label for c in view.children]
+    assert expected in labels
+    assert message.channel.send.call_args[0][0] == texts.MENU
 
 
 # ---------------------------------------------------------------------------

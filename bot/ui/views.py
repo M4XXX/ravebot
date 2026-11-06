@@ -382,10 +382,9 @@ class FallbackMenuView(disnake.ui.View):
     Shown when a DJ sends free text outside any active multi-step flow.
     NOT shown during active onboarding (on_message checks the lock first).
 
-    Buttons per UX-DR1:
-      Row 0: [Book a Slot] (primary) · [Cancel a Slot] (secondary)
-      Row 1: [Go Active] (success) · [Go Inactive] (secondary)
-      Row 2: [Show Lineup] (primary)
+    Buttons: Book a slot, Cancel a slot, Show lineup and exactly one pool button:
+    "Contact me for Booking" (active False/None) or "Don't automatically ask for
+    booking" (active True). The other pool button is removed in __init__.
 
     timeout=None: DJ-facing views never expire (UX-DR16).
     No per-user lock: Go Active/Go Inactive are single-step interactions.
@@ -394,9 +393,13 @@ class FallbackMenuView(disnake.ui.View):
     [Source: ux-design-specification.md#UX-DR1, UX-DR13, UX-DR16]
     """
 
-    def __init__(self, ctx: "BotContext") -> None:
+    def __init__(self, ctx: "BotContext", active: bool | None = None) -> None:
         super().__init__(timeout=None)
         self.ctx = ctx
+        if active:
+            self.remove_item(self.go_active)
+        else:
+            self.remove_item(self.go_inactive)
 
     async def on_timeout(self) -> None:
         """No-op: timeout=None means this never fires.
@@ -404,7 +407,7 @@ class FallbackMenuView(disnake.ui.View):
         """
 
     @disnake.ui.button(
-        label="📅 Book a Slot",
+        label=texts.BTN_BOOK,
         style=disnake.ButtonStyle.primary,
         custom_id="fallback:book_slot",
         row=0,
@@ -445,7 +448,7 @@ class FallbackMenuView(disnake.ui.View):
             )
 
     @disnake.ui.button(
-        label="❌ Cancel a Slot",
+        label=texts.BTN_CANCEL,
         style=disnake.ButtonStyle.secondary,
         custom_id="fallback:cancel_slot",
         row=0,
@@ -562,7 +565,7 @@ class FallbackMenuView(disnake.ui.View):
             )
 
     @disnake.ui.button(
-        label="✅ Go Active",
+        label=texts.BTN_INVITES_ON,
         style=disnake.ButtonStyle.success,
         custom_id="fallback:go_active",
         row=1,
@@ -597,11 +600,7 @@ class FallbackMenuView(disnake.ui.View):
         )
 
         if not updated:
-            await inter.response.send_message(
-                "Looks like you haven't set up your profile yet! "
-                "You'll need to complete onboarding first — "
-                "ask an organizer to re-assign your DJ role to get started.",
-            )
+            await inter.response.send_message(texts.NO_PROFILE, ephemeral=True)
             return
 
         # Assign Active Booking role (best-effort — failure does not block confirmation)
@@ -622,7 +621,7 @@ class FallbackMenuView(disnake.ui.View):
                         )
                 break
 
-        go_active_text = "You're back in the pool — I'll reach out when there's an open slot."
+        go_active_text = texts.INVITES_ON_DONE
         await inter.response.send_message(go_active_text)
         # Story 6.1 AC1: log bot response
         if self.ctx.log_service is not None:
@@ -633,7 +632,7 @@ class FallbackMenuView(disnake.ui.View):
             )
 
     @disnake.ui.button(
-        label="🚫 Go Inactive",
+        label=texts.BTN_INVITES_OFF,
         style=disnake.ButtonStyle.secondary,
         custom_id="fallback:go_inactive",
         row=1,
@@ -661,11 +660,14 @@ class FallbackMenuView(disnake.ui.View):
             )
             return
 
-        await update_active_booking(
+        updated = await update_active_booking(
             self.ctx.db,
             discord_user_id=inter.author.id,
             active_booking=False,
         )
+        if not updated:
+            await inter.response.send_message(texts.NO_PROFILE, ephemeral=True)
+            return
 
         # Remove Active Booking role (best-effort — failure does not block confirmation)
         for guild in inter.client.guilds:
@@ -685,7 +687,7 @@ class FallbackMenuView(disnake.ui.View):
                         )
                 break
 
-        go_inactive_text = "Got it — I'll stop reaching out. You can still self-book anytime."
+        go_inactive_text = texts.INVITES_OFF_DONE
         await inter.response.send_message(go_inactive_text)
         # Story 6.1 AC1: log bot response
         if self.ctx.log_service is not None:
@@ -696,7 +698,7 @@ class FallbackMenuView(disnake.ui.View):
             )
 
     @disnake.ui.button(
-        label="🌌 Show Lineup",
+        label=texts.BTN_LINEUP,
         style=disnake.ButtonStyle.primary,
         custom_id="fallback:show_lineup",
         row=2,
@@ -720,34 +722,56 @@ class FallbackMenuView(disnake.ui.View):
                 direction="DJ",
                 content=f"[Button: {button.label}]",
             )
+        from bot.services.lineup import _today, future_events, upcoming_event
         from bot.ui.embeds import LineupUpdateEmbed
 
         if self.ctx.notion_client is None:
-            await inter.response.send_message(
-                "Lineup data isn't available right now — check back soon!",
-                ephemeral=True,
-            )
+            await inter.response.send_message(texts.GENERIC_ERROR, ephemeral=True)
             return
 
         try:
             events = await self.ctx.notion_client.list_events()
         except Exception:
             logger.exception("show_lineup: list_events() failed")
-            await inter.response.send_message(
-                "Something went wrong fetching the lineup — try again in a moment.",
-                ephemeral=True,
-            )
+            await inter.response.send_message(texts.GENERIC_ERROR, ephemeral=True)
             return
 
-        if not events:
-            await inter.response.send_message(
-                "No upcoming events scheduled right now — check back soon!",
-                ephemeral=True,
-            )
+        today = _today()
+        chosen = upcoming_event(events, today)
+        if chosen is None:
+            await inter.response.send_message(texts.NO_LINEUP, ephemeral=True)
             return
 
-        embed = LineupUpdateEmbed(events[0])
-        await inter.response.send_message(embed=embed)
+        upcoming = future_events(events, today)
+        pick_view = LineupEventPickView(upcoming) if len(upcoming) > 1 else None
+        kwargs: dict = {"embed": LineupUpdateEmbed(chosen), "ephemeral": True}
+        if pick_view is not None:
+            kwargs["view"] = pick_view
+        await inter.response.send_message(**kwargs)
+
+
+class LineupEventPickView(disnake.ui.View):
+    """One button per future event (max 5); each replies privately with that lineup."""
+
+    def __init__(self, events: list["EventInfo"]) -> None:
+        super().__init__(timeout=None)
+        for i, event in enumerate(events[:5]):
+            btn = disnake.ui.Button(
+                label=event.event_id[:80],
+                style=disnake.ButtonStyle.secondary,
+                custom_id=f"lineup_pick:{event.page_id}",
+                row=0,
+            )
+
+            async def _cb(
+                inter: disnake.MessageInteraction, e: "EventInfo" = event
+            ) -> None:
+                from bot.ui.embeds import LineupUpdateEmbed
+
+                await inter.response.send_message(embed=LineupUpdateEmbed(e), ephemeral=True)
+
+            btn.callback = _cb
+            self.add_item(btn)
 
 
 # ---------------------------------------------------------------------------

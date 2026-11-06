@@ -332,7 +332,7 @@ async def test_fallback_go_active_updates_db_assigns_role() -> None:
 
     inter.response.send_message.assert_awaited_once()
     msg = inter.response.send_message.call_args[0][0]
-    assert "pool" in msg.lower()
+    assert msg == texts.INVITES_ON_DONE
     member.add_roles.assert_awaited_once()
 
 
@@ -354,7 +354,7 @@ async def test_fallback_go_active_dj_not_in_db() -> None:
 
     inter.response.send_message.assert_awaited_once()
     msg = inter.response.send_message.call_args[0][0]
-    assert "onboarding" in msg.lower() or "profile" in msg.lower() or "role" in msg.lower()
+    assert msg == texts.NO_PROFILE
 
 
 @pytest.mark.asyncio
@@ -383,7 +383,7 @@ async def test_fallback_go_inactive_updates_db_removes_role() -> None:
 
     inter.response.send_message.assert_awaited_once()
     msg = inter.response.send_message.call_args[0][0]
-    assert "stop reaching out" in msg.lower() or "inactive" in msg.lower()
+    assert msg == texts.INVITES_OFF_DONE
     member.remove_roles.assert_awaited_once()
 
 
@@ -412,7 +412,7 @@ async def test_show_lineup_sends_embed_for_first_event() -> None:
 
     ctx = make_real_ctx(db=MagicMock())
     notion_client = MagicMock()
-    notion_client.list_events = AsyncMock(return_value=[_make_notion_event()])
+    notion_client.list_events = AsyncMock(return_value=[_lineup_event("Friday Night Rave", 2)])
     ctx.notion_client = notion_client
     view = FallbackMenuView(ctx)
 
@@ -446,7 +446,7 @@ async def test_show_lineup_sends_no_events_message_when_empty() -> None:
     inter.response.send_message.assert_awaited_once()
     call_args = inter.response.send_message.call_args
     msg = call_args[0][0] if call_args[0] else call_args.kwargs.get("content", "")
-    assert "no upcoming events" in msg.lower()
+    assert msg == texts.NO_LINEUP
 
 
 @pytest.mark.asyncio
@@ -466,7 +466,7 @@ async def test_show_lineup_handles_notion_client_none() -> None:
     inter.response.send_message.assert_awaited_once()
     call_args = inter.response.send_message.call_args
     msg = call_args[0][0] if call_args[0] else call_args.kwargs.get("content", "")
-    assert "available" in msg.lower() or "check back" in msg.lower()
+    assert msg == texts.GENERIC_ERROR
 
 
 @pytest.mark.asyncio
@@ -488,7 +488,96 @@ async def test_show_lineup_handles_poll_exception() -> None:
     inter.response.send_message.assert_awaited_once()
     call_args = inter.response.send_message.call_args
     msg = call_args[0][0] if call_args[0] else call_args.kwargs.get("content", "")
-    assert "something went wrong" in msg.lower() or "wrong" in msg.lower()
+    assert msg == texts.GENERIC_ERROR
+
+
+def _lineup_event(event_id: str, day: int):
+    import datetime as _dt
+
+    future = _dt.datetime.now(_dt.UTC).date() + _dt.timedelta(days=day)
+    return make_event(event_id=event_id, page_id=f"p-{event_id}", date=future)
+
+
+@pytest.mark.asyncio
+async def test_show_lineup_single_event_has_no_pick_view() -> None:
+    from bot.ui.embeds import LineupUpdateEmbed
+    from bot.ui.views import FallbackMenuView
+
+    ctx = make_real_ctx(db=MagicMock())
+    ctx.notion_client = MagicMock()
+    ctx.notion_client.list_events = AsyncMock(return_value=[_lineup_event("E1", 3)])
+    view = FallbackMenuView(ctx)
+    inter = MagicMock(spec=disnake.MessageInteraction)
+    inter.response.send_message = AsyncMock()
+
+    await view.show_lineup.callback(inter)
+
+    kw = inter.response.send_message.call_args.kwargs
+    assert isinstance(kw["embed"], LineupUpdateEmbed)
+    assert kw["ephemeral"] is True
+    assert kw.get("view") is None
+
+
+@pytest.mark.asyncio
+async def test_show_lineup_multi_event_offers_picker_capped_at_five() -> None:
+    from bot.ui.views import FallbackMenuView, LineupEventPickView
+
+    events = [_lineup_event(f"E{i}", i + 1) for i in range(7)]
+    ctx = make_real_ctx(db=MagicMock())
+    ctx.notion_client = MagicMock()
+    ctx.notion_client.list_events = AsyncMock(return_value=events)
+    view = FallbackMenuView(ctx)
+    inter = MagicMock(spec=disnake.MessageInteraction)
+    inter.response.send_message = AsyncMock()
+
+    await view.show_lineup.callback(inter)
+
+    kw = inter.response.send_message.call_args.kwargs
+    pick = kw["view"]
+    assert isinstance(pick, LineupEventPickView)
+    assert [c.label for c in pick.children] == ["E0", "E1", "E2", "E3", "E4"]
+    assert kw["embed"].footer.text == "E0"
+
+    # tapping a button replies privately with that event's lineup
+    inter2 = MagicMock(spec=disnake.MessageInteraction)
+    inter2.response.send_message = AsyncMock()
+    await pick.children[2].callback(inter2)
+    kw2 = inter2.response.send_message.call_args.kwargs
+    assert kw2["embed"].footer.text == "E2"
+    assert kw2["ephemeral"] is True
+
+
+@pytest.mark.asyncio
+async def test_show_lineup_ignores_past_events() -> None:
+    from bot.ui.views import FallbackMenuView
+
+    ctx = make_real_ctx(db=MagicMock())
+    ctx.notion_client = MagicMock()
+    ctx.notion_client.list_events = AsyncMock(return_value=[_lineup_event("OLD", -3)])
+    view = FallbackMenuView(ctx)
+    inter = MagicMock(spec=disnake.MessageInteraction)
+    inter.response.send_message = AsyncMock()
+
+    await view.show_lineup.callback(inter)
+
+    assert inter.response.send_message.call_args[0][0] == texts.NO_LINEUP
+
+
+def _menu_labels(view) -> list[str]:
+    return [c.label for c in view.children]
+
+
+@pytest.mark.asyncio
+async def test_menu_buttons_by_dj_state() -> None:
+    from bot.ui.views import FallbackMenuView
+
+    base = [texts.BTN_BOOK, texts.BTN_CANCEL, texts.BTN_LINEUP]
+    ctx = make_real_ctx(db=MagicMock())
+    for state, pool in ((None, texts.BTN_INVITES_ON), (False, texts.BTN_INVITES_ON),
+                        (True, texts.BTN_INVITES_OFF)):
+        labels = _menu_labels(FallbackMenuView(ctx, state))
+        assert sorted(labels) == sorted([*base, pool])
+    assert _menu_labels(FallbackMenuView(ctx)).count(texts.BTN_INVITES_OFF) == 0
 
 
 # ---------------------------------------------------------------------------
