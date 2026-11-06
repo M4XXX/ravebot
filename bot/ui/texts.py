@@ -1,4 +1,6 @@
 """Central catalog of user-facing strings and small formatters (no em dash allowed)."""
+import disnake
+
 from bot.notion.models import EventInfo
 
 
@@ -157,3 +159,69 @@ POST_DM_BLOCKED = (
     "(Discord Settings, Privacy & Safety) and press the button again."
 )
 NO_LINEUP = "There is no upcoming event yet."
+
+
+# --- Log channel entries (names passed in are already escaped by the caller) ---
+
+LOG_BOOKED_TITLE = "Booked"
+LOG_CANCELLED_TITLE = "Cancelled"
+LOG_ORGANIZER_TITLE = "Changed by an organizer"
+LOG_NOTION_TITLE = "Changed in Notion"
+LOG_FULLY_BOOKED_TITLE = "Event fully booked"
+LOG_NEW_DJ_TITLE = "New DJ"
+LOG_TODO_FIELD = "What to do"
+LOG_NO_MANUAL_ACTION = "No manual action required."
+
+
+def escape_text(text: str) -> str:
+    """Literal rendering of foreign text: markdown, mentions and <...> tokens neutralised."""
+    escaped = disnake.utils.escape_mentions(disnake.utils.escape_markdown(text))
+    return escaped.replace("<", "<\u200b")
+
+
+def _ev(event: EventInfo) -> str:
+    return f"**{escape_text(event.event_id)}**"
+
+
+def log_booked_text(dj: str, event: EventInfo, slot_index: int, via: str) -> str:
+    where = "via DM" if via == "DM" else "added in Notion"
+    return f"{dj} booked {_ev(event)}, {slot_phrase(event, slot_index)} ({where})"
+
+
+def log_cancelled_text(dj: str, event: EventInfo, slot_index: int) -> str:
+    return f"{dj} cancelled {_ev(event)}, {slot_phrase(event, slot_index)} (via DM)"
+
+
+def log_organizer_text(
+    organizer: str, action: str, dj: str, event: EventInfo, slot_index: int
+) -> str:
+    when = slot_phrase(event, slot_index)
+    if action == "booked":
+        return f"{organizer} booked {dj} into {_ev(event)}, {when}"
+    return f"{organizer} removed {dj} from {_ev(event)}, {when}"
+
+
+def log_notion_text(dj: str, event: EventInfo, slot_index: int) -> str:
+    return f"{dj} was removed from {_ev(event)}, {slot_phrase(event, slot_index)}"
+
+
+def log_fully_booked_text(event: EventInfo) -> str:
+    return f"{_ev(event)}: all {event.slot_count} slots are booked."
+
+
+def log_new_dj_text(name: str, vrchat_name: str | None) -> str:
+    if vrchat_name:
+        return f"{name} (VRChat: {vrchat_name}) joined the DJ pool."
+    return f"{name} joined the DJ pool."
+
+
+def log_message_title(display_name: str, dj_name: str | None) -> str:
+    if dj_name and dj_name != display_name:
+        return f"Message from {display_name} (DJ {dj_name})"
+    return f"Message from {display_name}"
+
+
+def log_message_text(text: str, attachment_names: list[str]) -> str:
+    lines = [text] if text else []
+    lines.extend(f"(attachment: {name})" for name in attachment_names)
+    return "\n".join(lines)

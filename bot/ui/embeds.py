@@ -31,6 +31,7 @@ class EmbedColors(enum.IntEnum):
     DEEP_SPACE_BLUE = 0x5865F2   # Outreach in progress, status updates, informational
     STARLIGHT_YELLOW = 0xFEE75C  # Pending, awaiting DJ response
     NEBULA_WHITE = 0xF5F5F5      # Neutral system messages, admin log entries
+    SUCCESS_GREEN = 0x2E7D32     # Log entries: booked, event fully booked, new DJ
 
 
 class ErrorCode(enum.StrEnum):
@@ -190,3 +191,20 @@ class LineupUpdateEmbed(disnake.Embed):
             colour=EmbedColors.MISSION_GOLD,
         )
         self.set_footer(text=event.event_id)
+
+
+_CUT_NOTE = "\n(cut)"
+
+
+class LogEntryEmbed(disnake.Embed):
+    """One typed entry for the admin log channel."""
+
+    def __init__(
+        self, title: str, description: str, color: EmbedColors, todo: str | None = None
+    ) -> None:
+        if len(description) > _MAX_DESCRIPTION:
+            description = description[: _MAX_DESCRIPTION - len(_CUT_NOTE)] + _CUT_NOTE
+        super().__init__(title=title[:256], description=description, color=color)
+        if todo:
+            self.add_field(name=texts.LOG_TODO_FIELD, value=todo[:1024], inline=False)
+        self.set_footer(text="RaveBot")

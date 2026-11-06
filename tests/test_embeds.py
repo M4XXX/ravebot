@@ -20,6 +20,7 @@ class TestEmbedColors:
             "DEEP_SPACE_BLUE",
             "STARLIGHT_YELLOW",
             "NEBULA_WHITE",
+            "SUCCESS_GREEN",
         }
         assert {c.name for c in EmbedColors} == expected
 
@@ -295,3 +296,21 @@ class TestLineupUpdateEmbed:
         assert embed.footer.text == "EV-1"
         assert embed.colour is not None
         assert embed.colour.value == EmbedColors.MISSION_GOLD
+
+
+class TestLogEntryEmbed:
+    def test_fields_and_footer(self) -> None:
+        from bot.ui.embeds import EmbedColors, LogEntryEmbed
+
+        assert EmbedColors.SUCCESS_GREEN == 0x2E7D32
+        embed = LogEntryEmbed("T", "body", EmbedColors.IMPERIAL_RED, "Do it")
+        assert embed.footer.text == "RaveBot"
+        assert (embed.fields[0].name, embed.fields[0].value) == ("What to do", "Do it")
+        assert LogEntryEmbed("T", "b", EmbedColors.IMPERIAL_RED).fields == []
+
+    def test_long_description_is_cut_with_note(self) -> None:
+        from bot.ui.embeds import EmbedColors, LogEntryEmbed
+
+        embed = LogEntryEmbed("T", "x" * 5000, EmbedColors.IMPERIAL_RED)
+        assert len(embed.description) <= 4096
+        assert embed.description.endswith("(cut)")

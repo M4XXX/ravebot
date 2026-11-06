@@ -12,15 +12,32 @@ Never raises — errors in the log service must not crash the bot.
 [Source: epics.md#FR47, NFR11]
 """
 import logging
+from typing import Literal
 
 import asyncpg
 import disnake
 from disnake.ext import commands
 
 from bot.db import config as db_config
-from bot.ui.embeds import AdminLogEmbed, ErrorCode, ErrorEmbed
+from bot.notion.models import EventInfo
+from bot.ui import texts
+from bot.ui.embeds import (
+    AdminLogEmbed,
+    EmbedColors,
+    ErrorCode,
+    LogEntryEmbed,
+    _safe_dj_name,
+)
 
 logger = logging.getLogger(__name__)
+
+# ERR_SLOT_CONFLICT and ERR_BUTTON_TIMEOUT are deliberately absent: logger only.
+_ERROR_TITLES: dict[ErrorCode, str] = {
+    ErrorCode.ERR_DM_FAILED: "Could not DM a DJ",
+    ErrorCode.ERR_NOTION_WRITE: "Notion write failed",
+    ErrorCode.ERR_DB_UNAVAILABLE: "Database unavailable",
+    ErrorCode.ERR_OUTREACH_EXHAUSTED: "No more DJs to ask",
+}
 
 
 class AdminLogService:
@@ -83,14 +100,8 @@ class AdminLogService:
         [Source: epics.md#Story 1.3 AC3]
         [Source: epics.md#NFR11 — all errors surfaced within 60 seconds]
         """
-        embed = ErrorEmbed(
-            error_code=error_code,
-            trigger=trigger,
-            action_taken=action_taken,
-            manual_action=manual_action,
-        )
-        channel = await self._get_log_channel()
-        if channel is None:
+        title = _ERROR_TITLES.get(error_code)
+        if title is None:
             logger.warning(
                 "[%s] trigger=%r action_taken=%r manual=%r",
                 error_code,
@@ -99,10 +110,137 @@ class AdminLogService:
                 manual_action,
             )
             return
+        what = trigger.strip()
+        if action_taken.strip():
+            if what and what[-1] not in ".!?":
+                what += "."
+            what = f"{what} {action_taken.strip()}".strip()
+        todo = None if manual_action == texts.LOG_NO_MANUAL_ACTION else manual_action
+        await self.log_attention(title, what, todo)
+
+    # --- Typed entries -------------------------------------------------
+
+    async def _send(
+        self, embed: disnake.Embed, view: disnake.ui.View | None = None
+    ) -> disnake.Message | None:
+        """Post one entry. Never raises; falls back to the logger."""
         try:
-            await channel.send(embed=embed)
-        except disnake.DiscordException as exc:
-            logger.error("Failed to post error embed to log channel: %s", exc)
+            channel = await self._get_log_channel()
+            if channel is None:
+                logger.warning(
+                    "Log entry (no log channel): %s | %s", embed.title, embed.description
+                )
+                return None
+            kwargs: dict = {
+                "embed": embed,
+                "allowed_mentions": disnake.AllowedMentions.none(),
+            }
+            if view is not None:
+                kwargs["view"] = view
+            return await channel.send(**kwargs)
+        except Exception as exc:
+            logger.error("Failed to post log entry %r: %s", embed.title, exc)
+            return None
+
+    async def log_booked(
+        self,
+        dj_name: str,
+        event: EventInfo,
+        slot_index: int,
+        via: Literal["DM", "Notion"],
+    ) -> None:
+        await self._send(
+            LogEntryEmbed(
+                texts.LOG_BOOKED_TITLE,
+                texts.log_booked_text(_safe_dj_name(dj_name), event, slot_index, via),
+                EmbedColors.SUCCESS_GREEN,
+            )
+        )
+
+    async def log_cancelled(self, dj_name: str, event: EventInfo, slot_index: int) -> None:
+        await self._send(
+            LogEntryEmbed(
+                texts.LOG_CANCELLED_TITLE,
+                texts.log_cancelled_text(_safe_dj_name(dj_name), event, slot_index),
+                EmbedColors.MISSION_GOLD,
+            )
+        )
+
+    async def log_changed_by_organizer(
+        self,
+        organizer: str,
+        action: Literal["booked", "removed"],
+        dj_name: str,
+        event: EventInfo,
+        slot_index: int,
+    ) -> None:
+        await self._send(
+            LogEntryEmbed(
+                texts.LOG_ORGANIZER_TITLE,
+                texts.log_organizer_text(
+                    _safe_dj_name(organizer),
+                    action,
+                    _safe_dj_name(dj_name),
+                    event,
+                    slot_index,
+                ),
+                EmbedColors.MISSION_GOLD,
+            )
+        )
+
+    async def log_changed_in_notion(
+        self, dj_name: str, event: EventInfo, slot_index: int
+    ) -> None:
+        await self._send(
+            LogEntryEmbed(
+                texts.LOG_NOTION_TITLE,
+                texts.log_notion_text(_safe_dj_name(dj_name), event, slot_index),
+                EmbedColors.MISSION_GOLD,
+            )
+        )
+
+    async def log_fully_booked(self, event: EventInfo) -> None:
+        await self._send(
+            LogEntryEmbed(
+                texts.LOG_FULLY_BOOKED_TITLE,
+                texts.log_fully_booked_text(event),
+                EmbedColors.SUCCESS_GREEN,
+            )
+        )
+
+    async def log_new_dj(self, dj_name: str, vrchat_name: str | None) -> None:
+        vrchat = _safe_dj_name(vrchat_name) if vrchat_name else None
+        await self._send(
+            LogEntryEmbed(
+                texts.LOG_NEW_DJ_TITLE,
+                texts.log_new_dj_text(_safe_dj_name(dj_name), vrchat),
+                EmbedColors.SUCCESS_GREEN,
+            )
+        )
+
+    async def log_attention(self, title: str, what: str, todo: str | None = None) -> None:
+        await self._send(LogEntryEmbed(title, what, EmbedColors.IMPERIAL_RED, todo))
+
+    async def log_user_message(
+        self,
+        user: disnake.abc.User,
+        text: str,
+        attachment_names: list[str],
+        dj_name: str | None,
+        view: disnake.ui.View | None = None,
+    ) -> disnake.Message | None:
+        display = _safe_dj_name(getattr(user, "display_name", None) or user.name)
+        dj = _safe_dj_name(dj_name) if dj_name else None
+        body = texts.log_message_text(
+            texts.escape_text(text),
+            [texts.escape_text(name) for name in attachment_names],
+        )
+        embed = LogEntryEmbed(
+            texts.log_message_title(display, dj),
+            body,
+            EmbedColors.DEEP_SPACE_BLUE,
+        )
+        return await self._send(embed, view)
 
     async def post_interaction(
         self,
