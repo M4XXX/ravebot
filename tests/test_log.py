@@ -116,66 +116,6 @@ class TestAdminLogServicePostError:
         await service.post_error(ErrorCode.ERR_DM_FAILED, "trigger", "action")
 
 
-class TestAdminLogServicePostInteraction:
-    @pytest.mark.asyncio
-    async def test_sends_admin_log_embed_to_channel(self) -> None:
-        """post_interaction() sends an AdminLogEmbed to the configured log channel."""
-        mock_channel = _make_mock_channel()
-        mock_bot = _make_mock_bot(channel=mock_channel)
-        mock_pool = _make_mock_pool(log_channel_value="222")
-        from bot.log import AdminLogService
-
-        service = AdminLogService(bot=mock_bot, db=mock_pool)
-        await service.post_interaction("DJ Felix", "Booking", "Slot secured")
-
-        mock_channel.send.assert_awaited_once()
-        kwargs = mock_channel.send.call_args.kwargs
-        assert "embed" in kwargs
-
-    @pytest.mark.asyncio
-    async def test_embed_color_is_nebula_white(self) -> None:
-        """AdminLogEmbed posted by post_interaction() uses NEBULA_WHITE color."""
-        mock_channel = _make_mock_channel()
-        mock_bot = _make_mock_bot(channel=mock_channel)
-        mock_pool = _make_mock_pool(log_channel_value="222")
-        from bot.log import AdminLogService
-        from bot.ui.embeds import EmbedColors
-
-        service = AdminLogService(bot=mock_bot, db=mock_pool)
-        await service.post_interaction("DJ Mars", "Onboarding", "Complete")
-
-        sent_embed = mock_channel.send.call_args.kwargs["embed"]
-        assert sent_embed.color.value == EmbedColors.NEBULA_WHITE
-
-    @pytest.mark.asyncio
-    async def test_falls_back_to_stdout_when_no_guilds(self, caplog) -> None:
-        """post_interaction() logs a warning when bot has no guilds."""
-        mock_bot = _make_mock_bot(has_guilds=False)
-        mock_pool = _make_mock_pool()
-        from bot.log import AdminLogService
-
-        service = AdminLogService(bot=mock_bot, db=mock_pool)
-        with caplog.at_level(logging.WARNING, logger="bot.log"):
-            await service.post_interaction("DJ Mars", "Onboarding", "Complete")
-
-        assert not any(r.levelno == logging.ERROR for r in caplog.records)
-
-    @pytest.mark.asyncio
-    async def test_does_not_raise_on_discord_exception(self) -> None:
-        """post_interaction() catches DiscordException and logs error instead of raising."""
-        import disnake
-
-        mock_channel = _make_mock_channel()
-        mock_channel.send = AsyncMock(side_effect=disnake.HTTPException(MagicMock(), "fail"))
-        mock_bot = _make_mock_bot(channel=mock_channel)
-        mock_pool = _make_mock_pool(log_channel_value="222")
-        from bot.log import AdminLogService
-
-        service = AdminLogService(bot=mock_bot, db=mock_pool)
-        # Must not raise
-        await service.post_interaction("DJ Felix", "Booking", "Slot secured")
-
-
 class TestAdminLogServicePostIntervention:
     @pytest.mark.asyncio
     async def test_sends_plain_message_to_channel(self) -> None:
@@ -232,29 +172,6 @@ class TestAdminLogServicePostIntervention:
         service = AdminLogService(bot=mock_bot, db=mock_pool)
         # Must not raise
         await service.post_intervention("Admin", "@DJ Mars", "Check your slot")
-
-
-class TestAdminLogServicePostAdminOverride:
-    @pytest.mark.asyncio
-    async def test_sends_text_without_pinging_anyone(self) -> None:
-        """post_admin_override() sends the line with all mentions disabled."""
-        import disnake
-
-        from bot.log import AdminLogService
-
-        mock_channel = _make_mock_channel()
-        service = AdminLogService(
-            bot=_make_mock_bot(channel=mock_channel), db=_make_mock_pool("111")
-        )
-        await service.post_admin_override("[NOTION SYNC] <@123> @everyone moved")
-
-        mock_channel.send.assert_awaited_once()
-        args, kwargs = mock_channel.send.call_args
-        assert args == ("[NOTION SYNC] <@123> @everyone moved",)
-        mentions = kwargs["allowed_mentions"]
-        assert isinstance(mentions, disnake.AllowedMentions)
-        none = disnake.AllowedMentions.none()
-        assert mentions.to_dict() == none.to_dict()
 
 
 # --- Typed entries (group 4) ---------------------------------------------------

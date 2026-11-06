@@ -595,3 +595,19 @@ async def test_poll_notion_refresh_reloads_when_events_were_created() -> None:
     with patch.object(cog, "_auto_create_events", new=AsyncMock(return_value=2)):
         await EventsCog._poll_notion.coro(cog)
     cog.ctx.lineup_service.refresh.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_poll_notion_runs_fully_booked_check_for_all_events() -> None:
+    from bot.cogs.events import EventsCog
+
+    cog = _make_cog_with_bot()
+    events = _make_pages("page-a", "page-b")
+    cog.ctx.notion_client.list_events = AsyncMock(return_value=events)
+    cog.ctx.lineup_service = MagicMock(refresh=AsyncMock(return_value=False))
+
+    with patch.object(cog, "_auto_create_events", new=AsyncMock(return_value=0)), \
+         patch("bot.cogs.events.check_fully_booked", new=AsyncMock()) as check:
+        await EventsCog._poll_notion.coro(cog)
+
+    check.assert_awaited_once_with(cog.ctx.db, cog.ctx.log_service, events)

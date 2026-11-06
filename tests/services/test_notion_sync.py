@@ -52,7 +52,7 @@ class Env:
         if log:
             self.log = MagicMock()
             for name in (
-                "post_admin_override", "post_error", "post_interaction", "log_booked",
+                "post_error", "log_booked",
                 "log_cancelled", "log_changed_by_organizer", "log_changed_in_notion",
                 "log_attention",
             ):

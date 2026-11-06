@@ -53,9 +53,7 @@ def _make_service(**overrides):
     notion_client.clear_slot = AsyncMock(return_value=True)
 
     log_service = MagicMock()
-    for name in (
-        "post_admin_override", "log_booked", "log_cancelled", "log_changed_by_organizer"
-    ):
+    for name in ("log_booked", "log_cancelled", "log_changed_by_organizer", "log_fully_booked"):
         setattr(log_service, name, AsyncMock())
 
     defaults = {
@@ -114,7 +112,6 @@ async def test_book_slot_override_success(monkeypatch):
         "Admin", "booked", "DJ Scope", event, 1
     )
     svc.log_service.log_booked.assert_not_awaited()
-    svc.log_service.post_admin_override.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -409,7 +406,6 @@ async def test_cancel_slot_override_success(monkeypatch):
         "Admin", "removed", "DJ Scope", event, 1
     )
     svc.log_service.log_cancelled.assert_not_awaited()
-    svc.log_service.post_admin_override.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -638,3 +634,34 @@ async def test_admin_book_and_cancel_work_without_log_service(monkeypatch):
         admin_name="Admin", dj_id=42, dj_name="DJ Scope", event_name=EVENT_NAME, slot_num=2
     )
     assert ok is True
+
+
+@pytest.mark.asyncio
+async def test_organizer_booking_last_slot_logs_fully_booked(monkeypatch):
+    from tests.services.test_fully_booked import FakeStore
+
+    FakeStore().patch(monkeypatch)
+    _patch_db(monkeypatch)
+    full = make_event(
+        event_id=EVENT_NAME,
+        page_id=EVENT_PAGE_ID,
+        slot_count=2,
+        slots=[make_slot(1, dj_page_id="a"), make_slot(2, dj_page_id="b")],
+    )
+    svc = _make_service()
+    svc.notion_client.list_events = AsyncMock(side_effect=[[_make_event()], [full]])
+    ok, _ = await svc.book_slot_override("Admin", 42, "DJ Scope", EVENT_NAME, 2)
+    assert ok is True
+    svc.log_service.log_fully_booked.assert_awaited_once_with(full)
+    svc.log_service.log_changed_by_organizer.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_organizer_cancellation_does_not_announce_open_event(monkeypatch):
+    from tests.services.test_fully_booked import FakeStore
+
+    FakeStore().patch(monkeypatch)
+    _patch_db(monkeypatch, holder=42)
+    svc = _make_service()
+    ok, _ = await svc.cancel_slot_override("Admin", 42, "DJ Scope", EVENT_NAME, 1)
+    svc.log_service.log_fully_booked.assert_not_awaited()

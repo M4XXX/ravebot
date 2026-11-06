@@ -1051,7 +1051,6 @@ async def test_booking_confirm_success_posts_admin_log() -> None:
 
     log_service = MagicMock()
     log_service.log_booked = AsyncMock()
-    log_service.post_interaction = AsyncMock()
     ctx.log_service = log_service
 
     view = _make_booking_confirm_view(ctx, lock, user_id=20007, slot_index=2)
@@ -1066,7 +1065,6 @@ async def test_booking_confirm_success_posts_admin_log() -> None:
         await view._handle_confirm(inter)
 
     log_service.log_booked.assert_awaited_once_with("Nova", view._event, 2, "DM")
-    log_service.post_interaction.assert_not_awaited()
     assert not lock.locked()
 
 
@@ -2201,7 +2199,6 @@ def _ctx_with_events(events: list[EventInfo] | Exception):
         ctx.notion_client.list_events = AsyncMock(return_value=events)
     ctx.log_service = MagicMock()
     ctx.log_service.post_error = AsyncMock()
-    ctx.log_service.post_dm_transcript = AsyncMock()
     return ctx
 
 
@@ -2468,7 +2465,6 @@ async def test_cancel_confirm_success_logs_one_cancelled_entry() -> None:
     ctx.notion_client.clear_slot = AsyncMock(return_value=True)
     log_service = MagicMock()
     log_service.log_cancelled = AsyncMock()
-    log_service.post_interaction = AsyncMock()
     ctx.log_service = log_service
     ctx.lineup_service = None
     lock = ctx.get_user_lock(30099)
@@ -2488,7 +2484,6 @@ async def test_cancel_confirm_success_logs_one_cancelled_entry() -> None:
         await view._handle_confirm(inter)
 
     log_service.log_cancelled.assert_awaited_once_with("Nova", event, 0)
-    log_service.post_interaction.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -2509,3 +2504,102 @@ async def test_booking_confirm_success_without_log_service() -> None:
         await view._handle_confirm(inter)
     inter.response.send_message.assert_awaited_once()
     assert not lock.locked()
+
+
+# --- New DJ log entry and fully booked hooks (group 4, task 3) ----------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("vrchat_input", "vrchat_logged"), [("", None), ("Vee", "Vee")]
+)
+async def test_onboarding_completion_logs_one_new_dj_entry(vrchat_input, vrchat_logged) -> None:
+    from bot.ui.views import OnboardingModal
+
+    ctx = make_real_ctx(db=MagicMock())
+    ctx.log_service = MagicMock()
+    ctx.log_service.log_new_dj = AsyncMock()
+    lock = ctx.get_user_lock(12345)
+    await lock.acquire()
+    modal = OnboardingModal(ctx, 12345, lock, guild_id=99999)
+    inter = make_modal_inter(vrchat_name=vrchat_input)
+    inter.client.get_guild.return_value = None
+
+    with patch("bot.ui.views.insert_dj", new=AsyncMock()):
+        await modal.callback(inter)
+
+    ctx.log_service.log_new_dj.assert_awaited_once_with("TestDJ", vrchat_logged)
+
+
+@pytest.mark.asyncio
+async def test_booking_by_last_open_slot_logs_fully_booked(monkeypatch) -> None:
+    from tests.services.test_fully_booked import FakeStore
+
+    store = FakeStore()
+    store.patch(monkeypatch)
+    ctx = make_real_ctx(db=MagicMock())
+    lock = ctx.get_user_lock(20008)
+    await lock.acquire()
+    full = make_event(
+        page_id="evt-full",
+        slot_count=2,
+        slots=[
+            make_slot(1, dj_page_id="d1", dj_name="A"),
+            make_slot(2, dj_page_id="d2", dj_name="B"),
+        ],
+    )
+    ctx.notion_client = MagicMock()
+    ctx.notion_client.assign_slot = AsyncMock(return_value=True)
+    ctx.notion_client.list_events = AsyncMock(return_value=[full])
+    ctx.log_service = MagicMock()
+    ctx.log_service.log_booked = AsyncMock()
+    ctx.log_service.log_fully_booked = AsyncMock()
+    view = _make_booking_confirm_view(ctx, lock, user_id=20008, slot_index=2)
+    inter = MagicMock(spec=disnake.MessageInteraction)
+    inter.author = MagicMock()
+    inter.author.display_name = "Nova"
+    inter.response.send_message = AsyncMock()
+
+    with patch("bot.db.bookings.acquire_slot_lock", new=AsyncMock(return_value=True)), \
+         patch("bot.services.dj_pages.ensure_dj_page", new=AsyncMock(return_value="dj-page")):
+        await view._handle_confirm(inter)
+
+    ctx.log_service.log_fully_booked.assert_awaited_once_with(full)
+
+
+@pytest.mark.asyncio
+async def test_cancellation_reopens_event_and_clears_fully_booked(monkeypatch) -> None:
+    from bot.ui.views import CancelConfirmView
+    from tests.services.test_fully_booked import FakeStore
+
+    store = FakeStore()
+    store.rows.add("evt-open")
+    store.patch(monkeypatch)
+    ctx = make_real_ctx(db=MagicMock())
+    ctx.notion_client = MagicMock()
+    ctx.notion_client.clear_slot = AsyncMock(return_value=True)
+    opened = make_event(
+        page_id="evt-open", slot_count=2, slots=[make_slot(1, dj_page_id="d1"), make_slot(2)]
+    )
+    ctx.notion_client.list_events = AsyncMock(return_value=[opened])
+    ctx.log_service = MagicMock()
+    ctx.log_service.log_cancelled = AsyncMock()
+    ctx.log_service.log_fully_booked = AsyncMock()
+    ctx.lineup_service = None
+    lock = ctx.get_user_lock(30098)
+    await lock.acquire()
+    event = _make_event(event_id="evt-cancel-fb", djs_booked=1)
+    view = CancelConfirmView(
+        ctx, event=event, slot_index=0, slot_unix=1751414400, lock=lock, user_id=30098
+    )
+    inter = MagicMock(spec=disnake.MessageInteraction)
+    inter.author = MagicMock()
+    inter.author.display_name = "Nova"
+    inter.response.send_message = AsyncMock()
+
+    with patch("bot.services.dj_pages.ensure_dj_page", new=AsyncMock(return_value="page")), \
+         patch("bot.db.bookings.release_slot_lock", new=AsyncMock()):
+        await view._handle_confirm(inter)
+
+    assert store.rows == set()
+    ctx.log_service.log_fully_booked.assert_not_awaited()

@@ -2,7 +2,6 @@
 
 All errors surface to the admin log channel within 60 seconds (NFR11).
 All 6 error codes are routed through post_error().
-DJ interaction transcripts are posted through post_interaction().
 Admin intervention messages are posted through post_intervention().
 
 If no log channel is configured, all posts fall back to stdout (warning level).
@@ -23,7 +22,6 @@ from bot.db import config as db_config
 from bot.notion.models import EventInfo
 from bot.ui import texts
 from bot.ui.embeds import (
-    AdminLogEmbed,
     EmbedColors,
     ErrorCode,
     LogEntryEmbed,
@@ -259,42 +257,6 @@ class AdminLogService:
 
         return await self._post_built(build, view)
 
-    async def post_interaction(
-        self,
-        dj_name: str,
-        action_type: str,
-        outcome: str,
-        event: str | None = None,
-    ) -> None:
-        """Post an AdminLogEmbed for a DJ interaction event.
-
-        Called after every meaningful bot↔DJ interaction: DM sent/received,
-        button tapped, booking confirmed, etc.
-        Falls back to stdout warning if no channel configured.
-
-        [Source: epics.md#Story 1.3 AC4]
-        [Source: epics.md#FR31 — every interaction mirrored to admin log]
-        """
-        embed = AdminLogEmbed(
-            dj_name=dj_name,
-            action_type=action_type,
-            outcome=outcome,
-            event=event,
-        )
-        channel = await self._get_log_channel()
-        if channel is None:
-            logger.warning(
-                "AdminLog [%s \u2192 %s]: outcome=%r",
-                dj_name,
-                action_type,
-                outcome,
-            )
-            return
-        try:
-            await channel.send(embed=embed)
-        except disnake.DiscordException as exc:
-            logger.error("Failed to post interaction embed to log channel: %s", exc)
-
     async def post_intervention(
         self,
         sender: str,
@@ -318,57 +280,3 @@ class AdminLogService:
             await channel.send(message)
         except disnake.DiscordException as exc:
             logger.error("Failed to post intervention log: %s", exc)
-
-    async def post_admin_override(self, content: str) -> None:
-        """Post an admin override action line to the admin log channel.
-
-        Caller constructs the full string, e.g.:
-          "[ADMIN OVERRIDE] @AdminName booked @DJName into EventName at <t:...:f>"
-          "[ADMIN OVERRIDE] @AdminName cancelled @DJName from EventName at <t:...:f>"
-
-        Plain text (not embed) — consistent with post_dm_transcript and post_intervention.
-        Mentions in the text never ping anyone (the text can carry Notion content).
-        Never raises.
-
-        [Source: epics.md#Story 6.3 AC1, AC2]
-        """
-        channel = await self._get_log_channel()
-        if channel is None:
-            logger.warning("Admin override log (no channel): %s", content)
-            return
-        try:
-            await channel.send(content, allowed_mentions=disnake.AllowedMentions.none())
-        except disnake.DiscordException as exc:
-            logger.error("Failed to post admin override log: %s", exc)
-
-    async def post_dm_transcript(
-        self,
-        dj_name: str,
-        direction: str,
-        content: str,
-    ) -> None:
-        """Post a raw DM transcript entry to the admin log channel.
-
-        Formats:
-          direction="BOT" → "[BOT → @{dj_name}] {content}"
-          direction="DJ"  → "[@{dj_name} → BOT] {content}"
-
-        Plain text (not embed) — keeps the transcript scannable.
-        Falls back to stdout warning if no channel is configured.
-        Never raises.
-
-        [Source: epics.md#Story 6.1 AC1–AC4]
-        [Source: epics.md#FR31 — every interaction mirrored to admin log]
-        """
-        if direction == "BOT":
-            entry = f"[BOT \u2192 @{dj_name}] {content}"
-        else:
-            entry = f"[@{dj_name} \u2192 BOT] {content}"
-        channel = await self._get_log_channel()
-        if channel is None:
-            logger.warning("DM transcript (no log channel): %s", entry)
-            return
-        try:
-            await channel.send(entry)
-        except disnake.DiscordException as exc:
-            logger.error("Failed to post DM transcript to log channel: %s", exc)

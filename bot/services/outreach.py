@@ -325,13 +325,6 @@ class OutreachService:
         # Send DM
         try:
             await user.send(content=opener, embed=embed, view=view)
-            # Story 6.1 AC1: log outgoing outreach DM
-            if self.log_service is not None:
-                await self.log_service.post_dm_transcript(
-                    dj_name=dj_name,
-                    direction="BOT",
-                    content=opener,
-                )
         except disnake.Forbidden:
             await self._mark_unreachable(
                 event_id, discord_user_id, dj_name, reason="DMs blocked"

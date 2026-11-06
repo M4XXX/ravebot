@@ -182,13 +182,6 @@ class RemindersService:
                 dm_text = texts.reminder(event, slot_index)
                 try:
                     await user.send(dm_text)
-                    # Story 6.1 AC1: log outgoing reminder DM
-                    if self.log_service is not None:
-                        await self.log_service.post_dm_transcript(
-                            dj_name=dj_name,
-                            direction="BOT",
-                            content=dm_text,
-                        )
                 except disnake.Forbidden:
                     # AC3: DMs blocked — log error, do NOT record sent (allow retry next cycle)
                     if self.log_service is not None:

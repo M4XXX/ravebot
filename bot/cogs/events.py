@@ -23,6 +23,7 @@ from bot.db.config import get_value
 from bot.notion.client import DuplicateEventError, NotionWriteError
 from bot.notion.models import EventInfo
 from bot.services.event_defaults import default_event_shape
+from bot.services.fully_booked import check_fully_booked
 from bot.ui.embeds import ErrorCode
 
 logger = logging.getLogger(__name__)
@@ -226,6 +227,9 @@ class EventsCog(commands.Cog):
 
         # Story 7.1: auto-create events to maintain look-ahead count (AC1-AC4)
         created = await self._auto_create_events(events, guild_id)
+
+        # Announce events that became fully booked (and clear the flag of reopened ones)
+        await check_fully_booked(self.ctx.db, self.ctx.log_service, events)
 
         # Post a Lineup Update if the upcoming event changed since the last post
         if self.ctx.lineup_service is None:

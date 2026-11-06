@@ -57,7 +57,6 @@ def _make_service(list_events_result: list | None = None) -> OutreachService:
     notion_client.list_events = AsyncMock(return_value=list_events_result or [])
     log_service = MagicMock()
     log_service.post_error = AsyncMock()
-    log_service.post_dm_transcript = AsyncMock()
     return OutreachService(bot=bot, db=db, notion_client=notion_client, log_service=log_service)
 
 
@@ -228,11 +227,6 @@ async def test_contact_next_dj_sends_dm_and_returns_true():
         result = await svc.contact_next_dj(event, guild_id=1, ctx=ctx)
     assert result is True
     mock_user.send.assert_awaited_once()
-    # Story 6.1 AC1: outgoing DM must be transcribed
-    svc.log_service.post_dm_transcript.assert_awaited_once()
-    call_kwargs = svc.log_service.post_dm_transcript.call_args.kwargs
-    assert call_kwargs["direction"] == "BOT"
-    assert "DJ Test" in call_kwargs["dj_name"]
 
 
 @pytest.mark.asyncio
@@ -259,7 +253,6 @@ async def test_contact_next_dj_dm_has_opener_lineup_and_view():
     assert "OPEN SLOT" in kwargs["embed"].description
     assert "DJ 0" in kwargs["embed"].description
     assert isinstance(kwargs["view"], OutreachView)
-    assert svc.log_service.post_dm_transcript.call_args.kwargs["content"] == kwargs["content"]
 
 
 @pytest.mark.asyncio

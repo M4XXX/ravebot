@@ -960,7 +960,7 @@ class AdminCog(commands.Cog):
     ) -> None:
         """Query djs table and display all registered DJs with active status.
 
-        Uses NEBULA_WHITE embed (consistent with AdminLogEmbed style).
+        Uses NEBULA_WHITE embed (plain list style).
         Protected by cog_slash_command_check — admin-only.
 
         [Source: epics.md#Story 6.5 AC3, AC4, AC5 — FR39]

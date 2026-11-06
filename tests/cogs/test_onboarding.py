@@ -333,7 +333,6 @@ async def test_on_message_dm_logs_transcript_for_incoming_and_outgoing(
     )
 
     log_service = MagicMock()
-    log_service.post_dm_transcript = AsyncMock()
     ctx = make_real_ctx(db=MagicMock())
     ctx.log_service = log_service
 
@@ -348,16 +347,8 @@ async def test_on_message_dm_logs_transcript_for_incoming_and_outgoing(
     cog = OnboardingCog(ctx)
     await cog.on_message(message)
 
-    # AC2: incoming message logged first; AC1: outgoing fallback menu logged second
-    calls = log_service.post_dm_transcript.call_args_list
-    assert len(calls) == 2
-    incoming = calls[0].kwargs
-    assert incoming["direction"] == "DJ"
-    assert incoming["dj_name"] == "DJ Tester"
-    assert incoming["content"] == "hello bot"
-    outgoing = calls[1].kwargs
-    assert outgoing["direction"] == "BOT"
-    assert outgoing["content"] == texts.MENU
+    message.channel.send.assert_awaited_once()
+    assert message.channel.send.call_args.args[0] == texts.MENU
 
 
 @pytest.mark.asyncio
@@ -411,7 +402,6 @@ async def test_on_message_under_intervention_forwards_to_admin_no_fallback(
     )
 
     log_service = MagicMock()
-    log_service.post_dm_transcript = AsyncMock()
     log_service.post_intervention = AsyncMock()
 
     ctx = make_real_ctx(db=MagicMock())
@@ -427,9 +417,6 @@ async def test_on_message_under_intervention_forwards_to_admin_no_fallback(
 
     cog = OnboardingCog(ctx)
     await cog.on_message(message)
-
-    # Transcript was still logged (6.1 hook fires before intervention check)
-    log_service.post_dm_transcript.assert_awaited_once()
 
     # post_intervention called to forward to admin
     log_service.post_intervention.assert_awaited_once()

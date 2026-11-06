@@ -22,6 +22,7 @@ from bot.db.djs import update_active_booking
 from bot.notion.client import NotionWriteError, SlotRowMissingError
 from bot.services.dj_pages import ensure_dj_page
 from bot.services.dm import dm_user
+from bot.services.fully_booked import recheck_fully_booked
 from bot.ui import texts
 
 if TYPE_CHECKING:
@@ -189,6 +190,8 @@ class AdminBookingService:
                 admin_name, "booked", dj_name, event, slot_index
             )
 
+        await recheck_fully_booked(self.db, self.log_service, self.notion_client)
+
         return True, ""
 
     async def cancel_slot_override(
@@ -288,6 +291,8 @@ class AdminBookingService:
             await self.log_service.log_changed_by_organizer(
                 admin_name, "removed", dj_name, event, slot_index
             )
+
+        await recheck_fully_booked(self.db, self.log_service, self.notion_client)
 
         return True, ""
 

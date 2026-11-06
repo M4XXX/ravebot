@@ -73,13 +73,6 @@ class OnboardingCog(commands.Cog):
                 onboarding_text,
                 view=OnboardingIntroView(self.ctx, after.id, after.guild.id),
             )
-            # Story 6.1 AC1: log outgoing onboarding DM
-            if self.ctx.log_service is not None:
-                await self.ctx.log_service.post_dm_transcript(
-                    dj_name=after.name,
-                    direction="BOT",
-                    content=onboarding_text,
-                )
             logger.info("Onboarding DM sent to %s (user_id=%s)", after.name, after.id)
         except disnake.Forbidden:
             logger.warning(
@@ -118,13 +111,6 @@ class OnboardingCog(commands.Cog):
         # Ignore bot messages (including our own)
         if message.author.bot:
             return
-        # Story 6.1 AC2: log all incoming DJ DMs regardless of flow state
-        if self.ctx.log_service is not None:
-            await self.ctx.log_service.post_dm_transcript(
-                dj_name=message.author.name,
-                direction="DJ",
-                content=message.content,
-            )
 
         # Story 6.2 AC3: if DJ is under admin intervention, forward to admin log and suppress
         if self.ctx.db is not None:
@@ -152,10 +138,3 @@ class OnboardingCog(commands.Cog):
                 active = bool(dj["active_booking"])
         fallback_text = texts.MENU
         await message.channel.send(fallback_text, view=FallbackMenuView(self.ctx, active))
-        # Story 6.1 AC1: log outgoing fallback menu DM
-        if self.ctx.log_service is not None:
-            await self.ctx.log_service.post_dm_transcript(
-                dj_name=message.author.name,
-                direction="BOT",
-                content=fallback_text,
-            )
