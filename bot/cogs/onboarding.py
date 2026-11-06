@@ -86,14 +86,11 @@ class OnboardingCog(commands.Cog):
                 await self.ctx.log_service.post_error(
                     error_code=ErrorCode.ERR_DM_FAILED,
                     trigger=(
-                        f"Onboarding DM to {after.name} (user_id={after.id}) "
-                        "was blocked. The user has DMs from server members disabled."
+                        f"The welcome message to {after.display_name} could not be "
+                        "delivered because their DMs are closed."
                     ),
-                    action_taken="Onboarding DM skipped. DJ was not added to the booking pool.",
-                    manual_action=(
-                        f"Ask {after.name} to enable DMs from server members "
-                        f"(Discord Settings → Privacy & Safety), then re-assign the DJ role."
-                    ),
+                    action_taken="They have not been added to the DJ pool yet.",
+                    manual_action=texts.dm_failed_todo(after.display_name),
                 )
 
     async def _log_incoming(self, message: disnake.Message) -> None:

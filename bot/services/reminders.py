@@ -142,17 +142,6 @@ class RemindersService:
                     )
                     continue
 
-                # Step 5: compute slot time
-                try:
-                    slot_unix = int(event.slot_start(slot_index).timestamp())
-                except Exception as exc:
-                    logger.warning(
-                        "RemindersService.send_reminders: slot_unix failed for DJ %s: %s",
-                        discord_user_id,
-                        exc,
-                    )
-                    slot_unix = int(now.timestamp())
-
                 # Story 6.2 AC7: skip DJs under admin intervention silently
                 try:
                     if await is_under_intervention(self.db, discord_user_id):
@@ -189,14 +178,13 @@ class RemindersService:
                             await self.log_service.post_error(
                                 error_code=ErrorCode.ERR_DM_FAILED,
                                 trigger=(
-                                    f"Day-before reminder DM failed for {dj_name} "
-                                    f"(ID: {discord_user_id}), slot <t:{slot_unix}:f>"
+                                    f"The reminder for {dj_name} could not be delivered "
+                                    f"({event.event_id}, "
+                                    f"{texts.slot_phrase(event, slot_index)}) "
+                                    "because their DMs are closed."
                                 ),
-                                action_taken="Reminder not delivered. User has DMs blocked.",
-                                manual_action=(
-                                    f"Manually notify {dj_name} about their booking at "
-                                    f"<t:{slot_unix}:f>."
-                                ),
+                                action_taken="The bot tries again on the next run.",
+                                manual_action=texts.dm_failed_todo(dj_name),
                             )
                         except Exception as log_exc:
                             logger.warning(

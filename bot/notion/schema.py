@@ -20,7 +20,7 @@ import asyncpg
 from bot.db.config import get_value, set_value
 from bot.db.djs import clear_all_notion_dj_page_ids
 from bot.notion.api import NotionApi, NotionWriteError
-from bot.ui.embeds import ErrorCode
+from bot.ui import texts
 
 logger = logging.getLogger(__name__)
 
@@ -161,15 +161,6 @@ def _relation_state(existing: dict[str, Any], spec: dict[str, Any]) -> str:
     return "ok" if same else "wrong"
 
 
-async def _report(api: NotionApi, trigger: str, action: str, manual: str) -> None:
-    await api.log.post_error(
-        error_code=ErrorCode.ERR_NOTION_WRITE,
-        trigger=trigger,
-        action_taken=action,
-        manual_action=manual,
-    )
-
-
 async def _reconcile(
     api: NotionApi, ds_id: str, label: str, desired: dict[str, Any]
 ) -> dict[str, Any]:
@@ -198,12 +189,8 @@ async def _reconcile(
                 wrong.append(f"{label}.{name}: relation target or reverse name differs")
     if wrong:
         detail = "; ".join(wrong)
-        await _report(
-            api,
-            f"Notion schema check failed: {detail}",
-            "Bot did not change the data source.",
-            "Fix or delete the mismatching property in Notion, then restart the bot.",
-        )
+        # Startup failure: the bot exits, so nothing is posted (the logger has it).
+        logger.error("Notion schema check failed: %s", detail)
         raise NotionSchemaError(detail)
     # The API rejects formulas/rollups that read properties added in the same
     # request, so patch plain properties, then rollups, then formulas.
@@ -288,12 +275,12 @@ async def ensure_schema(
     if problems:
         detail = "; ".join(problems)
         logger.warning("Notion schema: %s; creating a fresh set of databases", detail)
-        await _report(
-            api,
-            f"Stored Notion database check failed: {detail}.",
-            "Bot created a fresh set of Events, Slots and DJs databases.",
-            "Old data stays in the old databases and is not migrated; "
-            "archive them in Notion if no longer needed.",
+        await api.log.log_attention(
+            texts.LOG_FAILED_TITLE,
+            "The stored Notion databases did not match what the bot expects, "
+            "so it created a new set of Events, Slots and DJs databases.",
+            "Old data stays in the old databases and is not copied over. "
+            "Archive them in Notion if you no longer need them.",
         )
         await set_value(db, guild_id, _COMPLETE_KEY, "0")
         await set_value(db, guild_id, VIEWS_MARKER_KEY, "0")

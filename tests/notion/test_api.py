@@ -14,6 +14,7 @@ API_KEY = "secret_super_key_123"
 def make_log() -> MagicMock:
     log = MagicMock()
     log.post_error = AsyncMock(return_value=None)
+    log.log_attention = AsyncMock(return_value=None)
     return log
 
 

@@ -221,9 +221,9 @@ async def test_send_reminders_handles_dm_forbidden():
     svc.log_service.post_error.assert_awaited_once()
     call_kwargs = svc.log_service.post_error.call_args.kwargs
     assert call_kwargs["error_code"] == ErrorCode.ERR_DM_FAILED
-    assert "123" in call_kwargs["trigger"]
+    assert "123" not in call_kwargs["trigger"]  # no raw ids
     assert "DJ Test" in call_kwargs["trigger"]
-    assert "<t:" in call_kwargs["trigger"]  # AC3: slot time required in trigger
+    assert "slot 1 at 00:00" in call_kwargs["trigger"]
 
 
 @pytest.mark.asyncio

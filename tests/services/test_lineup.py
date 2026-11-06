@@ -13,7 +13,7 @@ from bot.services.lineup import (
     future_events,
     upcoming_event,
 )
-from bot.ui.embeds import ErrorCode, LineupUpdateEmbed
+from bot.ui.embeds import LineupUpdateEmbed
 from tests.notion.factories import make_event, make_slot
 
 TODAY = datetime.date(2026, 11, 6)
@@ -45,7 +45,7 @@ def _service(
     bot = MagicMock()
     bot.guilds = [MagicMock(id=GUILD)]
     bot.get_channel = MagicMock(return_value=channel)
-    log = MagicMock(post_error=AsyncMock())
+    log = MagicMock(post_error=AsyncMock(), log_attention=AsyncMock())
     notion = MagicMock(list_events=AsyncMock(return_value=events or []))
     service = LineupService(bot=bot, db=MagicMock(), log_service=log, notion_client=notion)
     return service, cfg, channel, log, notion
@@ -228,10 +228,11 @@ async def test_unset_channel_stores_snapshot_and_posts_admin_error_once() -> Non
         assert await service.refresh([event]) is False
     channel.send.assert_not_awaited()
     assert cfg.values["lineup_post_snapshot"] == event_snapshot(event)
-    log.post_error.assert_awaited_once()
-    kwargs = log.post_error.call_args.kwargs
-    assert kwargs["error_code"] == ErrorCode.ERR_NOTION_WRITE
-    assert kwargs["manual_action"] == "Run /config set dj-channel to configure the DJ channel."
+    log.log_attention.assert_awaited_once_with(
+        "Something failed",
+        "The lineup could not be posted because no DJ channel is set.",
+        "Run /config set dj-channel to set the DJ channel.",
+    )
 
 
 @pytest.mark.asyncio

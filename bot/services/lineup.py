@@ -14,7 +14,8 @@ import disnake
 
 from bot.db.config import get_value, set_value
 from bot.notion.models import EventInfo
-from bot.ui.embeds import ErrorCode, LineupUpdateEmbed
+from bot.ui import texts
+from bot.ui.embeds import LineupUpdateEmbed
 
 if TYPE_CHECKING:
     from bot.log import AdminLogService
@@ -161,11 +162,10 @@ class LineupService:
         if dj_channel_id is None:
             logger.warning("LineupService: dj_channel not configured, cannot post lineup")
             if report_error and self.log_service is not None:
-                await self.log_service.post_error(
-                    error_code=ErrorCode.ERR_NOTION_WRITE,
-                    trigger="Lineup update triggered but dj_channel is not configured.",
-                    action_taken="Lineup post skipped.",
-                    manual_action="Run /config set dj-channel to configure the DJ channel.",
+                await self.log_service.log_attention(
+                    texts.LOG_FAILED_TITLE,
+                    "The lineup could not be posted because no DJ channel is set.",
+                    texts.DJ_CHANNEL_TODO,
                 )
             return _NO_CONFIG
         channel = self.bot.get_channel(int(dj_channel_id))

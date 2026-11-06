@@ -127,6 +127,7 @@ async def test_on_member_update_posts_error_on_dm_failure() -> None:
     before.roles = []
     after = make_member()
     after.roles = [make_role("DJ")]
+    after.display_name = "DJ Anna"
     after.send = AsyncMock(
         side_effect=disnake.Forbidden(MagicMock(), "Cannot send messages to this user")
     )

@@ -96,13 +96,18 @@ class NotionSyncService:
             name = row.dj_name if row is not None else None
         return name or str(dj_id)
 
+    def _where(self, action: SyncAction) -> str:
+        if action.slot_index is None:
+            return action.event.event_id
+        return f"{action.event.event_id}, {texts.slot_phrase(action.event, action.slot_index)}"
+
     async def _post_error(self, action: SyncAction, problem: str, manual: str) -> None:
         if self.log_service is None:
             return
         await self.log_service.post_error(
             error_code=ErrorCode.ERR_NOTION_WRITE,
-            trigger=f"Notion sync: {action.detail}",
-            action_taken=problem,
+            trigger=problem.format(where=self._where(action)),
+            action_taken="Notion was left as it is.",
             manual_action=manual,
         )
 
@@ -113,8 +118,8 @@ class NotionSyncService:
             return
         await self._post_error(
             action,
-            f"Notion write failed ({type(exc).__name__}: {exc}); Notion left as is.",
-            "Check the event's Slots rows in Notion; the next sync retries.",
+            "A change to {where} could not be saved to Notion.",
+            texts.NOTION_RETRY_TODO,
         )
 
     # ------------------------------------------------------------------ actions
@@ -194,8 +199,8 @@ class NotionSyncService:
         if page_id is None:
             await self._post_error(
                 action,
-                f"Could not find or create the DJ page of holder {holder}; Notion left as is.",
-                f"Fix slot {index + 1} of {event.event_id} in Notion by hand.",
+                "The DJ page for the person booked into {where} could not be found or created.",
+                texts.NOTION_RETRY_TODO,
             )
             return
         try:

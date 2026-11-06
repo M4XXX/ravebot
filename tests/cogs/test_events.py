@@ -102,6 +102,7 @@ def _make_cog_with_bot(guilds: list = None) -> "EventsCog":
     mock_db.fetchval = AsyncMock(return_value=1)
     log = MagicMock()
     log.post_error = AsyncMock()
+    log.log_attention = AsyncMock()
     notion = MagicMock()
     notion.list_events = AsyncMock()
     ctx = MagicMock()
@@ -179,8 +180,8 @@ async def test_poll_notion_notion_failure_no_snapshot_update() -> None:
     await EventsCog._poll_notion.coro(cog)
 
     cog.ctx.lineup_service.refresh.assert_not_called()
-    cog.ctx.log_service.post_error.assert_awaited_once()
-    assert cog.ctx.log_service.post_error.call_args.kwargs["error_code"] == ErrorCode.ERR_NOTION_WRITE
+    cog.ctx.log_service.log_attention.assert_awaited_once()
+    assert cog.ctx.log_service.log_attention.call_args.args[0] == "Something failed"
 
 
 @pytest.mark.asyncio
@@ -211,8 +212,8 @@ async def test_poll_notion_notion_client_none_posts_error() -> None:
     await EventsCog._poll_notion.coro(cog)
 
     cog.ctx.lineup_service.refresh.assert_not_called()
-    cog.ctx.log_service.post_error.assert_awaited_once()
-    assert cog.ctx.log_service.post_error.call_args.kwargs["error_code"] == ErrorCode.ERR_NOTION_WRITE
+    cog.ctx.log_service.log_attention.assert_awaited_once()
+    assert cog.ctx.log_service.log_attention.call_args.args[0] == "Something failed"
 
 
 # ---------------------------------------------------------------------------
@@ -533,10 +534,10 @@ async def test_poll_notion_sync_failure_does_not_stop_lineup_update() -> None:
 
     mock_auto.assert_awaited_once()
     cog.ctx.lineup_service.refresh.assert_awaited_once_with(events)
-    cog.ctx.log_service.post_error.assert_awaited_once()
-    kwargs = cog.ctx.log_service.post_error.call_args.kwargs
-    assert kwargs["error_code"] == ErrorCode.ERR_NOTION_WRITE
-    assert "boom" in kwargs["trigger"]
+    cog.ctx.log_service.log_attention.assert_awaited_once()
+    title, what, _todo = cog.ctx.log_service.log_attention.call_args.args
+    assert title == "Something failed"
+    assert "boom" not in what
 
 
 @pytest.mark.asyncio

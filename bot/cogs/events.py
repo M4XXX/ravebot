@@ -24,6 +24,7 @@ from bot.notion.client import DuplicateEventError, NotionWriteError
 from bot.notion.models import EventInfo
 from bot.services.event_defaults import default_event_shape
 from bot.services.fully_booked import check_fully_booked
+from bot.ui import texts
 from bot.ui.embeds import ErrorCode
 
 logger = logging.getLogger(__name__)
@@ -59,9 +60,8 @@ class EventsCog(commands.Cog):
             if self.ctx.log_service is not None:
                 await self.ctx.log_service.post_error(
                     error_code=ErrorCode.ERR_DB_UNAVAILABLE,
-                    trigger=f"DB pool is None at start of {operation}",
-                    action_taken="Skipped this cycle. It will retry on the next scheduled run.",
-                    manual_action="Check PostgreSQL connectivity and POSTGRES_URL.",
+                    trigger="The bot cannot reach its database.",
+                    action_taken="It skips this run and tries again on the next one.",
                 )
             return False
         try:
@@ -72,9 +72,8 @@ class EventsCog(commands.Cog):
             if self.ctx.log_service is not None:
                 await self.ctx.log_service.post_error(
                     error_code=ErrorCode.ERR_DB_UNAVAILABLE,
-                    trigger=f"PostgreSQL connection failed during {operation}: {exc}",
-                    action_taken="Paused this cycle. It will retry on the next scheduled run.",
-                    manual_action="Check PostgreSQL connectivity.",
+                    trigger="The bot lost its connection to the database.",
+                    action_taken="It skips this run and tries again on the next one.",
                 )
             return False
 
@@ -172,14 +171,13 @@ class EventsCog(commands.Cog):
             await sync.run_cycle(guild_id)
         except Exception as exc:
             logger.warning("Notion sync cycle failed — continuing with the poll: %s", exc)
-            if self.ctx.log_service is not None:
-                await self.ctx.log_service.post_error(
-                    error_code=ErrorCode.ERR_NOTION_WRITE,
-                    trigger=f"NotionSyncService.run_cycle() raised during notion_poll: {exc}",
-                    action_taken="Skipped the sync this cycle. The lineup update continues.",
-                    manual_action=(
-                        "Check NOTION_API_KEY, NOTION_PARENT_PAGE_ID, and Notion API status."
-                    ),
+            # A NotionWriteError was already posted by NotionApi.
+            if self.ctx.log_service is not None and not isinstance(exc, NotionWriteError):
+                await self.ctx.log_service.log_attention(
+                    texts.LOG_FAILED_TITLE,
+                    "The sync with Notion failed. The lineup update goes on and the "
+                    "next poll tries the sync again.",
+                    "Check that the Notion integration still has access to the pages.",
                 )
 
     @tasks.loop(minutes=5)
@@ -214,14 +212,13 @@ class EventsCog(commands.Cog):
             events = await self.ctx.notion_client.list_events()
         except Exception as exc:
             logger.warning("Notion poll failed — skipping cycle: %s", exc)
-            if self.ctx.log_service is not None:
-                await self.ctx.log_service.post_error(
-                    error_code=ErrorCode.ERR_NOTION_WRITE,
-                    trigger=f"Notion list_events() raised during notion_poll: {exc}",
-                    action_taken="Skipped this cycle. It will retry on the next scheduled run.",
-                    manual_action=(
-                        "Check NOTION_API_KEY, NOTION_PARENT_PAGE_ID, and Notion API status."
-                    ),
+            # A NotionWriteError was already posted by NotionApi.
+            if self.ctx.log_service is not None and not isinstance(exc, NotionWriteError):
+                await self.ctx.log_service.log_attention(
+                    texts.LOG_FAILED_TITLE,
+                    "The bot could not read the events from Notion. "
+                    "It tries again on the next poll.",
+                    "Check that the Notion integration still has access to the pages.",
                 )
             return
 

@@ -109,11 +109,12 @@ class AdminLogService:
                 manual_action,
             )
             return
-        what = trigger.strip()
-        if action_taken.strip():
+        what = texts.escape_text(trigger.strip())
+        action = texts.escape_text(action_taken.strip())
+        if action:
             if what and what[-1] not in ".!?":
                 what += "."
-            what = f"{what} {action_taken.strip()}".strip()
+            what = f"{what} {action}".strip()
         todo = None if manual_action == texts.LOG_NO_MANUAL_ACTION else manual_action
         await self.log_attention(title, what, todo)
 

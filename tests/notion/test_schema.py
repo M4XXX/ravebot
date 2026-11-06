@@ -15,7 +15,6 @@ from bot.notion.schema import (
     NotionSchemaError,
     ensure_schema,
 )
-from bot.ui.embeds import ErrorCode
 from tests.notion.fake_notion import FakeNotion
 
 GUILD = 42
@@ -66,6 +65,7 @@ def clear_ids() -> Iterator[AsyncMock]:
 def make(fake: FakeNotion) -> tuple[NotionApi, MagicMock]:
     log = MagicMock()
     log.post_error = AsyncMock(return_value=None)
+    log.log_attention = AsyncMock(return_value=None)
     return NotionApi("secret", log, transport=fake.transport), log
 
 
@@ -185,10 +185,12 @@ async def test_missing_database_creates_fresh_set_of_all_three(
     assert store[(GUILD, "notion_views_created")] == "0"
     clear_ids.assert_awaited_once()
     assert any("fresh set" in r.message for r in caplog.records)
-    log.post_error.assert_awaited_once()
-    trigger = log.post_error.await_args.kwargs["trigger"]
-    assert "DJs" in trigger and "Events" not in trigger
-    assert "old" in log.post_error.await_args.kwargs["manual_action"].lower()
+    log.log_attention.assert_awaited_once()
+    title, what, todo = log.log_attention.await_args.args
+    assert title == "Something failed"
+    assert "new set" in what
+    assert "old" in todo.lower()
+    log.post_error.assert_not_awaited()
     # old data source untouched, new set is wired to the new set
     sl = fake.data_sources[second.slots_ds]
     assert sl["properties"]["DJ"]["relation"]["data_source_id"] == second.djs_ds
@@ -252,10 +254,9 @@ async def test_wrong_property_type_is_reported_and_raises(store: dict) -> None:
     with pytest.raises(NotionSchemaError, match="Genre"):
         await ensure_schema(api, object(), GUILD, PARENT)  # type: ignore[arg-type]
 
-    log.post_error.assert_awaited()
-    kwargs = log.post_error.await_args.kwargs
-    assert kwargs["error_code"] == ErrorCode.ERR_NOTION_WRITE
-    assert "Genre" in kwargs["trigger"]
+    # A schema mismatch exits the bot at startup, so nothing is posted.
+    log.post_error.assert_not_awaited()
+    log.log_attention.assert_not_awaited()
 
 
 def _patched_names(fake: FakeNotion) -> list[list[str]]:

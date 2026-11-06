@@ -30,6 +30,7 @@ from bot.db.outreach import (
     upsert_sequence,
 )
 from bot.notion.models import EventInfo
+from bot.ui import texts
 
 if TYPE_CHECKING:
     from bot.log import AdminLogService
@@ -251,7 +252,6 @@ class OutreachService:
         [Source: epics.md#Story 5.2 AC1–AC5]
         [Source: architecture.md#Stateless Services: All Per-User State in PostgreSQL]
         """
-        from bot.ui import texts
         from bot.ui.embeds import LineupUpdateEmbed
         from bot.ui.views import OutreachView
 
@@ -314,7 +314,8 @@ class OutreachService:
                 discord_user_id,
             )
             await self._mark_unreachable(
-                event_id, discord_user_id, dj_name, reason="User not in bot cache"
+                event_id, discord_user_id, dj_name, reason="User not in bot cache",
+                event_name=event.event_id, blocked=False,
             )
             return True
 
@@ -327,7 +328,8 @@ class OutreachService:
             await user.send(content=opener, embed=embed, view=view)
         except disnake.Forbidden:
             await self._mark_unreachable(
-                event_id, discord_user_id, dj_name, reason="DMs blocked"
+                event_id, discord_user_id, dj_name, reason="DMs blocked",
+                event_name=event.event_id, blocked=True,
             )
             return True
         except Exception as exc:
@@ -417,7 +419,6 @@ class OutreachService:
 
         # Build alert context from event
         event_name = event.event_id or event_id
-        date_display = f"<t:{int(event.slot_start(0).timestamp())}:f>"
 
         # Post ERR_OUTREACH_EXHAUSTED to admin log (AC1)
         if self.log_service is not None:
@@ -425,17 +426,14 @@ class OutreachService:
                 await self.log_service.post_error(
                     error_code=ErrorCode.ERR_OUTREACH_EXHAUSTED,
                     trigger=(
-                        f"All Active Booking DJs contacted for '{event_name}'"
-                        f" ({date_display}). Open slots remaining: {open_slots}."
-                        f" DJs contacted: {djs_contacted_count}."
+                        f"All {djs_contacted_count} DJs in the pool were asked about "
+                        f"{event_name}, and {open_slots} "
+                        f"{'slot is' if open_slots == 1 else 'slots are'} still open."
                     ),
-                    action_taken=(
-                        "Outreach sequence marked exhausted. No further automated"
-                        " outreach for this event."
-                    ),
+                    action_taken="The bot will not ask again for this event.",
                     manual_action=(
-                        "Manually contact DJs or add new Active Booking DJs to the pool. "
-                        "New DJs opting in will trigger a fresh outreach pass automatically."
+                        "Ask DJs yourself or add new DJs to the pool. A new DJ joining "
+                        "the pool starts another round of invites."
                     ),
                 )
             except Exception as exc:
@@ -452,7 +450,13 @@ class OutreachService:
         )
 
     async def _mark_unreachable(
-        self, event_id: str, discord_user_id: int, dj_name: str, reason: str
+        self,
+        event_id: str,
+        discord_user_id: int,
+        dj_name: str,
+        reason: str,
+        event_name: str | None = None,
+        blocked: bool = True,
     ) -> None:
         """Mark a DJ as unreachable and post ERR_DM_FAILED to admin log."""
         from bot.ui.embeds import ErrorCode
@@ -465,12 +469,26 @@ class OutreachService:
             logger.warning("_mark_unreachable: DB update failed: %s", exc)
 
         if self.log_service is not None:
+            logger.warning(
+                "Outreach DM to %s (%s) for event %s failed: %s",
+                dj_name, discord_user_id, event_id, reason,
+            )
+            what = event_name or "an event"
+            if blocked:
+                trigger = (
+                    f"The invite to {dj_name} for {what} could not be delivered "
+                    "because their DMs are closed."
+                )
+                todo = texts.dm_failed_todo(dj_name)
+            else:
+                trigger = (
+                    f"The invite to {dj_name} for {what} could not be delivered "
+                    "because the bot cannot find them on the server."
+                )
+                todo = f"Check that {texts.escape_text(dj_name)} is still on the server."
             await self.log_service.post_error(
                 error_code=ErrorCode.ERR_DM_FAILED,
-                trigger=(
-                    f"Outreach DM failed for DJ '{dj_name}' (ID: {discord_user_id})"
-                    f" on event '{event_id}': {reason}"
-                ),
-                action_taken="DJ marked as unreachable for this sequence. Outreach continues with the next eligible DJ.",
-                manual_action="Verify the DJ's Discord privacy settings or their presence in the server.",
+                trigger=trigger,
+                action_taken="The bot skips them and asks the next DJ.",
+                manual_action=todo,
             )

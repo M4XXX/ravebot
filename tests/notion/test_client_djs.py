@@ -16,6 +16,7 @@ def env():
     fake = FakeNotion()
     log = MagicMock()
     log.post_error = AsyncMock()
+    log.log_attention = AsyncMock()
     api = NotionApi("key", log, transport=fake.transport)
     ids = {}
     for name in ("events", "slots", "djs"):

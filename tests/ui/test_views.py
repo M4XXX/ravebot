@@ -2267,6 +2267,7 @@ def _post_inter(user_id: int = 77, name: str = "Alice") -> MagicMock:
     inter.author = MagicMock()
     inter.author.id = user_id
     inter.author.name = name
+    inter.author.display_name = name
     inter.author.send = AsyncMock()
     inter.response.defer = AsyncMock()
     inter.followup.send = AsyncMock()
@@ -2320,11 +2321,11 @@ async def test_post_button_dm_forbidden_releases_lock_and_logs() -> None:
     inter.followup.send.assert_awaited_once_with(texts.POST_DM_BLOCKED, ephemeral=True)
     ctx.log_service.post_error.assert_awaited_once_with(
         ErrorCode.ERR_DM_FAILED,
-        trigger="Alice pressed 'Book a slot' on the Lineup Update but I can't DM them.",
-        action_taken="Told them privately to allow DMs.",
+        trigger="Alice pressed Book a slot but their DMs are closed.",
+        action_taken="They were told privately to allow DMs.",
         manual_action=(
-            "They need to allow DMs from server members (Discord Settings, "
-            "Privacy & Safety), then press the button again."
+            "Tell Alice yourself. They need to allow DMs from server members "
+            "(Discord Settings, Privacy & Safety)."
         ),
     )
 

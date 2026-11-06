@@ -434,5 +434,5 @@ async def test_handle_exhaustion_open_slots_from_slot_rows():
          patch("bot.services.outreach.mark_sequence_exhausted", new=AsyncMock()):
         await svc.handle_exhaustion(event, guild_id=1)
     trigger = svc.log_service.post_error.call_args.kwargs["trigger"]
-    assert "Open slots remaining: 2." in trigger
-    assert "'Rave'" in trigger
+    assert "2 slots are still open" in trigger
+    assert "Rave" in trigger

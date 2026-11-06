@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
+from bot.ui import texts
 from bot.ui.embeds import ErrorCode
 
 if TYPE_CHECKING:
@@ -111,12 +112,20 @@ class NotionApi:
             if attempt < _MAX_ATTEMPTS:
                 await asyncio.sleep(delay)
 
-        await self._log.post_error(
-            error_code=ErrorCode.ERR_NOTION_WRITE,
-            trigger=f"Notion {method} {path} failed ({failure}): {context}",
-            action_taken="Bot aborted the operation.",
-            manual_action=f"Check Notion API key and permissions. Context: {context}",
-        )
+        logger.error("Notion %s %s failed (%s): %s", method, path, failure, context)
+        if method == "GET" or path.endswith("/query"):
+            await self._log.log_attention(
+                texts.LOG_FAILED_TITLE,
+                "The bot could not read from Notion. It tries again on the next poll.",
+                "Check that the Notion integration still has access to the pages.",
+            )
+        else:
+            await self._log.post_error(
+                error_code=ErrorCode.ERR_NOTION_WRITE,
+                trigger="A change could not be saved to Notion.",
+                action_taken="The bot stopped that operation.",
+                manual_action=texts.NOTION_RETRY_TODO,
+            )
         raise NotionWriteError(
             f"Notion {method} {path} failed ({failure}): {context}", last_status
         )

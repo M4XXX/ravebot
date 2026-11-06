@@ -212,9 +212,11 @@ class OnboardingModal(disnake.ui.Modal):
             if self._ctx.log_service is not None:
                 await self._ctx.log_service.post_error(
                     error_code=ErrorCode.ERR_DB_UNAVAILABLE,
-                    trigger=f"OnboardingModal.callback: db pool is None for user {self._user_id}",
-                    action_taken="Lock released; DJ informed to retry.",
-                    manual_action="Check DB pool initialisation in bot/main.py.",
+                    trigger=(
+                        f"{inter.author.display_name} could not finish setting up "
+                        "their DJ profile because the database is unavailable."
+                    ),
+                    action_taken="They were asked to try again.",
                 )
             await inter.response.send_message(
                 texts.GENERIC_ERROR,
@@ -813,14 +815,10 @@ class LineupPostView(disnake.ui.View):
                 await self.ctx.log_service.post_error(
                     ErrorCode.ERR_DM_FAILED,
                     trigger=(
-                        f"{user.name} pressed 'Book a slot' on the Lineup Update "
-                        "but I can't DM them."
+                        f"{user.display_name} pressed Book a slot but their DMs are closed."
                     ),
-                    action_taken="Told them privately to allow DMs.",
-                    manual_action=(
-                        "They need to allow DMs from server members (Discord Settings, "
-                        "Privacy & Safety), then press the button again."
-                    ),
+                    action_taken="They were told privately to allow DMs.",
+                    manual_action=texts.dm_failed_todo(user.display_name),
                 )
             return
         except Exception:

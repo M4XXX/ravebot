@@ -171,6 +171,17 @@ LOG_FULLY_BOOKED_TITLE = "Event fully booked"
 LOG_NEW_DJ_TITLE = "New DJ"
 LOG_TODO_FIELD = "What to do"
 LOG_NO_MANUAL_ACTION = "No manual action required."
+LOG_FAILED_TITLE = "Something failed"
+NOTION_RETRY_TODO = "Check the Slots rows in Notion. The next sync retries."
+DJ_CHANNEL_TODO = "Run /config set dj-channel to set the DJ channel."
+
+
+def dm_failed_todo(name: str) -> str:
+    """Todo line for every blocked-DM entry; the name is escaped."""
+    return (
+        f"Tell {escape_text(name)} yourself. They need to allow DMs from server members "
+        "(Discord Settings, Privacy & Safety)."
+    )
 
 
 def escape_text(text: str) -> str:
