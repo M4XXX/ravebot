@@ -109,3 +109,17 @@ A live lineup post in your DJ channel updates automatically whenever Notion chan
 ## Built With
 
 [disnake](https://docs.disnake.dev/) · [asyncpg](https://magicstack.github.io/asyncpg/) · [httpx](https://www.python-httpx.org/) · [Notion API](https://developers.notion.com/) · PostgreSQL 16 · Docker · [uv](https://docs.astral.sh/uv/)
+
+---
+
+## License
+
+Copyright © 2026 M4XXX.
+
+RaveBot is licensed under [CC BY-NC-SA 4.0](LICENSE):
+
+- **Attribution:** credit the author, link to the license and say if you changed anything.
+- **Non-commercial:** you may not use it primarily for commercial advantage or money.
+- **Share-alike:** if you share a changed version, it must use the same license.
+
+This is a summary; the [LICENSE](LICENSE) text is what applies. Because commercial use is excluded, RaveBot is source-available rather than open source under the [OSI definition](https://opensource.org/osd). For commercial use, ask the copyright holder for permission. Third-party dependencies keep their own licenses.
