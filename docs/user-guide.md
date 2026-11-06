@@ -14,6 +14,7 @@ Operator reference for deploying and configuring RaveBot.
 6. [Deployment: Podman](#6-deployment-podman)
 7. [First-Run Checklist](#7-first-run-checklist)
 8. [Troubleshooting](#8-troubleshooting)
+9. [The Admin Log Channel](#9-the-admin-log-channel)
 
 ---
 
@@ -388,4 +389,34 @@ The bot reverts a hand entry on a slot it has booked for another DJ. Clear the `
 
 ### Admin log channel shows no messages
 
-The log channel may not be configured yet. Run `/config set log-channel #your-channel` as an admin user. Until a log channel is set, errors are written to container stdout only.
+The log channel may not be configured yet. Run `/config set log-channel #your-channel` as an admin user. Until a log channel is set, entries are written to container stdout only. See [section 9](#9-the-admin-log-channel) for what the channel shows.
+
+---
+
+## 9. The Admin Log Channel
+
+Set it with `/config set log-channel #your-channel`. The channel shows only what an organizer needs to know. Each entry is a short embed with the footer `RaveBot`.
+
+| Entry | When it appears |
+|---|---|
+| `Booked` | A DJ booked a slot by DM, or you added one in Notion. |
+| `Cancelled` | A DJ cancelled a slot by DM. |
+| `Changed by an organizer` | An organizer booked or removed a DJ with a command. |
+| `Changed in Notion` | A DJ was removed from a slot by hand in Notion. |
+| `Event fully booked` | Every slot of an event has a DJ. Posted once per fill, and again if a slot opens and the event fills up once more. |
+| `New DJ` | A DJ joined the pool. |
+| `Message from <name>` | A user sent the bot a DM that is not part of a booking flow. |
+| Critical problems | The bot could not DM a DJ, a Notion write failed, a hand edit was reverted, no more DJs are left to ask, the database is unavailable, or something else failed. These are red and have a `What to do` line. |
+
+Button taps, the bot's own replies and routine sync work are not logged.
+
+After an update, the first poll announces every future event that is already fully booked once. This does not repeat.
+
+### Answering a user message
+
+1. Open the `Message from <name>` entry in the log channel.
+2. Click `Reply`. Only organizers can use it; everyone else gets a private refusal.
+3. Type your answer in the popup and send it. The bot sends it to the user as a DM and confirms privately with `Sent.`
+4. If the user has DMs from server members turned off, the bot tells you privately and the entry stays as it is.
+
+The button works on old entries too, also after a restart.

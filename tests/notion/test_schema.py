@@ -187,7 +187,7 @@ async def test_missing_database_creates_fresh_set_of_all_three(
     assert any("fresh set" in r.message for r in caplog.records)
     log.log_attention.assert_awaited_once()
     title, what, todo = log.log_attention.await_args.args
-    assert title == "Something failed"
+    assert title == "New Notion databases created"
     assert "new set" in what
     assert "old" in todo.lower()
     log.post_error.assert_not_awaited()

@@ -99,6 +99,7 @@ output/ravebot/
 │   │   └── client.py       # NotionClient: reads and writes events, slots, DJs
 │   ├── services/           # Business logic
 │   │   ├── admin_booking.py
+│   │   ├── fully_booked.py # check_fully_booked(): once-per-fill announcements
 │   │   ├── dj_pages.py     # ensure_dj_page(): a DJ's row in the DJs database
 │   │   ├── event_defaults.py # default start, slot length, slots per event (config)
 │   │   ├── intervention.py
@@ -109,7 +110,8 @@ output/ravebot/
 │   │   ├── outreach.py
 │   │   └── reminders.py
 │   ├── ui/
-│   │   ├── embeds.py       # Embed classes, LineupUpdateEmbed, lineup_text()
+│   │   ├── embeds.py       # Embed classes, LogEntryEmbed, LineupUpdateEmbed, lineup_text()
+│   │   ├── log_reply.py    # LogReplyView and ReplyModal (log channel Reply button)
 │   │   ├── texts.py        # Every user-facing string and date/slot formatters
 │   │   └── views.py        # All Discord UI: buttons, modals, views
 │   └── main.py             # Bot entry point: migrations, Notion setup, services, cogs
@@ -179,6 +181,48 @@ docker push ghcr.io/YOUR_USER/ravebot:latest
 
 # On Unraid: Docker → Add Container → Repository: ghcr.io/YOUR_USER/ravebot:v1.0.0
 ```
+
+### Admin log channel
+
+`bot/log.py` holds `AdminLogService`. Every `log_*` method builds a `LogEntryEmbed` (title, plain text, footer `RaveBot`, optional `What to do` field), escapes user, DJ and Notion text, sends with `AllowedMentions.none()` and never raises. With no log channel configured or reachable the entry goes to the Python logger (warning).
+
+API:
+
+- `log_booked(dj_name, event, slot_index, via)`, `log_cancelled(...)`, `log_changed_by_organizer(...)`, `log_changed_in_notion(...)`: booking changes. Organizer commands emit only `log_changed_by_organizer`.
+- `log_fully_booked(event)`, `log_new_dj(dj_name, vrchat_name)`.
+- `log_user_message(user, text, attachment_names, dj_name, view)`: returns the posted message so the caller can store its id.
+- `log_attention(title, what, todo=None)`: a red critical entry.
+- `post_error(error_code, trigger, action_taken, manual_action)`: maps the codes in `_ERROR_TITLES` to `log_attention`. `ERR_SLOT_CONFLICT` and `ERR_BUTTON_TIMEOUT` only reach the logger.
+- `post_intervention(sender, recipient, content)`: plain transcript line for `/intervene`.
+
+| Entry | Title | Colour |
+|---|---|---|
+| Booked | `Booked` | `SUCCESS_GREEN` |
+| Cancelled | `Cancelled` | `MISSION_GOLD` |
+| Changed by an organizer | `Changed by an organizer` | `MISSION_GOLD` |
+| Changed in Notion | `Changed in Notion` | `MISSION_GOLD` |
+| Event fully booked | `Event fully booked` | `SUCCESS_GREEN` |
+| New DJ | `New DJ` | `SUCCESS_GREEN` |
+| User message | `Message from <name>` (plus the DJ name if it differs) | `DEEP_SPACE_BLUE` |
+| Critical | the title passed to `log_attention` | `IMPERIAL_RED` |
+
+Adding an entry:
+
+1. Add the title constant and the text function to `bot/ui/texts.py` and cover them in `tests/test_texts.py`.
+2. Add a `log_*` method to `AdminLogService` that builds a `LogEntryEmbed` inside `_post_built(lambda: ...)`, with names passed through `_safe_dj_name` and free text through `texts.escape_text`.
+3. Call it from the code path. Do not call it for button taps, bot replies or routine sync.
+4. Test the exact wording and that mentions and markdown stay literal.
+
+Fully booked: `bot/services/fully_booked.py` (`check_fully_booked`, `recheck_fully_booked`) runs in the poll cycle and after every booking or cancellation. `mark_announced` is an atomic insert, so two paths filling at once announce once; `clear_announced` runs when a slot opens.
+
+Reply button: `LogReplyView` and `ReplyModal` in `bot/ui/log_reply.py`. The view is persistent (`bot.add_view` in `main.py`), checks that the clicker is an admin, looks up the user in `log_replies` and sends the DM. A missing row gives a private "cannot find the user" note.
+
+Tables (created by Alembic migrations):
+
+| Table | Migration | Columns | Purpose |
+|---|---|---|---|
+| `fully_booked_events` | `0009` | `event_id` (Notion page id, primary key), `announced_at` | Events already announced as fully booked. Restart safe. |
+| `log_replies` | `0010` | `message_id` (primary key), `user_id`, `created_at` | Maps a `Message from` entry to the user the Reply button answers. |
 
 ---
 

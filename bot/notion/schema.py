@@ -276,7 +276,7 @@ async def ensure_schema(
         detail = "; ".join(problems)
         logger.warning("Notion schema: %s; creating a fresh set of databases", detail)
         await api.log.log_attention(
-            texts.LOG_FAILED_TITLE,
+            texts.LOG_NEW_DATABASES_TITLE,
             "The stored Notion databases did not match what the bot expects, "
             "so it created a new set of Events, Slots and DJs databases.",
             "Old data stays in the old databases and is not copied over. "

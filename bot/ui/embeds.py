@@ -5,13 +5,12 @@ RULE: All embed construction MUST reference EmbedColors constants — never inli
 Classes:
     EmbedColors            — named color constants (Story 1.1 stub, completed Story 1.3)
     ErrorCode              — six error code strings for AdminLogService.post_error()
-    ErrorEmbed             — red embed for system errors posted to admin log channel
+    LogEntryEmbed          — one log channel entry: title, plain text, optional "What to do" field
     BookingConfirmEmbed    — Mission Gold pre-confirmation embed (Story 4.2)
     BookedEmbed            — post-booking embed
     LineupUpdateEmbed      — "Lineup Update" post for the DJ channel (one per change)
 """
 import enum
-from datetime import UTC, datetime
 
 import disnake
 
@@ -47,38 +46,6 @@ class ErrorCode(enum.StrEnum):
     ERR_BUTTON_TIMEOUT = "ERR_BUTTON_TIMEOUT"
     ERR_DB_UNAVAILABLE = "ERR_DB_UNAVAILABLE"
     ERR_OUTREACH_EXHAUSTED = "ERR_OUTREACH_EXHAUSTED"
-
-
-class ErrorEmbed(disnake.Embed):
-    """Red admin-log embed for system errors.
-
-    Posts to the admin log channel via AdminLogService.post_error().
-    Always includes the error code as a text title alongside the red color accent —
-    no color-only signaling (UX-DR18).
-
-    Fields: Trigger Condition, Action Taken, Manual Action Required.
-    Footer: "RaveBot" with ISO timestamp.
-
-    [Source: ux-design-specification.md#ErrorEmbed]
-    [Source: epics.md#UX-DR11, UX-DR18]
-    """
-
-    def __init__(
-        self,
-        error_code: ErrorCode,
-        trigger: str,
-        action_taken: str,
-        manual_action: str = "No manual action required.",
-    ) -> None:
-        super().__init__(
-            color=EmbedColors.IMPERIAL_RED,
-            title=error_code.value,  # text label alongside color — satisfies UX-DR18
-            timestamp=datetime.now(tz=UTC),
-        )
-        self.add_field(name="Trigger Condition", value=trigger, inline=False)
-        self.add_field(name="Action Taken", value=action_taken, inline=False)
-        self.add_field(name="Manual Action Required", value=manual_action, inline=False)
-        self.set_footer(text="RaveBot")
 
 
 _MAX_DJ_NAME = 100

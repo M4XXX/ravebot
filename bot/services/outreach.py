@@ -420,13 +420,19 @@ class OutreachService:
         # Build alert context from event
         event_name = event.event_id or event_id
 
+        asked = (
+            "The only DJ in the pool was asked"
+            if djs_contacted_count == 1
+            else f"All {djs_contacted_count} DJs in the pool were asked"
+        )
+
         # Post ERR_OUTREACH_EXHAUSTED to admin log (AC1)
         if self.log_service is not None:
             try:
                 await self.log_service.post_error(
                     error_code=ErrorCode.ERR_OUTREACH_EXHAUSTED,
                     trigger=(
-                        f"All {djs_contacted_count} DJs in the pool were asked about "
+                        f"{asked} about "
                         f"{event_name}, and {open_slots} "
                         f"{'slot is' if open_slots == 1 else 'slots are'} still open."
                     ),

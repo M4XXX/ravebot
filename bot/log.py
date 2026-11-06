@@ -1,7 +1,10 @@
-"""AdminLogService — centralised error routing and DJ interaction logging.
+"""AdminLogService — the admin log channel: typed entries and critical problems.
 
-All errors surface to the admin log channel within 60 seconds (NFR11).
-All 6 error codes are routed through post_error().
+The channel shows only bookings, cancellations, organizer and Notion changes,
+fully booked events, new DJs, users' DMs (with a Reply button) and critical
+problems. Typed entries are posted through the log_* methods. post_error()
+maps the error codes that matter to a plain attention entry; ERR_SLOT_CONFLICT
+and ERR_BUTTON_TIMEOUT only reach the Python logger.
 Admin intervention messages are posted through post_intervention().
 
 If no log channel is configured, all posts fall back to stdout (warning level).
@@ -90,7 +93,7 @@ class AdminLogService:
         action_taken: str,
         manual_action: str = "No manual action required.",
     ) -> None:
-        """Post an ErrorEmbed to the admin log channel.
+        """Post a critical problem to the admin log channel as an attention entry.
 
         Falls back to a stdout warning if no channel is configured (e.g. before
         Story 1.4 adds the /config set log-channel command).

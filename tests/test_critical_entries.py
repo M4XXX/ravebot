@@ -149,7 +149,7 @@ async def db_unavailable_outreach_down(log: Recorder) -> None:
     await OutreachCog(MagicMock(db=db, log_service=log))._guard_db("outreach_check")
 
 
-async def outreach_exhausted(log: Recorder) -> None:
+async def outreach_exhausted(log: Recorder, contacted: tuple[int, ...] = (101, 102)) -> None:
     slots = [make_slot(number=i + 1, dj_page_id=f"dj-{i}", dj_name=f"DJ {i}") for i in range(2)]
     event = make_event(event_id="Rave Night", page_id="evt-001",
                        date=datetime.date(2030, 5, 22), slot_count=6, slots=slots)
@@ -159,7 +159,7 @@ async def outreach_exhausted(log: Recorder) -> None:
     seq = {"event_id": "evt-001", "status": "active", "last_contact_at": None}
     with patch("bot.services.outreach.get_sequence", new=AsyncMock(return_value=seq)), \
          patch("bot.services.outreach.get_contacted_discord_ids",
-               new=AsyncMock(return_value=[101, 102])), \
+               new=AsyncMock(return_value=list(contacted))), \
          patch("bot.services.outreach.mark_sequence_exhausted", new=AsyncMock()):
         await svc.handle_exhaustion(event, guild_id=1)
 
@@ -281,6 +281,16 @@ async def test_exhausted_names_slots_and_not_a_zero() -> None:
     log = Recorder()
     await outreach_exhausted(log)
     assert "4 slots are still open" in log.only.description
+
+
+async def test_exhausted_singular_and_plural_wording() -> None:
+    log = Recorder()
+    await outreach_exhausted(log, contacted=(101,))
+    assert "The only DJ in the pool was asked" in log.only.description
+    assert "All 1 DJs" not in log.only.description
+    log = Recorder()
+    await outreach_exhausted(log)
+    assert "All 2 DJs in the pool were asked" in log.only.description
 
 
 async def test_slot_conflict_and_timeout_are_not_posted() -> None:

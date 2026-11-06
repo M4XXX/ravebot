@@ -34,7 +34,7 @@ def _make_mock_pool(log_channel_value: str | None = "111") -> MagicMock:
 class TestAdminLogServicePostError:
     @pytest.mark.asyncio
     async def test_sends_error_embed_to_channel(self) -> None:
-        """post_error() sends an ErrorEmbed to the configured log channel."""
+        """post_error() sends an attention entry to the configured log channel."""
         mock_channel = _make_mock_channel()
         mock_bot = _make_mock_bot(channel=mock_channel)
         mock_pool = _make_mock_pool(log_channel_value="111")

@@ -144,7 +144,13 @@ def test_removed_transcript_api_is_gone() -> None:
 
     for name in ("post_dm_transcript", "post_interaction", "post_admin_override"):
         assert not hasattr(AdminLogService, name)
+    import bot.ui.embeds as embeds
+
+    assert not hasattr(embeds, "AdminLogEmbed")
+    assert not hasattr(embeds, "ErrorEmbed")
     root = Path(__file__).parents[2] / "bot"
-    pattern = re.compile(r"post_dm_transcript|post_interaction|post_admin_override|AdminLogEmbed")
+    pattern = re.compile(
+        r"post_dm_transcript|post_interaction|post_admin_override|AdminLogEmbed|ErrorEmbed"
+    )
     for path in root.rglob("*.py"):
         assert not pattern.search(path.read_text()), path

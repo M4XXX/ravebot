@@ -1,11 +1,10 @@
-"""Tests for bot/ui/embeds.py — EmbedColors, ErrorEmbed."""
+"""Tests for bot/ui/embeds.py — EmbedColors, ErrorCode."""
 import datetime
 
 from bot.notion.models import EventInfo
 from bot.ui.embeds import (
     EmbedColors,
     ErrorCode,
-    ErrorEmbed,
 )
 from tests.notion.factories import make_event, make_slot
 
@@ -54,50 +53,6 @@ class TestErrorCode:
         """ErrorCode members are strings (usable as embed titles)."""
         for code in ErrorCode:
             assert isinstance(code, str)
-
-
-class TestErrorEmbed:
-    def test_color_is_imperial_red(self) -> None:
-        """ErrorEmbed uses IMPERIAL_RED color."""
-        embed = ErrorEmbed(ErrorCode.ERR_DM_FAILED, "DJ blocked DMs", "Logged event")
-        assert embed.color.value == EmbedColors.IMPERIAL_RED
-
-    def test_title_is_error_code_string(self) -> None:
-        """ErrorEmbed title equals the error code string."""
-        embed = ErrorEmbed(ErrorCode.ERR_DB_UNAVAILABLE, "DB down", "Paused scheduler")
-        assert embed.title == "ERR_DB_UNAVAILABLE"
-
-    def test_has_three_required_fields(self) -> None:
-        """ErrorEmbed has Trigger Condition, Action Taken, Manual Action Required."""
-        embed = ErrorEmbed(ErrorCode.ERR_NOTION_WRITE, "Write failed", "Retried 3x", "Check key")
-        field_names = [f.name for f in embed.fields]
-        assert "Trigger Condition" in field_names
-        assert "Action Taken" in field_names
-        assert "Manual Action Required" in field_names
-
-    def test_default_manual_action(self) -> None:
-        """Manual action defaults to 'No manual action required.' when omitted."""
-        embed = ErrorEmbed(ErrorCode.ERR_BUTTON_TIMEOUT, "Timeout", "Moved to next DJ")
-        values = {f.name: f.value for f in embed.fields}
-        assert values["Manual Action Required"] == "No manual action required."
-
-    def test_custom_manual_action(self) -> None:
-        """Custom manual action is stored correctly."""
-        embed = ErrorEmbed(
-            ErrorCode.ERR_OUTREACH_EXHAUSTED, "All DJs contacted", "Alerted admin", "Book manually"
-        )
-        values = {f.name: f.value for f in embed.fields}
-        assert values["Manual Action Required"] == "Book manually"
-
-    def test_has_footer(self) -> None:
-        """ErrorEmbed footer says 'RaveBot'."""
-        embed = ErrorEmbed(ErrorCode.ERR_SLOT_CONFLICT, "Slot taken", "Showed updated list")
-        assert embed.footer.text == "RaveBot"
-
-    def test_has_timestamp(self) -> None:
-        """ErrorEmbed has a timestamp set."""
-        embed = ErrorEmbed(ErrorCode.ERR_DM_FAILED, "DM blocked", "Logged")
-        assert embed.timestamp is not None
 
 
 def _booked_event(

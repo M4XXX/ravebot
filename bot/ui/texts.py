@@ -172,6 +172,7 @@ LOG_NEW_DJ_TITLE = "New DJ"
 LOG_TODO_FIELD = "What to do"
 LOG_NO_MANUAL_ACTION = "No manual action required."
 LOG_FAILED_TITLE = "Something failed"
+LOG_NEW_DATABASES_TITLE = "New Notion databases created"
 NOTION_RETRY_TODO = "Check the Slots rows in Notion. The next sync retries."
 DJ_CHANNEL_TODO = "Run /config set dj-channel to set the DJ channel."
 
