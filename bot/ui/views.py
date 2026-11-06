@@ -242,7 +242,7 @@ class OnboardingModal(disnake.ui.Modal):
                     manual_action="Check DB pool initialisation in bot/main.py.",
                 )
             await inter.response.send_message(
-                "Something went wrong on our end — please try again in a moment.",
+                texts.GENERIC_ERROR,
             )
             return
 
@@ -478,7 +478,7 @@ class FallbackMenuView(disnake.ui.View):
         # AC6: Per-user lock guard — same pattern as book_slot
         if lock.locked():
             await inter.response.send_message(
-                "You already have an active booking session — please complete or dismiss it first.",
+                texts.FLOW_OPEN,
                 ephemeral=True,
             )
             return
@@ -488,7 +488,7 @@ class FallbackMenuView(disnake.ui.View):
         if self.ctx.db is None:
             lock.release()
             await inter.response.send_message(
-                "Something went wrong on our end — please try again in a moment.",
+                texts.GENERIC_ERROR,
                 ephemeral=True,
             )
             return
@@ -497,7 +497,7 @@ class FallbackMenuView(disnake.ui.View):
         if self.ctx.notion_client is None:
             lock.release()
             await inter.response.send_message(
-                "Something went wrong on our end — please try again in a moment.",
+                texts.GENERIC_ERROR,
                 ephemeral=True,
             )
             return
@@ -509,7 +509,7 @@ class FallbackMenuView(disnake.ui.View):
             logger.exception("cancel_slot: get_dj_slot_locks failed")
             lock.release()
             await inter.response.send_message(
-                "Something went wrong fetching your bookings — try again in a moment.",
+                texts.GENERIC_ERROR,
                 ephemeral=True,
             )
             return
@@ -517,7 +517,7 @@ class FallbackMenuView(disnake.ui.View):
         if not slot_lock_rows:
             lock.release()
             await inter.response.send_message(
-                "You don't have any upcoming bookings to cancel.",
+                texts.NO_BOOKINGS,
                 ephemeral=True,
             )
             return
@@ -529,7 +529,7 @@ class FallbackMenuView(disnake.ui.View):
             logger.exception("cancel_slot: list_events() failed")
             lock.release()
             await inter.response.send_message(
-                "Something went wrong fetching the lineup — try again in a moment.",
+                texts.GENERIC_ERROR,
                 ephemeral=True,
             )
             return
@@ -548,13 +548,13 @@ class FallbackMenuView(disnake.ui.View):
         if not bookings:
             lock.release()
             await inter.response.send_message(
-                "You don't have any upcoming bookings to cancel.",
+                texts.NO_BOOKINGS,
                 ephemeral=True,
             )
             return
 
         view = CancellationView(self.ctx, bookings, lock, user_id)
-        cancel_prompt = "Which booking would you like to cancel?"
+        cancel_prompt = texts.CANCEL_WHICH
         await inter.response.send_message(cancel_prompt, view=view, ephemeral=True)
         # Story 6.1 AC1: log bot response
         if self.ctx.log_service is not None:
@@ -588,7 +588,7 @@ class FallbackMenuView(disnake.ui.View):
             )
         if self.ctx.db is None:
             await inter.response.send_message(
-                "Something went wrong on our end — please try again in a moment.",
+                texts.GENERIC_ERROR,
                 ephemeral=True,
             )
             return
@@ -655,7 +655,7 @@ class FallbackMenuView(disnake.ui.View):
             )
         if self.ctx.db is None:
             await inter.response.send_message(
-                "Something went wrong on our end — please try again in a moment.",
+                texts.GENERIC_ERROR,
                 ephemeral=True,
             )
             return
@@ -1091,10 +1091,9 @@ class SlotSelectionView(disnake.ui.View):
         """
         from bot.ui.embeds import BookingConfirmEmbed
 
-        event_name = self._event.event_id
         slot_unix = int(self._event.slot_start(slot_index).timestamp())
 
-        embed = BookingConfirmEmbed(event_name=event_name, slot_unix=slot_unix)
+        embed = BookingConfirmEmbed(self._event, slot_index)
         view = BookingConfirmView(
             ctx=self._ctx,
             event=self._event,
@@ -1167,7 +1166,7 @@ class BookingConfirmView(disnake.ui.View):
         """
 
     @disnake.ui.button(
-        label="✅ Confirm Booking",
+        label=texts.BTN_CONFIRM,
         style=disnake.ButtonStyle.success,
         custom_id="booking_confirm:confirm",
     )
@@ -1187,7 +1186,7 @@ class BookingConfirmView(disnake.ui.View):
         await self._handle_confirm(inter)
 
     @disnake.ui.button(
-        label="✖ Cancel",
+        label=texts.BTN_BACK,
         style=disnake.ButtonStyle.secondary,
         custom_id="booking_confirm:cancel",
     )
@@ -1211,7 +1210,7 @@ class BookingConfirmView(disnake.ui.View):
         if self._lock.locked():
             self._lock.release()
         await inter.response.send_message(
-            "No problem — nothing was booked.",
+            texts.BOOKING_ABORTED,
             ephemeral=True,
         )
 
@@ -1272,7 +1271,7 @@ class BookingConfirmView(disnake.ui.View):
             if self._lock.locked():
                 self._lock.release()
             await inter.response.send_message(
-                "Sorry, all slots for this event are now fully booked.",
+                texts.EVENT_FULL,
                 ephemeral=True,
             )
             return
@@ -1281,7 +1280,7 @@ class BookingConfirmView(disnake.ui.View):
             self._ctx, event_for_refresh, remaining, self._lock, self._user_id
         )
         await inter.response.send_message(
-            "Sorry, that slot was just taken! Here are the remaining open slots:",
+            texts.SLOT_TAKEN,
             view=refresh_view,
             ephemeral=True,
         )
@@ -1296,14 +1295,14 @@ class BookingConfirmView(disnake.ui.View):
         from bot.db.bookings import acquire_slot_lock, release_slot_lock
         from bot.notion.client import NotionWriteError, SlotRowMissingError
         from bot.services.dj_pages import ensure_dj_page
-        from bot.ui.embeds import BookingConfirmedEmbed
+        from bot.ui.embeds import BookedEmbed
 
         # Guard: DB must be available (AC6)
         if self._ctx.db is None:
             if self._lock.locked():
                 self._lock.release()
             await inter.response.send_message(
-                "Something went wrong on our end — please try again in a moment.",
+                texts.GENERIC_ERROR,
                 ephemeral=True,
             )
             return
@@ -1315,7 +1314,7 @@ class BookingConfirmView(disnake.ui.View):
             if self._lock.locked():
                 self._lock.release()
             await inter.response.send_message(
-                "Something went wrong on our end — please try again in a moment.",
+                texts.GENERIC_ERROR,
                 ephemeral=True,
             )
             return
@@ -1336,7 +1335,7 @@ class BookingConfirmView(disnake.ui.View):
             if self._lock.locked():
                 self._lock.release()
             await inter.response.send_message(
-                "Something went wrong — please try again.",
+                texts.GENERIC_ERROR,
                 ephemeral=True,
             )
             return
@@ -1376,7 +1375,7 @@ class BookingConfirmView(disnake.ui.View):
                 return
             responded = True
             await inter.response.send_message(
-                "Something went wrong saving your booking — please try again in a moment.",
+                texts.GENERIC_ERROR,
                 ephemeral=True,
             )
 
@@ -1431,7 +1430,7 @@ class BookingConfirmView(disnake.ui.View):
                 return
 
             # Send booking confirmed embed (AC3)
-            embed = BookingConfirmedEmbed(event_name=event_name, slot_unix=self._slot_unix)
+            embed = BookedEmbed(self._event, self._slot_index)
             await inter.response.send_message(embed=embed)
         except asyncio.CancelledError:
             if not booked:
@@ -1505,10 +1504,7 @@ class CancellationView(disnake.ui.View):
 
         for i, booking in enumerate(bookings[:4]):  # max 4 booking buttons on rows 0-3
             event = booking["event"]
-            slot_unix = booking["slot_unix"]
-            event_name = event.event_id
-            time_display = f"<t:{slot_unix}:f>" if slot_unix else "(time unknown)"
-            label = f"{event_name} · {time_display}"[:80]
+            label = f"{event.event_id} · {texts.slot_button(event, booking['slot_index'])}"[:80]
 
             btn = disnake.ui.Button(
                 label=label,
@@ -1527,7 +1523,7 @@ class CancellationView(disnake.ui.View):
             self.add_item(btn)
 
         never_mind = disnake.ui.Button(
-            label="Never mind",
+            label=texts.BTN_NEVER_MIND,
             style=disnake.ButtonStyle.secondary,
             custom_id="cancel_select:nevermind",
             row=4,
@@ -1545,7 +1541,7 @@ class CancellationView(disnake.ui.View):
         if self._lock.locked():
             self._lock.release()
         await inter.response.send_message(
-            "No problem — nothing was changed.",
+            texts.CANCEL_KEPT,
             ephemeral=True,
         )
 
@@ -1561,7 +1557,6 @@ class CancellationView(disnake.ui.View):
         event = booking["event"]
         slot_index = booking["slot_index"]
         slot_unix = booking["slot_unix"]
-        time_display = f"<t:{slot_unix}:f>" if slot_unix else "(time unknown)"
         view = CancelConfirmView(
             ctx=self._ctx,
             event=event,
@@ -1572,7 +1567,7 @@ class CancellationView(disnake.ui.View):
         )
         try:
             await inter.response.send_message(
-                f"Are you sure you want to cancel your slot at {time_display}?",
+                texts.cancel_confirm(event, slot_index),
                 view=view,
                 ephemeral=True,
             )
@@ -1626,7 +1621,7 @@ class CancelConfirmView(disnake.ui.View):
         """
 
     @disnake.ui.button(
-        label="✅ Yes, Cancel It",
+        label=texts.BTN_CANCEL_YES,
         style=disnake.ButtonStyle.danger,
         custom_id="cancel_confirm:confirm",
     )
@@ -1646,7 +1641,7 @@ class CancelConfirmView(disnake.ui.View):
         await self._handle_confirm(inter)
 
     @disnake.ui.button(
-        label="✖ Keep It",
+        label=texts.BTN_CANCEL_KEEP,
         style=disnake.ButtonStyle.secondary,
         custom_id="cancel_confirm:keep",
     )
@@ -1670,7 +1665,7 @@ class CancelConfirmView(disnake.ui.View):
         if self._lock.locked():
             self._lock.release()
         await inter.response.send_message(
-            "No changes made — you're still booked.",
+            texts.CANCEL_KEPT,
             ephemeral=True,
         )
 
@@ -1692,7 +1687,7 @@ class CancelConfirmView(disnake.ui.View):
             if self._lock.locked():
                 self._lock.release()
             await inter.response.send_message(
-                "Something went wrong on our end — please try again in a moment.",
+                texts.GENERIC_ERROR,
                 ephemeral=True,
             )
             return
@@ -1702,7 +1697,7 @@ class CancelConfirmView(disnake.ui.View):
             if self._lock.locked():
                 self._lock.release()
             await inter.response.send_message(
-                "Something went wrong on our end — please try again in a moment.",
+                texts.GENERIC_ERROR,
                 ephemeral=True,
             )
             return
@@ -1747,7 +1742,7 @@ class CancelConfirmView(disnake.ui.View):
             if self._lock.locked():
                 self._lock.release()
             await inter.response.send_message(
-                "Something went wrong cancelling your booking — please try again in a moment.",
+                texts.GENERIC_ERROR,
                 ephemeral=True,
             )
             return
@@ -1762,7 +1757,7 @@ class CancelConfirmView(disnake.ui.View):
 
         # Confirmation message (AC4)
         await inter.response.send_message(
-            "Done — your slot has been cancelled. The slot is now open for others.",
+            texts.CANCELLED,
         )
 
         # Trigger lineup channel post — best-effort (AC4)

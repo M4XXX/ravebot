@@ -980,8 +980,8 @@ async def test_booking_confirm_notion_failure_releases_lock() -> None:
 
 @pytest.mark.asyncio
 async def test_booking_confirm_success_sends_confirmed_embed() -> None:
-    """Full success path → BookingConfirmedEmbed sent, per-user lock released. (AC3)"""
-    from bot.ui.embeds import BookingConfirmedEmbed
+    """Full success path → BookedEmbed sent, per-user lock released. (AC3)"""
+    from bot.ui.embeds import BookedEmbed
 
     ctx = make_real_ctx(db=MagicMock())
     lock = ctx.get_user_lock(20005)
@@ -1004,7 +1004,7 @@ async def test_booking_confirm_success_sends_confirmed_embed() -> None:
     inter.response.send_message.assert_awaited_once()
     call_kwargs = inter.response.send_message.call_args.kwargs
     assert "embed" in call_kwargs
-    assert isinstance(call_kwargs["embed"], BookingConfirmedEmbed)
+    assert isinstance(call_kwargs["embed"], BookedEmbed)
     assert not lock.locked()
 
 
@@ -1151,7 +1151,7 @@ async def test_booking_confirm_slot_conflict_uses_fresh_notion_data() -> None:
     assert isinstance(presented_view, SlotSelectionView)
     assert presented_view._event is fresh_event  # fresh data used, not stale self._event
     msg = inter.response.send_message.call_args[0][0]
-    assert "remaining open slots" in msg.lower()
+    assert msg == texts.SLOT_TAKEN
 
 
 @pytest.mark.asyncio
@@ -1175,7 +1175,7 @@ async def test_booking_confirm_slot_conflict_all_slots_taken() -> None:
 
     assert not lock.locked()  # lock released — no slots to offer
     msg = inter.response.send_message.call_args[0][0]
-    assert "fully booked" in msg.lower()
+    assert msg == texts.EVENT_FULL
 
 
 @pytest.mark.asyncio
@@ -1771,7 +1771,7 @@ async def test_booking_confirm_assign_errors_release_both_locks(exc_name) -> Non
         ctx, 40022, ensure=AsyncMock(return_value="dj-me"), assign=AsyncMock(side_effect=exc)
     )
     rel.assert_awaited_once_with(ctx.db, "evt-gap", 1, expected_holder=40022)
-    assert "saving your booking" in inter.response.send_message.call_args[0][0]
+    assert inter.response.send_message.call_args[0][0] == texts.GENERIC_ERROR
     assert not lock.locked()
 
 
@@ -1784,7 +1784,7 @@ async def test_booking_confirm_no_dj_page_releases_both_locks(ensure) -> None:
     inter, lock, rel = await _run_booking(ctx, 40023, ensure=ensure)
     rel.assert_awaited_once_with(ctx.db, "evt-gap", 1, expected_holder=40023)
     ctx.notion_client.assign_slot.assert_not_called()
-    assert "saving your booking" in inter.response.send_message.call_args[0][0]
+    assert inter.response.send_message.call_args[0][0] == texts.GENERIC_ERROR
     assert not lock.locked()
 
 
@@ -1811,7 +1811,7 @@ async def test_cancel_slot_matches_lock_rows_by_page_id_and_slot_time() -> None:
         {"event": event, "slot_index": 3, "slot_unix": int(event.slot_start(3).timestamp())}
     ]
     label = inter.response.send_message.call_args.kwargs["view"].children[0].label
-    assert label.startswith("Cancel Rave · <t:")
+    assert label == "Cancel Rave · Slot 4 · 21:30"
 
 
 from bot.notion.client import SlotRowMissingError  # noqa: E402
@@ -1881,7 +1881,7 @@ async def test_cancel_confirm_notion_write_error_still_releases_both_locks() -> 
         40031, ensure=AsyncMock(return_value="dj-me"), clear=clear
     )
     rel.assert_awaited_once_with(ctx.db, "evt-gap", 2, expected_holder=40031)
-    assert "cancelling your booking" in inter.response.send_message.call_args[0][0]
+    assert inter.response.send_message.call_args[0][0] == texts.GENERIC_ERROR
     assert not lock.locked()
 
 
@@ -2009,7 +2009,7 @@ async def test_booking_confirm_unexpected_assign_error_releases_both_locks(exc) 
         ctx, 40040, ensure=AsyncMock(return_value="dj-me"), assign=AsyncMock(side_effect=exc)
     )
     rel.assert_awaited_once_with(ctx.db, "evt-gap", 1, expected_holder=40040)
-    assert "saving your booking" in inter.response.send_message.call_args[0][0]
+    assert inter.response.send_message.call_args[0][0] == texts.GENERIC_ERROR
     assert not lock.locked()
 
 

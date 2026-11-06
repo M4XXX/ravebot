@@ -9,7 +9,7 @@ Classes:
     AdminLogEmbed          — white embed for DJ interaction transcripts
     MissionRosterEmbed     — Mission Gold lineup embed (Story 3.2)
     BookingConfirmEmbed    — Mission Gold pre-confirmation embed (Story 4.2)
-    BookingConfirmedEmbed  — Mission Gold post-confirmation embed (Story 4.2)
+    BookedEmbed            — post-booking embed
 """
 import enum
 from datetime import UTC, datetime
@@ -182,52 +182,25 @@ class MissionRosterEmbed(disnake.Embed):
 
 
 class BookingConfirmEmbed(disnake.Embed):
-    """Mission Gold confirmation embed — shown before the DJ taps [Confirm Booking].
+    """Confirmation embed shown before the DJ taps Confirm."""
 
-    Displays the event name and selected slot time so the DJ can verify before
-    committing. Shown alongside BookingConfirmView buttons.
-
-    [Source: ux-design-specification.md#UX-DR4]
-    [Source: epics.md#Story 4.2 AC1]
-    """
-
-    def __init__(self, event_name: str, slot_unix: int) -> None:
+    def __init__(self, event: EventInfo, slot_index: int) -> None:
         super().__init__(
             color=EmbedColors.MISSION_GOLD,
-            title="Confirm Your Booking",
-            timestamp=datetime.now(tz=UTC),
+            title=texts.CONFIRM_TITLE,
+            description=texts.booking_body(event, slot_index),
         )
-        slot_display = f"<t:{slot_unix}:f>" if slot_unix else "TBD"
-        self.add_field(name="Event", value=event_name, inline=True)
-        self.add_field(name="Slot", value=slot_display, inline=True)
-        self.set_footer(text="RaveBot")
 
 
-class BookingConfirmedEmbed(disnake.Embed):
-    """Mission Gold booking confirmation embed — sent after a successful booking.
+class BookedEmbed(disnake.Embed):
+    """Embed sent after a successful booking."""
 
-    UX-DR5: "Slot Secured" title, event name + Discord timestamp, day-before reminder note.
-    Footer format: "RaveBot · {event_name}".
-
-    [Source: ux-design-specification.md#UX-DR5]
-    [Source: epics.md#Story 4.2 AC3]
-    """
-
-    def __init__(self, event_name: str, slot_unix: int) -> None:
+    def __init__(self, event: EventInfo, slot_index: int) -> None:
         super().__init__(
             color=EmbedColors.MISSION_GOLD,
-            title="Slot Secured",
-            timestamp=datetime.now(tz=UTC),
+            title=texts.BOOKED_TITLE,
+            description=f"{texts.booking_body(event, slot_index)}\n{texts.BOOKED_REMINDER_NOTE}",
         )
-        slot_display = f"<t:{slot_unix}:f>" if slot_unix else "TBD"
-        self.add_field(name="Event", value=event_name, inline=True)
-        self.add_field(name="Your Slot", value=slot_display, inline=True)
-        self.add_field(
-            name="Heads Up",
-            value="I'll send you a reminder the day before. See you on the decks! \U0001f3a7",
-            inline=False,
-        )
-        self.set_footer(text=f"RaveBot \u00b7 {event_name}")
 
 
 _MAX_DESCRIPTION = 4096
