@@ -7,9 +7,9 @@ Classes:
     ErrorCode              — six error code strings for AdminLogService.post_error()
     ErrorEmbed             — red embed for system errors posted to admin log channel
     AdminLogEmbed          — white embed for DJ interaction transcripts
-    MissionRosterEmbed     — Mission Gold lineup embed (Story 3.2)
     BookingConfirmEmbed    — Mission Gold pre-confirmation embed (Story 4.2)
     BookedEmbed            — post-booking embed
+    LineupUpdateEmbed      — "Lineup Update" post for the DJ channel (one per change)
 """
 import enum
 from datetime import UTC, datetime
@@ -116,24 +116,7 @@ class AdminLogEmbed(disnake.Embed):
         self.set_footer(text="RaveBot")
 
 
-def _slot_counts(event: EventInfo) -> tuple[int, int, int]:
-    """Return (booked, total, open) for an event; a DJ with two slots counts two."""
-    total = event.slot_count
-    booked = min(sum(1 for slot in event.slots if slot.dj_page_id is not None), total)
-    return booked, total, total - booked
-
-
-_MAX_FIELDS = 25
-_SHOWN_WHEN_CAPPED = _MAX_FIELDS - 1
 _MAX_DJ_NAME = 100
-_MAX_FIELD_NAME = 256  # Discord's limit for an embed field name
-
-
-def _field_name(text: str) -> str:
-    """Cap text used as an embed field name at Discord's 256 characters."""
-    if len(text) <= _MAX_FIELD_NAME:
-        return text
-    return text[: _MAX_FIELD_NAME - 1] + "\u2026"
 
 
 def _safe_dj_name(name: str | None) -> str:
@@ -145,40 +128,6 @@ def _safe_dj_name(name: str | None) -> str:
     text = disnake.utils.escape_mentions(disnake.utils.escape_markdown(text))
     text = text.replace("<", "<\u200b")  # break <@id>, <t:..>, <#id> tokens
     return text + "\u2026" if truncated else text
-
-
-class MissionRosterEmbed(disnake.Embed):
-    """Mission Gold lineup embed — lists upcoming events with slot status.
-
-    Posted to the configured DJ channel on each lineup change (at most once/day).
-    Edit-in-place on subsequent changes; delete-and-repost if edit fails.
-
-    [Source: ux-design-specification.md#MissionRosterEmbed]
-    [Source: epics.md#Story 3.2 AC1]
-    """
-
-    def __init__(self, events: list[EventInfo]) -> None:
-        super().__init__(
-            color=EmbedColors.MISSION_GOLD,
-            title="\U0001f30c Mission Roster",
-            timestamp=datetime.now(tz=UTC),
-        )
-        if not events:
-            self.description = "No upcoming events scheduled."
-        capped = len(events) > _MAX_FIELDS
-        shown = events[:_SHOWN_WHEN_CAPPED] if capped else events
-        for event in shown:
-            booked, total, slots_open = _slot_counts(event)
-            date_field = f"<t:{int(event.slot_start(0).timestamp())}:f>"
-            field_value = f"{date_field}\n{booked} confirmed · {slots_open} open"
-            self.add_field(name=_field_name(event.event_id), value=field_value, inline=False)
-        if capped:
-            self.add_field(
-                name="More events",
-                value=f"{len(events) - len(shown)} more events not shown.",
-                inline=False,
-            )
-        self.set_footer(text="RaveBot")
 
 
 class BookingConfirmEmbed(disnake.Embed):

@@ -1,4 +1,4 @@
-# RaveBot — Developer Guide
+# RaveBot - Developer Guide
 
 Local development setup, testing, linting, Docker builds, and release workflow.
 
@@ -19,8 +19,8 @@ Local development setup, testing, linting, Docker builds, and release workflow.
 ## 1. Prerequisites
 
 - **Python 3.13+**
-- **[uv](https://docs.astral.sh/uv/)** — fast Python package manager (`pip install uv` or see uv docs)
-- **Docker** — for the local PostgreSQL container
+- **[uv](https://docs.astral.sh/uv/)** - fast Python package manager (`pip install uv` or see uv docs)
+- **Docker** - for the local PostgreSQL container
 - **Git**
 
 ---
@@ -35,7 +35,7 @@ cd output/ravebot
 # Install all dependencies including dev extras (creates .venv automatically)
 uv sync
 
-# Start PostgreSQL only — the bot runs natively, NOT via compose
+# Start PostgreSQL only - the bot runs natively, NOT via compose
 docker compose up -d
 # Verify: docker compose ps  →  postgres should show as healthy
 
@@ -48,7 +48,7 @@ cp .env.example .env
 uv run python -m bot.main
 ```
 
-> The `docker-compose.yml` in this repo is **postgres-only** — it starts a local PostgreSQL instance for development. The bot itself is run natively with `uv`. Do not `docker compose up` the bot service in production from this file; see the [User Guide](user-guide.md#5-deployment-docker-compose) for a full production compose setup.
+> The `docker-compose.yml` in this repo is **postgres-only** - it starts a local PostgreSQL instance for development. The bot itself is run natively with `uv`. Do not `docker compose up` the bot service in production from this file; see the [User Guide](user-guide.md#5-deployment-docker-compose) for a full production compose setup.
 
 ---
 
@@ -85,8 +85,8 @@ All checks should pass before opening a PR or building a release image.
 output/ravebot/
 ├── bot/
 │   ├── cogs/               # Slash command handlers
-│   │   ├── admin.py        # /config, /intervene, /admin, /status, /list-djs, /add-event
-│   │   ├── booking.py      # DJ self-service booking (thin shell — logic in views.py)
+│   │   ├── admin.py        # /config (incl. outreach switch), /lineup post, /intervene, /admin, /status, /list-djs, /add-event
+│   │   ├── booking.py      # DJ self-service booking (thin shell - logic in views.py)
 │   │   ├── events.py       # Lineup post auto-update, event auto-creation
 │   │   ├── onboarding.py   # DJ onboarding DM flow
 │   │   └── outreach_cog.py # Proactive outreach background loop
@@ -102,13 +102,15 @@ output/ravebot/
 │   │   ├── dj_pages.py     # ensure_dj_page(): a DJ's row in the DJs database
 │   │   ├── event_defaults.py # default start, slot length, slots per event (config)
 │   │   ├── intervention.py
-│   │   ├── lineup.py
+│   │   ├── lineup.py       # LineupService: posts, snapshot dedupe, upcoming_event
 │   │   ├── notion_sync.py  # NotionSyncService: applies hand edits from Notion
 │   │   ├── notion_sync_plan.py # plan_sync(): pure Notion-vs-Postgres planner
 │   │   ├── onboarding.py
 │   │   ├── outreach.py
 │   │   └── reminders.py
 │   ├── ui/
+│   │   ├── embeds.py       # Embed classes, LineupUpdateEmbed, lineup_text()
+│   │   ├── texts.py        # Every user-facing string and date/slot formatters
 │   │   └── views.py        # All Discord UI: buttons, modals, views
 │   └── main.py             # Bot entry point: migrations, Notion setup, services, cogs
 ├── migrations/
@@ -129,6 +131,16 @@ output/ravebot/
 - Runtime configuration is stored in the PostgreSQL `config(guild_id, key, value)` table, read via `db_config.get_value()`.
 - Notion is the source of truth for slot assignments (one Slots row per slot, `DJ` relation). The PostgreSQL `slot_locks` table only guards against two DJs taking one slot at the same moment.
 
+### Lineup posts, outreach switch and texts
+
+- `LineupService.refresh()` (called by the Notion poll and by booking changes, debounced) computes `event_snapshot()` of the upcoming event (`upcoming_event()`: earliest event with `date >= today (UTC)` and status not Done or Canceled). If it differs from the stored snapshot it posts a new `Lineup Update` embed (`LineupUpdateEmbed`) with a `Book a slot` button (`LineupPostView`). Posts are never edited or deleted. If `dj_channel` is unset the snapshot is stored without posting.
+- The last posted snapshot is stored in the config key `lineup_post_snapshot`. The keys `lineup_snapshot`, `lineup_last_post_date` and `lineup_post_message_id` are obsolete and unused.
+- `/lineup post [event]` calls `LineupService.post_event()`; the `event` option autocompletes `future_events()`.
+- Post format (`lineup_text()`): `Event {Weekday} {DD.MM.YYYY}`, then `Slot {n}  {HH:MM}  {DJ name or OPEN SLOT}` with two spaces between parts. DJ names go through `_safe_dj_name`; the description is capped at 4096 characters.
+- `/config set outreach` stores `outreach_enabled` (`true`/`false`, default on). Only the outreach loop reads it (`parse_outreach_enabled`); nothing else changes when it is off.
+- Texts: all user-facing strings live in `bot/ui/texts.py`, with the formatters `fmt_date`, `fmt_time` and `slot_phrase`. To add one, define a constant (or a small function for parameterized text) there, import `texts` where it is used, and cover it in `tests/test_texts.py`. Do not inline new user-facing strings in cogs, services or views.
+- No em dash (U+2014) in user-facing strings. `tests/test_no_em_dash.py` parses `bot/**/*.py` and fails on any string constant with one, except docstrings and arguments of `debug`/`info`/`warning`/`error`/`exception`/`critical` calls. Docstrings and comments may keep it.
+
 ### Notion setup and sync
 
 - The bot uses the Notion API version `2026-03-11` (databases and data sources are separate; views are created via `POST /v1/views`). The only Notion settings are `NOTION_API_KEY` and `NOTION_PARENT_PAGE_ID`.
@@ -142,8 +154,8 @@ output/ravebot/
 ## 5. Manual Docker Build & Release
 
 The Dockerfile uses a two-stage build:
-- **`builder` stage** — installs `uv` and resolves all runtime dependencies into `.venv`
-- **`runtime` stage** — `python:3.13-slim` with `.venv` copied in, running as non-root user `ravebot`
+- **`builder` stage** - installs `uv` and resolves all runtime dependencies into `.venv`
+- **`runtime` stage** - `python:3.13-slim` with `.venv` copied in, running as non-root user `ravebot`
 - **CMD**: `python -m bot.main`
 
 ```bash
@@ -175,7 +187,7 @@ docker push ghcr.io/YOUR_USER/ravebot:latest
 Migrations are managed with **Alembic** and run automatically at container startup (`alembic upgrade head` is called before the bot connects).
 
 ```bash
-# Apply all pending migrations (runs automatically at startup — manual use for dev)
+# Apply all pending migrations (runs automatically at startup - manual use for dev)
 uv run alembic upgrade head
 
 # Check current migration state

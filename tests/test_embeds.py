@@ -1,4 +1,4 @@
-"""Tests for bot/ui/embeds.py — EmbedColors, ErrorEmbed, AdminLogEmbed, MissionRosterEmbed."""
+"""Tests for bot/ui/embeds.py — EmbedColors, ErrorEmbed, AdminLogEmbed."""
 import datetime
 
 from bot.notion.models import EventInfo
@@ -7,7 +7,6 @@ from bot.ui.embeds import (
     EmbedColors,
     ErrorCode,
     ErrorEmbed,
-    MissionRosterEmbed,
 )
 from tests.notion.factories import make_event, make_slot
 
@@ -167,95 +166,11 @@ def _booked_event(
     )
 
 
-class TestMissionRosterEmbed:
-    def test_mission_roster_embed_color(self) -> None:
-        """MissionRosterEmbed uses MISSION_GOLD color."""
-        embed = MissionRosterEmbed([_booked_event()])
-        assert embed.color.value == EmbedColors.MISSION_GOLD
-
-    def test_mission_roster_embed_title(self) -> None:
-        """MissionRosterEmbed title is '🌌 Mission Roster'."""
-        embed = MissionRosterEmbed([_booked_event()])
-        assert embed.title == "🌌 Mission Roster"
-
-    def test_mission_roster_embed_footer(self) -> None:
-        """MissionRosterEmbed footer says 'RaveBot'."""
-        embed = MissionRosterEmbed([_booked_event()])
-        assert embed.footer.text == "RaveBot"
-
-    def test_mission_roster_embed_empty_events(self) -> None:
-        """MissionRosterEmbed with no events shows 'No upcoming events scheduled.'."""
-        embed = MissionRosterEmbed([])
-        assert embed.description == "No upcoming events scheduled."
-        assert len(embed.fields) == 0
-
-    def test_mission_roster_embed_has_event_field(self) -> None:
-        """MissionRosterEmbed adds one field per event."""
-        embed = MissionRosterEmbed([_booked_event("Event A"), _booked_event("Event B")])
-        assert len(embed.fields) == 2
-
-    def test_mission_roster_embed_field_name_is_event_id(self) -> None:
-        """Each field name is the event title (event_id)."""
-        embed = MissionRosterEmbed([_booked_event("Friday Night Rave")])
-        assert embed.fields[0].name == "Friday Night Rave"
-
-    def test_mission_roster_embed_field_value_contains_slot_summary(self) -> None:
-        """Field value shows confirmed/open slot counts from slot rows."""
-        embed = MissionRosterEmbed([_booked_event(slots=6, djs=2)])
-        assert "2 confirmed" in embed.fields[0].value
-        assert "4 open" in embed.fields[0].value
-
-    def test_mission_roster_embed_dj_with_two_slots_counts_two(self) -> None:
-        """A DJ holding two slots counts as two booked."""
-        event = make_event(
-            slot_count=6,
-            slots=[
-                make_slot(1, dj_page_id="dj-a", dj_name="A"),
-                make_slot(2, dj_page_id="dj-a", dj_name="A"),
-                make_slot(3),
-            ],
-        )
-        embed = MissionRosterEmbed([event])
-        assert "2 confirmed" in embed.fields[0].value
-        assert "4 open" in embed.fields[0].value
-
-    def test_mission_roster_embed_event_time(self) -> None:
-        """Field value shows the first slot start as a Discord timestamp."""
-        event = _booked_event()
-        embed = MissionRosterEmbed([event])
-        assert f"<t:{int(event.slot_start(0).timestamp())}:f>" in embed.fields[0].value
-
-    def test_mission_roster_embed_timestamp_set(self) -> None:
-        """MissionRosterEmbed has a timestamp set."""
-        embed = MissionRosterEmbed([_booked_event()])
-        assert embed.timestamp is not None
-
-    def test_mission_roster_embed_zero_slots(self) -> None:
-        """slot_count=0 gives 0 confirmed and 0 open."""
-        embed = MissionRosterEmbed([_booked_event(slots=0, djs=0)])
-        assert "0 confirmed" in embed.fields[0].value
-        assert "0 open" in embed.fields[0].value
-
-
 class TestEmbedHardening:
     def test_safe_dj_name_none_is_guest(self) -> None:
         from bot.ui.embeds import _safe_dj_name
 
         assert _safe_dj_name(None) == "Guest DJ"
-
-    def test_roster_caps_fields_at_25(self) -> None:
-        events = [
-            make_event(
-                event_id=f"E{i}",
-                slot_count=2,
-                slots=[make_slot(1, dj_page_id="d", dj_name="D")],
-            )
-            for i in range(40)
-        ]
-        embed = MissionRosterEmbed(events)
-        assert len(embed.fields) == 25
-        assert embed.fields[24].name == "More events"
-        assert "16 more events" in embed.fields[24].value
 
 
 class TestBookingConfirmEmbed:
@@ -284,20 +199,6 @@ class TestBookedEmbed:
         assert embed.description == (
             "Test Rave\nSaturday 13.06.2026, slot 2 at 21:00\nI'll remind you the day before."
         )
-
-
-def test_mission_roster_field_name_capped_at_256_characters() -> None:
-    long_id = "2026-12-31 " + "x" * 400
-    embed = MissionRosterEmbed([_booked_event(long_id), _booked_event("Short")])
-    assert len(embed.fields[0].name) == 256
-    assert embed.fields[0].name.startswith("2026-12-31 xxx")
-    assert embed.fields[1].name == "Short"
-
-
-def test_mission_roster_field_name_of_exactly_256_characters_is_kept() -> None:
-    exact = "y" * 256
-    embed = MissionRosterEmbed([_booked_event(exact)])
-    assert embed.fields[0].name == exact
 
 
 class TestLineupUpdateEmbed:

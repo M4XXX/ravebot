@@ -1,4 +1,4 @@
-# RaveBot — User Guide
+# RaveBot - User Guide
 
 Operator reference for deploying and configuring RaveBot.
 
@@ -21,10 +21,10 @@ Operator reference for deploying and configuring RaveBot.
 
 Before deploying RaveBot you need:
 
-- **Discord Application** — a bot account with a token from [discord.com/developers/applications](https://discord.com/developers/applications).
+- **Discord Application** - a bot account with a token from [discord.com/developers/applications](https://discord.com/developers/applications).
   > **Critical:** Under **Bot** → **Privileged Gateway Intents**, enable **Server Members Intent**. Without it, `on_member_update` never fires and DJ onboarding never triggers automatically.
-- **Notion account** — a Notion workspace with an internal integration. Created at [notion.so/my-integrations](https://www.notion.so/my-integrations).
-- **PostgreSQL 16** — a PostgreSQL instance reachable from the bot container. On Unraid this is typically a separate PostgreSQL Docker container.
+- **Notion account** - a Notion workspace with an internal integration. Created at [notion.so/my-integrations](https://www.notion.so/my-integrations).
+- **PostgreSQL 16** - a PostgreSQL instance reachable from the bot container. On Unraid this is typically a separate PostgreSQL Docker container.
 - **Docker** (or Podman) on your host machine.
 
 ---
@@ -61,7 +61,7 @@ The page ID is the 32-character hex string at the end of the URL (after the last
 
 On the first start the bot creates three databases under the parent page:
 
-**Events** — one row per event
+**Events** - one row per event
 
 | Property | Type | Notes |
 |---|---|---|
@@ -74,7 +74,7 @@ On the first start the bot creates three databases under the parent page:
 | `Start` | Text | Start of slot 1, `HH:MM` (24 h) |
 | `Slot length` | Number | Minutes per slot |
 
-**Slots** — one row per slot of an event
+**Slots** - one row per slot of an event
 
 | Property | Type | Notes |
 |---|---|---|
@@ -86,7 +86,7 @@ On the first start the bot creates three databases under the parent page:
 
 The Slots database also has a few helper columns (`Name`, `Event start`, `Event slot length`, `Event date`) that the formulas and rollups need. Leave them alone.
 
-**DJs** — one row per DJ
+**DJs** - one row per DJ
 
 | Property | Type | Notes |
 |---|---|---|
@@ -112,11 +112,11 @@ The bot never recreates what already exists. On every start it checks the databa
 
 The bot keeps the configured number of future events itself (see `/config set lookahead-count`). To add one by hand, create a row in **Events** and fill in:
 
-- `ID` — `YYYY-MM-DD <name>`, e.g. `2026-12-31 New Year Rave`. Must be unique.
+- `ID` - `YYYY-MM-DD <name>`, e.g. `2026-12-31 New Year Rave`. Must be unique.
 - `Date`
-- `Slots` — e.g. `6`
-- `Start` — `HH:MM`, e.g. `20:00`
-- `Slot length` — minutes, e.g. `60`
+- `Slots` - e.g. `6`
+- `Start` - `HH:MM`, e.g. `20:00`
+- `Slot length` - minutes, e.g. `60`
 
 On the next poll (every five minutes) the bot creates the Slots rows for the event. Later changes to `Slots`, `Start` or `Slot length` follow the rules in 2.6.
 
@@ -145,11 +145,11 @@ Copy `.env.example` to `.env` and fill in your values. **Never commit `.env` to 
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `DISCORD_BOT_TOKEN` | Yes | — | Bot token from Discord Developer Portal |
-| `POSTGRES_URL` | Yes | — | PostgreSQL connection string: `postgresql://user:pass@host:5432/dbname` |
-| `NOTION_API_KEY` | Yes | — | Internal Integration Secret of your Notion integration (see [section 2.1](#21-create-an-integration)) |
-| `NOTION_PARENT_PAGE_ID` | Yes | — | 32-character ID of an empty Notion page shared with the integration; the bot creates its databases under it |
-| `ADMIN_USER_IDS` | Yes | — | Comma-separated Discord user IDs for admin slash commands |
+| `DISCORD_BOT_TOKEN` | Yes | - | Bot token from Discord Developer Portal |
+| `POSTGRES_URL` | Yes | - | PostgreSQL connection string: `postgresql://user:pass@host:5432/dbname` |
+| `NOTION_API_KEY` | Yes | - | Internal Integration Secret of your Notion integration (see [section 2.1](#21-create-an-integration)) |
+| `NOTION_PARENT_PAGE_ID` | Yes | - | 32-character ID of an empty Notion page shared with the integration; the bot creates its databases under it |
+| `ADMIN_USER_IDS` | Yes | - | Comma-separated Discord user IDs for admin slash commands |
 | `LOG_LEVEL` | No | `INFO` | Log verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 | `DB_POOL_MIN` | No | `5` | Minimum asyncpg connection pool size |
 | `DB_POOL_MAX` | No | `20` | Maximum asyncpg connection pool size |
@@ -177,7 +177,7 @@ docker tag ravebot:latest ravebot:v1.0.0
 
 ### Step 2: Transfer the Image to Unraid
 
-**Option A — save/load (no registry required):**
+**Option A - save/load (no registry required):**
 
 ```bash
 docker save ravebot:latest | gzip > ravebot.tar.gz
@@ -185,7 +185,7 @@ docker save ravebot:latest | gzip > ravebot.tar.gz
 docker load < ravebot.tar.gz
 ```
 
-**Option B — push to a registry:**
+**Option B - push to a registry:**
 
 ```bash
 docker tag ravebot:latest ghcr.io/YOUR_USER/ravebot:latest
@@ -199,7 +199,7 @@ docker push ghcr.io/YOUR_USER/ravebot:latest
 2. Set **Name**: `ravebot`
 3. Set **Repository**: `ravebot:latest` (or your registry path)
 4. Set **Network Type**: `bridge`
-5. Leave **Port Mappings** empty — the bot makes no inbound connections
+5. Leave **Port Mappings** empty - the bot makes no inbound connections
 
 ### Step 4: Configure Environment Variables
 
@@ -214,7 +214,7 @@ In the Add Container form, click **"Add another Path, Port, Variable, Label or D
 | `ADMIN_USER_IDS` | `123456789012345678` |
 | `LOG_LEVEL` | `INFO` |
 
-Use your Unraid server's internal IP (e.g. `192.168.1.x`) for `POSTGRES_URL`, not `localhost` — containers on bridge networks cannot use `localhost` to reach other containers.
+Use your Unraid server's internal IP (e.g. `192.168.1.x`) for `POSTGRES_URL`, not `localhost` - containers on bridge networks cannot use `localhost` to reach other containers.
 
 ### Step 5: Start the Container
 
@@ -289,7 +289,7 @@ Stop:
 docker compose down
 ```
 
-> **Note:** The `POSTGRES_URL` in the compose file above uses the service name `postgres` as the hostname — Docker Compose networking resolves this automatically. Do not copy this value into your `.env` when using the Unraid or standalone Docker approach.
+> **Note:** The `POSTGRES_URL` in the compose file above uses the service name `postgres` as the hostname - Docker Compose networking resolves this automatically. Do not copy this value into your `.env` when using the Unraid or standalone Docker approach.
 
 ---
 
@@ -317,25 +317,34 @@ After the bot comes online:
 
 - [ ] Verify the bot appears in your server's member list as online
 
-**Required — run these before the bot is useful:**
+**Required - run these before the bot is useful:**
 
-- [ ] `/config set dj-channel #your-channel` — where the lineup post is published
-- [ ] `/config set log-channel #your-channel` — where admin alerts and DM transcripts go
+- [ ] `/config set dj-channel #your-channel` - where the lineup post is published
+- [ ] `/config set log-channel #your-channel` - where admin alerts and DM transcripts go
 - [ ] Verify the bot has **Send Messages** and **Embed Links** permissions in both channels
 - [ ] Check that the Events, Slots and DJs databases appeared under your Notion parent page
 
 **Optional tuning (defaults shown):**
 
-- [ ] `/config set slots-per-event 6` — number of DJ slots per auto-created event
-- [ ] `/config set event-interval-days 7` — days between auto-created events
-- [ ] `/config set lookahead-count 6` — how many future events to maintain in Notion
-- [ ] `/config set start-time 20:00` — default event start time (HH:MM UTC)
-- [ ] `/config set slot-duration 60` — slot length in minutes
-- [ ] `/config set outreach-days-before 14` — how far before an event to begin outreach
-- [ ] `/config set outreach-cooldown-hours 12` — minimum hours between contacts per DJ
-- [ ] `/config set outreach-max` — cap on DJs contacted per outreach cycle (default: unlimited)
-- [ ] `/config set event-schedule` — cron expression for future automated event scheduling
-- [ ] `/config show` — review all current settings at any time
+- [ ] `/config set slots-per-event 6` - number of DJ slots per auto-created event
+- [ ] `/config set event-interval-days 7` - days between auto-created events
+- [ ] `/config set lookahead-count 6` - how many future events to maintain in Notion
+- [ ] `/config set start-time 20:00` - default event start time (HH:MM UTC)
+- [ ] `/config set slot-duration 60` - slot length in minutes
+- [ ] `/config set outreach true` - turn automatic invite DMs on or off (default: on)
+- [ ] `/config set outreach-days-before 14` - how far before an event to begin outreach
+- [ ] `/config set outreach-cooldown-hours 12` - minimum hours between contacts per DJ
+- [ ] `/config set outreach-max` - cap on DJs contacted per outreach cycle (default: unlimited)
+- [ ] `/config set event-schedule` - cron expression for future automated event scheduling
+- [ ] `/config show` - review all current settings at any time, including the `Automatic outreach` row
+
+### 7.1 Lineup posts and booking button
+
+- Whenever the lineup of the upcoming event changes, the bot posts a new `Lineup Update` message in the DJ channel. Upcoming event means the earliest event whose date is today or later and whose status is not Done or Canceled. Older posts stay as they are.
+- Post format: line 1 is `Event Saturday 14.11.2026`, followed by one line per slot, for example `Slot 1  20:00  DJ Felix` or `Slot 2  21:00  OPEN SLOT`. Times are UTC.
+- Every post has a `Book a slot` button. A DJ who presses it gets the booking flow in DMs. If DMs are blocked, the bot says so privately.
+- `/lineup post` posts the upcoming event again. `/lineup post event:<event id>` posts any future event.
+- `/config set outreach false` stops only the proactive invite DMs. Booking menus, reminders and all other DMs keep working. Use `true` to resume.
 
 > **Permissions note:** All `/config`, `/admin`, `/intervene`, `/status`, `/list-djs`, and `/add-event` commands are restricted to the Discord user IDs listed in `ADMIN_USER_IDS`. If a command shows "You don't have permission", verify your user ID is in the env var.
 
@@ -347,16 +356,16 @@ After the bot comes online:
 
 One or more required env vars are not set. The error message lists all missing variables. Check your `.env` file or Unraid container variables against the [Environment Variables](#3-environment-variables) table.
 
-### "Database migration failed — is PostgreSQL reachable?"
+### "Database migration failed - is PostgreSQL reachable?"
 
 The bot cannot connect to PostgreSQL at startup. Check:
 - `POSTGRES_URL` is correct (host, port, database name, credentials)
 - The PostgreSQL service is running
 - Network connectivity between the bot container and PostgreSQL (use the internal IP on Unraid, not `localhost`)
 
-### "Failed to connect to PostgreSQL — cannot start bot"
+### "Failed to connect to PostgreSQL - cannot start bot"
 
-Same as above — the asyncpg pool could not be opened. Fix the connection string and restart.
+Same as above - the asyncpg pool could not be opened. Fix the connection string and restart.
 
 ### Bot exits with "Cannot use the Notion parent page"
 
