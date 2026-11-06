@@ -474,3 +474,32 @@ async def test_adopt_free_and_revert_work_without_log_service(monkeypatch):
     env = Env(monkeypatch, [event_with(dj_row(1, Y, page="other"), make_slot(2))],
               {(PAGE, 0): lock(X)}, log=False)
     assert [a.kind for a in await env.svc.run_cycle(1)] == ["revert"]
+
+
+@pytest.mark.asyncio
+async def test_adopt_undelivered_dm_posts_error_entry(monkeypatch):
+    env = Env(monkeypatch, [event_with(dj_row(1, X), make_slot(2))])
+    env.user.send.side_effect = RuntimeError("discord down")
+    await env.svc.run_cycle(1)
+    kwargs = env.log.post_error.await_args.kwargs
+    assert kwargs["error_code"].name == "ERR_DM_FAILED"
+    assert "holder-name" in kwargs["trigger"]
+    assert "Rave" in kwargs["trigger"]
+    assert kwargs["manual_action"].startswith("Tell holder-name yourself")
+
+
+@pytest.mark.asyncio
+async def test_free_undelivered_dm_posts_error_entry(monkeypatch):
+    env = Env(monkeypatch, [event_with(make_slot(1), make_slot(2))], {(PAGE, 0): lock(Y)})
+    env.user.send.side_effect = RuntimeError("discord down")
+    await env.svc.run_cycle(1)
+    kwargs = env.log.post_error.await_args.kwargs
+    assert kwargs["error_code"].name == "ERR_DM_FAILED"
+    assert kwargs["manual_action"].startswith("Tell holder-name yourself")
+
+
+@pytest.mark.asyncio
+async def test_delivered_notion_dm_posts_no_error_entry(monkeypatch):
+    env = Env(monkeypatch, [event_with(dj_row(1, X), make_slot(2))])
+    await env.svc.run_cycle(1)
+    env.log.post_error.assert_not_awaited()

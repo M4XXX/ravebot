@@ -253,6 +253,10 @@ async def test_send_reminders_skips_user_not_in_cache():
         await svc.send_reminders(guild_id=1, ctx=MagicMock(), _now=FIXED_NOW)
 
     mock_record.assert_not_awaited()
+    kwargs = svc.log_service.post_error.await_args.kwargs
+    assert kwargs["error_code"] == ErrorCode.ERR_DM_FAILED
+    assert "Ghost DJ" in kwargs["trigger"]
+    assert kwargs["manual_action"].startswith("Tell Ghost DJ yourself")
 
 
 @pytest.mark.asyncio

@@ -13,6 +13,7 @@ import pytest
 
 from bot.notion.client import NotionWriteError, SlotRowMissingError
 from bot.notion.models import EventInfo
+from bot.ui import texts
 from tests.notion.factories import make_event, make_slot
 
 EVENT_PAGE_ID = "evt-page-001"
@@ -53,7 +54,9 @@ def _make_service(**overrides):
     notion_client.clear_slot = AsyncMock(return_value=True)
 
     log_service = MagicMock()
-    for name in ("log_booked", "log_cancelled", "log_changed_by_organizer", "log_fully_booked"):
+    for name in (
+        "log_booked", "log_cancelled", "log_changed_by_organizer", "log_fully_booked", "post_error"
+    ):
         setattr(log_service, name, AsyncMock())
 
     defaults = {
@@ -665,3 +668,42 @@ async def test_organizer_cancellation_does_not_announce_open_event(monkeypatch):
     svc = _make_service()
     ok, _ = await svc.cancel_slot_override("Admin", 42, "DJ Scope", EVENT_NAME, 1)
     svc.log_service.log_fully_booked.assert_not_awaited()
+
+
+def _block_dms(svc):
+    blocked = MagicMock()
+    blocked.send = AsyncMock(side_effect=disnake.Forbidden(MagicMock(), "DMs blocked"))
+    svc.bot.get_user = MagicMock(return_value=blocked)
+
+
+@pytest.mark.asyncio
+async def test_organizer_booking_undelivered_dm_posts_entry(monkeypatch):
+    svc = _make_service()
+    _patch_db(monkeypatch)
+    _block_dms(svc)
+    ok, _ = await svc.book_slot_override("Admin", 42, "DJ Lock", EVENT_NAME, 2)
+    assert ok is True
+    kwargs = svc.log_service.post_error.await_args.kwargs
+    assert kwargs["error_code"].name == "ERR_DM_FAILED"
+    assert "DJ Lock" in kwargs["trigger"]
+    assert kwargs["manual_action"] == texts.dm_failed_todo("DJ Lock")
+
+
+@pytest.mark.asyncio
+async def test_organizer_cancel_undelivered_dm_posts_entry(monkeypatch):
+    svc = _make_service()
+    _patch_db(monkeypatch, holder=42)
+    _block_dms(svc)
+    ok, _ = await svc.cancel_slot_override("Admin", 42, "DJ Lock", EVENT_NAME, 1)
+    assert ok is True
+    kwargs = svc.log_service.post_error.await_args.kwargs
+    assert kwargs["error_code"].name == "ERR_DM_FAILED"
+    assert kwargs["manual_action"] == texts.dm_failed_todo("DJ Lock")
+
+
+@pytest.mark.asyncio
+async def test_delivered_dm_posts_no_error_entry(monkeypatch):
+    svc = _make_service()
+    _patch_db(monkeypatch)
+    await svc.book_slot_override("Admin", 42, "DJ Lock", EVENT_NAME, 2)
+    svc.log_service.post_error.assert_not_awaited()

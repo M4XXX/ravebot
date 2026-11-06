@@ -101,6 +101,25 @@ class NotionSyncService:
             return action.event.event_id
         return f"{action.event.event_id}, {texts.slot_phrase(action.event, action.slot_index)}"
 
+    async def _dm_failed(self, action: SyncAction, what: str) -> None:
+        """Report a Notion-change DM that could not be delivered (best effort)."""
+        if self.log_service is None or action.discord_id is None or action.slot_index is None:
+            return
+        name = self._dj_name(action.discord_id, action.event, action.slot_index)
+        try:
+            await self.log_service.post_error(
+                error_code=ErrorCode.ERR_DM_FAILED,
+                trigger=(
+                    f"The notice that {_safe_dj_name(name)} was {what} in Notion "
+                    f"({self._where(action)}) could not be delivered because their DMs "
+                    "are closed or the bot cannot reach them."
+                ),
+                action_taken="The change in Notion was applied anyway.",
+                manual_action=texts.dm_failed_todo(name),
+            )
+        except Exception:
+            logger.exception("Notion sync: post_error failed for DJ %s", action.discord_id)
+
     async def _post_error(self, action: SyncAction, problem: str, manual: str) -> None:
         if self.log_service is None:
             return
@@ -148,11 +167,8 @@ class NotionSyncService:
         if not await acquire_slot_lock(self.db, event.page_id, index, dj):
             logger.info("Notion sync: %s; slot taken meanwhile, nothing adopted", action.detail)
             return
-        await dm_user(
-            self.bot,
-            dj,
-            texts.dm_added(event, index),
-        )
+        if not await dm_user(self.bot, dj, texts.dm_added(event, index)):
+            await self._dm_failed(action, "added")
         logger.info("%s was added to %s slot %s in Notion", dj, event.event_id, index + 1)
         if self.log_service is not None:
             await self.log_service.log_booked(
@@ -163,11 +179,8 @@ class NotionSyncService:
         event, index, dj = action.event, action.slot_index, action.discord_id
         assert index is not None and dj is not None
         await release_slot_lock(self.db, event.page_id, index, expected_holder=dj)
-        await dm_user(
-            self.bot,
-            dj,
-            texts.dm_removed(event, index),
-        )
+        if not await dm_user(self.bot, dj, texts.dm_removed(event, index)):
+            await self._dm_failed(action, "removed")
         logger.info("%s was removed from %s slot %s in Notion", dj, event.event_id, index + 1)
         if self.log_service is not None:
             await self.log_service.log_changed_in_notion(

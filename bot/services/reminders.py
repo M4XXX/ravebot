@@ -165,6 +165,24 @@ class RemindersService:
                         "RemindersService.send_reminders: user %s not in cache — skipping",
                         discord_user_id,
                     )
+                    if self.log_service is not None:
+                        try:
+                            await self.log_service.post_error(
+                                error_code=ErrorCode.ERR_DM_FAILED,
+                                trigger=(
+                                    f"The reminder for {dj_name} could not be delivered "
+                                    f"({event.event_id}, "
+                                    f"{texts.slot_phrase(event, slot_index)}) "
+                                    "because the bot cannot find them on the server."
+                                ),
+                                action_taken="The bot tries again on the next run.",
+                                manual_action=texts.dm_failed_todo(dj_name),
+                            )
+                        except Exception as log_exc:
+                            logger.warning(
+                                "RemindersService.send_reminders: post_error failed: %s",
+                                log_exc,
+                            )
                     continue
 
                 # Step 6/7: send DM

@@ -24,6 +24,7 @@ from bot.services.dj_pages import ensure_dj_page
 from bot.services.dm import dm_user
 from bot.services.fully_booked import recheck_fully_booked
 from bot.ui import texts
+from bot.ui.embeds import ErrorCode
 
 if TYPE_CHECKING:
     import asyncpg
@@ -77,9 +78,24 @@ class AdminBookingService:
             logger.exception("%s: ensure_dj_page failed for %s", what, dj_id)
             return None
 
-    async def _dm_dj(self, dj_id: int, text: str) -> None:
-        """Send a DM to the DJ. Swallows Forbidden/NotFound — DM failure is non-fatal."""
-        await dm_user(self.bot, dj_id, text)
+    async def _dm_dj(self, dj_id: int, text: str, dj_name: str, what: str) -> None:
+        """Send a DM to the DJ; a failed DM is non-fatal but reported to the log channel."""
+        if await dm_user(self.bot, dj_id, text):
+            return
+        if self.log_service is None:
+            return
+        try:
+            await self.log_service.post_error(
+                error_code=ErrorCode.ERR_DM_FAILED,
+                trigger=(
+                    f"The {what} notice to {texts.escape_text(dj_name)} could not be "
+                    "delivered because their DMs are closed or the bot cannot reach them."
+                ),
+                action_taken="The change was made anyway.",
+                manual_action=texts.dm_failed_todo(dj_name),
+            )
+        except Exception:
+            logger.exception("admin booking: post_error failed for DJ %s", dj_id)
 
     # ---------------------------------------------------------------------------
     # Public API
@@ -182,6 +198,8 @@ class AdminBookingService:
         await self._dm_dj(
             dj_id,
             texts.dm_booked(event, slot_index),
+            dj_name,
+            "booking",
         )
 
         # Step 6: log override to admin channel
@@ -284,6 +302,8 @@ class AdminBookingService:
         await self._dm_dj(
             dj_id,
             texts.dm_cancelled(event, slot_index),
+            dj_name,
+            "cancellation",
         )
 
         # Step 7: log override to admin channel
