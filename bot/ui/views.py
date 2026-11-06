@@ -1379,16 +1379,17 @@ class BookingConfirmView(disnake.ui.View):
             except Exception:
                 logger.exception("BookingConfirmView: admin log post failed")
 
-        # Announce the event when this booking filled it, clear the flag when a slot opened
+        # Release per-user lock — flow complete (AC3)
+        if self._lock.locked():
+            self._lock.release()
+
+        # Announce the event when this booking filled it, clear the flag when a slot opened.
+        # After the lock release: the Notion read can be slow and must not hold the DJ's flow.
         from bot.services.fully_booked import recheck_fully_booked
 
         await recheck_fully_booked(
             self._ctx.db, self._ctx.log_service, self._ctx.notion_client
         )
-
-        # Release per-user lock — flow complete (AC3)
-        if self._lock.locked():
-            self._lock.release()
 
 
 # ---------------------------------------------------------------------------
@@ -1683,16 +1684,17 @@ class CancelConfirmView(disnake.ui.View):
             except Exception:
                 logger.exception("CancelConfirmView: admin log post failed")
 
-        # Announce the event when this booking filled it, clear the flag when a slot opened
+        # Release per-user lock — flow complete (AC4)
+        if self._lock.locked():
+            self._lock.release()
+
+        # Announce the event when this booking filled it, clear the flag when a slot opened.
+        # After the lock release: the Notion read can be slow and must not hold the DJ's flow.
         from bot.services.fully_booked import recheck_fully_booked
 
         await recheck_fully_booked(
             self._ctx.db, self._ctx.log_service, self._ctx.notion_client
         )
-
-        # Release per-user lock — flow complete (AC4)
-        if self._lock.locked():
-            self._lock.release()
 
 
 # ---------------------------------------------------------------------------

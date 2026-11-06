@@ -208,6 +208,7 @@ class EventsCog(commands.Cog):
         await self._run_sync_cycle(guild_id)
 
         # Fetch events from Notion (AC1, AC4)
+        listed_at = datetime.datetime.now(datetime.UTC)
         try:
             events = await self.ctx.notion_client.list_events()
         except Exception as exc:
@@ -226,7 +227,9 @@ class EventsCog(commands.Cog):
         created = await self._auto_create_events(events, guild_id)
 
         # Announce events that became fully booked (and clear the flag of reopened ones)
-        await check_fully_booked(self.ctx.db, self.ctx.log_service, events)
+        await check_fully_booked(
+            self.ctx.db, self.ctx.log_service, events, listed_at=listed_at
+        )
 
         # Post a Lineup Update if the upcoming event changed since the last post
         if self.ctx.lineup_service is None:

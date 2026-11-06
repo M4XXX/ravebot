@@ -1,11 +1,12 @@
 """Tests for bot/services/fully_booked.py."""
+import datetime
 import re
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from bot.services.fully_booked import check_fully_booked
+from bot.services.fully_booked import check_fully_booked, recheck_fully_booked
 from tests.notion.factories import make_event, make_slot
 
 
@@ -14,6 +15,8 @@ class FakeStore:
 
     def __init__(self) -> None:
         self.rows: set[str] = set()
+        self.announced_at: dict[str, datetime.datetime] = {}
+        self.clear_calls: list = []
 
     def patch(self, monkeypatch) -> None:
         async def get_announced(pool, ids):
@@ -25,7 +28,11 @@ class FakeStore:
             self.rows.add(event_id)
             return True
 
-        async def clear_announced(pool, event_id):
+        async def clear_announced(pool, event_id, before=None):
+            self.clear_calls.append((event_id, before))
+            at = self.announced_at.get(event_id, datetime.datetime.min.replace(tzinfo=datetime.UTC))
+            if before is not None and at >= before:
+                return
             self.rows.discard(event_id)
 
         monkeypatch.setattr("bot.services.fully_booked.fb_db.get_announced", get_announced)
@@ -154,3 +161,40 @@ def test_removed_transcript_api_is_gone() -> None:
     )
     for path in root.rglob("*.py"):
         assert not pattern.search(path.read_text()), path
+
+
+@pytest.mark.asyncio
+async def test_stale_poll_does_not_clear_a_newer_announcement(store, log) -> None:
+    listed_at = datetime.datetime(2026, 11, 6, 12, 0, tzinfo=datetime.UTC)
+    store.rows.add("ev-1")
+    store.announced_at["ev-1"] = listed_at + datetime.timedelta(seconds=5)
+    await check_fully_booked(MagicMock(), log, [_event(2)], listed_at=listed_at)
+    assert store.rows == {"ev-1"}
+    await check_fully_booked(MagicMock(), log, [_event(3)], listed_at=listed_at)
+    log.log_fully_booked.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_old_announcement_is_cleared_when_slot_opened(store, log) -> None:
+    listed_at = datetime.datetime(2026, 11, 6, 12, 0, tzinfo=datetime.UTC)
+    store.rows.add("ev-1")
+    store.announced_at["ev-1"] = listed_at - datetime.timedelta(minutes=5)
+    await check_fully_booked(MagicMock(), log, [_event(2)], listed_at=listed_at)
+    assert store.rows == set()
+
+
+@pytest.mark.asyncio
+async def test_recheck_records_time_before_listing_events(store, log) -> None:
+    order = []
+    notion = MagicMock()
+
+    async def list_events():
+        order.append("list")
+        return [_event(2)]
+
+    notion.list_events = list_events
+    store.rows.add("ev-1")
+    before = datetime.datetime.now(datetime.UTC)
+    await recheck_fully_booked(MagicMock(), log, notion)
+    (event_id, cutoff), = store.clear_calls
+    assert before <= cutoff <= datetime.datetime.now(datetime.UTC)

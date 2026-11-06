@@ -2604,3 +2604,44 @@ async def test_cancellation_reopens_event_and_clears_fully_booked(monkeypatch) -
 
     assert store.rows == set()
     ctx.log_service.log_fully_booked.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_booking_confirm_rechecks_fully_booked_after_lock_release() -> None:
+    ctx = make_real_ctx(db=MagicMock())
+    seen = []
+
+    async def recheck(*args, **kwargs):
+        seen.append(ctx.get_user_lock(40020).locked())
+
+    with patch("bot.services.fully_booked.recheck_fully_booked", new=recheck):
+        _, lock, _ = await _run_booking(
+            ctx, 40020, ensure=AsyncMock(return_value="dj-me")
+        )
+    assert seen == [False]
+    assert not lock.locked()
+
+
+@pytest.mark.asyncio
+async def test_cancel_confirm_rechecks_fully_booked_after_lock_release() -> None:
+    seen = []
+    holder = {}
+
+    async def recheck(*args, **kwargs):
+        seen.append(holder["lock"].locked())
+
+    import bot.ui.views as views_mod
+
+    orig = views_mod.CancelConfirmView._handle_confirm
+
+    async def spy(self, inter):
+        holder["lock"] = self._lock
+        await orig(self, inter)
+
+    with patch("bot.services.fully_booked.recheck_fully_booked", new=recheck), \
+         patch.object(views_mod.CancelConfirmView, "_handle_confirm", spy):
+        _, _, _, lock, _ = await _run_cancel(
+            40021, ensure=AsyncMock(return_value="dj-me"), clear=AsyncMock(return_value=True)
+        )
+    assert seen == [False]
+    assert not lock.locked()

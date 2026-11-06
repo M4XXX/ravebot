@@ -41,6 +41,21 @@ async def test_clear_announced_deletes_row() -> None:
 
 
 @pytest.mark.asyncio
+async def test_clear_announced_before_only_deletes_older_rows() -> None:
+    import datetime
+
+    from bot.db.fully_booked import clear_announced
+
+    pool = MagicMock()
+    pool.execute = AsyncMock()
+    cutoff = datetime.datetime(2026, 11, 6, tzinfo=datetime.UTC)
+    await clear_announced(pool, "ev-1", before=cutoff)
+    sql, event_id, before = pool.execute.await_args.args
+    assert "announced_at < $2" in sql
+    assert (event_id, before) == ("ev-1", cutoff)
+
+
+@pytest.mark.asyncio
 async def test_get_announced_returns_stored_subset() -> None:
     from bot.db.fully_booked import get_announced
 

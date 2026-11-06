@@ -3,6 +3,8 @@
 Keyed by the Notion page id of the Events row (same key as slot_locks.event_id).
 Stored in Postgres so the announcement is once per fill and survives restarts.
 """
+import datetime
+
 import asyncpg
 
 
@@ -19,9 +21,22 @@ async def mark_announced(pool: asyncpg.Pool, event_id: str) -> bool:
     return result == "INSERT 0 1"
 
 
-async def clear_announced(pool: asyncpg.Pool, event_id: str) -> None:
-    """Forget the announcement (a slot opened), so a refill is announced again."""
-    await pool.execute("DELETE FROM fully_booked_events WHERE event_id = $1", event_id)
+async def clear_announced(
+    pool: asyncpg.Pool, event_id: str, before: datetime.datetime | None = None
+) -> None:
+    """Forget the announcement (a slot opened), so a refill is announced again.
+
+    With `before`, only an announcement older than that time is forgotten: a poll
+    that read its event list earlier must not undo a newer announcement.
+    """
+    if before is None:
+        await pool.execute("DELETE FROM fully_booked_events WHERE event_id = $1", event_id)
+        return
+    await pool.execute(
+        "DELETE FROM fully_booked_events WHERE event_id = $1 AND announced_at < $2",
+        event_id,
+        before,
+    )
 
 
 async def get_announced(pool: asyncpg.Pool, event_ids: list[str]) -> set[str]:

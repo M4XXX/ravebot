@@ -611,4 +611,6 @@ async def test_poll_notion_runs_fully_booked_check_for_all_events() -> None:
          patch("bot.cogs.events.check_fully_booked", new=AsyncMock()) as check:
         await EventsCog._poll_notion.coro(cog)
 
-    check.assert_awaited_once_with(cog.ctx.db, cog.ctx.log_service, events)
+    args = check.await_args
+    assert args.args == (cog.ctx.db, cog.ctx.log_service, events)
+    assert isinstance(args.kwargs["listed_at"], datetime.datetime)
