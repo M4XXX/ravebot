@@ -11,17 +11,15 @@ Full lineup post (FR10) implemented in Story 3.2.
 [Source: epics.md#Story 7.1 AC1-AC4]
 """
 import datetime
-import json
 import logging
 from datetime import timedelta
-from typing import Any
 
 import asyncpg
 from disnake.ext import commands, tasks
 
 from bot.context import BotContext
 from bot.db.bookings import init_event_slots
-from bot.db.config import get_value, set_value
+from bot.db.config import get_value
 from bot.notion.client import DuplicateEventError, NotionWriteError
 from bot.notion.models import EventInfo
 from bot.services.event_defaults import default_event_shape
@@ -79,37 +77,6 @@ class EventsCog(commands.Cog):
                 )
             return False
 
-    @staticmethod
-    def _build_snapshot(events: list[EventInfo]) -> str:
-        """Stable, content-based JSON snapshot of events and their slot assignments.
-
-        One entry per event (sorted by page_id), including the list of
-        [slot number, dj_page_id] pairs sorted by slot number. Order-independent
-        and changes whenever an assignment or schedule field changes.
-
-        [Source: epics.md#Story 3.1 AC1]
-        """
-        entries: list[dict[str, Any]] = sorted(
-            (
-                {
-                    "page_id": e.page_id,
-                    "event_id": e.event_id,
-                    "date": e.date.isoformat(),
-                    "start": e.start.strftime("%H:%M"),
-                    "slot_count": e.slot_count,
-                    "slot_minutes": e.slot_minutes,
-                    "status": e.status,
-                    "slots": [
-                        [s.number, s.dj_page_id]
-                        for s in sorted(e.slots, key=lambda s: s.number)
-                    ],
-                }
-                for e in events
-            ),
-            key=lambda x: x["page_id"],
-        )
-        return json.dumps(entries)
-
     def _get_guild_id(self) -> int | None:
         """Return the first guild's ID, or None if the bot has no guilds yet.
 
@@ -130,8 +97,8 @@ class EventsCog(commands.Cog):
         the look-ahead target. After each successful Notion write, pre-initializes
         slot_locks rows via init_event_slots() (Story 7.3 AC2).
 
-        Called from _poll_notion() after list_events() succeeds, before snapshot
-        comparison — newly created events appear in the same cycle's snapshot.
+        Called from _poll_notion() after list_events() succeeds, before the
+        lineup refresh — newly created events are part of the same cycle.
 
         On NotionWriteError: ERR_NOTION_WRITE is already posted by NotionApi.request.
         Logs a warning and continues — remaining events in the loop still attempted.
@@ -188,16 +155,6 @@ class EventsCog(commands.Cog):
             except ValueError:
                 logger.exception("Auto event creation rejected for %s", new_date.isoformat())
 
-    async def _trigger_lineup_update(self, events: list[EventInfo]) -> None:
-        """Trigger lineup channel post update via LineupService.
-
-        [Source: epics.md#Story 3.2]
-        """
-        if self.ctx.lineup_service is None:
-            logger.warning("lineup_service not available — skipping lineup update")
-            return
-        await self.ctx.lineup_service.post_update(events)
-
     async def _run_sync_cycle(self, guild_id: int) -> None:
         """Run one NotionSyncService cycle; a failure is logged and never raised.
 
@@ -226,14 +183,13 @@ class EventsCog(commands.Cog):
 
         Order per cycle: (1) NotionSyncService.run_cycle (skipped if the service is
         None; a failure is posted and the cycle continues), (2) list_events() for the
-        state after the sync, (3) auto-create events, (4) snapshot and lineup update.
+        state after the sync, (3) auto-create events, (4) lineup refresh.
         The first iteration runs after the bot is ready and is the startup reconcile.
 
         On DB unavailability: skips cycle (guard handles logging).
         On Notion read failure: logs warning, posts ERR_NOTION_WRITE, skips cycle
         (no snapshot update).
-        On no change: silently returns.
-        On change: triggers lineup update and persists new snapshot.
+        The lineup refresh compares the upcoming event with the last posted snapshot.
 
         [Source: epics.md#Story 3.1 AC1-AC4]
         [Source: architecture.md#Scheduled Work: disnake tasks.loop]
@@ -267,16 +223,11 @@ class EventsCog(commands.Cog):
         # Story 7.1: auto-create events to maintain look-ahead count (AC1-AC4)
         await self._auto_create_events(events, guild_id)
 
-        # Compare against stored snapshot (AC1, AC2, AC3)
-        new_snapshot = self._build_snapshot(events)
-        stored_snapshot = await get_value(self.ctx.db, guild_id, "lineup_snapshot")
-
-        if new_snapshot == stored_snapshot:
-            return  # AC3: no change, no action
-
-        # AC2: change detected — trigger lineup post then persist new snapshot
-        await self._trigger_lineup_update(events)
-        await set_value(self.ctx.db, guild_id, "lineup_snapshot", new_snapshot)
+        # Post a Lineup Update if the upcoming event changed since the last post
+        if self.ctx.lineup_service is None:
+            logger.warning("lineup_service not available — skipping lineup update")
+            return
+        await self.ctx.lineup_service.refresh(events)
 
     @_poll_notion.before_loop
     async def _before_poll_notion(self) -> None:

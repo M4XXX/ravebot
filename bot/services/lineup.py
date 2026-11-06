@@ -1,11 +1,12 @@
-"""Lineup service — daily-capped lineup post to DJ channel.
+"""Lineup service: posts a Lineup Update for the upcoming event on every change.
 
-Handles FR10 — lineup post construction, daily cap, and edit-in-place deduplication.
-
-[Source: epics.md#Story 3.2]
-[Source: architecture.md#Repository Pattern]
+A new post per change (never edited or deleted). The last posted state is kept as a
+snapshot in config (`lineup_post_snapshot`) so a poll cycle and a debounced refresh
+never post the same state twice.
 """
+import asyncio
 import datetime
+import json
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -13,96 +14,168 @@ import disnake
 
 from bot.db.config import get_value, set_value
 from bot.notion.models import EventInfo
-from bot.ui.embeds import ErrorCode, MissionRosterEmbed
+from bot.ui.embeds import ErrorCode, LineupUpdateEmbed
 
 if TYPE_CHECKING:
     from bot.log import AdminLogService
 
 logger = logging.getLogger(__name__)
 
+LINEUP_DEBOUNCE_SECONDS = 45
+SNAPSHOT_KEY = "lineup_post_snapshot"
+_EXCLUDED_STATUSES = {"Done", "Canceled"}
+
+_SENT = "sent"
+_NO_CONFIG = "no_config"
+_FAILED = "failed"
+
+
+def _today() -> datetime.date:
+    return datetime.datetime.now(datetime.UTC).date()
+
+
+def future_events(events: list[EventInfo], today: datetime.date) -> list[EventInfo]:
+    """Events dated today or later, not Done/Canceled, sorted by date and start."""
+    eligible = [
+        e for e in events if e.date >= today and e.status not in _EXCLUDED_STATUSES
+    ]
+    return sorted(eligible, key=lambda e: (e.date, e.start))
+
+
+def upcoming_event(events: list[EventInfo], today: datetime.date) -> EventInfo | None:
+    """The earliest eligible event, or None."""
+    eligible = future_events(events, today)
+    return eligible[0] if eligible else None
+
+
+def event_snapshot(event: EventInfo | None) -> str:
+    """Content snapshot of an event's schedule and bookings; status is excluded."""
+    if event is None:
+        return "none"
+    return json.dumps(
+        {
+            "page_id": event.page_id,
+            "event_id": event.event_id,
+            "date": event.date.isoformat(),
+            "start": event.start.strftime("%H:%M"),
+            "slot_minutes": event.slot_minutes,
+            "slot_count": event.slot_count,
+            "slots": sorted([s.number, s.dj_page_id] for s in event.slots),
+        }
+    )
+
 
 class LineupService:
-    """Stateful lineup post manager — posts MissionRosterEmbed to DJ channel."""
+    """Posts a LineupUpdateEmbed to the DJ channel when the upcoming event changes."""
 
     def __init__(
         self,
         bot: Any,
         db: Any,
         log_service: "AdminLogService",
+        notion_client: Any,
+        view: disnake.ui.View | None = None,
     ) -> None:
         self.bot = bot
         self.db = db
         self.log_service = log_service
+        self.notion_client = notion_client
+        self.view = view
+        self._lock = asyncio.Lock()
+        self._pending = False
+        self._task: asyncio.Task[None] | None = None
+        self._tasks: set[asyncio.Task[None]] = set()
 
     def _get_guild_id(self) -> int | None:
         if not self.bot.guilds:
-            logger.warning("LineupService._get_guild_id: no guilds — skipping")
+            logger.warning("LineupService: no guilds, skipping")
             return None
         return self.bot.guilds[0].id
 
-    async def post_update(self, events: list[EventInfo]) -> None:
-        """Post (or edit) the lineup embed to the DJ channel.
-
-        Daily cap: at most one post per calendar day (UTC).
-        Edit-in-place: re-uses the existing message if available.
-        Falls back to delete-and-repost on NotFound/Forbidden.
-
-        [Source: epics.md#Story 3.2 AC1-AC4]
-        """
-        guild_id = self._get_guild_id()
-        if guild_id is None:
+    def notify_changed(self) -> None:
+        """Schedule one debounced refresh; calls while one is waiting are merged."""
+        if self._pending:
             return
+        self._pending = True
+        task = asyncio.get_running_loop().create_task(self._debounced_refresh())
+        self._task = task
+        self._tasks.add(task)  # strong reference until done
+        task.add_done_callback(self._tasks.discard)
 
-        # AC4 — channel must be configured
+    async def _debounced_refresh(self) -> None:
+        try:
+            await asyncio.sleep(LINEUP_DEBOUNCE_SECONDS)
+            # Cleared before the refresh so a change during it schedules another one
+            self._pending = False
+            await self.refresh()
+        except Exception:
+            logger.exception("LineupService: debounced refresh failed")
+        finally:
+            self._pending = False
+
+    async def refresh(self, events: list[EventInfo] | None = None) -> bool:
+        """Post the upcoming event if it differs from the last posted snapshot."""
+        async with self._lock:
+            guild_id = self._get_guild_id()
+            if guild_id is None:
+                return False
+            loaded = events if events is not None else await self.notion_client.list_events()
+            upcoming = upcoming_event(loaded, _today())
+            snapshot = event_snapshot(upcoming)
+            stored = await get_value(self.db, guild_id, SNAPSHOT_KEY)
+            if snapshot == stored:
+                return False
+            if upcoming is None:
+                await set_value(self.db, guild_id, SNAPSHOT_KEY, snapshot)
+                return False
+            outcome = await self._send(guild_id, upcoming)
+            if outcome == _SENT:
+                await set_value(self.db, guild_id, SNAPSHOT_KEY, snapshot)
+                return True
+            if outcome == _NO_CONFIG:
+                # Store anyway so the admin error is not repeated on every poll
+                await set_value(self.db, guild_id, SNAPSHOT_KEY, snapshot)
+            return False
+
+    async def post_event(self, event: EventInfo) -> bool:
+        """Post one event; store its snapshot if it is the current upcoming event."""
+        async with self._lock:
+            guild_id = self._get_guild_id()
+            if guild_id is None:
+                return False
+            if await self._send(guild_id, event, report_error=False) != _SENT:
+                return False
+            try:
+                current = upcoming_event(await self.notion_client.list_events(), _today())
+            except Exception:
+                logger.warning("LineupService.post_event: could not load events", exc_info=True)
+                return True
+            if current is not None and current.page_id == event.page_id:
+                await set_value(self.db, guild_id, SNAPSHOT_KEY, event_snapshot(event))
+            return True
+
+    async def _send(self, guild_id: int, event: EventInfo, report_error: bool = True) -> str:
         dj_channel_id = await get_value(self.db, guild_id, "dj_channel")
         if dj_channel_id is None:
-            logger.warning("LineupService: dj_channel not configured — cannot post lineup")
-            if self.log_service is not None:
+            logger.warning("LineupService: dj_channel not configured, cannot post lineup")
+            if report_error and self.log_service is not None:
                 await self.log_service.post_error(
                     error_code=ErrorCode.ERR_NOTION_WRITE,
                     trigger="Lineup update triggered but dj_channel is not configured.",
                     action_taken="Lineup post skipped.",
-                    manual_action="Run /set-dj-channel to configure the DJ channel.",
+                    manual_action="Run /config set dj-channel to configure the DJ channel.",
                 )
-            return
-
-        # AC2 — daily cap
-        today = datetime.date.today().isoformat()
-        last_post_date = await get_value(self.db, guild_id, "lineup_last_post_date")
-        if last_post_date == today:
-            logger.info("LineupService: lineup already posted today — skipping")
-            return
-
+            return _NO_CONFIG
         channel = self.bot.get_channel(int(dj_channel_id))
         if channel is None:
-            logger.warning("LineupService: channel %s not found in cache", dj_channel_id)
-            return
-
-        embed = MissionRosterEmbed(events)
-
-        # AC3 — edit-in-place or delete-and-repost
-        msg_id_str = await get_value(self.db, guild_id, "lineup_post_message_id")
-        sent_message = None
-        if msg_id_str is not None:
-            try:
-                existing = await channel.fetch_message(int(msg_id_str))
-            except (disnake.NotFound, disnake.Forbidden):
-                existing = None  # message gone or inaccessible — just send new
-
-            if existing is not None:
-                try:
-                    await existing.edit(embed=embed)
-                    sent_message = existing
-                except (disnake.NotFound, disnake.Forbidden):
-                    # Edit failed — delete old message then fall through to send
-                    try:
-                        await existing.delete()
-                    except (disnake.NotFound, disnake.Forbidden):
-                        pass  # already gone or no delete permission — acceptable
-
-        if sent_message is None:
-            sent_message = await channel.send(embed=embed)
-
-        # AC1 — persist state
-        await set_value(self.db, guild_id, "lineup_last_post_date", today)
-        await set_value(self.db, guild_id, "lineup_post_message_id", str(sent_message.id))
+            logger.warning("LineupService: channel %s not found", dj_channel_id)
+            return _FAILED
+        kwargs: dict[str, Any] = {"embed": LineupUpdateEmbed(event)}
+        if self.view is not None:
+            kwargs["view"] = self.view
+        try:
+            await channel.send(**kwargs)
+        except disnake.HTTPException as exc:
+            logger.warning("LineupService: sending the lineup post failed: %s", exc)
+            return _FAILED
+        return _SENT

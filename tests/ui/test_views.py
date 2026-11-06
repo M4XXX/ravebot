@@ -920,7 +920,7 @@ async def test_booking_confirm_success_sends_confirmed_embed() -> None:
 
 @pytest.mark.asyncio
 async def test_booking_confirm_success_triggers_lineup_post() -> None:
-    """Success path with lineup_service set → post_update awaited with fresh events. (AC3)"""
+    """Success path with lineup_service set → notify_changed called once. (AC3)"""
     ctx = make_real_ctx(db=MagicMock())
     lock = ctx.get_user_lock(20006)
     await lock.acquire()
@@ -932,7 +932,6 @@ async def test_booking_confirm_success_triggers_lineup_post() -> None:
     ctx.notion_client = notion_client
 
     lineup_service = MagicMock()
-    lineup_service.post_update = AsyncMock()
     ctx.lineup_service = lineup_service
 
     view = _make_booking_confirm_view(ctx, lock, user_id=20006)
@@ -944,7 +943,7 @@ async def test_booking_confirm_success_triggers_lineup_post() -> None:
          patch("bot.services.dj_pages.ensure_dj_page", new=AsyncMock(return_value="dj-page")):
         await view._handle_confirm(inter)
 
-    lineup_service.post_update.assert_awaited_once_with(fresh_events)
+    lineup_service.notify_changed.assert_called_once_with()
     assert not lock.locked()
 
 

@@ -103,7 +103,12 @@ async def main() -> None:
 
     # Story 3.2: init LineupService after DB and log_service are ready
     from bot.services.lineup import LineupService
-    ctx.lineup_service = LineupService(bot=bot, db=ctx.db, log_service=ctx.log_service)
+    ctx.lineup_service = LineupService(
+        bot=bot,
+        db=ctx.db,
+        log_service=ctx.log_service,
+        notion_client=ctx.notion_client,
+    )
 
     # Notion rework: reconcile hand edits in Notion with Postgres on every poll
     from bot.services.notion_sync import NotionSyncService

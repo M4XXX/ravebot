@@ -1360,12 +1360,11 @@ class BookingConfirmView(disnake.ui.View):
             return
 
         # Trigger lineup channel post — best-effort, failure must not block confirmation (AC3)
-        if self._ctx.lineup_service is not None and self._ctx.notion_client is not None:
+        if self._ctx.lineup_service is not None:
             try:
-                fresh_events = await self._ctx.notion_client.list_events()
-                await self._ctx.lineup_service.post_update(fresh_events)
+                self._ctx.lineup_service.notify_changed()
             except Exception:
-                logger.exception("BookingConfirmView: lineup post failed after booking")
+                logger.exception("BookingConfirmView: lineup notify failed after booking")
 
         # Log to admin channel — best-effort (AC3)
         if self._ctx.log_service is not None:
@@ -1679,12 +1678,11 @@ class CancelConfirmView(disnake.ui.View):
         )
 
         # Trigger lineup channel post — best-effort (AC4)
-        if self._ctx.lineup_service is not None and self._ctx.notion_client is not None:
+        if self._ctx.lineup_service is not None:
             try:
-                fresh_events = await self._ctx.notion_client.list_events()
-                await self._ctx.lineup_service.post_update(fresh_events)
+                self._ctx.lineup_service.notify_changed()
             except Exception:
-                logger.exception("CancelConfirmView: lineup post failed after cancellation")
+                logger.exception("CancelConfirmView: lineup notify failed after cancellation")
 
         # Log to admin channel — best-effort
         if self._ctx.log_service is not None:
