@@ -12,6 +12,7 @@ import asyncpg
 from disnake.ext import commands, tasks
 
 from bot.context import BotContext
+from bot.services.outreach import outreach_enabled
 from bot.ui.embeds import ErrorCode
 
 logger = logging.getLogger(__name__)
@@ -90,6 +91,12 @@ class OutreachCog(commands.Cog):
 
         guild_id = self._get_guild_id()
         if guild_id is None:
+            return
+
+        # Global switch, read fresh each cycle. Off: no gap detection, no invites,
+        # no exhaustion handling. Nothing else in the bot depends on this.
+        if not await outreach_enabled(self.ctx.db, guild_id):
+            logger.debug("OutreachCog._outreach_check: automatic outreach is off, skipping")
             return
 
         if self.ctx.notion_client is None:

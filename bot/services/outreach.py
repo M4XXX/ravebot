@@ -39,6 +39,18 @@ logger = logging.getLogger(__name__)
 _DEFAULT_OUTREACH_DAYS = 14
 _DEFAULT_COOLDOWN_HOURS = 12
 
+OUTREACH_ENABLED_KEY = "outreach_enabled"
+
+
+def parse_outreach_enabled(raw: str | None) -> bool:
+    """Missing or anything other than "false" means on."""
+    return raw is None or raw.strip().lower() != "false"
+
+
+async def outreach_enabled(db: Any, guild_id: int) -> bool:
+    """Global switch for automatic invite DMs. Read fresh on every call; default on."""
+    return parse_outreach_enabled(await get_value(db, guild_id, OUTREACH_ENABLED_KEY))
+
 
 class OutreachService:
     """Stateless outreach logic — gap detection, sequence lifecycle, cooldown enforcement.

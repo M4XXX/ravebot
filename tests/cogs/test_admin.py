@@ -1073,7 +1073,7 @@ async def test_config_show_displays_embed_with_all_values(
     embed = call_kwargs.get("embed")
     assert embed is not None
     assert embed.color.value == EmbedColors.NEBULA_WHITE
-    assert len(embed.fields) == 11  # 6 original (7.2) + 5 slot config (7.3)
+    assert len(embed.fields) == 12  # 11 config keys + Automatic outreach
 
 
 @pytest.mark.asyncio
@@ -1381,7 +1381,7 @@ async def test_config_show_includes_slot_config_fields(
     embed = call_kwargs.get("embed")
     assert embed is not None
     assert embed.color.value == EmbedColors.NEBULA_WHITE
-    assert len(embed.fields) == 11
+    assert len(embed.fields) == 12
 
 
 @pytest.mark.asyncio
@@ -1590,3 +1590,56 @@ def test_lineup_post_is_admin_gated() -> None:
 
     cog = AdminCog(make_mock_ctx(frozenset({1})))
     assert cog.cog_slash_command_check(make_mock_inter(user_id=2)) is False
+
+
+# ---------------------------------------------------------------------------
+# Global outreach switch
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("enabled", "stored", "reply"),
+    [
+        (True, "true", "Automatic outreach is on."),
+        (False, "false", "Automatic outreach is off. Booking, reminders and DMs keep working."),
+    ],
+)
+async def test_config_set_outreach_stores_value_and_replies_privately(
+    monkeypatch: pytest.MonkeyPatch, enabled: bool, stored: str, reply: str
+) -> None:
+    from bot.cogs.admin import AdminCog
+
+    cog = AdminCog(make_mock_ctx(frozenset({1})))
+    inter = make_mock_inter(user_id=1, guild_id=111)
+    set_value = AsyncMock()
+    monkeypatch.setattr("bot.db.config.set_value", set_value)
+
+    await cog.config_set_outreach.callback(cog, inter, enabled)
+
+    set_value.assert_awaited_once_with(cog.ctx.db, 111, "outreach_enabled", stored)
+    inter.response.send_message.assert_awaited_once_with(reply, ephemeral=True)
+    assert "\u2014" not in reply
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("raw", "shown"), [(None, "on"), ("true", "on"), ("false", "off")]
+)
+async def test_config_show_lists_automatic_outreach_row(
+    monkeypatch: pytest.MonkeyPatch, raw: str | None, shown: str
+) -> None:
+    from bot.cogs.admin import AdminCog
+
+    cog = AdminCog(make_mock_ctx(frozenset({1})))
+    inter = make_mock_inter(user_id=1, guild_id=111)
+
+    async def mock_get_value(pool: object, guild_id: int, key: str) -> str | None:
+        return raw if key == "outreach_enabled" else None
+
+    monkeypatch.setattr("bot.db.config.get_value", mock_get_value)
+    await cog.config_show.callback(cog, inter)
+
+    embed = inter.response.send_message.call_args[1]["embed"]
+    fields = {f.name: f.value for f in embed.fields}
+    assert fields["Automatic outreach"] == shown

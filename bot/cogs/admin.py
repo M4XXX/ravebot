@@ -21,6 +21,7 @@ Story 7.3: /config set event-interval-days -- days between auto-created events (
 Story 7.3: /config set slot-duration -- slot duration in minutes (FR37)
 Story 7.3: /config set start-time -- default event start time HH:MM UTC (FR37)
 Story 7.3: /config set event-schedule -- event recurrence cron expression (FR37)
+/config set outreach -- global switch for automatic outreach invites
 FR41: All commands restricted to ADMIN_USER_IDS via cog_slash_command_check
 
 disnake 2.12.0 slash command hierarchy:
@@ -37,6 +38,7 @@ disnake 2.12.0 slash command hierarchy:
       slot-duration            <- .sub_command()  [Story 7.3]
       start-time               <- .sub_command()  [Story 7.3]
       event-schedule           <- .sub_command()  [Story 7.3]
+      outreach                 <- .sub_command()  [enabled: bool]
     show                       <- .sub_command()
   /intervene                   <- @commands.slash_command()
     start                      <- .sub_command()
@@ -74,6 +76,7 @@ from bot.db.djs import get_all_djs
 from bot.notion.client import DuplicateEventError, NotionWriteError
 from bot.services.event_defaults import default_event_shape
 from bot.services.lineup import future_events, upcoming_event
+from bot.services.outreach import parse_outreach_enabled
 from bot.ui import texts
 from bot.ui.embeds import EmbedColors
 
@@ -534,6 +537,33 @@ class AdminCog(commands.Cog):
             f"Event recurrence schedule set to: {cron}", ephemeral=True
         )
 
+    @config_set_base.sub_command(
+        name="outreach",
+        description="Turn automatic outreach invites on or off",
+    )
+    async def config_set_outreach(
+        self,
+        inter: disnake.ApplicationCommandInteraction,
+        enabled: bool = commands.Param(description="True to send invites, false to stop"),
+    ) -> None:
+        """Store outreach_enabled ("true"/"false"); only the outreach loop reads it."""
+        guild_id = inter.guild_id
+        assert guild_id is not None
+        if self.ctx.db is None:
+            logger.error("AdminCog: DB pool is None in config_set_outreach")
+            await inter.response.send_message(
+                "Bot is not ready — please try again.", ephemeral=True
+            )
+            return
+        await db_config.set_value(
+            self.ctx.db, guild_id, "outreach_enabled", "true" if enabled else "false"
+        )
+        if enabled:
+            reply = "Automatic outreach is on."
+        else:
+            reply = "Automatic outreach is off. Booking, reminders and DMs keep working."
+        await inter.response.send_message(reply, ephemeral=True)
+
     # ---------------------------------------------------------------------------
     # Story 7.2: /config show — display all current config values
     # ---------------------------------------------------------------------------
@@ -586,6 +616,12 @@ class AdminCog(commands.Cog):
                 value=raw if raw is not None else f"(default: {default})",
                 inline=True,
             )
+        raw_enabled = await db_config.get_value(self.ctx.db, guild_id, "outreach_enabled")
+        embed.add_field(
+            name="Automatic outreach",
+            value="on" if parse_outreach_enabled(raw_enabled) else "off",
+            inline=True,
+        )
 
         await inter.response.send_message(embed=embed, ephemeral=True)
 
