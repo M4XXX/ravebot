@@ -22,6 +22,21 @@ logger = logging.getLogger(__name__)
 
 _TITLE_PREFIX = "Message from "
 _FIELD_MAX = 1024
+_CUT_NOTE = " (cut)"
+
+
+def _reply_field_value(text: str) -> str:
+    """Escape the reply for the entry field; cut the raw text first, note the cut."""
+    escaped = texts.escape_text(text)
+    if len(escaped) <= _FIELD_MAX:
+        return escaped
+    keep = _FIELD_MAX - len(_CUT_NOTE)
+    while keep > 0:
+        value = texts.escape_text(text[:keep]) + _CUT_NOTE
+        if len(value) <= _FIELD_MAX:
+            return value
+        keep -= max(1, (len(value) - _FIELD_MAX) // 2)
+    return _CUT_NOTE.strip()
 
 
 class ReplyModal(disnake.ui.Modal):
@@ -39,13 +54,13 @@ class ReplyModal(disnake.ui.Modal):
         self._log_message = log_message
         super().__init__(
             title=f"Reply to {name}"[:45],
-            custom_id="log_reply_modal",
+            custom_id=f"log_reply_modal:{log_message.id}",
             components=[
                 disnake.ui.TextInput(
                     label="Message",
                     custom_id="message",
                     style=disnake.TextInputStyle.paragraph,
-                    max_length=4000,
+                    max_length=2000,
                     required=True,
                 )
             ],
@@ -61,13 +76,19 @@ class ReplyModal(disnake.ui.Modal):
             organizer = _safe_dj_name(
                 getattr(inter.author, "display_name", None) or inter.author.name
             )
-            embed = disnake.Embed.from_dict(self._log_message.embeds[0].to_dict())
+            entry = self._log_message
+            try:
+                # inter.message is stale: another organizer may have replied meanwhile
+                entry = await entry.channel.fetch_message(entry.id)
+            except Exception:
+                entry = self._log_message
+            embed = disnake.Embed.from_dict(entry.embeds[0].to_dict())
             embed.add_field(
                 name=f"{organizer} replied",
-                value=texts.escape_text(text)[:_FIELD_MAX],
+                value=_reply_field_value(text),
                 inline=False,
             )
-            await self._log_message.edit(embed=embed, view=None)
+            await entry.edit(embed=embed, view=None)
         except Exception:
             logger.exception("Reply sent but the log entry could not be updated")
         await inter.followup.send(texts.LOG_REPLY_SENT, ephemeral=True)

@@ -64,7 +64,7 @@ async def test_admin_click_opens_modal_for_mapped_user() -> None:
     assert modal.title == "Reply to Sam"
     field = modal.components[0].children[0]
     assert field.label == "Message"
-    assert field.max_length == 4000
+    assert field.max_length == 2000
     assert field.required is True
     assert field.style == disnake.TextInputStyle.paragraph
 
@@ -114,7 +114,8 @@ async def test_submit_success_sends_dm_edits_entry_and_confirms() -> None:
     assert embed.title == "Message from Sam"
     assert embed.description == "hello"
     assert embed.fields[0].name == "Orga replied"
-    assert embed.fields[0].value == "x" * 1024
+    assert embed.fields[0].value.startswith("x" * 900)
+    assert embed.fields[0].value.endswith("(cut)")
     sent = (
         inter.followup.send.await_args if inter.followup.send.await_count
         else inter.response.send_message.await_args
@@ -139,3 +140,73 @@ async def test_submit_dm_failure_leaves_entry_untouched() -> None:
         "I could not send the message. The user may have DMs from server members turned off.",
     )
     assert sent.kwargs["ephemeral"] is True
+
+
+def test_modal_custom_id_is_unique_per_log_entry() -> None:
+    ctx = _ctx()
+    m1, m2 = _log_message(), _log_message()
+    m1.id, m2.id = 701, 702
+    a = ReplyModal(ctx, 1, "A", m1)
+    b = ReplyModal(ctx, 2, "B", m2)
+    assert a.custom_id == "log_reply_modal:701"
+    assert b.custom_id == "log_reply_modal:702"
+    assert a.custom_id != b.custom_id
+
+
+@pytest.mark.asyncio
+async def test_two_open_modals_each_dm_their_own_user() -> None:
+    ctx = _ctx()
+    m1, m2 = _log_message(), _log_message()
+    m1.id, m2.id = 701, 702
+    a = ReplyModal(ctx, 1, "A", m1)
+    b = ReplyModal(ctx, 2, "B", m2)
+    with patch("bot.ui.log_reply.dm_user", AsyncMock(return_value=True)) as dm:
+        await a.callback(_modal_inter("to a"))
+        await b.callback(_modal_inter("to b"))
+    assert [c.args[1:] for c in dm.await_args_list] == [(1, "to a"), (2, "to b")]
+
+
+@pytest.mark.asyncio
+async def test_submit_refetches_entry_so_earlier_reply_is_kept() -> None:
+    stale = _log_message()
+    fresh = _log_message()
+    fresh.embeds = [
+        disnake.Embed(title="Message from Sam", description="hello").add_field(
+            name="Other replied", value="first", inline=False
+        )
+    ]
+    fresh.edit = AsyncMock()
+    stale.channel = MagicMock()
+    stale.channel.fetch_message = AsyncMock(return_value=fresh)
+    stale.id = 5
+    modal = ReplyModal(_ctx(), 42, "Sam", stale)
+    with patch("bot.ui.log_reply.dm_user", AsyncMock(return_value=True)):
+        await modal.callback(_modal_inter("second"))
+    stale.edit.assert_not_awaited()
+    embed = fresh.edit.await_args.kwargs["embed"]
+    assert [f.name for f in embed.fields] == ["Other replied", "Orga replied"]
+
+
+@pytest.mark.asyncio
+async def test_submit_refetch_failure_falls_back_to_stale_copy() -> None:
+    stale = _log_message()
+    stale.channel = MagicMock()
+    stale.channel.fetch_message = AsyncMock(side_effect=disnake.NotFound(MagicMock(), "gone"))
+    stale.id = 5
+    modal = ReplyModal(_ctx(), 42, "Sam", stale)
+    with patch("bot.ui.log_reply.dm_user", AsyncMock(return_value=True)):
+        await modal.callback(_modal_inter("second"))
+    assert stale.edit.await_args.kwargs["embed"].fields[0].name == "Orga replied"
+
+
+@pytest.mark.asyncio
+async def test_long_reply_is_cut_then_escaped_with_note() -> None:
+    msg = _log_message()
+    modal = ReplyModal(_ctx(), 42, "Sam", msg)
+    with patch("bot.ui.log_reply.dm_user", AsyncMock(return_value=True)):
+        await modal.callback(_modal_inter("*" * 2000))
+    value = msg.edit.await_args.kwargs["embed"].fields[0].value
+    assert len(value) <= 1024
+    assert value.endswith("(cut)")
+    assert "\\*" in value
+    assert not value.removesuffix(" (cut)").endswith("\\")
