@@ -444,3 +444,13 @@ async def test_user_message_long_text_is_cut() -> None:
     embed = _sent(channel)
     assert len(embed.description) <= 4096
     assert embed.description.endswith("(cut)")
+
+
+@pytest.mark.asyncio
+async def test_building_failure_does_not_raise(caplog) -> None:
+    service, channel = _service()
+    broken_event = object()  # no event_id / slots: building the text raises
+    await service.log_booked("Nova", broken_event, 0, "DM")  # type: ignore[arg-type]
+    await service.log_cancelled("Nova", broken_event, 0)  # type: ignore[arg-type]
+    await service.log_fully_booked(broken_event)  # type: ignore[arg-type]
+    channel.send.assert_not_awaited()

@@ -39,7 +39,7 @@ from bot.services.dj_pages import ensure_dj_page
 from bot.services.dm import dm_user
 from bot.services.notion_sync_plan import SyncAction, plan_sync
 from bot.ui import texts
-from bot.ui.embeds import ErrorCode
+from bot.ui.embeds import ErrorCode, _safe_dj_name
 
 if TYPE_CHECKING:
     import asyncpg
@@ -47,10 +47,9 @@ if TYPE_CHECKING:
 
     from bot.log import AdminLogService
     from bot.notion.client import NotionClient
+    from bot.notion.models import EventInfo
 
 logger = logging.getLogger(__name__)
-
-_PREFIX = "[NOTION SYNC]"
 
 
 class NotionSyncService:
@@ -88,10 +87,14 @@ class NotionSyncService:
 
     # ------------------------------------------------------------------ helpers
 
-    async def _log_line(self, text: str) -> None:
-        logger.info("%s", text)
-        if self.log_service is not None:
-            await self.log_service.post_admin_override(f"{_PREFIX} {text}")
+    def _dj_name(self, dj_id: int, event: "EventInfo", index: int) -> str:
+        """Best display name for a DJ: Discord user, then the Notion slot row, then the id."""
+        user = self.bot.get_user(dj_id)
+        name = getattr(user, "display_name", None) if user is not None else None
+        if not name:
+            row = next((r for r in event.slots if r.number == index + 1), None)
+            name = row.dj_name if row is not None else None
+        return name or str(dj_id)
 
     async def _post_error(self, action: SyncAction, problem: str, manual: str) -> None:
         if self.log_service is None:
@@ -145,7 +148,11 @@ class NotionSyncService:
             dj,
             texts.dm_added(event, index),
         )
-        await self._log_line(f"{dj} was added to {event.event_id} slot {index + 1} in Notion")
+        logger.info("%s was added to %s slot %s in Notion", dj, event.event_id, index + 1)
+        if self.log_service is not None:
+            await self.log_service.log_booked(
+                self._dj_name(dj, event, index), event, index, "Notion"
+            )
 
     async def _free(self, action: SyncAction) -> None:
         event, index, dj = action.event, action.slot_index, action.discord_id
@@ -156,9 +163,11 @@ class NotionSyncService:
             dj,
             texts.dm_removed(event, index),
         )
-        await self._log_line(
-            f"{dj} was removed from {event.event_id} slot {index + 1} in Notion"
-        )
+        logger.info("%s was removed from %s slot %s in Notion", dj, event.event_id, index + 1)
+        if self.log_service is not None:
+            await self.log_service.log_changed_in_notion(
+                self._dj_name(dj, event, index), event, index
+            )
 
     async def _revert(self, action: SyncAction) -> None:
         event, index, holder = action.event, action.slot_index, action.discord_id
@@ -169,9 +178,10 @@ class NotionSyncService:
             except Exception as exc:
                 await self._notion_failed(action, exc)
                 return
-            await self._log_line(
-                f"extra DJs were removed from slot {index + 1} of {event.event_id}; "
-                "the first DJ was kept"
+            logger.info(
+                "Notion sync: extra DJs were removed from slot %s of %s; the first DJ was kept",
+                index + 1,
+                event.event_id,
             )
             return
         user = self.bot.get_user(holder)
@@ -193,9 +203,20 @@ class NotionSyncService:
         except Exception as exc:
             await self._notion_failed(action, exc)
             return
-        await self._log_line(
-            f"a hand edit on slot {index + 1} of {event.event_id} was reverted to {holder}"
+        logger.info(
+            "Notion sync: a hand edit on slot %s of %s was reverted to %s",
+            index + 1,
+            event.event_id,
+            holder,
         )
+        if self.log_service is not None:
+            await self.log_service.log_attention(
+                "Hand edit reverted",
+                f"A hand edit on {texts.slot_phrase(event, index)} of "
+                f"**{_safe_dj_name(event.event_id)}** "
+                f"was reverted to {_safe_dj_name(name or str(holder))}.",
+                "Clear the slot in Notion first if you want to replace a DJ.",
+            )
 
     async def _create_slots(self, action: SyncAction) -> None:
         event = action.event
@@ -205,7 +226,7 @@ class NotionSyncService:
             await self._notion_failed(action, exc)
             return
         await init_event_slots(self.db, event.page_id, event.slot_count)
-        await self._log_line(action.detail)
+        logger.info("Notion sync: %s", action.detail)
 
     async def _trim_slots(self, action: SyncAction) -> None:
         numbers = set(action.numbers)
@@ -220,7 +241,7 @@ class NotionSyncService:
         except Exception as exc:
             await self._notion_failed(action, exc)
             return
-        await self._log_line(action.detail)
+        logger.info("Notion sync: %s", action.detail)
 
     async def _skip(self, action: SyncAction) -> None:
         key = (action.event.page_id, action.detail)
@@ -228,8 +249,6 @@ class NotionSyncService:
             return
         self._skips_logged.add(key)
         logger.warning("Notion sync: %s", action.detail)
-        if self.log_service is not None:
-            await self.log_service.post_admin_override(f"{_PREFIX} {action.detail}")
 
     async def _accept_shape(self, action: SyncAction) -> None:
         event = action.event
@@ -251,7 +270,10 @@ class NotionSyncService:
         except Exception as exc:
             await self._notion_failed(action, exc)
             return
-        await self._log_line(
-            f"Start/Slot length of {event.event_id} cannot change while DJs are booked; "
-            f"restored {start.strftime('%H:%M')} / {minutes} min, not applied"
+        logger.info(
+            "Notion sync: Start/Slot length of %s cannot change while DJs are booked; "
+            "restored %s / %s min, not applied",
+            event.event_id,
+            start.strftime("%H:%M"),
+            minutes,
         )

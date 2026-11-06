@@ -124,7 +124,6 @@ class AdminBookingService:
 
         event_id = event.page_id
         slot_index = slot_num - 1  # convert to 0-based
-        slot_unix = int(event.slot_start(slot_index).timestamp())
 
         # Step 3a: remember the current Postgres holder, to restore it if Notion fails
         try:
@@ -179,7 +178,6 @@ class AdminBookingService:
             return False, "Notion write failed after 3 attempts. Please try again in a moment."
 
         # Step 5: DM the DJ (non-fatal)
-        slot_display = f"<t:{slot_unix}:f>" if slot_unix else "your slot"
         await self._dm_dj(
             dj_id,
             texts.dm_booked(event, slot_index),
@@ -187,11 +185,9 @@ class AdminBookingService:
 
         # Step 6: log override to admin channel
         if self.log_service is not None:
-            msg = (
-                f"[ADMIN OVERRIDE] @{admin_name} booked @{dj_name}"
-                f" into {event_name} at {slot_display}"
+            await self.log_service.log_changed_by_organizer(
+                admin_name, "booked", dj_name, event, slot_index
             )
-            await self.log_service.post_admin_override(msg)
 
         return True, ""
 
@@ -246,7 +242,6 @@ class AdminBookingService:
         if holder != dj_id:
             return False, f"No booking found for @{dj_name} in that slot."
 
-        slot_unix = int(event.slot_start(slot_index).timestamp())
 
         # Step 4: remove this DJ from the Notion slot row (retry x3 built in).
         # Do NOT return on failure — the slot lock must always be freed (AC2).
@@ -283,7 +278,6 @@ class AdminBookingService:
             )
 
         # Step 6: DM the DJ (non-fatal)
-        slot_display = f"<t:{slot_unix}:f>" if slot_unix else "your slot"
         await self._dm_dj(
             dj_id,
             texts.dm_cancelled(event, slot_index),
@@ -291,11 +285,9 @@ class AdminBookingService:
 
         # Step 7: log override to admin channel
         if self.log_service is not None:
-            msg = (
-                f"[ADMIN OVERRIDE] @{admin_name} cancelled @{dj_name}"
-                f" from {event_name} at {slot_display}"
+            await self.log_service.log_changed_by_organizer(
+                admin_name, "removed", dj_name, event, slot_index
             )
-            await self.log_service.post_admin_override(msg)
 
         return True, ""
 

@@ -12,6 +12,7 @@ Never raises — errors in the log service must not crash the bot.
 [Source: epics.md#FR47, NFR11]
 """
 import logging
+from collections.abc import Callable
 from typing import Literal
 
 import asyncpg
@@ -142,6 +143,19 @@ class AdminLogService:
             logger.error("Failed to post log entry %r: %s", embed.title, exc)
             return None
 
+    async def _post_built(
+        self,
+        build: Callable[[], disnake.Embed],
+        view: disnake.ui.View | None = None,
+    ) -> disnake.Message | None:
+        """Build an entry and post it. Never raises, not even when building fails."""
+        try:
+            embed = build()
+        except Exception:
+            logger.exception("Failed to build a log entry")
+            return None
+        return await self._send(embed, view)
+
     async def log_booked(
         self,
         dj_name: str,
@@ -149,8 +163,8 @@ class AdminLogService:
         slot_index: int,
         via: Literal["DM", "Notion"],
     ) -> None:
-        await self._send(
-            LogEntryEmbed(
+        await self._post_built(
+            lambda: LogEntryEmbed(
                 texts.LOG_BOOKED_TITLE,
                 texts.log_booked_text(_safe_dj_name(dj_name), event, slot_index, via),
                 EmbedColors.SUCCESS_GREEN,
@@ -158,8 +172,8 @@ class AdminLogService:
         )
 
     async def log_cancelled(self, dj_name: str, event: EventInfo, slot_index: int) -> None:
-        await self._send(
-            LogEntryEmbed(
+        await self._post_built(
+            lambda: LogEntryEmbed(
                 texts.LOG_CANCELLED_TITLE,
                 texts.log_cancelled_text(_safe_dj_name(dj_name), event, slot_index),
                 EmbedColors.MISSION_GOLD,
@@ -174,8 +188,8 @@ class AdminLogService:
         event: EventInfo,
         slot_index: int,
     ) -> None:
-        await self._send(
-            LogEntryEmbed(
+        await self._post_built(
+            lambda: LogEntryEmbed(
                 texts.LOG_ORGANIZER_TITLE,
                 texts.log_organizer_text(
                     _safe_dj_name(organizer),
@@ -191,8 +205,8 @@ class AdminLogService:
     async def log_changed_in_notion(
         self, dj_name: str, event: EventInfo, slot_index: int
     ) -> None:
-        await self._send(
-            LogEntryEmbed(
+        await self._post_built(
+            lambda: LogEntryEmbed(
                 texts.LOG_NOTION_TITLE,
                 texts.log_notion_text(_safe_dj_name(dj_name), event, slot_index),
                 EmbedColors.MISSION_GOLD,
@@ -200,8 +214,8 @@ class AdminLogService:
         )
 
     async def log_fully_booked(self, event: EventInfo) -> None:
-        await self._send(
-            LogEntryEmbed(
+        await self._post_built(
+            lambda: LogEntryEmbed(
                 texts.LOG_FULLY_BOOKED_TITLE,
                 texts.log_fully_booked_text(event),
                 EmbedColors.SUCCESS_GREEN,
@@ -209,17 +223,18 @@ class AdminLogService:
         )
 
     async def log_new_dj(self, dj_name: str, vrchat_name: str | None) -> None:
-        vrchat = _safe_dj_name(vrchat_name) if vrchat_name else None
-        await self._send(
-            LogEntryEmbed(
+        def build() -> disnake.Embed:
+            vrchat = _safe_dj_name(vrchat_name) if vrchat_name else None
+            return LogEntryEmbed(
                 texts.LOG_NEW_DJ_TITLE,
                 texts.log_new_dj_text(_safe_dj_name(dj_name), vrchat),
                 EmbedColors.SUCCESS_GREEN,
             )
-        )
+
+        await self._post_built(build)
 
     async def log_attention(self, title: str, what: str, todo: str | None = None) -> None:
-        await self._send(LogEntryEmbed(title, what, EmbedColors.IMPERIAL_RED, todo))
+        await self._post_built(lambda: LogEntryEmbed(title, what, EmbedColors.IMPERIAL_RED, todo))
 
     async def log_user_message(
         self,
@@ -229,18 +244,20 @@ class AdminLogService:
         dj_name: str | None,
         view: disnake.ui.View | None = None,
     ) -> disnake.Message | None:
-        display = _safe_dj_name(getattr(user, "display_name", None) or user.name)
-        dj = _safe_dj_name(dj_name) if dj_name else None
-        body = texts.log_message_text(
-            texts.escape_text(text),
-            [texts.escape_text(name) for name in attachment_names],
-        )
-        embed = LogEntryEmbed(
-            texts.log_message_title(display, dj),
-            body,
-            EmbedColors.DEEP_SPACE_BLUE,
-        )
-        return await self._send(embed, view)
+        def build() -> disnake.Embed:
+            display = _safe_dj_name(getattr(user, "display_name", None) or user.name)
+            dj = _safe_dj_name(dj_name) if dj_name else None
+            body = texts.log_message_text(
+                texts.escape_text(text),
+                [texts.escape_text(name) for name in attachment_names],
+            )
+            return LogEntryEmbed(
+                texts.log_message_title(display, dj),
+                body,
+                EmbedColors.DEEP_SPACE_BLUE,
+            )
+
+        return await self._post_built(build, view)
 
     async def post_interaction(
         self,

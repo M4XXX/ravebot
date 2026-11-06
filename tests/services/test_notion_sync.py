@@ -51,9 +51,12 @@ class Env:
         self.log = None
         if log:
             self.log = MagicMock()
-            self.log.post_admin_override = AsyncMock()
-            self.log.post_error = AsyncMock()
-            self.log.post_interaction = AsyncMock()
+            for name in (
+                "post_admin_override", "post_error", "post_interaction", "log_booked",
+                "log_cancelled", "log_changed_by_organizer", "log_changed_in_notion",
+                "log_attention",
+            ):
+                setattr(self.log, name, AsyncMock())
         self.get_locks = AsyncMock(return_value=locks or {})
         self.acquire = AsyncMock(return_value=True)
         self.release = AsyncMock()
@@ -79,9 +82,10 @@ class Env:
         monkeypatch.setattr(f"{mod}.ensure_dj_page", self.ensure)
         self.svc = NotionSyncService(self.bot, self.db, self.notion, self.log)
 
-    def overrides(self) -> list[str]:
+    def entries(self) -> list[tuple[str, tuple]]:
+        """Every channel entry the sync posted (post_error excluded)."""
         assert self.log is not None
-        return [c.args[0] for c in self.log.post_admin_override.await_args_list]
+        return [(c[0], c[1]) for c in self.log.mock_calls if c[0] != "post_error"]
 
     def assert_no_writes(self):
         for name in (
@@ -113,7 +117,7 @@ async def test_adopt_writes_lock_dms_and_logs_one_line(monkeypatch):
     env.user.send.assert_awaited_once_with(
         "You are in the lineup: Rave, slot 1 at 20:00 (added by an organizer)."
     )
-    assert env.overrides() == [f"[NOTION SYNC] {X} was added to Rave slot 1 in Notion"]
+    assert env.entries() == [("log_booked", ("holder-name", event, 0, "Notion"))]
     env.release.assert_not_awaited()
 
 
@@ -124,7 +128,7 @@ async def test_adopt_when_lock_taken_meanwhile_does_nothing_else(monkeypatch):
     await env.svc.run_cycle(1)
     env.acquire.assert_awaited_once()
     env.user.send.assert_not_awaited()
-    env.log.post_admin_override.assert_not_awaited()
+    assert env.entries() == []
     env.release.assert_not_awaited()
 
 
@@ -133,7 +137,7 @@ async def test_guest_dj_produces_no_lock_and_no_dm(monkeypatch):
     env = Env(monkeypatch, [event_with(dj_row(1, None, page="guest"), make_slot(2))])
     assert await env.svc.run_cycle(1) == []
     env.assert_no_writes()
-    env.log.post_admin_override.assert_not_awaited()
+    assert env.entries() == []
 
 
 @pytest.mark.asyncio
@@ -145,9 +149,14 @@ async def test_guest_dj_over_holder_is_reverted_to_holder(monkeypatch):
     env.notion.force_assign_slot.assert_awaited_once_with(actions[0].event, 0, "holder-dj-page")
     env.release.assert_not_awaited()
     env.user.send.assert_not_awaited()
-    assert env.overrides() == [
-        f"[NOTION SYNC] a hand edit on slot 1 of Rave was reverted to {Y}"
-    ]
+    assert env.entries() == [(
+        "log_attention",
+        (
+            "Hand edit reverted",
+            "A hand edit on slot 1 at 20:00 of **Rave** was reverted to holder-name.",
+            "Clear the slot in Notion first if you want to replace a DJ.",
+        ),
+    )]
 
 
 @pytest.mark.asyncio
@@ -158,7 +167,7 @@ async def test_failing_dm_does_not_fail_cycle_or_undo_adopt(monkeypatch):
     assert [a.kind for a in actions] == ["adopt"]
     env.acquire.assert_awaited_once()
     env.release.assert_not_awaited()
-    assert len(env.overrides()) == 1
+    assert [e[0] for e in env.entries()] == ["log_booked"]
 
 
 # ---- free ----
@@ -175,7 +184,7 @@ async def test_free_releases_lock_dms_and_logs(monkeypatch):
     env.user.send.assert_awaited_once_with(
         "You were removed from Rave, slot 1 at 20:00 (by an organizer)."
     )
-    assert env.overrides() == [f"[NOTION SYNC] {Y} was removed from Rave slot 1 in Notion"]
+    assert env.entries() == [("log_changed_in_notion", ("holder-name", event, 0))]
 
 
 # ---- revert ----
@@ -192,9 +201,14 @@ async def test_revert_restores_holder_in_notion_without_dm(monkeypatch):
     env.user.send.assert_not_awaited()
     env.acquire.assert_not_awaited()
     env.release.assert_not_awaited()
-    assert env.overrides() == [
-        f"[NOTION SYNC] a hand edit on slot 1 of Rave was reverted to {X}"
-    ]
+    assert env.entries() == [(
+        "log_attention",
+        (
+            "Hand edit reverted",
+            "A hand edit on slot 1 at 20:00 of **Rave** was reverted to holder-name.",
+            "Clear the slot in Notion first if you want to replace a DJ.",
+        ),
+    )]
 
 
 @pytest.mark.asyncio
@@ -229,7 +243,7 @@ async def test_revert_without_dj_page_posts_error_and_leaves_notion(monkeypatch,
     env.notion.force_assign_slot.assert_not_awaited()
     env.log.post_error.assert_awaited_once()
     assert env.log.post_error.await_args.kwargs["error_code"] == ErrorCode.ERR_NOTION_WRITE
-    env.log.post_admin_override.assert_not_awaited()
+    assert env.entries() == []
 
 
 @pytest.mark.asyncio
@@ -242,7 +256,7 @@ async def test_revert_extras_keeps_first_dj(monkeypatch):
     env.notion.force_assign_slot.assert_not_awaited()
     env.acquire.assert_not_awaited()
     env.user.send.assert_not_awaited()
-    assert len(env.overrides()) == 1
+    assert env.entries() == []
 
 
 # ---- event-level ----
@@ -255,7 +269,7 @@ async def test_create_slots_creates_missing_rows_and_inits_locks(monkeypatch):
     await env.svc.run_cycle(1)
     env.notion.create_slot_rows.assert_awaited_once_with(event, [2, 3])
     env.init_slots.assert_awaited_once_with(env.db, PAGE, 3)
-    assert len(env.overrides()) == 1
+    assert env.entries() == []
 
 
 @pytest.mark.asyncio
@@ -265,7 +279,7 @@ async def test_trim_slots_trashes_only_named_rows(monkeypatch):
     env = Env(monkeypatch, [event])
     await env.svc.run_cycle(1)
     env.notion.trash_slot_rows.assert_awaited_once_with([rows[1], rows[2]])
-    assert len(env.overrides()) == 1
+    assert env.entries() == []
 
 
 @pytest.mark.asyncio
@@ -279,7 +293,7 @@ async def test_skip_is_logged_and_posted_once_across_cycles(monkeypatch, caplog)
     hits = [r for r in caplog.records if first[0].detail in r.getMessage()]
     assert len(hits) == 1
     assert hits[0].levelno == logging.WARNING
-    assert env.overrides() == [f"[NOTION SYNC] {first[0].detail}"]
+    assert env.entries() == []
     env.log.post_error.assert_not_awaited()
     env.assert_no_writes()
 
@@ -338,10 +352,10 @@ async def test_second_cycle_over_unchanged_state_writes_nothing(monkeypatch):
     await env.svc.run_cycle(1)
     env.acquire.reset_mock()
     env.user.send.reset_mock()
-    env.log.post_admin_override.reset_mock()
+    env.log.reset_mock()
     assert await env.svc.run_cycle(1) == []
     env.assert_no_writes()
-    env.log.post_admin_override.assert_not_awaited()
+    assert env.entries() == []
 
 
 @pytest.mark.asyncio
@@ -414,7 +428,7 @@ async def test_accept_shape_stores_current_shape(monkeypatch):
     assert [a.kind for a in actions] == ["accept_shape"]
     env.upsert_shape.assert_awaited_once_with(env.db, PAGE, "21:30", 45, 2)
     env.notion.restore_event_shape.assert_not_awaited()
-    env.log.post_admin_override.assert_not_awaited()
+    assert env.entries() == []
     env.user.send.assert_not_awaited()
 
 
@@ -429,10 +443,7 @@ async def test_restore_shape_patches_notion_and_logs_one_line_without_dm(monkeyp
     env.notion.restore_event_shape.assert_awaited_once_with(
         event, datetime.time(20, 0), 60
     )
-    assert env.overrides() == [
-        "[NOTION SYNC] Start/Slot length of Rave cannot change while DJs are booked; "
-        "restored 20:00 / 60 min, not applied"
-    ]
+    assert env.entries() == []
     env.upsert_shape.assert_not_awaited()
     env.user.send.assert_not_awaited()
 
@@ -444,6 +455,18 @@ async def test_restore_shape_failure_posts_error_and_no_line(monkeypatch):
     env = Env(monkeypatch, [event], {(PAGE, 0): lock(X)}, shapes=shape())
     env.notion.restore_event_shape.side_effect = RuntimeError("boom")
     await env.svc.run_cycle(1)
-    env.log.post_admin_override.assert_not_awaited()
+    assert env.entries() == []
     env.log.post_error.assert_awaited_once()
     env.upsert_shape.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_adopt_free_and_revert_work_without_log_service(monkeypatch):
+    env = Env(monkeypatch, [event_with(dj_row(1, X), make_slot(2))], log=False)
+    assert [a.kind for a in await env.svc.run_cycle(1)] == ["adopt"]
+    env = Env(monkeypatch, [event_with(make_slot(1), make_slot(2))], {(PAGE, 0): lock(Y)},
+              log=False)
+    assert [a.kind for a in await env.svc.run_cycle(1)] == ["free"]
+    env = Env(monkeypatch, [event_with(dj_row(1, Y, page="other"), make_slot(2))],
+              {(PAGE, 0): lock(X)}, log=False)
+    assert [a.kind for a in await env.svc.run_cycle(1)] == ["revert"]

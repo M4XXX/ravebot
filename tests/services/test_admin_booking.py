@@ -53,7 +53,10 @@ def _make_service(**overrides):
     notion_client.clear_slot = AsyncMock(return_value=True)
 
     log_service = MagicMock()
-    log_service.post_admin_override = AsyncMock()
+    for name in (
+        "post_admin_override", "log_booked", "log_cancelled", "log_changed_by_organizer"
+    ):
+        setattr(log_service, name, AsyncMock())
 
     defaults = {
         "bot": bot,
@@ -105,14 +108,13 @@ async def test_book_slot_override_success(monkeypatch):
     event = svc.notion_client.list_events.return_value[0]
     svc.notion_client.force_assign_slot.assert_awaited_once_with(event, 1, "dj-notion-id")
     release.assert_not_awaited()
-    slot_unix = int(datetime.datetime(2026, 6, 14, 21, 0, tzinfo=datetime.UTC).timestamp())
     dm = svc.bot.get_user.return_value.send.call_args[0][0]
     assert dm == f"An organizer booked you: {EVENT_NAME}, slot 2 at 21:00."
-    svc.log_service.post_admin_override.assert_awaited_once()
-    call = svc.log_service.post_admin_override.call_args[0][0]
-    assert call == (
-        f"[ADMIN OVERRIDE] @Admin booked @DJ Scope into {EVENT_NAME} at <t:{slot_unix}:f>"
+    svc.log_service.log_changed_by_organizer.assert_awaited_once_with(
+        "Admin", "booked", "DJ Scope", event, 1
     )
+    svc.log_service.log_booked.assert_not_awaited()
+    svc.log_service.post_admin_override.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -193,7 +195,7 @@ async def test_book_slot_override_notion_write_fails(monkeypatch, error):
     force.assert_awaited_once()
     # slot lock must be undone
     release.assert_awaited_once_with(svc.db, EVENT_PAGE_ID, 0, expected_holder=42)
-    svc.log_service.post_admin_override.assert_not_awaited()  # no log on failure
+    svc.log_service.log_changed_by_organizer.assert_not_awaited()  # no log on failure
 
 
 @pytest.mark.asyncio
@@ -215,7 +217,7 @@ async def test_book_slot_override_no_dj_page_fails_and_releases(monkeypatch, ens
     assert msg == "Notion write failed after 3 attempts. Please try again in a moment."
     release.assert_awaited_once_with(svc.db, EVENT_PAGE_ID, 0, expected_holder=42)
     svc.notion_client.force_assign_slot.assert_not_awaited()
-    svc.log_service.post_admin_override.assert_not_awaited()
+    svc.log_service.log_changed_by_organizer.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -358,7 +360,7 @@ async def test_book_slot_override_dm_forbidden_does_not_fail(monkeypatch):
 
     assert success is True
     assert msg == ""
-    svc.log_service.post_admin_override.assert_awaited_once()
+    svc.log_service.log_changed_by_organizer.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -399,16 +401,15 @@ async def test_cancel_slot_override_success(monkeypatch):
     event = svc.notion_client.list_events.return_value[0]
     svc.notion_client.clear_slot.assert_awaited_once_with(event, 1, "dj-notion-id")
     release.assert_awaited_once_with(svc.db, EVENT_PAGE_ID, 1, expected_holder=42)
-    slot_unix = int(datetime.datetime(2026, 6, 14, 21, 0, tzinfo=datetime.UTC).timestamp())
     dm = svc.bot.get_user.return_value.send.call_args[0][0]
     assert dm == (
         f"An organizer cancelled your booking: {EVENT_NAME}, slot 2 at 21:00."
     )
-    svc.log_service.post_admin_override.assert_awaited_once()
-    call = svc.log_service.post_admin_override.call_args[0][0]
-    assert call == (
-        f"[ADMIN OVERRIDE] @Admin cancelled @DJ Scope from {EVENT_NAME} at <t:{slot_unix}:f>"
+    svc.log_service.log_changed_by_organizer.assert_awaited_once_with(
+        "Admin", "removed", "DJ Scope", event, 1
     )
+    svc.log_service.log_cancelled.assert_not_awaited()
+    svc.log_service.post_admin_override.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -462,7 +463,7 @@ async def test_cancel_slot_override_notion_error_still_releases_lock(monkeypatch
         "Check the slot in Notion."
     )
     release.assert_awaited_once_with(svc.db, EVENT_PAGE_ID, 0, expected_holder=42)  # MUST be freed
-    svc.log_service.post_admin_override.assert_not_awaited()  # no log on failure
+    svc.log_service.log_changed_by_organizer.assert_not_awaited()  # no log on failure
 
 
 @pytest.mark.asyncio
@@ -623,3 +624,17 @@ async def test_set_dj_active_status_role_http_exception_nonfatal(monkeypatch):
 
     assert success is True
     assert msg == ""
+
+
+@pytest.mark.asyncio
+async def test_admin_book_and_cancel_work_without_log_service(monkeypatch):
+    svc = _make_service(log_service=None)
+    _patch_db(monkeypatch, holder=42)
+    ok, _ = await svc.book_slot_override(
+        admin_name="Admin", dj_id=42, dj_name="DJ Scope", event_name=EVENT_NAME, slot_num=2
+    )
+    assert ok is True
+    ok, _ = await svc.cancel_slot_override(
+        admin_name="Admin", dj_id=42, dj_name="DJ Scope", event_name=EVENT_NAME, slot_num=2
+    )
+    assert ok is True

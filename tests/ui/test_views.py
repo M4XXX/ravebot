@@ -1039,7 +1039,7 @@ async def test_booking_confirm_success_triggers_lineup_post() -> None:
 
 @pytest.mark.asyncio
 async def test_booking_confirm_success_posts_admin_log() -> None:
-    """Success path → AdminLogService.post_interaction called with booking details. (AC3)"""
+    """Success path → AdminLogService.log_booked called once with the DJ name, via DM. (AC3)"""
     ctx = make_real_ctx(db=MagicMock())
     lock = ctx.get_user_lock(20007)
     await lock.acquire()
@@ -1050,6 +1050,7 @@ async def test_booking_confirm_success_posts_admin_log() -> None:
     ctx.notion_client = notion_client
 
     log_service = MagicMock()
+    log_service.log_booked = AsyncMock()
     log_service.post_interaction = AsyncMock()
     ctx.log_service = log_service
 
@@ -1057,17 +1058,15 @@ async def test_booking_confirm_success_posts_admin_log() -> None:
 
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.author = MagicMock()
-    inter.author.__str__ = lambda self: "DJ_Test#1234"
+    inter.author.display_name = "Nova"
     inter.response.send_message = AsyncMock()
 
     with patch("bot.db.bookings.acquire_slot_lock", new=AsyncMock(return_value=True)), \
          patch("bot.services.dj_pages.ensure_dj_page", new=AsyncMock(return_value="dj-page")):
         await view._handle_confirm(inter)
 
-    log_service.post_interaction.assert_awaited_once()
-    call_kwargs = log_service.post_interaction.call_args.kwargs
-    assert call_kwargs["action_type"] == "Booking"
-    assert "3" in call_kwargs["outcome"]  # slot_index=2 → "Slot 3 confirmed"
+    log_service.log_booked.assert_awaited_once_with("Nova", view._event, 2, "DM")
+    log_service.post_interaction.assert_not_awaited()
     assert not lock.locked()
 
 
@@ -2458,3 +2457,55 @@ async def test_cancel_confirm_success_notifies_lineup() -> None:
         lineup=lineup,
     )
     lineup.notify_changed.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_cancel_confirm_success_logs_one_cancelled_entry() -> None:
+    from bot.ui.views import CancelConfirmView
+
+    ctx = make_real_ctx(db=MagicMock())
+    ctx.notion_client = MagicMock()
+    ctx.notion_client.clear_slot = AsyncMock(return_value=True)
+    log_service = MagicMock()
+    log_service.log_cancelled = AsyncMock()
+    log_service.post_interaction = AsyncMock()
+    ctx.log_service = log_service
+    ctx.lineup_service = None
+    lock = ctx.get_user_lock(30099)
+    await lock.acquire()
+
+    event = _make_event(event_id="evt-cancel-log", djs_booked=1)
+    view = CancelConfirmView(
+        ctx, event=event, slot_index=0, slot_unix=1751414400, lock=lock, user_id=30099
+    )
+    inter = MagicMock(spec=disnake.MessageInteraction)
+    inter.author = MagicMock()
+    inter.author.display_name = "Nova"
+    inter.response.send_message = AsyncMock()
+
+    with patch("bot.services.dj_pages.ensure_dj_page", new=AsyncMock(return_value="page")), \
+         patch("bot.db.bookings.release_slot_lock", new=AsyncMock()):
+        await view._handle_confirm(inter)
+
+    log_service.log_cancelled.assert_awaited_once_with("Nova", event, 0)
+    log_service.post_interaction.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_booking_confirm_success_without_log_service() -> None:
+    ctx = make_real_ctx(db=MagicMock())
+    lock = ctx.get_user_lock(20008)
+    await lock.acquire()
+    ctx.notion_client = MagicMock()
+    ctx.notion_client.assign_slot = AsyncMock(return_value=True)
+    ctx.notion_client.list_events = AsyncMock(return_value=[])
+    ctx.log_service = None
+    view = _make_booking_confirm_view(ctx, lock, user_id=20008, slot_index=2)
+    inter = MagicMock(spec=disnake.MessageInteraction)
+    inter.author = MagicMock()
+    inter.response.send_message = AsyncMock()
+    with patch("bot.db.bookings.acquire_slot_lock", new=AsyncMock(return_value=True)), \
+         patch("bot.services.dj_pages.ensure_dj_page", new=AsyncMock(return_value="dj-page")):
+        await view._handle_confirm(inter)
+    inter.response.send_message.assert_awaited_once()
+    assert not lock.locked()

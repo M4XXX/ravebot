@@ -1368,9 +1368,6 @@ class BookingConfirmView(disnake.ui.View):
             await self._present_slot_taken(inter)
             return
 
-        # Get event name for embed + admin log
-        event_name = self._event.event_id
-
         pg_released = False  # Postgres lock freed (never free it twice)
         responded = False  # an error response has gone out
         booked = False  # assign_slot succeeded: the booking exists in Notion
@@ -1480,12 +1477,9 @@ class BookingConfirmView(disnake.ui.View):
         # Log to admin channel — best-effort (AC3)
         if self._ctx.log_service is not None:
             try:
-                slot_display = f"<t:{self._slot_unix}:f>" if self._slot_unix else "TBD"
-                await self._ctx.log_service.post_interaction(
-                    dj_name=str(inter.author),
-                    action_type="Booking",
-                    outcome=f"Slot {self._slot_index + 1} confirmed",
-                    event=f"{event_name} \u00b7 {slot_display}",
+                await self._ctx.log_service.log_booked(
+                    inter.author.display_name,
+                    self._event, self._slot_index, "DM",
                 )
             except Exception:
                 logger.exception("BookingConfirmView: admin log post failed")
@@ -1794,12 +1788,9 @@ class CancelConfirmView(disnake.ui.View):
         # Log to admin channel — best-effort
         if self._ctx.log_service is not None:
             try:
-                slot_display = f"<t:{self._slot_unix}:f>" if self._slot_unix else "TBD"
-                await self._ctx.log_service.post_interaction(
-                    dj_name=str(inter.author),
-                    action_type="Cancellation",
-                    outcome=f"Slot {self._slot_index + 1} cancelled",
-                    event=f"{event_name} \u00b7 {slot_display}",
+                await self._ctx.log_service.log_cancelled(
+                    inter.author.display_name,
+                    self._event, self._slot_index,
                 )
             except Exception:
                 logger.exception("CancelConfirmView: admin log post failed")
