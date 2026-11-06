@@ -18,7 +18,7 @@ class TestConfigMissingVars:
             "DISCORD_BOT_TOKEN",
             "POSTGRES_URL",
             "NOTION_API_KEY",
-            "NOTION_DATABASE_ID",
+            "NOTION_PARENT_PAGE_ID",
             "ADMIN_USER_IDS",
         ):
             monkeypatch.delenv(key, raising=False)
@@ -36,7 +36,7 @@ class TestConfigMissingVars:
             "DISCORD_BOT_TOKEN",
             "POSTGRES_URL",
             "NOTION_API_KEY",
-            "NOTION_DATABASE_ID",
+            "NOTION_PARENT_PAGE_ID",
             "ADMIN_USER_IDS",
         ):
             monkeypatch.delenv(key, raising=False)
@@ -50,7 +50,7 @@ class TestConfigMissingVars:
             "DISCORD_BOT_TOKEN",
             "POSTGRES_URL",
             "NOTION_API_KEY",
-            "NOTION_DATABASE_ID",
+            "NOTION_PARENT_PAGE_ID",
             "ADMIN_USER_IDS",
         ):
             assert var in message, f"Expected {var} in exit message"
@@ -60,7 +60,7 @@ class TestConfigMissingVars:
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
         monkeypatch.setenv("POSTGRES_URL", "postgresql://localhost/test")
         monkeypatch.setenv("NOTION_API_KEY", "secret_key")
-        monkeypatch.setenv("NOTION_DATABASE_ID", "test-db-id")
+        monkeypatch.setenv("NOTION_PARENT_PAGE_ID", "test-parent-id")
         monkeypatch.delenv("ADMIN_USER_IDS", raising=False)
 
         Config = _fresh_config(monkeypatch)
@@ -75,7 +75,7 @@ class TestConfigParsing:
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test_token_abc")
         monkeypatch.setenv("POSTGRES_URL", "postgresql://user:pw@localhost:5432/ravebot")
         monkeypatch.setenv("NOTION_API_KEY", "secret_notion_key_xyz")
-        monkeypatch.setenv("NOTION_DATABASE_ID", "test-notion-db-id")
+        monkeypatch.setenv("NOTION_PARENT_PAGE_ID", "test-notion-parent-id")
         monkeypatch.setenv("ADMIN_USER_IDS", "111,222,333")
 
     def test_parses_admin_user_ids_as_frozenset_of_ints(
@@ -125,7 +125,7 @@ class TestConfigParsing:
         assert config.discord_bot_token == "test_token_abc"
         assert config.postgres_url == "postgresql://user:pw@localhost:5432/ravebot"
         assert config.notion_api_key == "secret_notion_key_xyz"
-        assert config.notion_database_id == "test-notion-db-id"
+        assert config.notion_parent_page_id == "test-notion-parent-id"
 
     def test_exits_when_admin_ids_only_commas(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """ADMIN_USER_IDS containing only commas must not silently produce empty frozenset."""
@@ -135,3 +135,34 @@ class TestConfigParsing:
         with pytest.raises(SystemExit) as exc:
             Config.from_env()
         assert "ADMIN_USER_IDS" in str(exc.value)
+
+
+class TestNotionParentPage:
+    def _set_others(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        monkeypatch.setenv("POSTGRES_URL", "postgresql://localhost/test")
+        monkeypatch.setenv("NOTION_API_KEY", "secret_key")
+        monkeypatch.setenv("ADMIN_USER_IDS", "1")
+
+    def test_missing_notion_parent_page_id_exits(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._set_others(monkeypatch)
+        monkeypatch.delenv("NOTION_PARENT_PAGE_ID", raising=False)
+        Config = _fresh_config(monkeypatch)
+        with pytest.raises(SystemExit) as exc:
+            Config.from_env()
+        assert "NOTION_PARENT_PAGE_ID" in str(exc.value)
+
+    def test_notion_database_id_is_ignored(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._set_others(monkeypatch)
+        monkeypatch.delenv("NOTION_PARENT_PAGE_ID", raising=False)
+        monkeypatch.setenv("NOTION_DATABASE_ID", "old-db-id")
+        Config = _fresh_config(monkeypatch)
+        with pytest.raises(SystemExit) as exc:
+            Config.from_env()
+        assert "NOTION_PARENT_PAGE_ID" in str(exc.value)
+
+    def test_notion_parent_page_id_loaded(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._set_others(monkeypatch)
+        monkeypatch.setenv("NOTION_PARENT_PAGE_ID", "page-123")
+        Config = _fresh_config(monkeypatch)
+        assert Config.from_env().notion_parent_page_id == "page-123"

@@ -1,10 +1,10 @@
-"""Tests for bot/notion/client.py — NotionClient retry/backoff and schema validation."""
+"""Tests for bot/notion/legacy.py — LegacyNotionClient retry/backoff and schema validation."""
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 
-from bot.notion.client import NotionClient, NotionWriteError
+from bot.notion.legacy import LegacyNotionClient, NotionWriteError
 from bot.ui.embeds import ErrorCode
 
 
@@ -14,8 +14,8 @@ def make_mock_log() -> MagicMock:
     return log
 
 
-def make_client(log: MagicMock | None = None) -> NotionClient:
-    return NotionClient(
+def make_client(log: MagicMock | None = None) -> LegacyNotionClient:
+    return LegacyNotionClient(
         api_key="secret_test",
         database_id="test-db-id",
         log_service=log or make_mock_log(),
@@ -54,7 +54,7 @@ async def test_write_with_retry_does_not_post_error_on_transient_failure() -> No
             mock_success,
         ]
     )
-    with patch("bot.notion.client.asyncio.sleep", new=AsyncMock()):
+    with patch("bot.notion.legacy.asyncio.sleep", new=AsyncMock()):
         result = await client._write_with_retry("POST", "/pages", {}, "ctx")
 
     assert result == {"id": "page-2"}
@@ -68,7 +68,7 @@ async def test_write_with_retry_posts_error_on_third_failure() -> None:
     client = make_client(log)
     client._client.request = AsyncMock(side_effect=httpx.RequestError("network error"))
 
-    with patch("bot.notion.client.asyncio.sleep", new=AsyncMock()):
+    with patch("bot.notion.legacy.asyncio.sleep", new=AsyncMock()):
         with pytest.raises(NotionWriteError):
             await client._write_with_retry("POST", "/pages", {}, "slot 2026-06-01")
 
@@ -274,7 +274,7 @@ async def test_create_event_propagates_notion_write_error() -> None:
     import datetime
     from unittest.mock import patch
 
-    from bot.notion.client import NotionWriteError
+    from bot.notion.legacy import NotionWriteError
 
     client = make_client()
     with patch.object(

@@ -1,0 +1,348 @@
+{
+ "view_events": {
+  "request": {
+   "name": "Overview",
+   "type": "table",
+   "sorts": [
+    {
+     "property": "Date",
+     "direction": "descending"
+    }
+   ],
+   "database_id": "3355d4fe-f4c0-4d21-ae8c-815830bc9ed5",
+   "data_source_id": "4fffe505-0a1e-471e-8062-ca4f20ac642d"
+  },
+  "status": 200,
+  "response": {
+   "object": "view",
+   "id": "410898b5-0017-81b9-9d8e-000c8ab1d2ed",
+   "parent": {
+    "type": "database_id",
+    "database_id": "3355d4fe-f4c0-4d21-ae8c-815830bc9ed5"
+   },
+   "data_source_id": "4fffe505-0a1e-471e-8062-ca4f20ac642d",
+   "name": "Overview",
+   "type": "table",
+   "created_time": "2026-11-06T16:06:23.189+00:00",
+   "created_by": {
+    "object": "user",
+    "id": "00000000-0000-0000-0000-000000000001"
+   },
+   "last_edited_time": "2026-11-06T16:06:23.189+00:00",
+   "last_edited_by": {
+    "object": "user",
+    "id": "00000000-0000-0000-0000-000000000001"
+   },
+   "url": "https://app.notion.com/p/3355d4fef4c04d21ae8c815830bc9ed5?v=410898b5001781b99d8e000c8ab1d2ed",
+   "filter": null,
+   "sorts": [
+    {
+     "property": "@<YX",
+     "direction": "descending"
+    }
+   ],
+   "quick_filters": null,
+   "configuration": {
+    "type": "table"
+   },
+   "request_id": "dd539288-4df1-4e87-864a-7df6e851b26e"
+  }
+ },
+ "view_djs": {
+  "request": {
+   "name": "All DJs",
+   "type": "table",
+   "sorts": [
+    {
+     "property": "Last booked",
+     "direction": "descending"
+    }
+   ],
+   "configuration": {
+    "type": "table",
+    "properties": [
+     {
+      "property_id": "DJ name",
+      "visible": true
+     },
+     {
+      "property_id": "Discord name",
+      "visible": true
+     },
+     {
+      "property_id": "VRChat name",
+      "visible": true
+     },
+     {
+      "property_id": "Link",
+      "visible": true
+     },
+     {
+      "property_id": "Alternative link",
+      "visible": true
+     },
+     {
+      "property_id": "Events booked",
+      "visible": true
+     },
+     {
+      "property_id": "Last booked",
+      "visible": true
+     }
+    ]
+   },
+   "database_id": "032b9a37-3f88-412a-811b-9f79a90e00b5",
+   "data_source_id": "05035a11-52dd-4fc4-bf4c-184e1bbacb35"
+  },
+  "status": 200,
+  "response": {
+   "object": "view",
+   "id": "410898b5-0017-81f4-8a06-000c1b1a4386",
+   "parent": {
+    "type": "database_id",
+    "database_id": "032b9a37-3f88-412a-811b-9f79a90e00b5"
+   },
+   "data_source_id": "05035a11-52dd-4fc4-bf4c-184e1bbacb35",
+   "name": "All DJs",
+   "type": "table",
+   "created_time": "2026-11-06T16:06:41.841+00:00",
+   "created_by": {
+    "object": "user",
+    "id": "00000000-0000-0000-0000-000000000001"
+   },
+   "last_edited_time": "2026-11-06T16:06:41.841+00:00",
+   "last_edited_by": {
+    "object": "user",
+    "id": "00000000-0000-0000-0000-000000000001"
+   },
+   "url": "https://app.notion.com/p/032b9a373f88412a811b9f79a90e00b5?v=410898b5001781f48a06000c1b1a4386",
+   "filter": null,
+   "sorts": [
+    {
+     "property": ">V{Q",
+     "direction": "descending"
+    }
+   ],
+   "quick_filters": null,
+   "configuration": {
+    "type": "table",
+    "properties": [
+     {
+      "property_id": "title",
+      "property_name": "DJ name",
+      "visible": true
+     },
+     {
+      "property_id": "eo\\W",
+      "property_name": "Discord name",
+      "visible": true
+     },
+     {
+      "property_id": "nkE`",
+      "property_name": "VRChat name",
+      "visible": true
+     },
+     {
+      "property_id": "}^qp",
+      "property_name": "Link",
+      "visible": true
+     },
+     {
+      "property_id": "Igxb",
+      "property_name": "Alternative link",
+      "visible": true
+     },
+     {
+      "property_id": "f{>m",
+      "property_name": "Events booked",
+      "visible": true
+     },
+     {
+      "property_id": ">V{Q",
+      "property_name": "Last booked",
+      "visible": true
+     },
+     {
+      "property_id": "I@Do",
+      "property_name": "Discord ID",
+      "visible": false
+     },
+     {
+      "property_id": "S}{J",
+      "property_name": "Logo",
+      "visible": false
+     },
+     {
+      "property_id": "qviZ",
+      "property_name": "Slots",
+      "visible": false
+     }
+    ]
+   },
+   "request_id": "7951a83e-6c7b-42a2-aea6-9e9a2cdab958"
+  }
+ },
+ "view_slots": {
+  "request": {
+   "name": "Lineup",
+   "type": "table",
+   "sorts": [
+    {
+     "property": "Slot number",
+     "direction": "ascending"
+    }
+   ],
+   "configuration": {
+    "type": "table",
+    "group_by": {
+     "type": "relation",
+     "property_id": "@~pK",
+     "sort": {
+      "type": "descending"
+     }
+    },
+    "properties": [
+     {
+      "property_id": "Slot number",
+      "visible": true
+     },
+     {
+      "property_id": "Time",
+      "visible": true
+     },
+     {
+      "property_id": "DJ",
+      "visible": true
+     }
+    ]
+   },
+   "database_id": "9b6d60d6-e93a-4f6b-bda6-a6553c8218f4",
+   "data_source_id": "5c079c42-9e83-4266-a766-fb060cd0ad41"
+  },
+  "status": 200,
+  "response": {
+   "object": "view",
+   "id": "410898b5-0017-81e8-bbbd-000ced83dc47",
+   "parent": {
+    "type": "database_id",
+    "database_id": "9b6d60d6-e93a-4f6b-bda6-a6553c8218f4"
+   },
+   "data_source_id": "5c079c42-9e83-4266-a766-fb060cd0ad41",
+   "name": "Lineup",
+   "type": "table",
+   "created_time": "2026-11-06T16:06:50.413+00:00",
+   "created_by": {
+    "object": "user",
+    "id": "00000000-0000-0000-0000-000000000001"
+   },
+   "last_edited_time": "2026-11-06T16:06:50.413+00:00",
+   "last_edited_by": {
+    "object": "user",
+    "id": "00000000-0000-0000-0000-000000000001"
+   },
+   "url": "https://app.notion.com/p/9b6d60d6e93a4f6bbda6a6553c8218f4?v=410898b5001781e8bbbd000ced83dc47",
+   "filter": null,
+   "sorts": [
+    {
+     "property": "xX<B",
+     "direction": "ascending"
+    }
+   ],
+   "quick_filters": null,
+   "configuration": {
+    "type": "table",
+    "properties": [
+     {
+      "property_id": "xX<B",
+      "property_name": "Slot number",
+      "visible": true
+     },
+     {
+      "property_id": "VPnk",
+      "property_name": "Time",
+      "visible": true
+     },
+     {
+      "property_id": "P=K[",
+      "property_name": "DJ",
+      "visible": true
+     },
+     {
+      "property_id": "=u`c",
+      "property_name": "Event date",
+      "visible": false
+     },
+     {
+      "property_id": "@~pK",
+      "property_name": "Event",
+      "visible": false
+     },
+     {
+      "property_id": "^Sdn",
+      "property_name": "Event slot length",
+      "visible": false
+     },
+     {
+      "property_id": "qczu",
+      "property_name": "Event start",
+      "visible": false
+     },
+     {
+      "property_id": "xFaE",
+      "property_name": "Slot status",
+      "visible": false
+     },
+     {
+      "property_id": "~YPt",
+      "property_name": "Event date src",
+      "visible": false
+     },
+     {
+      "property_id": "title",
+      "property_name": "Name",
+      "visible": false
+     }
+    ],
+    "group_by": {
+     "type": "relation",
+     "property_id": "@~pK",
+     "sort": {
+      "type": "descending"
+     },
+     "property_name": "Event"
+    }
+   },
+   "request_id": "8f9c99b6-a175-48b3-9505-79d68fd861b2"
+  }
+ },
+ "list_views": {
+  "method": "GET",
+  "path": "/v1/views?database_id=<database_id>",
+  "status": 200,
+  "response": {
+   "object": "list",
+   "results": [
+    {
+     "object": "view",
+     "id": "5ef176e5-05ea-44bb-83fd-498e48792c91"
+    }
+   ],
+   "next_cursor": null,
+   "has_more": false,
+   "type": "view",
+   "view": {},
+   "request_id": "35502840-bcf9-40c0-b08d-e4f1f5824f21"
+  }
+ },
+ "list_views_events": {
+  "method": "GET",
+  "path": "/v1/views?database_id=<database_id>",
+  "status": 200,
+  "response": {
+   "results": [
+    "7d8c2e86-b3ad-42a1-9527-1c93751f33ed",
+    "410898b5-0017-81b9-9d8e-000c8ab1d2ed"
+   ]
+  }
+ }
+}

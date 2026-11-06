@@ -70,14 +70,14 @@ async def main() -> None:
     from bot.cogs.onboarding import OnboardingCog
     from bot.cogs.outreach_cog import OutreachCog
     from bot.log import AdminLogService
-    from bot.notion.client import NotionClient
+    from bot.notion.legacy import LegacyNotionClient
 
     ctx.log_service = AdminLogService(bot=bot, db=ctx.db)
 
     # Story 1.5: init NotionClient after log_service is ready
-    ctx.notion_client = NotionClient(
+    ctx.notion_client = LegacyNotionClient(  # TEMP until Task 13
         api_key=config.notion_api_key,
-        database_id=config.notion_database_id,
+        database_id=config.notion_parent_page_id,  # TEMP until Task 13
         log_service=ctx.log_service,
     )
 
@@ -145,7 +145,7 @@ async def main() -> None:
             logger.info("asyncpg pool closed.")
         if ctx.notion_client is not None:
             await ctx.notion_client.close()
-            logger.info("NotionClient closed.")
+            logger.info("LegacyNotionClient closed.")
 
 
 if __name__ == "__main__":

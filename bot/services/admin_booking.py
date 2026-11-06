@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from disnake.ext import commands
 
     from bot.log import AdminLogService
-    from bot.notion.client import NotionClient
+    from bot.notion.legacy import LegacyNotionClient
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +41,7 @@ class AdminBookingService:
         self,
         bot: "commands.Bot",
         db: "asyncpg.Pool",
-        notion_client: "NotionClient | None",
+        notion_client: "LegacyNotionClient | None",
         log_service: "AdminLogService | None",
     ) -> None:
         self.bot = bot

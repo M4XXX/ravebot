@@ -1,377 +1,196 @@
-"""Notion REST API client — exponential backoff, schema validation.
-
-Story 1.5 scope: NotionWriteError, NotionClient with _write_with_retry() and validate_schema().
-Story 3.1 scope: poll_events() — fetch future events for change detection.
-Story 7.1 scope: create_event() — auto-create and manual event creation in Notion.
-Full read_slots(), write_booking(), delete_booking() are Story 3.x scope.
-
-[Source: architecture.md#Notion Client: Raw httpx (async, HTTPS/SSL)]
-[Source: architecture.md#Error Routing: Centralized AdminLogService]
-"""
-import asyncio
+"""Notion client for the Events, Slots and DJs data sources (new schema)."""
+import dataclasses
 import datetime
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-import httpx
+from bot.notion.api import NotionApi, NotionWriteError
+from bot.notion.models import (
+    PROP_EVENT_DATE,
+    PROP_EVENT_GENRE,
+    PROP_EVENT_ID,
+    PROP_EVENT_SLOT_LENGTH,
+    PROP_EVENT_SLOTS,
+    PROP_EVENT_START,
+    PROP_EVENT_STATUS,
+    PROP_SLOT_EVENT,
+    PROP_SLOT_NUMBER,
+    DjInfo,
+    EventInfo,
+    SlotInfo,
+    _title,
+    parse_dj,
+    parse_event,
+    parse_slot,
+)
+from bot.notion.schema import NotionIds
 
-from bot.ui.embeds import ErrorCode
-
-if TYPE_CHECKING:
-    from bot.log import AdminLogService
+__all__ = ["DuplicateEventError", "NotionClient", "NotionWriteError"]
 
 logger = logging.getLogger(__name__)
 
-NOTION_API_VERSION = "2022-06-28"
-NOTION_BASE_URL = "https://api.notion.com/v1"
-
-# Retry delays in seconds: attempt 1 → wait 1s, attempt 2 → wait 2s, attempt 3 → fail
-_RETRY_DELAYS = (1.0, 2.0)
+INITIAL_STATUS = "Planning not started"
+PROP_SLOT_NAME = "Name"
 
 
-class NotionWriteError(Exception):
-    """Raised when a Notion write fails after all retry attempts."""
+class DuplicateEventError(Exception):
+    """An event with this ID already exists."""
+
+    def __init__(self, event_id: str) -> None:
+        super().__init__(f"Event ID already exists: {event_id}")
+        self.event_id = event_id
+
+
+def _is_trashed(page: dict[str, Any]) -> bool:
+    return bool(page.get("in_trash") or page.get("is_archived"))
+
+
+def _text(content: str) -> list[dict[str, Any]]:
+    return [{"type": "text", "text": {"content": content}}]
 
 
 class NotionClient:
-    """Async Notion REST API client with retry/backoff and schema validation.
+    def __init__(self, api: NotionApi, ids: NotionIds) -> None:
+        self._api = api
+        self._ids = ids
 
-    All requests use HTTPS via httpx (default). Authorization header is set
-    at construction time — never logged.
+    async def _rows(self, data_source_id: str) -> list[dict[str, Any]]:
+        pages = await self._api.query_all(data_source_id)
+        return [p for p in pages if not _is_trashed(p)]
 
-    [Source: architecture.md#Notion Client: Raw httpx (async, HTTPS/SSL)]
-    """
-
-    def __init__(
-        self,
-        api_key: str,
-        database_id: str,
-        log_service: "AdminLogService",
-    ) -> None:
-        self._database_id = database_id
-        self._log = log_service
-        self._client = httpx.AsyncClient(
-            base_url=NOTION_BASE_URL,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Notion-Version": NOTION_API_VERSION,
-                "Content-Type": "application/json",
-            },
-            timeout=10.0,
+    async def event_id_exists(self, event_id: str) -> bool:
+        pages = await self._api.query_all(
+            self._ids.events_ds,
+            {"filter": {"property": PROP_EVENT_ID, "title": {"equals": event_id}}},
+        )
+        # Compare titles again: do not rely on the server applying the filter.
+        return any(
+            not _is_trashed(p) and _title(p, PROP_EVENT_ID) == event_id for p in pages
         )
 
-    async def close(self) -> None:
-        """Close the underlying httpx client. Call in bot shutdown."""
-        await self._client.aclose()
+    async def list_events(self, *, include_past: bool = False) -> list[EventInfo]:
+        """All events with slots and DJs joined, sorted by (date, start).
 
-    async def _write_with_retry(
-        self,
-        method: str,
-        endpoint: str,
-        payload: dict[str, Any],
-        context: str,
-    ) -> dict[str, Any]:
-        """Execute a Notion write with exponential backoff.
-
-        Attempts up to 3 times. Delays between retries: 1s, then 2s.
-        On 3rd failure posts ERR_NOTION_WRITE with context to admin log
-        and raises NotionWriteError.
-
-        Args:
-            method: HTTP method ("POST", "PATCH").
-            endpoint: Notion API endpoint path (e.g. "/pages").
-            payload: JSON body.
-            context: Human-readable description of what was being written
-                     (e.g. "booking slot 2026-06-01 20:00 for DJ Axel").
-
-        [Source: architecture.md#Notion Client: exponential back-off (3 retries)]
-        [Source: epics.md#Story 1.5 AC2]
+        An event whose slot rows were only partly created (see create_event)
+        shows fewer slots than slot_count until the sync task repairs it.
         """
-        last_exc: Exception | None = None
-        for attempt in range(1, 4):  # attempts 1, 2, 3
-            try:
-                response = await self._client.request(method, endpoint, json=payload)
-                response.raise_for_status()
-                return response.json()
-            except (httpx.HTTPStatusError, httpx.RequestError) as exc:
-                last_exc = exc
-                logger.warning(
-                    "Notion write attempt %d/3 failed for %r: %s",
-                    attempt,
-                    context,
-                    exc,
-                )
-                if attempt < 3:
-                    await asyncio.sleep(_RETRY_DELAYS[attempt - 1])
+        event_pages = await self._rows(self._ids.events_ds)
+        slot_pages = await self._rows(self._ids.slots_ds)
+        dj_pages = await self._rows(self._ids.djs_ds)
 
-        # All 3 attempts failed — post to admin log and raise
-        await self._log.post_error(
-            error_code=ErrorCode.ERR_NOTION_WRITE,
-            trigger=f"Notion write failed after 3 attempts: {context}",
-            action_taken="Bot aborted the write operation.",
-            manual_action=f"Check Notion API key and database permissions. Context: {context}",
-        )
-        raise NotionWriteError(
-            f"Notion write failed after 3 attempts: {context}"
-        ) from last_exc
+        djs: dict[str, DjInfo] = {}
+        for page in dj_pages:
+            dj = parse_dj(page)
+            djs[dj.page_id] = dj
 
-    async def validate_schema(self, required_properties: list[str]) -> None:
-        """Check that the Notion database has all required properties.
+        events: dict[str, EventInfo] = {}
+        for page in event_pages:
+            event = parse_event(page)
+            if event is not None:
+                events[event.page_id] = event
 
-        Fetches the database metadata via GET /databases/{id}.
-        For each property in required_properties that is absent from the
-        database, logs a descriptive error and posts ERR_NOTION_WRITE to
-        the admin log channel.
-
-        This is called once at bot startup (inside on_ready) so that the
-        admin log channel is already configured before errors are posted.
-
-        [Source: epics.md#Story 1.5 AC5]
-        [Source: architecture.md — NFR13: Notion schema validation on startup]
-        """
-        try:
-            response = await self._client.get(f"/databases/{self._database_id}")
-            response.raise_for_status()
-            data = response.json()
-        except (httpx.HTTPStatusError, httpx.RequestError) as exc:
-            logger.error("Failed to fetch Notion database schema: %s", exc)
-            await self._log.post_error(
-                error_code=ErrorCode.ERR_NOTION_WRITE,
-                trigger=f"Could not fetch Notion database schema on startup: {exc}",
-                action_taken="Schema validation skipped.",
-                manual_action=(
-                    "Check NOTION_API_KEY and NOTION_DATABASE_ID. "
-                    "Ensure the integration is shared with the database."
-                ),
+        by_event: dict[str, list[SlotInfo]] = {}
+        invalid_numbers = 0
+        for page in slot_pages:
+            rel = (page.get("properties") or {}).get(PROP_SLOT_EVENT) or {}
+            event_ids = [r["id"] for r in rel.get("relation") or [] if r.get("id")]
+            if not event_ids:
+                continue
+            slot = parse_slot(page, djs)
+            if slot.number < 1:
+                invalid_numbers += 1
+                continue
+            by_event.setdefault(event_ids[0], []).append(slot)
+        if invalid_numbers:
+            logger.warning(
+                "Skipped %d slot row(s) without a valid slot number", invalid_numbers
             )
-            return
 
-        existing_properties: set[str] = set(data.get("properties", {}).keys())
-        for prop in required_properties:
-            if prop not in existing_properties:
-                logger.error(
-                    "Notion database is missing required property: %r (found: %s)",
-                    prop,
-                    sorted(existing_properties),
-                )
-                await self._log.post_error(
-                    error_code=ErrorCode.ERR_NOTION_WRITE,
-                    trigger=f"Notion database missing required property: '{prop}'",
-                    action_taken=(
-                        "Bot will continue but features depending on this property will fail."
-                    ),
-                    manual_action=f"Add property '{prop}' to the Notion database schema.",
-                )
-
-    async def poll_events(self) -> list[dict[str, Any]]:
-        """Fetch all future events from Notion sorted by date ascending.
-
-        Uses POST /databases/{id}/query with a date filter (on_or_after today).
-        Follows Notion pagination (has_more / next_cursor) to return ALL pages.
-        Returns the complete list of page objects from the Notion API response.
-
-        On HTTP error or network failure: logs a warning and re-raises so the
-        caller (EventsCog._poll_notion) can handle error reporting and retry semantics.
-        If a later page fails mid-pagination, the exception is raised and the caller
-        treats the whole cycle as failed — no partial snapshot update occurs.
-
-        [Source: epics.md#Story 3.1 AC1, AC4]
-        """
-        today = datetime.date.today().isoformat()
-        base_payload: dict[str, Any] = {
-            "filter": {
-                "property": "Date",
-                "date": {"on_or_after": today},
-            },
-            "sorts": [{"property": "Date", "direction": "ascending"}],
-        }
-
-        all_results: list[dict[str, Any]] = []
-        cursor: str | None = None
-
-        while True:
-            payload = dict(base_payload)
-            if cursor is not None:
-                payload["start_cursor"] = cursor
-            try:
-                response = await self._client.post(
-                    f"/databases/{self._database_id}/query",
-                    json=payload,
-                )
-                response.raise_for_status()
-                data = response.json()
-            except (httpx.HTTPStatusError, httpx.RequestError) as exc:
-                logger.warning("Notion poll_events failed: %s", exc)
-                raise
-
-            all_results.extend(data.get("results", []))
-
-            if data.get("has_more"):
-                cursor = data.get("next_cursor")
-            else:
-                break
-
-        return all_results
-
-    async def write_dj_record(self, discord_user_id: int, dj_name: str) -> str:
-        """Create a DJ page in the Notion database. Returns the new page's Notion ID.
-
-        Properties written: Name (title), Discord ID (rich_text).
-        Uses _write_with_retry — posts ERR_NOTION_WRITE and raises NotionWriteError
-        if all 3 attempts fail.
-
-        Return value (Notion page ID) is stored in the djs table via
-        set_notion_dj_page_id() so BookingConfirmView can later look it up when
-        writing a booking to the event's DJs relation.
-
-        Called from OnboardingModal.callback after successful DB insert (Story 2.3).
-        Caller catches the exception and continues — Notion sync is best-effort.
-
-        [Source: epics.md#Story 2.3 AC2, AC3]
-        [Source: epics.md#Story 4.2 AC2 — DJ Notion page ID prerequisite]
-        [Source: architecture.md#Notion Client: Raw httpx (async, HTTPS/SSL)]
-        """
-        payload: dict[str, Any] = {
-            "parent": {"database_id": self._database_id},
-            "properties": {
-                "Name": {
-                    "title": [{"type": "text", "text": {"content": dj_name}}]
-                },
-                "Discord ID": {
-                    "rich_text": [{"type": "text", "text": {"content": str(discord_user_id)}}]
-                },
-            },
-        }
-        result = await self._write_with_retry(
-            method="POST",
-            endpoint="/pages",
-            payload=payload,
-            context=f"DJ record for {dj_name} (discord_user_id={discord_user_id})",
-        )
-        return result["id"]
-
-    async def write_booking(
-        self,
-        event_id: str,
-        slot_index: int,
-        dj_notion_page_id: str | None,
-        current_dj_ids: list[str],
-        event_name: str,
-        slot_unix: int,
-    ) -> None:
-        """Append a DJ to the event's DJs relation in Notion.
-
-        Builds the new DJs list as current_dj_ids + dj_notion_page_id (if not None),
-        then PATCHes the event page. This REPLACES the entire relation — including
-        existing IDs is mandatory to avoid overwriting prior bookings.
-
-        If dj_notion_page_id is None (DJ onboarded before Story 4.2), the PATCH still
-        fires with only the existing IDs. The slot_locks DB row remains the authoritative
-        lock; Notion reflects reality minus the late DJ's page reference.
-
-        Uses _write_with_retry — raises NotionWriteError after 3 failed attempts.
-        Caller (BookingConfirmView._handle_confirm) must call release_slot_lock() on
-        NotionWriteError to undo the DB slot claim.
-
-        [Source: epics.md#Story 4.2 AC2, AC3]
-        [Source: architecture.md#Notion Client: Raw httpx (async, HTTPS/SSL)]
-        [Source: architecture.md#Gap Analysis — PG lock vs Notion write boundary]
-        """
-        new_djs = list(current_dj_ids)
-        if dj_notion_page_id is not None:
-            new_djs.append(dj_notion_page_id)
-        payload: dict[str, Any] = {
-            "properties": {
-                "DJs": {
-                    "relation": [{"id": pid} for pid in new_djs]
-                }
-            }
-        }
-        slot_display = f"<t:{slot_unix}:f>" if slot_unix else "TBD"
-        await self._write_with_retry(
-            method="PATCH",
-            endpoint=f"/pages/{event_id}",
-            payload=payload,
-            context=f"booking slot {slot_index + 1} in event '{event_name}' at {slot_display}",
-        )
-
-    async def delete_booking(
-        self,
-        event_id: str,
-        dj_notion_page_id: str | None,
-        current_dj_ids: list[str],
-        event_name: str,
-        slot_unix: int,
-    ) -> None:
-        """Remove a DJ from the event's DJs relation in Notion.
-
-        Builds a new DJs list excluding dj_notion_page_id, then PATCHes the event page.
-        If dj_notion_page_id is None (DJ has no Notion page), the PATCH fires with
-        current_dj_ids unchanged — best-effort; the slot_locks DB row is the authoritative
-        cancellation record.
-
-        Uses _write_with_retry — raises NotionWriteError after 3 failed attempts.
-        Caller (CancelConfirmView._handle_confirm) MUST call release_slot_lock()
-        regardless of Notion write outcome — the slot must be freed.
-
-        [Source: epics.md#Story 4.4 AC4]
-        [Source: architecture.md#Notion Client: Raw httpx (async, HTTPS/SSL)]
-        """
-        if dj_notion_page_id is not None:
-            new_djs = [pid for pid in current_dj_ids if pid != dj_notion_page_id]
-        else:
-            new_djs = list(current_dj_ids)
-        payload: dict[str, Any] = {
-            "properties": {
-                "DJs": {
-                    "relation": [{"id": pid} for pid in new_djs]
-                }
-            }
-        }
-        slot_display = f"<t:{slot_unix}:f>" if slot_unix else "TBD"
-        await self._write_with_retry(
-            method="PATCH",
-            endpoint=f"/pages/{event_id}",
-            payload=payload,
-            context=f"cancellation of slot in event '{event_name}' at {slot_display}",
-        )
+        today = datetime.datetime.now(datetime.UTC).date()
+        result = []
+        for page_id, event in events.items():
+            if not include_past and event.date < today:
+                continue
+            slots = tuple(sorted(by_event.get(page_id, ()), key=lambda s: s.number))
+            result.append(dataclasses.replace(event, slots=slots))
+        result.sort(key=lambda e: (e.date, e.start))
+        return result
 
     async def create_event(
         self,
-        event_name: str,
-        event_date: datetime.date,
-    ) -> str:
-        """Create a new event page in the Notion events database.
+        event_id: str,
+        date: datetime.date,
+        start: datetime.time,
+        slot_count: int,
+        slot_minutes: int,
+        *,
+        genre: str | None = None,
+    ) -> EventInfo:
+        """Create the Events row, then one Slots row per slot (no DJ).
 
-        Properties written: Name (title), Date (date, ISO date-only, no time component).
-        The DJs relation is NOT explicitly set — Notion initialises it empty by default.
-
-        Uses _write_with_retry — posts ERR_NOTION_WRITE and raises NotionWriteError
-        if all 3 attempts fail.
-
-        Returns the new Notion page ID (str), stored by callers for later reference.
-
-        Called by EventsCog._auto_create_events() for scheduled auto-creation and
-        by AdminCog.add_event() for manual creation via /add-event command.
-
-        [Source: epics.md#Story 7.1 AC2, AC3, AC5]
-        [Source: architecture.md#Notion Client: Raw httpx (async, HTTPS/SSL)]
+        Raises ValueError for an empty ID or slot_count/slot_minutes below 1
+        (before any request), DuplicateEventError if the ID exists.
+        If a slot row fails after retries, NotionWriteError propagates and the
+        already created event stays; list_events then shows it with missing
+        slot rows. Calling create_event again with the same ID raises
+        DuplicateEventError, so it is not retryable; the sync service's
+        "create_slots" action (Task 12) repairs events with missing slot rows.
         """
-        payload: dict[str, Any] = {
-            "parent": {"database_id": self._database_id},
-            "properties": {
-                "Name": {
-                    "title": [{"type": "text", "text": {"content": event_name}}]
-                },
-                "Date": {
-                    "date": {"start": event_date.isoformat()}
-                },
-            },
+        event_id = event_id.strip()
+        if not event_id:
+            raise ValueError("event_id must not be empty")
+        if slot_count < 1 or slot_minutes < 1:
+            raise ValueError("slot_count and slot_minutes must be at least 1")
+        if await self.event_id_exists(event_id):
+            raise DuplicateEventError(event_id)
+
+        props: dict[str, Any] = {
+            PROP_EVENT_ID: {"title": _text(event_id)},
+            PROP_EVENT_DATE: {"date": {"start": date.isoformat()}},
+            PROP_EVENT_STATUS: {"select": {"name": INITIAL_STATUS}},
+            PROP_EVENT_SLOTS: {"number": slot_count},
+            PROP_EVENT_START: {"rich_text": _text(start.strftime("%H:%M"))},
+            PROP_EVENT_SLOT_LENGTH: {"number": slot_minutes},
         }
-        result = await self._write_with_retry(
-            method="POST",
-            endpoint="/pages",
-            payload=payload,
-            context=f"auto event creation for {event_name} on {event_date.isoformat()}",
+        if genre:
+            props[PROP_EVENT_GENRE] = {"rich_text": _text(genre)}
+        page = await self._api.request(
+            "POST",
+            "/pages",
+            {"parent": self._parent(self._ids.events_ds), "properties": props},
+            f"create event {event_id}",
         )
-        return result["id"]
+        event_page_id = page["id"]
+
+        slots: list[SlotInfo] = []
+        for number in range(1, slot_count + 1):
+            slot_page = await self._api.request(
+                "POST",
+                "/pages",
+                {
+                    "parent": self._parent(self._ids.slots_ds),
+                    "properties": {
+                        PROP_SLOT_NAME: {"title": _text(f"{event_id} #{number}")},
+                        PROP_SLOT_EVENT: {"relation": [{"id": event_page_id}]},
+                        PROP_SLOT_NUMBER: {"number": number},
+                    },
+                },
+                f"create slot {number} of event {event_id}",
+            )
+            slots.append(SlotInfo(slot_page["id"], number, None, None, None))
+        return EventInfo(
+            page_id=event_page_id,
+            event_id=event_id,
+            date=date,
+            status=INITIAL_STATUS,
+            genre=genre or None,
+            notes=None,
+            slot_count=slot_count,
+            start=start,
+            slot_minutes=slot_minutes,
+            slots=tuple(slots),
+        )
+
+    @staticmethod
+    def _parent(data_source_id: str) -> dict[str, str]:
+        return {"type": "data_source_id", "data_source_id": data_source_id}

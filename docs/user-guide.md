@@ -87,7 +87,7 @@ Copy `.env.example` to `.env` and fill in your values. **Never commit `.env` to 
 | `DISCORD_BOT_TOKEN` | Yes | — | Bot token from Discord Developer Portal |
 | `POSTGRES_URL` | Yes | — | PostgreSQL connection string: `postgresql://user:pass@host:5432/dbname` |
 | `NOTION_API_KEY` | Yes | — | Notion integration secret (starts with `secret_`) |
-| `NOTION_DATABASE_ID` | Yes | — | 32-character ID from your Notion database URL |
+| `NOTION_PARENT_PAGE_ID` | Yes | — | ID of an empty Notion page shared with the integration; the bot creates its databases under it |
 | `ADMIN_USER_IDS` | Yes | — | Comma-separated Discord user IDs for admin slash commands |
 | `LOG_LEVEL` | No | `INFO` | Log verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 | `DB_POOL_MIN` | No | `5` | Minimum asyncpg connection pool size |
@@ -149,7 +149,7 @@ In the Add Container form, click **"Add another Path, Port, Variable, Label or D
 | `DISCORD_BOT_TOKEN` | `your_bot_token` |
 | `POSTGRES_URL` | `postgresql://ravebot:pass@192.168.1.100:5432/ravebot` |
 | `NOTION_API_KEY` | `secret_abc123...` |
-| `NOTION_DATABASE_ID` | `your32charnotionid` |
+| `NOTION_PARENT_PAGE_ID` | `your_notion_parent_page_id` |
 | `ADMIN_USER_IDS` | `123456789012345678` |
 | `LOG_LEVEL` | `INFO` |
 
@@ -211,7 +211,7 @@ Create a `.env` file in the same directory (fill in your values):
 ```env
 DISCORD_BOT_TOKEN=your_bot_token_here
 NOTION_API_KEY=secret_your_notion_key
-NOTION_DATABASE_ID=your_notion_database_id
+NOTION_PARENT_PAGE_ID=your_notion_parent_page_id
 ADMIN_USER_IDS=your_discord_user_id
 LOG_LEVEL=INFO
 ```
@@ -305,8 +305,8 @@ The startup validation found a missing database property. The most common cause 
 
 Check:
 - `NOTION_API_KEY` is correct (starts with `secret_`)
-- `NOTION_DATABASE_ID` is the correct 32-character ID from the database URL
-- The integration has been shared with the database (database → `...` → **Add connections**)
+- `NOTION_PARENT_PAGE_ID` is the ID of an empty Notion page; the bot creates its databases under it
+- The integration has been shared with that page (page → `...` → **Add connections**)
 
 ### Admin log channel shows no messages
 

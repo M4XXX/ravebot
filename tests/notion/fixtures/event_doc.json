@@ -1,0 +1,16 @@
+{
+  "object": "page",
+  "id": "evt-page-1",
+  "archived": false,
+  "in_trash": false,
+  "properties": {
+    "ID": {"type": "title", "title": [{"plain_text": "2026-11-14 Rave Night"}]},
+    "Date": {"type": "date", "date": {"start": "2026-11-14"}},
+    "Status": {"type": "select", "select": {"name": "Planning stage"}},
+    "Genre": {"type": "rich_text", "rich_text": [{"plain_text": "Techno"}]},
+    "Notes": {"type": "rich_text", "rich_text": []},
+    "Slots": {"type": "number", "number": 6},
+    "Start": {"type": "rich_text", "rich_text": [{"plain_text": "18:00"}]},
+    "Slot length": {"type": "number", "number": 60}
+  }
+}

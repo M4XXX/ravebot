@@ -1,0 +1,27 @@
+{
+ "trash_request": {
+  "in_trash": true
+ },
+ "trash_response_flags": {
+  "in_trash": true,
+  "is_archived": false
+ },
+ "archived_param": {
+  "request": {
+   "archived": true
+  },
+  "status": 400,
+  "response": {
+   "object": "error",
+   "status": 400,
+   "code": "validation_error",
+   "message": "body failed validation: body.archived should be not present, instead was `true`.",
+   "request_id": "bd6aa278-8395-404c-80b7-0ad3ca0b2ec6"
+  }
+ },
+ "retrieve_trashed_flags": {
+  "in_trash": true,
+  "is_archived": false
+ },
+ "query_after_trash_result_count": 5
+}

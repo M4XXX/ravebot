@@ -28,7 +28,7 @@ def mock_config() -> Config:
         discord_bot_token="test_token",
         postgres_url="postgresql://localhost/test",
         notion_api_key="secret_test",
-        notion_database_id="test-database-id",
+        notion_parent_page_id="test-parent-page-id",
         admin_user_ids=frozenset({111}),
         log_level="INFO",
         db_pool_min=2,

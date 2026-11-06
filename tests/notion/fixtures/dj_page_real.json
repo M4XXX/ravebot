@@ -1,0 +1,193 @@
+{
+ "create_request": {
+  "parent": {
+   "type": "data_source_id",
+   "data_source_id": "<djs_ds>"
+  },
+  "properties": {
+   "DJ name": {
+    "title": [
+     {
+      "text": {
+       "content": "DJ Test"
+      }
+     }
+    ]
+   },
+   "Discord name": {
+    "rich_text": [
+     {
+      "text": {
+       "content": "djtest"
+      }
+     }
+    ]
+   },
+   "Discord ID": {
+    "rich_text": [
+     {
+      "text": {
+       "content": "123456789012345678"
+      }
+     }
+    ]
+   },
+   "Link": {
+    "url": "https://twitch.tv/djtest"
+   }
+  }
+ },
+ "response": {
+  "object": "page",
+  "id": "410898b5-0017-81ea-a45f-f769cc9eb022",
+  "created_time": "2026-11-06T16:05:00.000Z",
+  "last_edited_time": "2026-11-06T16:05:00.000Z",
+  "created_by": {
+   "object": "user",
+   "id": "00000000-0000-0000-0000-000000000001"
+  },
+  "last_edited_by": {
+   "object": "user",
+   "id": "00000000-0000-0000-0000-000000000001"
+  },
+  "cover": null,
+  "icon": null,
+  "parent": {
+   "type": "data_source_id",
+   "data_source_id": "05035a11-52dd-4fc4-bf4c-184e1bbacb35",
+   "database_id": "032b9a37-3f88-412a-811b-9f79a90e00b5"
+  },
+  "in_trash": false,
+  "is_archived": false,
+  "is_locked": false,
+  "properties": {
+   "Last booked": {
+    "id": "%3EV%7BQ",
+    "type": "rollup",
+    "rollup": {
+     "type": "date",
+     "date": {
+      "start": "2026-11-14",
+      "end": null,
+      "time_zone": null
+     },
+     "function": "latest_date"
+    }
+   },
+   "Discord ID": {
+    "id": "I%40Do",
+    "type": "rich_text",
+    "rich_text": [
+     {
+      "type": "text",
+      "text": {
+       "content": "123456789012345678",
+       "link": null
+      },
+      "annotations": {
+       "bold": false,
+       "italic": false,
+       "strikethrough": false,
+       "underline": false,
+       "code": false,
+       "color": "default"
+      },
+      "plain_text": "123456789012345678",
+      "href": null
+     }
+    ]
+   },
+   "Alternative link": {
+    "id": "Igxb",
+    "type": "url",
+    "url": null
+   },
+   "Logo": {
+    "id": "S%7D%7BJ",
+    "type": "files",
+    "files": []
+   },
+   "Discord name": {
+    "id": "eo%5CW",
+    "type": "rich_text",
+    "rich_text": [
+     {
+      "type": "text",
+      "text": {
+       "content": "djtest",
+       "link": null
+      },
+      "annotations": {
+       "bold": false,
+       "italic": false,
+       "strikethrough": false,
+       "underline": false,
+       "code": false,
+       "color": "default"
+      },
+      "plain_text": "djtest",
+      "href": null
+     }
+    ]
+   },
+   "Events booked": {
+    "id": "f%7B%3Em",
+    "type": "rollup",
+    "rollup": {
+     "type": "number",
+     "number": 1,
+     "function": "unique"
+    }
+   },
+   "VRChat name": {
+    "id": "nkE%60",
+    "type": "rich_text",
+    "rich_text": []
+   },
+   "Slots": {
+    "id": "qviZ",
+    "type": "relation",
+    "relation": [
+     {
+      "id": "410898b5-0017-81e4-bd93-da5f1a20928d"
+     },
+     {
+      "id": "410898b5-0017-818f-8eed-f03f8ba66664"
+     }
+    ],
+    "has_more": false
+   },
+   "Link": {
+    "id": "%7D%5Eqp",
+    "type": "url",
+    "url": "https://twitch.tv/djtest"
+   },
+   "DJ name": {
+    "id": "title",
+    "type": "title",
+    "title": [
+     {
+      "type": "text",
+      "text": {
+       "content": "DJ Test",
+       "link": null
+      },
+      "annotations": {
+       "bold": false,
+       "italic": false,
+       "strikethrough": false,
+       "underline": false,
+       "code": false,
+       "color": "default"
+      },
+      "plain_text": "DJ Test",
+      "href": null
+     }
+    ]
+   }
+  },
+  "url": "https://app.notion.com/p/DJ-Test-410898b5001781eaa45ff769cc9eb022",
+  "public_url": null,
+  "request_id": "61a94c40-0529-4a0a-9974-fb3373dac4b5"
+ }
+}

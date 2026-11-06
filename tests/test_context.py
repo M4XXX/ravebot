@@ -11,7 +11,7 @@ def make_config(monkeypatch: pytest.MonkeyPatch) -> Config:
     monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
     monkeypatch.setenv("POSTGRES_URL", "postgresql://localhost/test")
     monkeypatch.setenv("NOTION_API_KEY", "secret_key")
-    monkeypatch.setenv("NOTION_DATABASE_ID", "test-db-id")
+    monkeypatch.setenv("NOTION_PARENT_PAGE_ID", "test-parent-id")
     monkeypatch.setenv("ADMIN_USER_IDS", "1,2")
     return Config.from_env()
 

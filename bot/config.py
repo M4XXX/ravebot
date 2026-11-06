@@ -20,7 +20,7 @@ class Config:
     discord_bot_token: str
     postgres_url: str
     notion_api_key: str
-    notion_database_id: str
+    notion_parent_page_id: str
     admin_user_ids: frozenset[int]
     log_level: str
     db_pool_min: int
@@ -45,7 +45,7 @@ class Config:
         discord_bot_token = require("DISCORD_BOT_TOKEN")
         postgres_url = require("POSTGRES_URL")
         notion_api_key = require("NOTION_API_KEY")
-        notion_database_id = require("NOTION_DATABASE_ID")
+        notion_parent_page_id = require("NOTION_PARENT_PAGE_ID")
         raw_admin_ids = require("ADMIN_USER_IDS")
 
         if missing:
@@ -61,7 +61,7 @@ class Config:
             discord_bot_token=discord_bot_token,
             postgres_url=postgres_url,
             notion_api_key=notion_api_key,
-            notion_database_id=notion_database_id,
+            notion_parent_page_id=notion_parent_page_id,
             admin_user_ids=admin_ids,
             log_level=os.getenv("LOG_LEVEL", "INFO"),
             db_pool_min=int(os.getenv("DB_POOL_MIN", "5")),

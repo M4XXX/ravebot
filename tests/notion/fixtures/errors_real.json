@@ -1,0 +1,41 @@
+{
+ "err_400": {
+  "method": "POST",
+  "path": "/v1/pages",
+  "request": {
+   "parent": {
+    "type": "data_source_id",
+    "data_source_id": "5c079c42-9e83-4266-a766-fb060cd0ad41"
+   },
+   "properties": {
+    "Nope": {
+     "number": 1
+    }
+   }
+  },
+  "status": 400,
+  "response": {
+   "object": "error",
+   "status": 400,
+   "code": "validation_error",
+   "message": "Nope is not a property that exists.",
+   "request_id": "190edeec-6099-4956-8b4a-8a52f69072ee"
+  }
+ },
+ "err_404": {
+  "method": "GET",
+  "path": "/v1/pages/00000000-0000-0000-0000-000000000000",
+  "request": null,
+  "status": 404,
+  "response": {
+   "object": "error",
+   "status": 404,
+   "code": "object_not_found",
+   "message": "Could not find page with ID: 00000000-0000-0000-0000-000000000000. Make sure the relevant pages and databases are shared with your integration \"<integration>\".",
+   "additional_data": {
+    "integration_id": "00000000-0000-0000-0000-000000000001"
+   },
+   "request_id": "d4048c23-8179-482e-a7b2-ff82aac6a353"
+  }
+ }
+}

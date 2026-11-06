@@ -1,0 +1,203 @@
+{
+ "create_request": {
+  "parent": {
+   "type": "data_source_id",
+   "data_source_id": "<events_ds>"
+  },
+  "properties": {
+   "ID": {
+    "title": [
+     {
+      "text": {
+       "content": "2026-11-14 Rave Night"
+      }
+     }
+    ]
+   },
+   "Date": {
+    "date": {
+     "start": "2026-11-14"
+    }
+   },
+   "Status": {
+    "select": {
+     "name": "Planning stage"
+    }
+   },
+   "Genre": {
+    "rich_text": [
+     {
+      "text": {
+       "content": "Techno"
+      }
+     }
+    ]
+   },
+   "Slots": {
+    "number": 6
+   },
+   "Start": {
+    "rich_text": [
+     {
+      "text": {
+       "content": "18:00"
+      }
+     }
+    ]
+   },
+   "Slot length": {
+    "number": 60
+   }
+  }
+ },
+ "response": {
+  "object": "page",
+  "id": "410898b5-0017-815d-bbae-db1c5766c069",
+  "created_time": "2026-11-06T16:05:00.000Z",
+  "last_edited_time": "2026-11-06T16:05:00.000Z",
+  "created_by": {
+   "object": "user",
+   "id": "00000000-0000-0000-0000-000000000001"
+  },
+  "last_edited_by": {
+   "object": "user",
+   "id": "00000000-0000-0000-0000-000000000001"
+  },
+  "cover": null,
+  "icon": null,
+  "parent": {
+   "type": "data_source_id",
+   "data_source_id": "4fffe505-0a1e-471e-8062-ca4f20ac642d",
+   "database_id": "3355d4fe-f4c0-4d21-ae8c-815830bc9ed5"
+  },
+  "in_trash": false,
+  "is_archived": false,
+  "is_locked": false,
+  "properties": {
+   "Slot rows": {
+    "id": "%3ApeK",
+    "type": "relation",
+    "relation": [
+     {
+      "id": "410898b5-0017-81e4-bd93-da5f1a20928d"
+     },
+     {
+      "id": "410898b5-0017-818f-8eed-f03f8ba66664"
+     },
+     {
+      "id": "410898b5-0017-8155-9182-edeafdb62305"
+     },
+     {
+      "id": "410898b5-0017-8119-916c-f59bb83fd77f"
+     }
+    ],
+    "has_more": false
+   },
+   "Date": {
+    "id": "%40%3CYX",
+    "type": "date",
+    "date": {
+     "start": "2026-11-14",
+     "end": null,
+     "time_zone": null
+    }
+   },
+   "Status": {
+    "id": "B~Be",
+    "type": "select",
+    "select": {
+     "id": "b03e5e43-0ffe-492b-895e-e8084c049de3",
+     "name": "Planning stage",
+     "color": "default"
+    }
+   },
+   "Slot length": {
+    "id": "TEi%5B",
+    "type": "number",
+    "number": 60
+   },
+   "Genre": {
+    "id": "%60%3D%3Du",
+    "type": "rich_text",
+    "rich_text": [
+     {
+      "type": "text",
+      "text": {
+       "content": "Techno",
+       "link": null
+      },
+      "annotations": {
+       "bold": false,
+       "italic": false,
+       "strikethrough": false,
+       "underline": false,
+       "code": false,
+       "color": "default"
+      },
+      "plain_text": "Techno",
+      "href": null
+     }
+    ]
+   },
+   "Start": {
+    "id": "wSAz",
+    "type": "rich_text",
+    "rich_text": [
+     {
+      "type": "text",
+      "text": {
+       "content": "18:00",
+       "link": null
+      },
+      "annotations": {
+       "bold": false,
+       "italic": false,
+       "strikethrough": false,
+       "underline": false,
+       "code": false,
+       "color": "default"
+      },
+      "plain_text": "18:00",
+      "href": null
+     }
+    ]
+   },
+   "Slots": {
+    "id": "zH%3BB",
+    "type": "number",
+    "number": 6
+   },
+   "Notes": {
+    "id": "~_%5B%40",
+    "type": "rich_text",
+    "rich_text": []
+   },
+   "ID": {
+    "id": "title",
+    "type": "title",
+    "title": [
+     {
+      "type": "text",
+      "text": {
+       "content": "2026-11-14 Rave Night",
+       "link": null
+      },
+      "annotations": {
+       "bold": false,
+       "italic": false,
+       "strikethrough": false,
+       "underline": false,
+       "code": false,
+       "color": "default"
+      },
+      "plain_text": "2026-11-14 Rave Night",
+      "href": null
+     }
+    ]
+   }
+  },
+  "url": "https://app.notion.com/p/2026-11-14-Rave-Night-410898b50017815dbbaedb1c5766c069",
+  "public_url": null,
+  "request_id": "805905e5-0830-4990-8078-cb6a2d200c55"
+ }
+}

@@ -1,0 +1,11 @@
+{
+  "object": "page",
+  "id": "slot-page-1",
+  "archived": false,
+  "in_trash": false,
+  "properties": {
+    "Event": {"type": "relation", "relation": [{"id": "evt-page-1"}]},
+    "Slot number": {"type": "number", "number": 2},
+    "DJ": {"type": "relation", "relation": [{"id": "dj-page-1"}]}
+  }
+}

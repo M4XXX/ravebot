@@ -1,0 +1,69 @@
+{
+ "create_slots_database_properties": {
+  "Name": {
+   "title": {}
+  },
+  "Slot number": {
+   "number": {}
+  },
+  "Event": {
+   "relation": {
+    "data_source_id": "<events_ds>",
+    "dual_property": {
+     "synced_property_name": "Slot rows"
+    }
+   }
+  },
+  "DJ": {
+   "relation": {
+    "data_source_id": "<djs_ds>",
+    "single_property": {}
+   }
+  }
+ },
+ "patch_dj_to_two_way": {
+  "properties": {
+   "DJ": {
+    "relation": {
+     "data_source_id": "<djs_ds>",
+     "dual_property": {
+      "synced_property_name": "Slots"
+     }
+    }
+   }
+  }
+ },
+ "note": "limit: 1 is accepted but ignored; relation.limit stays null",
+ "slots_Event": {
+  "id": "%40~pK",
+  "name": "Event",
+  "description": null,
+  "type": "relation",
+  "relation": {
+   "database_id": "3355d4fe-f4c0-4d21-ae8c-815830bc9ed5",
+   "data_source_id": "4fffe505-0a1e-471e-8062-ca4f20ac642d",
+   "limit": null,
+   "type": "dual_property",
+   "dual_property": {
+    "synced_property_name": "Slot rows",
+    "synced_property_id": "%3ApeK"
+   }
+  }
+ },
+ "slots_DJ": {
+  "id": "P%3DK%5B",
+  "name": "DJ",
+  "description": null,
+  "type": "relation",
+  "relation": {
+   "database_id": "032b9a37-3f88-412a-811b-9f79a90e00b5",
+   "data_source_id": "05035a11-52dd-4fc4-bf4c-184e1bbacb35",
+   "limit": null,
+   "type": "dual_property",
+   "dual_property": {
+    "synced_property_name": "Slots",
+    "synced_property_id": "qviZ"
+   }
+  }
+ }
+}

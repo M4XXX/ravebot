@@ -1,0 +1,1492 @@
+{
+ "query_filter_title": {
+  "method": "POST",
+  "path": "/v1/data_sources/4fffe505-0a1e-471e-8062-ca4f20ac642d/query",
+  "request": {
+   "filter": {
+    "property": "ID",
+    "title": {
+     "contains": "Rave"
+    }
+   }
+  },
+  "status": 200,
+  "response": {
+   "object": "list",
+   "results": [
+    {
+     "object": "page",
+     "id": "410898b5-0017-815d-bbae-db1c5766c069",
+     "created_time": "2026-11-06T16:05:00.000Z",
+     "last_edited_time": "2026-11-06T16:05:00.000Z",
+     "created_by": {
+      "object": "user",
+      "id": "00000000-0000-0000-0000-000000000001"
+     },
+     "last_edited_by": {
+      "object": "user",
+      "id": "00000000-0000-0000-0000-000000000001"
+     },
+     "cover": null,
+     "icon": null,
+     "parent": {
+      "type": "data_source_id",
+      "data_source_id": "4fffe505-0a1e-471e-8062-ca4f20ac642d",
+      "database_id": "3355d4fe-f4c0-4d21-ae8c-815830bc9ed5"
+     },
+     "in_trash": false,
+     "is_archived": false,
+     "is_locked": false,
+     "properties": {
+      "Slot rows": {
+       "id": "%3ApeK",
+       "type": "relation",
+       "relation": [
+        {
+         "id": "410898b5-0017-81e4-bd93-da5f1a20928d"
+        },
+        {
+         "id": "410898b5-0017-818f-8eed-f03f8ba66664"
+        },
+        {
+         "id": "410898b5-0017-8155-9182-edeafdb62305"
+        },
+        {
+         "id": "410898b5-0017-8119-916c-f59bb83fd77f"
+        },
+        {
+         "id": "410898b5-0017-8139-a32e-f912522de222"
+        }
+       ],
+       "has_more": false
+      },
+      "Date": {
+       "id": "%40%3CYX",
+       "type": "date",
+       "date": {
+        "start": "2026-11-14",
+        "end": null,
+        "time_zone": null
+       }
+      },
+      "Status": {
+       "id": "B~Be",
+       "type": "select",
+       "select": {
+        "id": "b03e5e43-0ffe-492b-895e-e8084c049de3",
+        "name": "Planning stage",
+        "color": "default"
+       }
+      },
+      "Slot length": {
+       "id": "TEi%5B",
+       "type": "number",
+       "number": 60
+      },
+      "Genre": {
+       "id": "%60%3D%3Du",
+       "type": "rich_text",
+       "rich_text": [
+        {
+         "type": "text",
+         "text": {
+          "content": "Techno",
+          "link": null
+         },
+         "annotations": {
+          "bold": false,
+          "italic": false,
+          "strikethrough": false,
+          "underline": false,
+          "code": false,
+          "color": "default"
+         },
+         "plain_text": "Techno",
+         "href": null
+        }
+       ]
+      },
+      "Start": {
+       "id": "wSAz",
+       "type": "rich_text",
+       "rich_text": [
+        {
+         "type": "text",
+         "text": {
+          "content": "18:00",
+          "link": null
+         },
+         "annotations": {
+          "bold": false,
+          "italic": false,
+          "strikethrough": false,
+          "underline": false,
+          "code": false,
+          "color": "default"
+         },
+         "plain_text": "18:00",
+         "href": null
+        }
+       ]
+      },
+      "Slots": {
+       "id": "zH%3BB",
+       "type": "number",
+       "number": 6
+      },
+      "Notes": {
+       "id": "~_%5B%40",
+       "type": "rich_text",
+       "rich_text": []
+      },
+      "ID": {
+       "id": "title",
+       "type": "title",
+       "title": [
+        {
+         "type": "text",
+         "text": {
+          "content": "2026-11-14 Rave Night",
+          "link": null
+         },
+         "annotations": {
+          "bold": false,
+          "italic": false,
+          "strikethrough": false,
+          "underline": false,
+          "code": false,
+          "color": "default"
+         },
+         "plain_text": "2026-11-14 Rave Night",
+         "href": null
+        }
+       ]
+      }
+     },
+     "url": "https://app.notion.com/p/2026-11-14-Rave-Night-410898b50017815dbbaedb1c5766c069",
+     "public_url": null
+    }
+   ],
+   "next_cursor": null,
+   "has_more": false,
+   "type": "page_or_data_source",
+   "page_or_data_source": {},
+   "request_id": "52aa2767-dc24-4dd9-9058-ce475524dbe8"
+  }
+ },
+ "query_page1": {
+  "method": "POST",
+  "path": "/v1/data_sources/5c079c42-9e83-4266-a766-fb060cd0ad41/query",
+  "request": {
+   "page_size": 2
+  },
+  "status": 200,
+  "response": {
+   "object": "list",
+   "results": [
+    {
+     "object": "page",
+     "id": "410898b5-0017-81d1-adfd-dacc6e21dc09",
+     "created_time": "2026-11-06T16:05:00.000Z",
+     "last_edited_time": "2026-11-06T16:06:00.000Z",
+     "created_by": {
+      "object": "user",
+      "id": "00000000-0000-0000-0000-000000000001"
+     },
+     "last_edited_by": {
+      "object": "user",
+      "id": "00000000-0000-0000-0000-000000000001"
+     },
+     "cover": null,
+     "icon": null,
+     "parent": {
+      "type": "data_source_id",
+      "data_source_id": "5c079c42-9e83-4266-a766-fb060cd0ad41",
+      "database_id": "9b6d60d6-e93a-4f6b-bda6-a6553c8218f4"
+     },
+     "in_trash": false,
+     "is_archived": false,
+     "is_locked": false,
+     "properties": {
+      "Event date": {
+       "id": "%3Du%60c",
+       "type": "formula",
+       "formula": {
+        "type": "date",
+        "date": {
+         "start": "2026-11-20",
+         "end": null,
+         "time_zone": null
+        }
+       }
+      },
+      "Event": {
+       "id": "%40~pK",
+       "type": "relation",
+       "relation": [
+        {
+         "id": "410898b5-0017-81e0-b053-c52957149d45"
+        }
+       ],
+       "has_more": false
+      },
+      "DJ": {
+       "id": "P%3DK%5B",
+       "type": "relation",
+       "relation": [],
+       "has_more": false
+      },
+      "Time": {
+       "id": "VPnk",
+       "type": "formula",
+       "formula": {
+        "type": "string",
+        "string": "01:30"
+       }
+      },
+      "Event slot length": {
+       "id": "%5ESdn",
+       "type": "rollup",
+       "rollup": {
+        "type": "number",
+        "number": 90,
+        "function": "max"
+       }
+      },
+      "Event start": {
+       "id": "qczu",
+       "type": "rollup",
+       "rollup": {
+        "type": "array",
+        "array": [
+         {
+          "type": "rich_text",
+          "rich_text": [
+           {
+            "type": "text",
+            "text": {
+             "content": "22:30",
+             "link": null
+            },
+            "annotations": {
+             "bold": false,
+             "italic": false,
+             "strikethrough": false,
+             "underline": false,
+             "code": false,
+             "color": "default"
+            },
+            "plain_text": "22:30",
+            "href": null
+           }
+          ]
+         }
+        ],
+        "function": "show_original"
+       }
+      },
+      "Slot status": {
+       "id": "xFaE",
+       "type": "formula",
+       "formula": {
+        "type": "string",
+        "string": "Open"
+       }
+      },
+      "Slot number": {
+       "id": "xX%3CB",
+       "type": "number",
+       "number": 3
+      },
+      "Event date src": {
+       "id": "~YPt",
+       "type": "rollup",
+       "rollup": {
+        "type": "date",
+        "date": {
+         "start": "2026-11-20",
+         "end": null,
+         "time_zone": null
+        },
+        "function": "latest_date"
+       }
+      },
+      "Name": {
+       "id": "title",
+       "type": "title",
+       "title": [
+        {
+         "type": "text",
+         "text": {
+          "content": "Slot 3",
+          "link": null
+         },
+         "annotations": {
+          "bold": false,
+          "italic": false,
+          "strikethrough": false,
+          "underline": false,
+          "code": false,
+          "color": "default"
+         },
+         "plain_text": "Slot 3",
+         "href": null
+        }
+       ]
+      }
+     },
+     "url": "https://app.notion.com/p/Slot-3-410898b5001781d1adfddacc6e21dc09",
+     "public_url": null
+    },
+    {
+     "object": "page",
+     "id": "410898b5-0017-8139-a32e-f912522de222",
+     "created_time": "2026-11-06T16:05:00.000Z",
+     "last_edited_time": "2026-11-06T16:05:00.000Z",
+     "created_by": {
+      "object": "user",
+      "id": "00000000-0000-0000-0000-000000000001"
+     },
+     "last_edited_by": {
+      "object": "user",
+      "id": "00000000-0000-0000-0000-000000000001"
+     },
+     "cover": null,
+     "icon": null,
+     "parent": {
+      "type": "data_source_id",
+      "data_source_id": "5c079c42-9e83-4266-a766-fb060cd0ad41",
+      "database_id": "9b6d60d6-e93a-4f6b-bda6-a6553c8218f4"
+     },
+     "in_trash": false,
+     "is_archived": false,
+     "is_locked": false,
+     "properties": {
+      "Event date": {
+       "id": "%3Du%60c",
+       "type": "formula",
+       "formula": {
+        "type": "date",
+        "date": {
+         "start": "2026-11-14",
+         "end": null,
+         "time_zone": null
+        }
+       }
+      },
+      "Event": {
+       "id": "%40~pK",
+       "type": "relation",
+       "relation": [
+        {
+         "id": "410898b5-0017-815d-bbae-db1c5766c069"
+        }
+       ],
+       "has_more": false
+      },
+      "DJ": {
+       "id": "P%3DK%5B",
+       "type": "relation",
+       "relation": [],
+       "has_more": false
+      },
+      "Time": {
+       "id": "VPnk",
+       "type": "formula",
+       "formula": {
+        "type": "string",
+        "string": "22:00"
+       }
+      },
+      "Event slot length": {
+       "id": "%5ESdn",
+       "type": "rollup",
+       "rollup": {
+        "type": "number",
+        "number": 60,
+        "function": "max"
+       }
+      },
+      "Event start": {
+       "id": "qczu",
+       "type": "rollup",
+       "rollup": {
+        "type": "array",
+        "array": [
+         {
+          "type": "rich_text",
+          "rich_text": [
+           {
+            "type": "text",
+            "text": {
+             "content": "18:00",
+             "link": null
+            },
+            "annotations": {
+             "bold": false,
+             "italic": false,
+             "strikethrough": false,
+             "underline": false,
+             "code": false,
+             "color": "default"
+            },
+            "plain_text": "18:00",
+            "href": null
+           }
+          ]
+         }
+        ],
+        "function": "show_original"
+       }
+      },
+      "Slot status": {
+       "id": "xFaE",
+       "type": "formula",
+       "formula": {
+        "type": "string",
+        "string": "Open"
+       }
+      },
+      "Slot number": {
+       "id": "xX%3CB",
+       "type": "number",
+       "number": 5
+      },
+      "Event date src": {
+       "id": "~YPt",
+       "type": "rollup",
+       "rollup": {
+        "type": "date",
+        "date": {
+         "start": "2026-11-14",
+         "end": null,
+         "time_zone": null
+        },
+        "function": "latest_date"
+       }
+      },
+      "Name": {
+       "id": "title",
+       "type": "title",
+       "title": [
+        {
+         "type": "text",
+         "text": {
+          "content": "Slot 5",
+          "link": null
+         },
+         "annotations": {
+          "bold": false,
+          "italic": false,
+          "strikethrough": false,
+          "underline": false,
+          "code": false,
+          "color": "default"
+         },
+         "plain_text": "Slot 5",
+         "href": null
+        }
+       ]
+      }
+     },
+     "url": "https://app.notion.com/p/Slot-5-410898b500178139a32ef912522de222",
+     "public_url": null
+    }
+   ],
+   "next_cursor": "s:e3116536-9085-406b-af42-a7181a5d61ba:410898b5-0017-8119-916c-f59bb83fd77f",
+   "has_more": true,
+   "type": "page_or_data_source",
+   "page_or_data_source": {},
+   "request_id": "1e3fc25c-470a-4359-921d-178794e25e5e"
+  }
+ },
+ "query_page2": {
+  "method": "POST",
+  "path": "/v1/data_sources/5c079c42-9e83-4266-a766-fb060cd0ad41/query",
+  "request": {
+   "page_size": 2,
+   "start_cursor": "s:e3116536-9085-406b-af42-a7181a5d61ba:410898b5-0017-8119-916c-f59bb83fd77f"
+  },
+  "status": 200,
+  "response": {
+   "object": "list",
+   "results": [
+    {
+     "object": "page",
+     "id": "410898b5-0017-8119-916c-f59bb83fd77f",
+     "created_time": "2026-11-06T16:05:00.000Z",
+     "last_edited_time": "2026-11-06T16:05:00.000Z",
+     "created_by": {
+      "object": "user",
+      "id": "00000000-0000-0000-0000-000000000001"
+     },
+     "last_edited_by": {
+      "object": "user",
+      "id": "00000000-0000-0000-0000-000000000001"
+     },
+     "cover": null,
+     "icon": null,
+     "parent": {
+      "type": "data_source_id",
+      "data_source_id": "5c079c42-9e83-4266-a766-fb060cd0ad41",
+      "database_id": "9b6d60d6-e93a-4f6b-bda6-a6553c8218f4"
+     },
+     "in_trash": false,
+     "is_archived": false,
+     "is_locked": false,
+     "properties": {
+      "Event date": {
+       "id": "%3Du%60c",
+       "type": "formula",
+       "formula": {
+        "type": "date",
+        "date": {
+         "start": "2026-11-14",
+         "end": null,
+         "time_zone": null
+        }
+       }
+      },
+      "Event": {
+       "id": "%40~pK",
+       "type": "relation",
+       "relation": [
+        {
+         "id": "410898b5-0017-815d-bbae-db1c5766c069"
+        }
+       ],
+       "has_more": false
+      },
+      "DJ": {
+       "id": "P%3DK%5B",
+       "type": "relation",
+       "relation": [],
+       "has_more": false
+      },
+      "Time": {
+       "id": "VPnk",
+       "type": "formula",
+       "formula": {
+        "type": "string",
+        "string": "21:00"
+       }
+      },
+      "Event slot length": {
+       "id": "%5ESdn",
+       "type": "rollup",
+       "rollup": {
+        "type": "number",
+        "number": 60,
+        "function": "max"
+       }
+      },
+      "Event start": {
+       "id": "qczu",
+       "type": "rollup",
+       "rollup": {
+        "type": "array",
+        "array": [
+         {
+          "type": "rich_text",
+          "rich_text": [
+           {
+            "type": "text",
+            "text": {
+             "content": "18:00",
+             "link": null
+            },
+            "annotations": {
+             "bold": false,
+             "italic": false,
+             "strikethrough": false,
+             "underline": false,
+             "code": false,
+             "color": "default"
+            },
+            "plain_text": "18:00",
+            "href": null
+           }
+          ]
+         }
+        ],
+        "function": "show_original"
+       }
+      },
+      "Slot status": {
+       "id": "xFaE",
+       "type": "formula",
+       "formula": {
+        "type": "string",
+        "string": "Open"
+       }
+      },
+      "Slot number": {
+       "id": "xX%3CB",
+       "type": "number",
+       "number": 4
+      },
+      "Event date src": {
+       "id": "~YPt",
+       "type": "rollup",
+       "rollup": {
+        "type": "date",
+        "date": {
+         "start": "2026-11-14",
+         "end": null,
+         "time_zone": null
+        },
+        "function": "latest_date"
+       }
+      },
+      "Name": {
+       "id": "title",
+       "type": "title",
+       "title": [
+        {
+         "type": "text",
+         "text": {
+          "content": "Slot 4",
+          "link": null
+         },
+         "annotations": {
+          "bold": false,
+          "italic": false,
+          "strikethrough": false,
+          "underline": false,
+          "code": false,
+          "color": "default"
+         },
+         "plain_text": "Slot 4",
+         "href": null
+        }
+       ]
+      }
+     },
+     "url": "https://app.notion.com/p/Slot-4-410898b500178119916cf59bb83fd77f",
+     "public_url": null
+    },
+    {
+     "object": "page",
+     "id": "410898b5-0017-8155-9182-edeafdb62305",
+     "created_time": "2026-11-06T16:05:00.000Z",
+     "last_edited_time": "2026-11-06T16:05:00.000Z",
+     "created_by": {
+      "object": "user",
+      "id": "00000000-0000-0000-0000-000000000001"
+     },
+     "last_edited_by": {
+      "object": "user",
+      "id": "00000000-0000-0000-0000-000000000001"
+     },
+     "cover": null,
+     "icon": null,
+     "parent": {
+      "type": "data_source_id",
+      "data_source_id": "5c079c42-9e83-4266-a766-fb060cd0ad41",
+      "database_id": "9b6d60d6-e93a-4f6b-bda6-a6553c8218f4"
+     },
+     "in_trash": false,
+     "is_archived": false,
+     "is_locked": false,
+     "properties": {
+      "Event date": {
+       "id": "%3Du%60c",
+       "type": "formula",
+       "formula": {
+        "type": "date",
+        "date": {
+         "start": "2026-11-14",
+         "end": null,
+         "time_zone": null
+        }
+       }
+      },
+      "Event": {
+       "id": "%40~pK",
+       "type": "relation",
+       "relation": [
+        {
+         "id": "410898b5-0017-815d-bbae-db1c5766c069"
+        }
+       ],
+       "has_more": false
+      },
+      "DJ": {
+       "id": "P%3DK%5B",
+       "type": "relation",
+       "relation": [],
+       "has_more": false
+      },
+      "Time": {
+       "id": "VPnk",
+       "type": "formula",
+       "formula": {
+        "type": "string",
+        "string": "20:00"
+       }
+      },
+      "Event slot length": {
+       "id": "%5ESdn",
+       "type": "rollup",
+       "rollup": {
+        "type": "number",
+        "number": 60,
+        "function": "max"
+       }
+      },
+      "Event start": {
+       "id": "qczu",
+       "type": "rollup",
+       "rollup": {
+        "type": "array",
+        "array": [
+         {
+          "type": "rich_text",
+          "rich_text": [
+           {
+            "type": "text",
+            "text": {
+             "content": "18:00",
+             "link": null
+            },
+            "annotations": {
+             "bold": false,
+             "italic": false,
+             "strikethrough": false,
+             "underline": false,
+             "code": false,
+             "color": "default"
+            },
+            "plain_text": "18:00",
+            "href": null
+           }
+          ]
+         }
+        ],
+        "function": "show_original"
+       }
+      },
+      "Slot status": {
+       "id": "xFaE",
+       "type": "formula",
+       "formula": {
+        "type": "string",
+        "string": "Open"
+       }
+      },
+      "Slot number": {
+       "id": "xX%3CB",
+       "type": "number",
+       "number": 3
+      },
+      "Event date src": {
+       "id": "~YPt",
+       "type": "rollup",
+       "rollup": {
+        "type": "date",
+        "date": {
+         "start": "2026-11-14",
+         "end": null,
+         "time_zone": null
+        },
+        "function": "latest_date"
+       }
+      },
+      "Name": {
+       "id": "title",
+       "type": "title",
+       "title": [
+        {
+         "type": "text",
+         "text": {
+          "content": "Slot 3",
+          "link": null
+         },
+         "annotations": {
+          "bold": false,
+          "italic": false,
+          "strikethrough": false,
+          "underline": false,
+          "code": false,
+          "color": "default"
+         },
+         "plain_text": "Slot 3",
+         "href": null
+        }
+       ]
+      }
+     },
+     "url": "https://app.notion.com/p/Slot-3-410898b5001781559182edeafdb62305",
+     "public_url": null
+    }
+   ],
+   "next_cursor": "s:e3116536-9085-406b-af42-a7181a5d61ba:410898b5-0017-818f-8eed-f03f8ba66664",
+   "has_more": true,
+   "type": "page_or_data_source",
+   "page_or_data_source": {},
+   "request_id": "93db7c89-6784-48f9-81c5-0ca08ec26396"
+  }
+ },
+ "query_filter_relation": {
+  "method": "POST",
+  "path": "/v1/data_sources/5c079c42-9e83-4266-a766-fb060cd0ad41/query",
+  "request": {
+   "filter": {
+    "property": "Event",
+    "relation": {
+     "contains": "410898b5-0017-815d-bbae-db1c5766c069"
+    }
+   }
+  },
+  "status": 200,
+  "response": {
+   "object": "list",
+   "results": [
+    {
+     "object": "page",
+     "id": "410898b5-0017-8139-a32e-f912522de222",
+     "created_time": "2026-11-06T16:05:00.000Z",
+     "last_edited_time": "2026-11-06T16:05:00.000Z",
+     "created_by": {
+      "object": "user",
+      "id": "00000000-0000-0000-0000-000000000001"
+     },
+     "last_edited_by": {
+      "object": "user",
+      "id": "00000000-0000-0000-0000-000000000001"
+     },
+     "cover": null,
+     "icon": null,
+     "parent": {
+      "type": "data_source_id",
+      "data_source_id": "5c079c42-9e83-4266-a766-fb060cd0ad41",
+      "database_id": "9b6d60d6-e93a-4f6b-bda6-a6553c8218f4"
+     },
+     "in_trash": false,
+     "is_archived": false,
+     "is_locked": false,
+     "properties": {
+      "Event date": {
+       "id": "%3Du%60c",
+       "type": "formula",
+       "formula": {
+        "type": "date",
+        "date": {
+         "start": "2026-11-14",
+         "end": null,
+         "time_zone": null
+        }
+       }
+      },
+      "Event": {
+       "id": "%40~pK",
+       "type": "relation",
+       "relation": [
+        {
+         "id": "410898b5-0017-815d-bbae-db1c5766c069"
+        }
+       ],
+       "has_more": false
+      },
+      "DJ": {
+       "id": "P%3DK%5B",
+       "type": "relation",
+       "relation": [],
+       "has_more": false
+      },
+      "Time": {
+       "id": "VPnk",
+       "type": "formula",
+       "formula": {
+        "type": "string",
+        "string": "22:00"
+       }
+      },
+      "Event slot length": {
+       "id": "%5ESdn",
+       "type": "rollup",
+       "rollup": {
+        "type": "number",
+        "number": 60,
+        "function": "max"
+       }
+      },
+      "Event start": {
+       "id": "qczu",
+       "type": "rollup",
+       "rollup": {
+        "type": "array",
+        "array": [
+         {
+          "type": "rich_text",
+          "rich_text": [
+           {
+            "type": "text",
+            "text": {
+             "content": "18:00",
+             "link": null
+            },
+            "annotations": {
+             "bold": false,
+             "italic": false,
+             "strikethrough": false,
+             "underline": false,
+             "code": false,
+             "color": "default"
+            },
+            "plain_text": "18:00",
+            "href": null
+           }
+          ]
+         }
+        ],
+        "function": "show_original"
+       }
+      },
+      "Slot status": {
+       "id": "xFaE",
+       "type": "formula",
+       "formula": {
+        "type": "string",
+        "string": "Open"
+       }
+      },
+      "Slot number": {
+       "id": "xX%3CB",
+       "type": "number",
+       "number": 5
+      },
+      "Event date src": {
+       "id": "~YPt",
+       "type": "rollup",
+       "rollup": {
+        "type": "date",
+        "date": {
+         "start": "2026-11-14",
+         "end": null,
+         "time_zone": null
+        },
+        "function": "latest_date"
+       }
+      },
+      "Name": {
+       "id": "title",
+       "type": "title",
+       "title": [
+        {
+         "type": "text",
+         "text": {
+          "content": "Slot 5",
+          "link": null
+         },
+         "annotations": {
+          "bold": false,
+          "italic": false,
+          "strikethrough": false,
+          "underline": false,
+          "code": false,
+          "color": "default"
+         },
+         "plain_text": "Slot 5",
+         "href": null
+        }
+       ]
+      }
+     },
+     "url": "https://app.notion.com/p/Slot-5-410898b500178139a32ef912522de222",
+     "public_url": null
+    },
+    {
+     "object": "page",
+     "id": "410898b5-0017-8119-916c-f59bb83fd77f",
+     "created_time": "2026-11-06T16:05:00.000Z",
+     "last_edited_time": "2026-11-06T16:05:00.000Z",
+     "created_by": {
+      "object": "user",
+      "id": "00000000-0000-0000-0000-000000000001"
+     },
+     "last_edited_by": {
+      "object": "user",
+      "id": "00000000-0000-0000-0000-000000000001"
+     },
+     "cover": null,
+     "icon": null,
+     "parent": {
+      "type": "data_source_id",
+      "data_source_id": "5c079c42-9e83-4266-a766-fb060cd0ad41",
+      "database_id": "9b6d60d6-e93a-4f6b-bda6-a6553c8218f4"
+     },
+     "in_trash": false,
+     "is_archived": false,
+     "is_locked": false,
+     "properties": {
+      "Event date": {
+       "id": "%3Du%60c",
+       "type": "formula",
+       "formula": {
+        "type": "date",
+        "date": {
+         "start": "2026-11-14",
+         "end": null,
+         "time_zone": null
+        }
+       }
+      },
+      "Event": {
+       "id": "%40~pK",
+       "type": "relation",
+       "relation": [
+        {
+         "id": "410898b5-0017-815d-bbae-db1c5766c069"
+        }
+       ],
+       "has_more": false
+      },
+      "DJ": {
+       "id": "P%3DK%5B",
+       "type": "relation",
+       "relation": [],
+       "has_more": false
+      },
+      "Time": {
+       "id": "VPnk",
+       "type": "formula",
+       "formula": {
+        "type": "string",
+        "string": "21:00"
+       }
+      },
+      "Event slot length": {
+       "id": "%5ESdn",
+       "type": "rollup",
+       "rollup": {
+        "type": "number",
+        "number": 60,
+        "function": "max"
+       }
+      },
+      "Event start": {
+       "id": "qczu",
+       "type": "rollup",
+       "rollup": {
+        "type": "array",
+        "array": [
+         {
+          "type": "rich_text",
+          "rich_text": [
+           {
+            "type": "text",
+            "text": {
+             "content": "18:00",
+             "link": null
+            },
+            "annotations": {
+             "bold": false,
+             "italic": false,
+             "strikethrough": false,
+             "underline": false,
+             "code": false,
+             "color": "default"
+            },
+            "plain_text": "18:00",
+            "href": null
+           }
+          ]
+         }
+        ],
+        "function": "show_original"
+       }
+      },
+      "Slot status": {
+       "id": "xFaE",
+       "type": "formula",
+       "formula": {
+        "type": "string",
+        "string": "Open"
+       }
+      },
+      "Slot number": {
+       "id": "xX%3CB",
+       "type": "number",
+       "number": 4
+      },
+      "Event date src": {
+       "id": "~YPt",
+       "type": "rollup",
+       "rollup": {
+        "type": "date",
+        "date": {
+         "start": "2026-11-14",
+         "end": null,
+         "time_zone": null
+        },
+        "function": "latest_date"
+       }
+      },
+      "Name": {
+       "id": "title",
+       "type": "title",
+       "title": [
+        {
+         "type": "text",
+         "text": {
+          "content": "Slot 4",
+          "link": null
+         },
+         "annotations": {
+          "bold": false,
+          "italic": false,
+          "strikethrough": false,
+          "underline": false,
+          "code": false,
+          "color": "default"
+         },
+         "plain_text": "Slot 4",
+         "href": null
+        }
+       ]
+      }
+     },
+     "url": "https://app.notion.com/p/Slot-4-410898b500178119916cf59bb83fd77f",
+     "public_url": null
+    }
+   ],
+   "next_cursor": null,
+   "has_more": false,
+   "type": "page_or_data_source",
+   "page_or_data_source": {},
+   "request_id": "3bb93430-321a-473a-aef9-b2a9dec69c47"
+  }
+ },
+ "query_filter_dj_empty": {
+  "method": "POST",
+  "path": "/v1/data_sources/5c079c42-9e83-4266-a766-fb060cd0ad41/query",
+  "request": {
+   "filter": {
+    "property": "DJ",
+    "relation": {
+     "is_empty": true
+    }
+   }
+  },
+  "status": 200,
+  "response": {
+   "object": "list",
+   "results": [
+    {
+     "object": "page",
+     "id": "410898b5-0017-81d1-adfd-dacc6e21dc09",
+     "created_time": "2026-11-06T16:05:00.000Z",
+     "last_edited_time": "2026-11-06T16:06:00.000Z",
+     "created_by": {
+      "object": "user",
+      "id": "00000000-0000-0000-0000-000000000001"
+     },
+     "last_edited_by": {
+      "object": "user",
+      "id": "00000000-0000-0000-0000-000000000001"
+     },
+     "cover": null,
+     "icon": null,
+     "parent": {
+      "type": "data_source_id",
+      "data_source_id": "5c079c42-9e83-4266-a766-fb060cd0ad41",
+      "database_id": "9b6d60d6-e93a-4f6b-bda6-a6553c8218f4"
+     },
+     "in_trash": false,
+     "is_archived": false,
+     "is_locked": false,
+     "properties": {
+      "Event date": {
+       "id": "%3Du%60c",
+       "type": "formula",
+       "formula": {
+        "type": "date",
+        "date": {
+         "start": "2026-11-20",
+         "end": null,
+         "time_zone": null
+        }
+       }
+      },
+      "Event": {
+       "id": "%40~pK",
+       "type": "relation",
+       "relation": [
+        {
+         "id": "410898b5-0017-81e0-b053-c52957149d45"
+        }
+       ],
+       "has_more": false
+      },
+      "DJ": {
+       "id": "P%3DK%5B",
+       "type": "relation",
+       "relation": [],
+       "has_more": false
+      },
+      "Time": {
+       "id": "VPnk",
+       "type": "formula",
+       "formula": {
+        "type": "string",
+        "string": "01:30"
+       }
+      },
+      "Event slot length": {
+       "id": "%5ESdn",
+       "type": "rollup",
+       "rollup": {
+        "type": "number",
+        "number": 90,
+        "function": "max"
+       }
+      },
+      "Event start": {
+       "id": "qczu",
+       "type": "rollup",
+       "rollup": {
+        "type": "array",
+        "array": [
+         {
+          "type": "rich_text",
+          "rich_text": [
+           {
+            "type": "text",
+            "text": {
+             "content": "22:30",
+             "link": null
+            },
+            "annotations": {
+             "bold": false,
+             "italic": false,
+             "strikethrough": false,
+             "underline": false,
+             "code": false,
+             "color": "default"
+            },
+            "plain_text": "22:30",
+            "href": null
+           }
+          ]
+         }
+        ],
+        "function": "show_original"
+       }
+      },
+      "Slot status": {
+       "id": "xFaE",
+       "type": "formula",
+       "formula": {
+        "type": "string",
+        "string": "Open"
+       }
+      },
+      "Slot number": {
+       "id": "xX%3CB",
+       "type": "number",
+       "number": 3
+      },
+      "Event date src": {
+       "id": "~YPt",
+       "type": "rollup",
+       "rollup": {
+        "type": "date",
+        "date": {
+         "start": "2026-11-20",
+         "end": null,
+         "time_zone": null
+        },
+        "function": "latest_date"
+       }
+      },
+      "Name": {
+       "id": "title",
+       "type": "title",
+       "title": [
+        {
+         "type": "text",
+         "text": {
+          "content": "Slot 3",
+          "link": null
+         },
+         "annotations": {
+          "bold": false,
+          "italic": false,
+          "strikethrough": false,
+          "underline": false,
+          "code": false,
+          "color": "default"
+         },
+         "plain_text": "Slot 3",
+         "href": null
+        }
+       ]
+      }
+     },
+     "url": "https://app.notion.com/p/Slot-3-410898b5001781d1adfddacc6e21dc09",
+     "public_url": null
+    },
+    {
+     "object": "page",
+     "id": "410898b5-0017-8139-a32e-f912522de222",
+     "created_time": "2026-11-06T16:05:00.000Z",
+     "last_edited_time": "2026-11-06T16:05:00.000Z",
+     "created_by": {
+      "object": "user",
+      "id": "00000000-0000-0000-0000-000000000001"
+     },
+     "last_edited_by": {
+      "object": "user",
+      "id": "00000000-0000-0000-0000-000000000001"
+     },
+     "cover": null,
+     "icon": null,
+     "parent": {
+      "type": "data_source_id",
+      "data_source_id": "5c079c42-9e83-4266-a766-fb060cd0ad41",
+      "database_id": "9b6d60d6-e93a-4f6b-bda6-a6553c8218f4"
+     },
+     "in_trash": false,
+     "is_archived": false,
+     "is_locked": false,
+     "properties": {
+      "Event date": {
+       "id": "%3Du%60c",
+       "type": "formula",
+       "formula": {
+        "type": "date",
+        "date": {
+         "start": "2026-11-14",
+         "end": null,
+         "time_zone": null
+        }
+       }
+      },
+      "Event": {
+       "id": "%40~pK",
+       "type": "relation",
+       "relation": [
+        {
+         "id": "410898b5-0017-815d-bbae-db1c5766c069"
+        }
+       ],
+       "has_more": false
+      },
+      "DJ": {
+       "id": "P%3DK%5B",
+       "type": "relation",
+       "relation": [],
+       "has_more": false
+      },
+      "Time": {
+       "id": "VPnk",
+       "type": "formula",
+       "formula": {
+        "type": "string",
+        "string": "22:00"
+       }
+      },
+      "Event slot length": {
+       "id": "%5ESdn",
+       "type": "rollup",
+       "rollup": {
+        "type": "number",
+        "number": 60,
+        "function": "max"
+       }
+      },
+      "Event start": {
+       "id": "qczu",
+       "type": "rollup",
+       "rollup": {
+        "type": "array",
+        "array": [
+         {
+          "type": "rich_text",
+          "rich_text": [
+           {
+            "type": "text",
+            "text": {
+             "content": "18:00",
+             "link": null
+            },
+            "annotations": {
+             "bold": false,
+             "italic": false,
+             "strikethrough": false,
+             "underline": false,
+             "code": false,
+             "color": "default"
+            },
+            "plain_text": "18:00",
+            "href": null
+           }
+          ]
+         }
+        ],
+        "function": "show_original"
+       }
+      },
+      "Slot status": {
+       "id": "xFaE",
+       "type": "formula",
+       "formula": {
+        "type": "string",
+        "string": "Open"
+       }
+      },
+      "Slot number": {
+       "id": "xX%3CB",
+       "type": "number",
+       "number": 5
+      },
+      "Event date src": {
+       "id": "~YPt",
+       "type": "rollup",
+       "rollup": {
+        "type": "date",
+        "date": {
+         "start": "2026-11-14",
+         "end": null,
+         "time_zone": null
+        },
+        "function": "latest_date"
+       }
+      },
+      "Name": {
+       "id": "title",
+       "type": "title",
+       "title": [
+        {
+         "type": "text",
+         "text": {
+          "content": "Slot 5",
+          "link": null
+         },
+         "annotations": {
+          "bold": false,
+          "italic": false,
+          "strikethrough": false,
+          "underline": false,
+          "code": false,
+          "color": "default"
+         },
+         "plain_text": "Slot 5",
+         "href": null
+        }
+       ]
+      }
+     },
+     "url": "https://app.notion.com/p/Slot-5-410898b500178139a32ef912522de222",
+     "public_url": null
+    }
+   ],
+   "next_cursor": null,
+   "has_more": false,
+   "type": "page_or_data_source",
+   "page_or_data_source": {},
+   "request_id": "d1415546-3f6e-4832-a26b-8c36340f11e1"
+  }
+ }
+}

@@ -1,0 +1,472 @@
+{
+ "events": {
+  "object": "data_source",
+  "id": "4fffe505-0a1e-471e-8062-ca4f20ac642d",
+  "cover": null,
+  "icon": null,
+  "created_time": "2026-11-06T16:03:00.000Z",
+  "created_by": {
+   "object": "user",
+   "id": "00000000-0000-0000-0000-000000000001"
+  },
+  "last_edited_by": {
+   "object": "user",
+   "id": "00000000-0000-0000-0000-000000000001"
+  },
+  "last_edited_time": "2026-11-06T16:06:00.000Z",
+  "title": [
+   {
+    "type": "text",
+    "text": {
+     "content": "Events",
+     "link": null
+    },
+    "annotations": {
+     "bold": false,
+     "italic": false,
+     "strikethrough": false,
+     "underline": false,
+     "code": false,
+     "color": "default"
+    },
+    "plain_text": "Events",
+    "href": null
+   }
+  ],
+  "description": [],
+  "is_inline": false,
+  "database_type": null,
+  "properties": {
+   "Slot rows": {
+    "id": "%3ApeK",
+    "name": "Slot rows",
+    "description": null,
+    "type": "relation",
+    "relation": {
+     "database_id": "9b6d60d6-e93a-4f6b-bda6-a6553c8218f4",
+     "data_source_id": "5c079c42-9e83-4266-a766-fb060cd0ad41",
+     "limit": null,
+     "type": "dual_property",
+     "dual_property": {
+      "synced_property_name": "Event",
+      "synced_property_id": "%40~pK"
+     }
+    }
+   },
+   "Date": {
+    "id": "%40%3CYX",
+    "name": "Date",
+    "description": null,
+    "type": "date",
+    "date": {}
+   },
+   "Status": {
+    "id": "B~Be",
+    "name": "Status",
+    "description": null,
+    "type": "select",
+    "select": {
+     "options": [
+      {
+       "id": "b065f892-366d-4f13-af44-eca56915022a",
+       "name": "Planning not started",
+       "color": "default",
+       "description": null
+      },
+      {
+       "id": "b03e5e43-0ffe-492b-895e-e8084c049de3",
+       "name": "Planning stage",
+       "color": "default",
+       "description": null
+      },
+      {
+       "id": "e61e739a-57a0-4a37-a480-73068d627401",
+       "name": "Ready",
+       "color": "default",
+       "description": null
+      },
+      {
+       "id": "2a8b2c65-9fd3-47e3-a8d1-eda1c347215f",
+       "name": "Done",
+       "color": "default",
+       "description": null
+      },
+      {
+       "id": "a3325c74-2ee7-404b-bb83-1398b9ac373c",
+       "name": "Canceled",
+       "color": "default",
+       "description": null
+      }
+     ]
+    }
+   },
+   "Slot length": {
+    "id": "TEi%5B",
+    "name": "Slot length",
+    "description": null,
+    "type": "number",
+    "number": {
+     "format": "number"
+    }
+   },
+   "Genre": {
+    "id": "%60%3D%3Du",
+    "name": "Genre",
+    "description": null,
+    "type": "rich_text",
+    "rich_text": {}
+   },
+   "Start": {
+    "id": "wSAz",
+    "name": "Start",
+    "description": null,
+    "type": "rich_text",
+    "rich_text": {}
+   },
+   "Slots": {
+    "id": "zH%3BB",
+    "name": "Slots",
+    "description": null,
+    "type": "number",
+    "number": {
+     "format": "number"
+    }
+   },
+   "Notes": {
+    "id": "~_%5B%40",
+    "name": "Notes",
+    "description": null,
+    "type": "rich_text",
+    "rich_text": {}
+   },
+   "ID": {
+    "id": "title",
+    "name": "ID",
+    "description": null,
+    "type": "title",
+    "title": {}
+   }
+  },
+  "parent": {
+   "type": "database_id",
+   "database_id": "3355d4fe-f4c0-4d21-ae8c-815830bc9ed5"
+  },
+  "database_parent": {
+   "type": "page_id",
+   "page_id": "00000000-0000-0000-0000-000000000000"
+  },
+  "url": "https://app.notion.com/p/3355d4fef4c04d21ae8c815830bc9ed5",
+  "public_url": null,
+  "in_trash": false,
+  "request_id": "2919c0de-1f9e-45da-aa64-26c8646dec77"
+ },
+ "slots": {
+  "object": "data_source",
+  "id": "5c079c42-9e83-4266-a766-fb060cd0ad41",
+  "cover": null,
+  "icon": null,
+  "created_time": "2026-11-06T16:03:00.000Z",
+  "created_by": {
+   "object": "user",
+   "id": "00000000-0000-0000-0000-000000000001"
+  },
+  "last_edited_by": {
+   "object": "user",
+   "id": "00000000-0000-0000-0000-000000000001"
+  },
+  "last_edited_time": "2026-11-06T16:06:00.000Z",
+  "title": [
+   {
+    "type": "text",
+    "text": {
+     "content": "Slots",
+     "link": null
+    },
+    "annotations": {
+     "bold": false,
+     "italic": false,
+     "strikethrough": false,
+     "underline": false,
+     "code": false,
+     "color": "default"
+    },
+    "plain_text": "Slots",
+    "href": null
+   }
+  ],
+  "description": [],
+  "is_inline": false,
+  "database_type": null,
+  "properties": {
+   "Event date": {
+    "id": "%3Du%60c",
+    "name": "Event date",
+    "description": null,
+    "type": "formula",
+    "formula": {
+     "expression": "prop(\"Event date src\")"
+    }
+   },
+   "Event": {
+    "id": "%40~pK",
+    "name": "Event",
+    "description": null,
+    "type": "relation",
+    "relation": {
+     "database_id": "3355d4fe-f4c0-4d21-ae8c-815830bc9ed5",
+     "data_source_id": "4fffe505-0a1e-471e-8062-ca4f20ac642d",
+     "limit": null,
+     "type": "dual_property",
+     "dual_property": {
+      "synced_property_name": "Slot rows",
+      "synced_property_id": "%3ApeK"
+     }
+    }
+   },
+   "DJ": {
+    "id": "P%3DK%5B",
+    "name": "DJ",
+    "description": null,
+    "type": "relation",
+    "relation": {
+     "database_id": "032b9a37-3f88-412a-811b-9f79a90e00b5",
+     "data_source_id": "05035a11-52dd-4fc4-bf4c-184e1bbacb35",
+     "limit": null,
+     "type": "dual_property",
+     "dual_property": {
+      "synced_property_name": "Slots",
+      "synced_property_id": "qviZ"
+     }
+    }
+   },
+   "Time": {
+    "id": "VPnk",
+    "name": "Time",
+    "description": null,
+    "type": "formula",
+    "formula": {
+     "expression": "lets(m, mod(toNumber(prop(\"Event start\").substring(0, 2)) * 60 + toNumber(prop(\"Event start\").substring(3, 5)) + (prop(\"Slot number\") - 1) * prop(\"Event slot length\"), 1440), format(floor(m / 60)).padStart(2, \"0\") + \":\" + format(m % 60).padStart(2, \"0\"))"
+    }
+   },
+   "Event slot length": {
+    "id": "%5ESdn",
+    "name": "Event slot length",
+    "description": null,
+    "type": "rollup",
+    "rollup": {
+     "rollup_property_name": "Slot length",
+     "relation_property_name": "Event",
+     "rollup_property_id": "TEi[",
+     "relation_property_id": "@~pK",
+     "function": "max"
+    }
+   },
+   "Event start": {
+    "id": "qczu",
+    "name": "Event start",
+    "description": null,
+    "type": "rollup",
+    "rollup": {
+     "rollup_property_name": "Start",
+     "relation_property_name": "Event",
+     "rollup_property_id": "wSAz",
+     "relation_property_id": "@~pK",
+     "function": "show_original"
+    }
+   },
+   "Slot status": {
+    "id": "xFaE",
+    "name": "Slot status",
+    "description": null,
+    "type": "formula",
+    "formula": {
+     "expression": "if(empty(prop(\"DJ\")), \"Open\", \"Booked\")"
+    }
+   },
+   "Slot number": {
+    "id": "xX%3CB",
+    "name": "Slot number",
+    "description": null,
+    "type": "number",
+    "number": {
+     "format": "number"
+    }
+   },
+   "Event date src": {
+    "id": "~YPt",
+    "name": "Event date src",
+    "description": null,
+    "type": "rollup",
+    "rollup": {
+     "rollup_property_name": "Date",
+     "relation_property_name": "Event",
+     "rollup_property_id": "@<YX",
+     "relation_property_id": "@~pK",
+     "function": "latest_date"
+    }
+   },
+   "Name": {
+    "id": "title",
+    "name": "Name",
+    "description": null,
+    "type": "title",
+    "title": {}
+   }
+  },
+  "parent": {
+   "type": "database_id",
+   "database_id": "9b6d60d6-e93a-4f6b-bda6-a6553c8218f4"
+  },
+  "database_parent": {
+   "type": "page_id",
+   "page_id": "00000000-0000-0000-0000-000000000000"
+  },
+  "url": "https://app.notion.com/p/9b6d60d6e93a4f6bbda6a6553c8218f4",
+  "public_url": null,
+  "in_trash": false,
+  "request_id": "bb1ee884-79c0-4f0a-9baa-d9e1b7b33ba7"
+ },
+ "djs": {
+  "object": "data_source",
+  "id": "05035a11-52dd-4fc4-bf4c-184e1bbacb35",
+  "cover": null,
+  "icon": null,
+  "created_time": "2026-11-06T16:03:00.000Z",
+  "created_by": {
+   "object": "user",
+   "id": "00000000-0000-0000-0000-000000000001"
+  },
+  "last_edited_by": {
+   "object": "user",
+   "id": "00000000-0000-0000-0000-000000000001"
+  },
+  "last_edited_time": "2026-11-06T16:06:00.000Z",
+  "title": [
+   {
+    "type": "text",
+    "text": {
+     "content": "DJs",
+     "link": null
+    },
+    "annotations": {
+     "bold": false,
+     "italic": false,
+     "strikethrough": false,
+     "underline": false,
+     "code": false,
+     "color": "default"
+    },
+    "plain_text": "DJs",
+    "href": null
+   }
+  ],
+  "description": [],
+  "is_inline": false,
+  "database_type": null,
+  "properties": {
+   "Last booked": {
+    "id": "%3EV%7BQ",
+    "name": "Last booked",
+    "description": null,
+    "type": "rollup",
+    "rollup": {
+     "rollup_property_name": "Event date",
+     "relation_property_name": "Slots",
+     "rollup_property_id": "=u`c",
+     "relation_property_id": "qviZ",
+     "function": "latest_date"
+    }
+   },
+   "Discord ID": {
+    "id": "I%40Do",
+    "name": "Discord ID",
+    "description": null,
+    "type": "rich_text",
+    "rich_text": {}
+   },
+   "Alternative link": {
+    "id": "Igxb",
+    "name": "Alternative link",
+    "description": null,
+    "type": "url",
+    "url": {}
+   },
+   "Logo": {
+    "id": "S%7D%7BJ",
+    "name": "Logo",
+    "description": null,
+    "type": "files",
+    "files": {}
+   },
+   "Discord name": {
+    "id": "eo%5CW",
+    "name": "Discord name",
+    "description": null,
+    "type": "rich_text",
+    "rich_text": {}
+   },
+   "Events booked": {
+    "id": "f%7B%3Em",
+    "name": "Events booked",
+    "description": null,
+    "type": "rollup",
+    "rollup": {
+     "rollup_property_name": "Event",
+     "relation_property_name": "Slots",
+     "rollup_property_id": "@~pK",
+     "relation_property_id": "qviZ",
+     "function": "unique"
+    }
+   },
+   "VRChat name": {
+    "id": "nkE%60",
+    "name": "VRChat name",
+    "description": null,
+    "type": "rich_text",
+    "rich_text": {}
+   },
+   "Slots": {
+    "id": "qviZ",
+    "name": "Slots",
+    "description": null,
+    "type": "relation",
+    "relation": {
+     "database_id": "9b6d60d6-e93a-4f6b-bda6-a6553c8218f4",
+     "data_source_id": "5c079c42-9e83-4266-a766-fb060cd0ad41",
+     "limit": null,
+     "type": "dual_property",
+     "dual_property": {
+      "synced_property_name": "DJ",
+      "synced_property_id": "P%3DK%5B"
+     }
+    }
+   },
+   "Link": {
+    "id": "%7D%5Eqp",
+    "name": "Link",
+    "description": null,
+    "type": "url",
+    "url": {}
+   },
+   "DJ name": {
+    "id": "title",
+    "name": "DJ name",
+    "description": null,
+    "type": "title",
+    "title": {}
+   }
+  },
+  "parent": {
+   "type": "database_id",
+   "database_id": "032b9a37-3f88-412a-811b-9f79a90e00b5"
+  },
+  "database_parent": {
+   "type": "page_id",
+   "page_id": "00000000-0000-0000-0000-000000000000"
+  },
+  "url": "https://app.notion.com/p/032b9a373f88412a811b9f79a90e00b5",
+  "public_url": null,
+  "in_trash": false,
+  "request_id": "80091949-015f-4090-890a-92c7adba5d89"
+ }
+}

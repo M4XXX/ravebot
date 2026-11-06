@@ -202,7 +202,7 @@ class EventsCog(commands.Cog):
                     trigger=f"Notion poll_events() raised during notion_poll: {exc}",
                     action_taken="Skipped this cycle — will retry on next scheduled run.",
                     manual_action=(
-                        "Check NOTION_API_KEY, NOTION_DATABASE_ID, and Notion API status."
+                        "Check NOTION_API_KEY, NOTION_PARENT_PAGE_ID, and Notion API status."
                     ),
                 )
             return

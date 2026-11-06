@@ -1,0 +1,184 @@
+{
+ "events": {
+  "request": {
+   "parent": {
+    "type": "page_id",
+    "page_id": "<parent>"
+   },
+   "title": [
+    {
+     "type": "text",
+     "text": {
+      "content": "Events"
+     }
+    }
+   ],
+   "initial_data_source": {
+    "properties": {
+     "ID": {
+      "title": {}
+     },
+     "Date": {
+      "date": {}
+     },
+     "Status": {
+      "select": {
+       "options": [
+        {
+         "name": "Planning stage"
+        }
+       ]
+      }
+     },
+     "Slots": {
+      "number": {}
+     },
+     "Start": {
+      "rich_text": {}
+     },
+     "Slot length": {
+      "number": {}
+     }
+    }
+   }
+  },
+  "response": {
+   "object": "database",
+   "id": "3355d4fe-f4c0-4d21-ae8c-815830bc9ed5",
+   "title": [
+    {
+     "type": "text",
+     "text": {
+      "content": "Events",
+      "link": null
+     },
+     "annotations": {
+      "bold": false,
+      "italic": false,
+      "strikethrough": false,
+      "underline": false,
+      "code": false,
+      "color": "default"
+     },
+     "plain_text": "Events",
+     "href": null
+    }
+   ],
+   "description": [],
+   "parent": {
+    "type": "page_id",
+    "page_id": "00000000-0000-0000-0000-000000000000"
+   },
+   "is_inline": false,
+   "database_type": null,
+   "in_trash": false,
+   "is_locked": false,
+   "show_data_source_title": true,
+   "created_time": "2026-11-06T16:03:50.409+00:00",
+   "last_edited_time": "2026-11-06T16:03:50.409+00:00",
+   "data_sources": [
+    {
+     "id": "4fffe505-0a1e-471e-8062-ca4f20ac642d",
+     "name": "Events"
+    }
+   ],
+   "icon": null,
+   "cover": null,
+   "url": "https://app.notion.com/p/3355d4fef4c04d21ae8c815830bc9ed5",
+   "public_url": null,
+   "request_id": "7be8f506-87b1-4ef6-83ba-27e24d93eda2"
+  }
+ },
+ "slots_response": {
+  "object": "database",
+  "id": "9b6d60d6-e93a-4f6b-bda6-a6553c8218f4",
+  "title": [
+   {
+    "type": "text",
+    "text": {
+     "content": "Slots",
+     "link": null
+    },
+    "annotations": {
+     "bold": false,
+     "italic": false,
+     "strikethrough": false,
+     "underline": false,
+     "code": false,
+     "color": "default"
+    },
+    "plain_text": "Slots",
+    "href": null
+   }
+  ],
+  "description": [],
+  "parent": {
+   "type": "page_id",
+   "page_id": "00000000-0000-0000-0000-000000000000"
+  },
+  "is_inline": false,
+  "database_type": null,
+  "in_trash": false,
+  "is_locked": false,
+  "show_data_source_title": true,
+  "created_time": "2026-11-06T16:03:57.001+00:00",
+  "last_edited_time": "2026-11-06T16:03:57.001+00:00",
+  "data_sources": [
+   {
+    "id": "5c079c42-9e83-4266-a766-fb060cd0ad41",
+    "name": "Slots"
+   }
+  ],
+  "icon": null,
+  "cover": null,
+  "url": "https://app.notion.com/p/9b6d60d6e93a4f6bbda6a6553c8218f4",
+  "public_url": null,
+  "request_id": "8a8da950-affc-4e83-aea5-97e626645709"
+ },
+ "djs_response": {
+  "object": "database",
+  "id": "032b9a37-3f88-412a-811b-9f79a90e00b5",
+  "title": [
+   {
+    "type": "text",
+    "text": {
+     "content": "DJs",
+     "link": null
+    },
+    "annotations": {
+     "bold": false,
+     "italic": false,
+     "strikethrough": false,
+     "underline": false,
+     "code": false,
+     "color": "default"
+    },
+    "plain_text": "DJs",
+    "href": null
+   }
+  ],
+  "description": [],
+  "parent": {
+   "type": "page_id",
+   "page_id": "00000000-0000-0000-0000-000000000000"
+  },
+  "is_inline": false,
+  "database_type": null,
+  "in_trash": false,
+  "is_locked": false,
+  "show_data_source_title": true,
+  "created_time": "2026-11-06T16:03:51.072+00:00",
+  "last_edited_time": "2026-11-06T16:03:51.072+00:00",
+  "data_sources": [
+   {
+    "id": "05035a11-52dd-4fc4-bf4c-184e1bbacb35",
+    "name": "DJs"
+   }
+  ],
+  "icon": null,
+  "cover": null,
+  "url": "https://app.notion.com/p/032b9a373f88412a811b9f79a90e00b5",
+  "public_url": null,
+  "request_id": "02f185ef-fb08-4869-95a0-e324397a42e0"
+ }
+}

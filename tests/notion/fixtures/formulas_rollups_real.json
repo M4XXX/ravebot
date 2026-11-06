@@ -1,0 +1,156 @@
+{
+ "patch_slots_data_source_request": {
+  "properties": {
+   "Event start": {
+    "rollup": {
+     "relation_property_name": "Event",
+     "rollup_property_name": "Start",
+     "function": "show_original"
+    }
+   },
+   "Event slot length": {
+    "rollup": {
+     "relation_property_name": "Event",
+     "rollup_property_name": "Slot length",
+     "function": "max"
+    }
+   },
+   "Event date src": {
+    "rollup": {
+     "relation_property_name": "Event",
+     "rollup_property_name": "Date",
+     "function": "latest_date"
+    }
+   },
+   "Event date": {
+    "formula": {
+     "expression": "prop(\"Event date src\")"
+    }
+   },
+   "Time": {
+    "formula": {
+     "expression": "lets(m, mod(toNumber(prop(\"Event start\").substring(0, 2)) * 60 + toNumber(prop(\"Event start\").substring(3, 5)) + (prop(\"Slot number\") - 1) * prop(\"Event slot length\"), 1440), format(floor(m / 60)).padStart(2, \"0\") + \":\" + format(m % 60).padStart(2, \"0\"))"
+    }
+   },
+   "Slot status": {
+    "formula": {
+     "expression": "if(empty(prop(\"DJ\")), \"Open\", \"Booked\")"
+    }
+   }
+  }
+ },
+ "patch_djs_data_source_request": {
+  "properties": {
+   "Events booked": {
+    "rollup": {
+     "relation_property_name": "Slots",
+     "rollup_property_name": "Event",
+     "function": "unique"
+    }
+   },
+   "Last booked": {
+    "rollup": {
+     "relation_property_name": "Slots",
+     "rollup_property_name": "Event date",
+     "function": "latest_date"
+    }
+   }
+  }
+ },
+ "schema_slots": {
+  "Event date": {
+   "id": "%3Du%60c",
+   "name": "Event date",
+   "description": null,
+   "type": "formula",
+   "formula": {
+    "expression": "prop(\"Event date src\")"
+   }
+  },
+  "Time": {
+   "id": "VPnk",
+   "name": "Time",
+   "description": null,
+   "type": "formula",
+   "formula": {
+    "expression": "lets(m, mod(toNumber(prop(\"Event start\").substring(0, 2)) * 60 + toNumber(prop(\"Event start\").substring(3, 5)) + (prop(\"Slot number\") - 1) * prop(\"Event slot length\"), 1440), format(floor(m / 60)).padStart(2, \"0\") + \":\" + format(m % 60).padStart(2, \"0\"))"
+   }
+  },
+  "Event slot length": {
+   "id": "%5ESdn",
+   "name": "Event slot length",
+   "description": null,
+   "type": "rollup",
+   "rollup": {
+    "rollup_property_name": "Slot length",
+    "relation_property_name": "Event",
+    "rollup_property_id": "TEi[",
+    "relation_property_id": "@~pK",
+    "function": "max"
+   }
+  },
+  "Event start": {
+   "id": "qczu",
+   "name": "Event start",
+   "description": null,
+   "type": "rollup",
+   "rollup": {
+    "rollup_property_name": "Start",
+    "relation_property_name": "Event",
+    "rollup_property_id": "wSAz",
+    "relation_property_id": "@~pK",
+    "function": "show_original"
+   }
+  },
+  "Slot status": {
+   "id": "xFaE",
+   "name": "Slot status",
+   "description": null,
+   "type": "formula",
+   "formula": {
+    "expression": "if(empty(prop(\"DJ\")), \"Open\", \"Booked\")"
+   }
+  },
+  "Event date src": {
+   "id": "~YPt",
+   "name": "Event date src",
+   "description": null,
+   "type": "rollup",
+   "rollup": {
+    "rollup_property_name": "Date",
+    "relation_property_name": "Event",
+    "rollup_property_id": "@<YX",
+    "relation_property_id": "@~pK",
+    "function": "latest_date"
+   }
+  }
+ },
+ "schema_djs": {
+  "Last booked": {
+   "id": "%3EV%7BQ",
+   "name": "Last booked",
+   "description": null,
+   "type": "rollup",
+   "rollup": {
+    "rollup_property_name": "Event date",
+    "relation_property_name": "Slots",
+    "rollup_property_id": "=u`c",
+    "relation_property_id": "qviZ",
+    "function": "latest_date"
+   }
+  },
+  "Events booked": {
+   "id": "f%7B%3Em",
+   "name": "Events booked",
+   "description": null,
+   "type": "rollup",
+   "rollup": {
+    "rollup_property_name": "Event",
+    "relation_property_name": "Slots",
+    "rollup_property_id": "@~pK",
+    "relation_property_id": "qviZ",
+    "function": "unique"
+   }
+  }
+ }
+}

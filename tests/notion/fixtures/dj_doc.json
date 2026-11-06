@@ -1,0 +1,11 @@
+{
+  "object": "page",
+  "id": "dj-page-1",
+  "archived": false,
+  "in_trash": false,
+  "properties": {
+    "DJ name": {"type": "title", "title": [{"plain_text": "DJ Test"}]},
+    "Discord name": {"type": "rich_text", "rich_text": [{"plain_text": "djtest"}]},
+    "Discord ID": {"type": "rich_text", "rich_text": [{"plain_text": "123456789012345678"}]}
+  }
+}

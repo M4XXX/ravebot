@@ -41,7 +41,7 @@ docker compose up -d
 
 # Copy and fill in env vars
 cp .env.example .env
-# Edit .env: set DISCORD_BOT_TOKEN, NOTION_API_KEY, NOTION_DATABASE_ID, ADMIN_USER_IDS
+# Edit .env: set DISCORD_BOT_TOKEN, NOTION_API_KEY, NOTION_PARENT_PAGE_ID, ADMIN_USER_IDS
 # POSTGRES_URL default (postgresql://ravebot:ravebot@localhost:5432/ravebot) matches the compose config
 
 # Run the bot
