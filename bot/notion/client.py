@@ -195,26 +195,8 @@ class NotionClient:
             {"parent": self._parent(self._ids.events_ds), "properties": props},
             f"create event {event_id}",
         )
-        event_page_id = page["id"]
-
-        slots: list[SlotInfo] = []
-        for number in range(1, slot_count + 1):
-            slot_page = await self._api.request(
-                "POST",
-                "/pages",
-                {
-                    "parent": self._parent(self._ids.slots_ds),
-                    "properties": {
-                        PROP_SLOT_NAME: {"title": _text(f"{event_id} #{number}")},
-                        PROP_SLOT_EVENT: {"relation": [{"id": event_page_id}]},
-                        PROP_SLOT_NUMBER: {"number": number},
-                    },
-                },
-                f"create slot {number} of event {event_id}",
-            )
-            slots.append(SlotInfo(slot_page["id"], number, None, None, None))
-        return EventInfo(
-            page_id=event_page_id,
+        event = EventInfo(
+            page_id=page["id"],
             event_id=event_id,
             date=date,
             status=INITIAL_STATUS,
@@ -223,8 +205,44 @@ class NotionClient:
             slot_count=slot_count,
             start=start,
             slot_minutes=slot_minutes,
-            slots=tuple(slots),
+            slots=(),
         )
+        slots = await self.create_slot_rows(event, list(range(1, slot_count + 1)))
+        return dataclasses.replace(event, slots=tuple(slots))
+
+    async def create_slot_rows(self, event: EventInfo, numbers: list[int]) -> list[SlotInfo]:
+        """Create one empty Slots row per given number, linked to the event.
+
+        Rows are created in the given order; a failure raises NotionWriteError
+        and the rows created before it stay.
+        """
+        rows: list[SlotInfo] = []
+        for number in numbers:
+            slot_page = await self._api.request(
+                "POST",
+                "/pages",
+                {
+                    "parent": self._parent(self._ids.slots_ds),
+                    "properties": {
+                        PROP_SLOT_NAME: {"title": _text(f"{event.event_id} #{number}")},
+                        PROP_SLOT_EVENT: {"relation": [{"id": event.page_id}]},
+                        PROP_SLOT_NUMBER: {"number": number},
+                    },
+                },
+                f"create slot {number} of event {event.event_id}",
+            )
+            rows.append(SlotInfo(slot_page["id"], number, None, None, None))
+        return rows
+
+    async def trash_slot_rows(self, rows: list[SlotInfo]) -> None:
+        """Move the given Slots rows to the Notion trash (one PATCH per row)."""
+        for row in rows:
+            await self._api.request(
+                "PATCH",
+                f"/pages/{row.page_id}",
+                {"in_trash": True},
+                f"trash slot row {row.number} ({row.page_id})",
+            )
 
     async def upsert_dj(
         self,
@@ -376,6 +394,22 @@ class NotionClient:
             raise SlotRowMissingError(event.event_id, number)
         await self._write_slot_djs(
             row.page_id, [dj_page_id], f"admin book slot {number} of {event.event_id}"
+        )
+
+    async def keep_first_dj(self, event: EventInfo, slot_index: int) -> None:
+        """Reduce the slot row's DJ relation to its first entry (sync of hand edits).
+
+        Re-reads the row first; writes nothing if it holds one DJ or none.
+        Raises SlotRowMissingError if the event has no row for the slot,
+        NotionWriteError after failed retries.
+        """
+        page_id, current = await self._fresh_slot_dj_ids(event, slot_index)
+        if len(current) <= 1:
+            return
+        await self._write_slot_djs(
+            page_id,
+            current[:1],
+            f"remove extra DJs from slot {slot_index + 1} of {event.event_id}",
         )
 
     @staticmethod

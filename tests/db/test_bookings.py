@@ -202,3 +202,44 @@ async def test_init_event_slots_zero_slots_skips_executemany() -> None:
     await init_event_slots(pool, "evt-abc", 0)
 
     pool.executemany.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_get_slot_locks_for_events_one_query_keyed_by_event_and_index() -> None:
+    """One ANY($1) query; rows become SlotLock values keyed by (event_id, slot_index)."""
+    import datetime
+
+    from bot.db.bookings import SlotLock, get_slot_locks_for_events
+
+    booked = datetime.datetime(2026, 11, 6, 12, 0, tzinfo=datetime.UTC)
+    pool = MagicMock()
+    pool.fetch = AsyncMock(
+        return_value=[
+            {"event_id": "ev-a", "slot_index": 0, "discord_user_id": 111, "booked_at": booked},
+            {"event_id": "ev-a", "slot_index": 1, "discord_user_id": None, "booked_at": None},
+            {"event_id": "ev-b", "slot_index": 2, "discord_user_id": 222, "booked_at": None},
+        ]
+    )
+
+    result = await get_slot_locks_for_events(pool, ["ev-a", "ev-b"])
+
+    assert result == {
+        ("ev-a", 0): SlotLock(discord_user_id=111, booked_at=booked),
+        ("ev-a", 1): SlotLock(discord_user_id=None, booked_at=None),
+        ("ev-b", 2): SlotLock(discord_user_id=222, booked_at=None),
+    }
+    pool.fetch.assert_awaited_once()
+    sql, arg = pool.fetch.await_args.args
+    assert "= ANY($1)" in sql
+    assert arg == ["ev-a", "ev-b"]
+
+
+@pytest.mark.asyncio
+async def test_get_slot_locks_for_events_empty_list_skips_query() -> None:
+    from bot.db.bookings import get_slot_locks_for_events
+
+    pool = MagicMock()
+    pool.fetch = AsyncMock(return_value=[])
+
+    assert await get_slot_locks_for_events(pool, []) == {}
+    pool.fetch.assert_not_awaited()

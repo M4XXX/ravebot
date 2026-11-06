@@ -180,3 +180,108 @@ async def test_force_assign_missing_row_raises(env):
     with pytest.raises(SlotRowMissingError):
         await client.force_assign_slot(event, 3, "dj-1")
     assert patches(fake) == []
+
+
+@pytest.mark.asyncio
+async def test_create_slot_rows_creates_exactly_the_given_numbers(env):
+    fake, client = env
+    event = await make_event(client)
+    before = len(fake.requests_to("POST", "/pages"))
+    rows = await client.create_slot_rows(event, [4, 5])
+    assert len(fake.requests_to("POST", "/pages")) == before + 2
+    assert [r.number for r in rows] == [4, 5]
+    assert all(r.dj_page_id is None and r.extra_dj_page_ids == () for r in rows)
+    page = fake.pages[rows[0].page_id]
+    props = page["properties"]
+    assert props["Name"]["title"][0]["plain_text"] == "2026-12-04 Rave Night #4"
+    assert props["Event"]["relation"] == [{"id": event.page_id}]
+    assert props["Slot number"]["number"] == 4
+    assert "DJ" not in props
+    assert page["parent"]["data_source_id"] == client._ids.slots_ds
+
+
+@pytest.mark.asyncio
+async def test_create_slot_rows_empty_list_sends_nothing(env):
+    fake, client = env
+    event = await make_event(client)
+    before = len(fake.requests)
+    assert await client.create_slot_rows(event, []) == []
+    assert len(fake.requests) == before
+
+
+@pytest.mark.asyncio
+async def test_create_slot_rows_failure_raises_notion_write_error(env):
+    fake, client = env
+    event = await make_event(client)
+    fake.fail_once("POST", "/pages")
+    with pytest.raises(NotionWriteError):
+        await client.create_slot_rows(event, [4])
+
+
+@pytest.mark.asyncio
+async def test_trash_slot_rows_patches_in_trash(env):
+    fake, client = env
+    event = await make_event(client)
+    await client.trash_slot_rows([event.slots[1], event.slots[2]])
+    assert patches(fake) == [
+        ("PATCH", f"/pages/{event.slots[1].page_id}", {"in_trash": True}),
+        ("PATCH", f"/pages/{event.slots[2].page_id}", {"in_trash": True}),
+    ]
+    assert fake.pages[event.slots[1].page_id]["in_trash"] is True
+    assert fake.pages[event.slots[0].page_id]["in_trash"] is False
+    listed = await client.list_events(include_past=True)
+    assert [s.number for s in listed[0].slots] == [1]
+
+
+@pytest.mark.asyncio
+async def test_trash_slot_rows_failure_raises_notion_write_error(env):
+    fake, client = env
+    event = await make_event(client)
+    fake.fail_once("PATCH", "/pages/")
+    with pytest.raises(NotionWriteError):
+        await client.trash_slot_rows([event.slots[0]])
+
+
+@pytest.mark.asyncio
+async def test_keep_first_dj_removes_extra_djs(env):
+    fake, client = env
+    event = await make_event(client)
+    set_dj(fake, event.slots[1].page_id, "dj-1", "dj-2", "dj-3")
+    await client.keep_first_dj(event, 1)
+    assert dj_of(fake, event.slots[1].page_id) == ["dj-1"]
+    assert patches(fake) == [
+        (
+            "PATCH",
+            f"/pages/{event.slots[1].page_id}",
+            {"properties": {"DJ": {"relation": [{"id": "dj-1"}]}}},
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_keep_first_dj_rereads_the_row(env):
+    fake, client = env
+    event = await make_event(client)  # stale: no DJs known
+    set_dj(fake, event.slots[0].page_id, "dj-a", "dj-b")
+    await client.keep_first_dj(event, 0)
+    assert dj_of(fake, event.slots[0].page_id) == ["dj-a"]
+
+
+@pytest.mark.asyncio
+async def test_keep_first_dj_with_one_or_no_dj_writes_nothing(env):
+    fake, client = env
+    event = await make_event(client)
+    set_dj(fake, event.slots[0].page_id, "dj-1")
+    await client.keep_first_dj(event, 0)
+    await client.keep_first_dj(event, 1)
+    assert patches(fake) == []
+    assert dj_of(fake, event.slots[0].page_id) == ["dj-1"]
+
+
+@pytest.mark.asyncio
+async def test_keep_first_dj_missing_row_raises(env):
+    fake, client = env
+    event = await make_event(client)
+    with pytest.raises(SlotRowMissingError):
+        await client.keep_first_dj(event, 3)
+    assert patches(fake) == []

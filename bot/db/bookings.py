@@ -11,7 +11,18 @@ CRITICAL PATTERN:
 [Source: architecture.md#Slot Booking Atomicity: SELECT...FOR UPDATE in Transaction]
 [Source: architecture.md#Gap Analysis — PG lock vs Notion write boundary]
 """
+import datetime
+from dataclasses import dataclass
+
 import asyncpg
+
+
+@dataclass(frozen=True)
+class SlotLock:
+    """One slot_locks row: the holder (None = unclaimed) and when it was booked."""
+
+    discord_user_id: int | None
+    booked_at: datetime.datetime | None
 
 
 async def acquire_slot_lock(
@@ -233,3 +244,29 @@ async def get_booked_djs_for_event(
         }
         for row in rows
     ]
+
+
+async def get_slot_locks_for_events(
+    pool: asyncpg.Pool,
+    event_ids: list[str],
+) -> dict[tuple[str, int], SlotLock]:
+    """Return every slot_locks row of the given events, keyed by (event_id, slot_index).
+
+    One query. Rows without a holder are included (discord_user_id None).
+    """
+    if not event_ids:
+        return {}
+    rows = await pool.fetch(
+        """
+        SELECT event_id, slot_index, discord_user_id, booked_at
+        FROM slot_locks
+        WHERE event_id = ANY($1)
+        """,
+        list(event_ids),
+    )
+    return {
+        (row["event_id"], row["slot_index"]): SlotLock(
+            discord_user_id=row["discord_user_id"], booked_at=row["booked_at"]
+        )
+        for row in rows
+    }

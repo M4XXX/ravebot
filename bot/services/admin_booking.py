@@ -21,6 +21,7 @@ from bot.db.bookings import admin_force_book_slot, get_slot_lock_holder, release
 from bot.db.djs import update_active_booking
 from bot.notion.client import NotionWriteError, SlotRowMissingError
 from bot.services.dj_pages import ensure_dj_page
+from bot.services.dm import dm_user
 
 if TYPE_CHECKING:
     import asyncpg
@@ -76,17 +77,7 @@ class AdminBookingService:
 
     async def _dm_dj(self, dj_id: int, text: str) -> None:
         """Send a DM to the DJ. Swallows Forbidden/NotFound — DM failure is non-fatal."""
-        try:
-            user = self.bot.get_user(dj_id)
-            if user is None:
-                user = await self.bot.fetch_user(dj_id)
-            await user.send(text)
-        except disnake.NotFound:
-            logger.warning("admin override DM: user %s not found", dj_id)
-        except disnake.Forbidden:
-            logger.warning("admin override DM: DMs blocked for user %s", dj_id)
-        except Exception:
-            logger.exception("admin override DM: unexpected error for user %s", dj_id)
+        await dm_user(self.bot, dj_id, text)
 
     # ---------------------------------------------------------------------------
     # Public API
