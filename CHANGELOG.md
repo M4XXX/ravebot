@@ -14,9 +14,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `/config set outreach` turns the automatic invite DMs on or off (global, default on). `/config show` has a new `Automatic outreach` row. Booking, reminders and DMs keep working while it is off.
 - The bot creates three Notion databases itself under one shared page: Events, Slots (one row per slot) and DJs, plus the views Overview, Lineup and All DJs. Existing databases and views are never recreated.
 - Hand edits in Notion are synced: picking a DJ on an open slot becomes a booking, clearing the DJ cell frees the slot. The DJ gets a DM in both cases; conflicting hand entries are reverted and logged.
-- Changes to an event's `Start` or `Slot length` in Notion are applied only while no slot of the event has a DJ; otherwise the bot restores the previous values and logs it in the admin log channel.
+- Changes to an event's `Start` or `Slot length` in Notion are applied only while no slot of the event has a DJ; otherwise the bot restores the previous values and writes it to the log file only (not to the log channel).
 - Event IDs use the format `YYYY-MM-DD <name>`, e.g. `2026-11-14 Rave Night`; duplicates are refused.
-
 - The admin log channel now shows only what needs an organizer: bookings, cancellations, organizer and Notion changes, new DJs, events that became fully booked, critical problems and the DMs users send to the bot. Every entry is a short embed with plain sentences.
 - A `Reply` button under every user DM entry. An organizer types an answer in a popup and the bot sends it to the user. The button keeps working after a restart.
 - An `Event fully booked` entry is posted once per fill and again after a slot opened and the event filled up once more.

@@ -1,4 +1,5 @@
 """Tests for bot/cogs/onboarding.py — DJ role detection and DM initiation."""
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import disnake
@@ -397,7 +398,7 @@ async def test_on_message_under_intervention_logs_entry_no_fallback(
     log_service = _log_service()
     msg = _dm(content="I need help", user_id=99)
     monkeypatch.setattr("bot.cogs.onboarding.is_under_intervention", AsyncMock(return_value=True))
-    await _cog(log_service).on_message(msg)
+    await _send(_cog(log_service), msg)
     log_service.log_user_message.assert_awaited_once()
     assert log_service.log_user_message.await_args.args[1] == "I need help"
     msg.channel.send.assert_not_awaited()
@@ -427,7 +428,7 @@ async def test_on_message_under_intervention_suppresses_even_when_log_service_no
     message.channel.send = AsyncMock()
 
     cog = OnboardingCog(ctx)
-    await cog.on_message(message)
+    await _send(cog, message)
 
     # No FallbackMenuView despite log_service being None
     message.channel.send.assert_not_awaited()
@@ -457,7 +458,7 @@ async def test_on_message_not_under_intervention_shows_fallback(
     message.channel.send = AsyncMock()
 
     cog = OnboardingCog(ctx)
-    await cog.on_message(message)
+    await _send(cog, message)
 
     message.channel.send.assert_awaited_once()
     view = message.channel.send.call_args.kwargs.get("view")
@@ -492,6 +493,13 @@ def _dm(content: str = "hello", attachments: list | None = None, user_id: int = 
     return message
 
 
+async def _send(cog, message) -> None:
+    """Run on_message, then wait for the background log task it scheduled."""
+    await cog.on_message(message)
+    if cog._tasks:
+        await asyncio.gather(*list(cog._tasks))
+
+
 def _cog(log_service: MagicMock):
     from bot.cogs.onboarding import OnboardingCog
 
@@ -519,7 +527,7 @@ async def test_on_message_logs_plain_text_saves_mapping_and_sends_menu(_plain: d
 
     log_service = _log_service()
     msg = _dm(content="hi there")
-    await _cog(log_service).on_message(msg)
+    await _send(_cog(log_service), msg)
 
     log_service.log_user_message.assert_awaited_once()
     args = log_service.log_user_message.await_args.args
@@ -537,7 +545,7 @@ async def test_on_message_logs_attachment_only(_plain: dict) -> None:
     att.filename = "flyer.png"
     log_service = _log_service()
     msg = _dm(content="", attachments=[att])
-    await _cog(log_service).on_message(msg)
+    await _send(_cog(log_service), msg)
     args = log_service.log_user_message.await_args.args
     assert args[1] == "" and args[2] == ["flyer.png"]
     msg.channel.send.assert_awaited_once()
@@ -546,7 +554,7 @@ async def test_on_message_logs_attachment_only(_plain: dict) -> None:
 @pytest.mark.asyncio
 async def test_on_message_empty_without_attachments_logs_nothing(_plain: dict) -> None:
     log_service = _log_service()
-    await _cog(log_service).on_message(_dm(content=""))
+    await _send(_cog(log_service), _dm(content=""))
     log_service.log_user_message.assert_not_awaited()
 
 
@@ -556,7 +564,7 @@ async def test_on_message_flow_lock_logs_but_no_menu(_plain: dict) -> None:
     cog = _cog(log_service)
     await cog.ctx.get_user_lock(5).acquire()
     msg = _dm()
-    await cog.on_message(msg)
+    await _send(cog, msg)
     log_service.log_user_message.assert_awaited_once()
     msg.channel.send.assert_not_awaited()
 
@@ -565,8 +573,8 @@ async def test_on_message_flow_lock_logs_but_no_menu(_plain: dict) -> None:
 async def test_on_message_bot_and_guild_log_nothing(_plain: dict) -> None:
     log_service = _log_service()
     cog = _cog(log_service)
-    await cog.on_message(_dm(bot=True))
-    await cog.on_message(_dm(guild=MagicMock()))
+    await _send(cog, _dm(bot=True))
+    await _send(cog, _dm(guild=MagicMock()))
     log_service.log_user_message.assert_not_awaited()
 
 
@@ -575,7 +583,7 @@ async def test_on_message_no_mapping_when_post_failed(_plain: dict) -> None:
     log_service = _log_service()
     log_service.log_user_message = AsyncMock(return_value=None)
     msg = _dm()
-    await _cog(log_service).on_message(msg)
+    await _send(_cog(log_service), msg)
     _plain["save"].assert_not_awaited()
     msg.channel.send.assert_awaited_once()
 
@@ -591,7 +599,7 @@ async def test_on_message_passes_dj_name_only_when_different(
 ) -> None:
     _plain["dj"].return_value = row
     log_service = _log_service()
-    await _cog(log_service).on_message(_dm(name="Sam"))
+    await _send(_cog(log_service), _dm(name="Sam"))
     assert log_service.log_user_message.await_args.args[3] == expected
 
 
@@ -600,6 +608,47 @@ async def test_on_message_dj_lookup_failure_gives_none_and_still_logs(_plain: di
     _plain["dj"].side_effect = RuntimeError("db")
     log_service = _log_service()
     msg = _dm()
-    await _cog(log_service).on_message(msg)
+    await _send(_cog(log_service), msg)
     assert log_service.log_user_message.await_args.args[3] is None
     msg.channel.send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_menu_is_not_delayed_by_a_slow_log_post(_plain: dict) -> None:
+    gate = asyncio.Event()
+
+    async def slow(*args, **kwargs):
+        await gate.wait()
+        return None
+
+    log_service = _log_service()
+    log_service.log_user_message = AsyncMock(side_effect=slow)
+    cog = _cog(log_service)
+    msg = _dm()
+    await cog.on_message(msg)
+    msg.channel.send.assert_awaited_once()
+    gate.set()
+    await asyncio.gather(*list(cog._tasks))
+    log_service.log_user_message.assert_awaited_once()
+    assert not cog._tasks
+
+
+@pytest.mark.asyncio
+async def test_failing_log_task_is_swallowed(_plain: dict) -> None:
+    log_service = _log_service()
+    log_service.log_user_message = AsyncMock(side_effect=RuntimeError("boom"))
+    cog = _cog(log_service)
+    msg = _dm()
+    await _send(cog, msg)
+    msg.channel.send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_two_dms_share_one_reply_view(_plain: dict) -> None:
+    log_service = _log_service()
+    cog = _cog(log_service)
+    await _send(cog, _dm(content="one"))
+    await _send(cog, _dm(content="two"))
+    views = [c.args[4] for c in log_service.log_user_message.await_args_list]
+    assert len(views) == 2
+    assert views[0] is views[1]

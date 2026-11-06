@@ -8,6 +8,7 @@ Story 2.4: Pass for now handler + FallbackMenuView.
 [Source: architecture.md#Cog Responsibility Boundary]
 [Source: epics.md#FR1-FR8]
 """
+import asyncio
 import logging
 
 import disnake
@@ -30,6 +31,14 @@ class OnboardingCog(commands.Cog):
 
     def __init__(self, ctx: BotContext) -> None:
         self.ctx = ctx
+        self._reply_view: LogReplyView | None = None
+        self._tasks: set[asyncio.Task] = set()
+
+    def _get_reply_view(self) -> LogReplyView:
+        """One shared Reply view for every entry (disnake keeps each view it is given)."""
+        if self._reply_view is None:
+            self._reply_view = LogReplyView(self.ctx)
+        return self._reply_view
 
     @commands.Cog.listener()
     async def on_member_update(
@@ -116,7 +125,7 @@ class OnboardingCog(commands.Cog):
                 content,
                 [a.filename for a in attachments],
                 dj_name,
-                LogReplyView(self.ctx),
+                self._get_reply_view(),
             )
             if logged is not None and self.ctx.db is not None:
                 await save_log_reply(self.ctx.db, logged.id, message.author.id)
@@ -141,7 +150,10 @@ class OnboardingCog(commands.Cog):
         if message.author.bot:
             return
 
-        await self._log_incoming(message)
+        # Entry first, but in the background so the menu is not delayed by the log post
+        task = asyncio.create_task(self._log_incoming(message))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
 
         # Story 6.2 AC3: a DJ under admin intervention gets no menu
         if self.ctx.db is not None:
