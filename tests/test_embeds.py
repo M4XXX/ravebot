@@ -7,9 +7,7 @@ from bot.ui.embeds import (
     EmbedColors,
     ErrorCode,
     ErrorEmbed,
-    MissionOverviewEmbed,
     MissionRosterEmbed,
-    ProactiveOutreachEmbed,
 )
 from tests.notion.factories import make_event, make_slot
 
@@ -239,128 +237,11 @@ class TestMissionRosterEmbed:
         assert "0 open" in embed.fields[0].value
 
 
-class TestMissionOverviewEmbed:
-    def test_mission_overview_embed_color(self) -> None:
-        """MissionOverviewEmbed uses DEEP_SPACE_BLUE color."""
-        embed = MissionOverviewEmbed(_booked_event(slots=3, djs=1))
-        assert embed.color.value == EmbedColors.DEEP_SPACE_BLUE
-
-    def test_mission_overview_embed_title(self) -> None:
-        """MissionOverviewEmbed title is '🛰️ {event_id}'."""
-        embed = MissionOverviewEmbed(_booked_event(name="Friday Night Rave"))
-        assert embed.title == "\U0001f6f0\ufe0f Friday Night Rave"
-
-    def test_mission_overview_embed_footer(self) -> None:
-        """MissionOverviewEmbed footer says 'RaveBot'."""
-        embed = MissionOverviewEmbed(_booked_event())
-        assert embed.footer.text == "RaveBot"
-
-    def test_mission_overview_embed_timestamp_set(self) -> None:
-        """MissionOverviewEmbed has a timestamp set."""
-        embed = MissionOverviewEmbed(_booked_event())
-        assert embed.timestamp is not None
-
-    def test_mission_overview_embed_description_partial(self) -> None:
-        """Open slots description shows 'confirmed' and 'open' counts."""
-        embed = MissionOverviewEmbed(_booked_event(slots=3, djs=1))
-        assert "1/3 confirmed" in embed.description
-        assert "2 open" in embed.description
-
-    def test_mission_overview_embed_description_has_event_date(self) -> None:
-        """Description includes event date as Discord absolute timestamp."""
-        event = _booked_event()
-        embed = MissionOverviewEmbed(event)
-        assert f"<t:{int(event.slot_start(0).timestamp())}:f>" in embed.description
-
-    def test_mission_overview_embed_description_all_filled(self) -> None:
-        """All slots booked → description contains 'All slots filled'."""
-        embed = MissionOverviewEmbed(_booked_event(slots=3, djs=3))
-        assert "All slots filled" in embed.description
-
-    def test_mission_overview_embed_one_line_per_slot(self) -> None:
-        """One field per slot 1..slot_count with slot time and DJ name or Open."""
-        event = make_event(
-            slot_count=3,
-            slots=[make_slot(1, dj_page_id="dj-1", dj_name="DJ Alpha"), make_slot(3)],
-        )
-        embed = MissionOverviewEmbed(event)
-        assert len(embed.fields) == 3
-        assert [f.name for f in embed.fields] == ["Slot 1", "Slot 2", "Slot 3"]
-        for i, field in enumerate(embed.fields):
-            assert f"<t:{int(event.slot_start(i).timestamp())}:R>" in field.value
-        assert "DJ Alpha" in embed.fields[0].value
-        assert "Open" in embed.fields[1].value
-        assert "Open" in embed.fields[2].value
-
-    def test_mission_overview_embed_unknown_dj_name_shows_guest(self) -> None:
-        """A slot with a DJ but no resolvable name shows 'Guest DJ'."""
-        event = make_event(slot_count=2, slots=[make_slot(1, dj_page_id="dj-x", dj_name=None)])
-        embed = MissionOverviewEmbed(event)
-        assert "Guest DJ" in embed.fields[0].value
-        assert "Open" in embed.fields[1].value
-
-    def test_mission_overview_embed_slot_times_follow_slot_minutes(self) -> None:
-        """Slot times use the event's slot length."""
-        event = make_event(slot_count=2, slot_minutes=30)
-        embed = MissionOverviewEmbed(event)
-        first = int(event.slot_start(0).timestamp())
-        assert f"<t:{first + 1800}:R>" in embed.fields[1].value
-
-
-class TestOverviewHardening:
-    NASTY = "**bold** `code` @everyone <@123456789> <t:1:f> <#5>"
-
-    def test_dj_name_rendered_literally(self) -> None:
-        event = make_event(
-            slot_count=1, slots=[make_slot(1, dj_page_id="d", dj_name=self.NASTY)]
-        )
-        value = MissionOverviewEmbed(event).fields[0].value
-        assert "\\*\\*bold\\*\\*" in value
-        assert "\\`code\\`" in value
-        assert "@everyone" not in value
-        assert "@\u200beveryone" in value
-        name_part = value.split(" · ")[0]
-        assert "<@" not in name_part and "<t:" not in name_part and "<#" not in name_part
-        assert "<\u200b@123456789>" in value
-        assert "<\u200bt:1:f>" in value
-
-    def test_long_dj_name_truncated(self) -> None:
-        event = make_event(
-            slot_count=1, slots=[make_slot(1, dj_page_id="d", dj_name="a" * 300)]
-        )
-        value = MissionOverviewEmbed(event).fields[0].value
-        name = value.split(" · ")[0]
-        assert len(name) <= 101
-        assert name.endswith("\u2026")
-
+class TestEmbedHardening:
     def test_safe_dj_name_none_is_guest(self) -> None:
         from bot.ui.embeds import _safe_dj_name
 
         assert _safe_dj_name(None) == "Guest DJ"
-
-    def test_overview_caps_fields_at_25(self) -> None:
-        event = make_event(
-            slot_count=30,
-            slots=[make_slot(i, dj_page_id=f"d{i}", dj_name=f"DJ{i}") for i in (1, 2, 28)],
-        )
-        embed = MissionOverviewEmbed(event)
-        assert len(embed.fields) == 25
-        assert embed.fields[23].name == "Slot 24"
-        assert embed.fields[24].name == "More slots"
-        assert "6 more slots not shown" in embed.fields[24].value
-        assert "5 open" in embed.fields[24].value
-        assert "3/30 confirmed" in embed.description
-        assert "27 open" in embed.description
-
-    def test_overview_25_slots_all_shown(self) -> None:
-        embed = MissionOverviewEmbed(make_event(slot_count=25))
-        assert len(embed.fields) == 25
-        assert embed.fields[24].name == "Slot 25"
-
-    def test_overview_zero_slots(self) -> None:
-        embed = MissionOverviewEmbed(make_event(slot_count=0))
-        assert "All slots filled" not in embed.description
-        assert "No slots." in embed.description
 
     def test_roster_caps_fields_at_25(self) -> None:
         events = [
@@ -375,24 +256,6 @@ class TestOverviewHardening:
         assert len(embed.fields) == 25
         assert embed.fields[24].name == "More events"
         assert "16 more events" in embed.fields[24].value
-
-
-class TestProactiveOutreachEmbed:
-    def test_fields_from_event_info(self) -> None:
-        """Name, date and open-slot count come from the typed event."""
-        event = make_event(
-            event_id="Rave 1",
-            slot_count=4,
-            slots=[
-                make_slot(1, dj_page_id="dj-a", dj_name="A"),
-                make_slot(2, dj_page_id="dj-a", dj_name="A"),
-            ],
-        )
-        embed = ProactiveOutreachEmbed(event)
-        values = {f.name: f.value for f in embed.fields}
-        assert values["Event"] == "Rave 1"
-        assert values["Date"] == f"<t:{int(event.slot_start(0).timestamp())}:f>"
-        assert values["Open Slots"] == "2 of 4"
 
 
 class TestBookingConfirmEmbed:

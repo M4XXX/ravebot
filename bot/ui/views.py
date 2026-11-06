@@ -706,7 +706,7 @@ class FallbackMenuView(disnake.ui.View):
         button: disnake.ui.Button,
         inter: disnake.MessageInteraction,
     ) -> None:
-        """Show the first upcoming event's slot overview via MissionOverviewEmbed.
+        """Show the first upcoming event's lineup via LineupUpdateEmbed.
 
         Uses list_events() to fetch live Notion data. Falls back gracefully
         when Notion is unavailable or returns no events.
@@ -720,7 +720,7 @@ class FallbackMenuView(disnake.ui.View):
                 direction="DJ",
                 content=f"[Button: {button.label}]",
             )
-        from bot.ui.embeds import MissionOverviewEmbed
+        from bot.ui.embeds import LineupUpdateEmbed
 
         if self.ctx.notion_client is None:
             await inter.response.send_message(
@@ -746,7 +746,7 @@ class FallbackMenuView(disnake.ui.View):
             )
             return
 
-        embed = MissionOverviewEmbed(events[0])
+        embed = LineupUpdateEmbed(events[0])
         await inter.response.send_message(embed=embed)
 
 
@@ -914,7 +914,7 @@ class EventSelectionView(disnake.ui.View):
             self.add_item(btn)
 
         never_mind = disnake.ui.Button(
-            label="Never mind",
+            label=texts.BTN_NEVER_MIND,
             style=disnake.ButtonStyle.secondary,
             custom_id="event_select:cancel",
             row=4,
@@ -931,10 +931,7 @@ class EventSelectionView(disnake.ui.View):
         """[Never mind] — release lock and respond warmly. (AC5)"""
         if self._lock.locked():
             self._lock.release()
-        await inter.response.send_message(
-            "No problem — nothing was booked.",
-            ephemeral=True,
-        )
+        await inter.response.send_message(texts.BOOKING_ABORTED, ephemeral=True)
 
     async def _handle_event(
         self,
@@ -945,11 +942,11 @@ class EventSelectionView(disnake.ui.View):
 
         [Source: epics.md#Story 4.1 AC2]
         """
-        from bot.ui.embeds import MissionOverviewEmbed
+        from bot.ui.embeds import LineupUpdateEmbed
 
         open_slot_indices = _open_slot_indices(event)
 
-        embed = MissionOverviewEmbed(event)
+        embed = LineupUpdateEmbed(event)
         slot_view = SlotSelectionView(
             self._ctx,
             event,
@@ -958,7 +955,9 @@ class EventSelectionView(disnake.ui.View):
             self._user_id,
         )
         try:
-            await inter.response.send_message(embed=embed, view=slot_view, ephemeral=True)
+            await inter.response.send_message(
+                content=texts.PICK_SLOT, embed=embed, view=slot_view, ephemeral=True
+            )
         except Exception:
             logger.exception("_handle_event: send_message failed")
             self._lock.release()
@@ -971,7 +970,7 @@ class EventSelectionView(disnake.ui.View):
 class SlotSelectionView(disnake.ui.View):
     """Slot selection — one button per open slot in the chosen event.
 
-    Presented alongside MissionOverviewEmbed after DJ selects an event in
+    Presented alongside LineupUpdateEmbed after DJ selects an event in
     EventSelectionView. The per-user lock is ALREADY HELD when this view
     is created.
 
@@ -1002,12 +1001,13 @@ class SlotSelectionView(disnake.ui.View):
 
         event_id = event.page_id
 
-        for row_idx, slot_index in enumerate(open_slot_indices[:20]):  # guard
+        # Discord allows 25 components per message, one is Never mind
+        for row_idx, slot_index in enumerate(open_slot_indices[:24]):
             btn = disnake.ui.Button(
-                label=f"Slot {slot_index + 1}",
+                label=texts.slot_button(event, slot_index),
                 style=disnake.ButtonStyle.secondary,
                 custom_id=f"slot_select:{event_id}:{slot_index}",
-                row=min(row_idx // 5, 3),
+                row=row_idx // 5,
             )
 
             async def _cb(
@@ -1020,7 +1020,7 @@ class SlotSelectionView(disnake.ui.View):
             self.add_item(btn)
 
         never_mind = disnake.ui.Button(
-            label="Never mind",
+            label=texts.BTN_NEVER_MIND,
             style=disnake.ButtonStyle.secondary,
             custom_id="slot_select:cancel",
             row=4,
@@ -1037,10 +1037,7 @@ class SlotSelectionView(disnake.ui.View):
         """[Never mind] — release lock and respond warmly. (AC5)"""
         if self._lock.locked():
             self._lock.release()
-        await inter.response.send_message(
-            "No problem — nothing was booked.",
-            ephemeral=True,
-        )
+        await inter.response.send_message(texts.BOOKING_ABORTED, ephemeral=True)
 
     async def _handle_slot(
         self,
@@ -1823,7 +1820,7 @@ class OutreachView(disnake.ui.View):
                 logger.exception("OutreachView.on_timeout: admin log post failed")
 
     @disnake.ui.button(
-        label="🎧 Accept — Show Slots",
+        label=texts.BTN_PICK_SLOT,
         style=disnake.ButtonStyle.success,
         custom_id="outreach:accept",
     )
@@ -1850,17 +1847,14 @@ class OutreachView(disnake.ui.View):
                 content=f"[Button: {button.label}]",
             )
         from bot.db.outreach import update_outreach_contact_status
-        from bot.ui.embeds import MissionOverviewEmbed
+        from bot.ui.embeds import LineupUpdateEmbed
 
         event_id = self._event.page_id
 
         # Acquire per-user lock FIRST — prevents false 'accepted' when another flow is open
         lock = self._ctx.get_user_lock(inter.author.id)
         if lock.locked():
-            await inter.response.send_message(
-                "Looks like you've got a flow already open — let's finish that one first.",
-                ephemeral=True,
-            )
+            await inter.response.send_message(texts.FLOW_OPEN, ephemeral=True)
             return  # Don't stop view — DJ can still tap [Not this time]
         await lock.acquire()
         self.stop()  # Prevent re-use once booking flow is starting
@@ -1890,22 +1884,21 @@ class OutreachView(disnake.ui.View):
 
         if not open_slot_indices:
             lock.release()
-            await inter.response.send_message(
-                "Looks like those slots just got filled — nothing available right now!",
-                ephemeral=True,
-            )
+            await inter.response.send_message(texts.INVITE_FILLED, ephemeral=True)
             return
 
-        embed = MissionOverviewEmbed(event)
+        embed = LineupUpdateEmbed(event)
         slot_view = SlotSelectionView(self._ctx, event, open_slot_indices, lock, inter.author.id)
         try:
-            await inter.response.send_message(embed=embed, view=slot_view)
+            await inter.response.send_message(
+                content=texts.PICK_SLOT, embed=embed, view=slot_view
+            )
         except Exception:
             logger.exception("OutreachView.accept: send_message failed")
             lock.release()
 
     @disnake.ui.button(
-        label="Not this time",
+        label=texts.BTN_NOT_THIS_TIME,
         style=disnake.ButtonStyle.secondary,
         custom_id="outreach:decline",
     )
@@ -1940,7 +1933,7 @@ class OutreachView(disnake.ui.View):
             except Exception as exc:
                 logger.warning("OutreachView.decline: DB update failed: %s", exc)
 
-        decline_text = "No worries — I'll reach out again next time!"
+        decline_text = texts.INVITE_DECLINED
         await inter.response.send_message(decline_text)
         # Story 6.1 AC1: log bot response
         if self._ctx.log_service is not None:

@@ -236,6 +236,33 @@ async def test_contact_next_dj_sends_dm_and_returns_true():
 
 
 @pytest.mark.asyncio
+async def test_contact_next_dj_dm_has_opener_lineup_and_view():
+    from bot.ui import texts
+    from bot.ui.embeds import LineupUpdateEmbed
+    from bot.ui.views import OutreachView
+
+    event = _make_event(days_ahead=5, slots=6, djs_booked=2)
+    svc = _make_service()
+    mock_user = MagicMock()
+    mock_user.send = AsyncMock()
+    svc.bot.get_user = MagicMock(return_value=mock_user)
+    djs = AsyncMock(return_value=[_make_dj()])
+    with patch("bot.services.outreach.get_active_booking_djs", new=djs), \
+         patch("bot.services.outreach.get_contacted_discord_ids", new=AsyncMock(return_value=[])), \
+         patch("bot.services.outreach.record_outreach_contact", new=AsyncMock()), \
+         patch("bot.services.outreach.update_last_contact_at", new=AsyncMock()), \
+         patch("bot.services.outreach.update_dj_last_contacted_at", new=AsyncMock()):
+        await svc.contact_next_dj(event, guild_id=1, ctx=MagicMock())
+    kwargs = mock_user.send.call_args.kwargs
+    assert kwargs["content"] == texts.invite_opener(event.event_id)
+    assert isinstance(kwargs["embed"], LineupUpdateEmbed)
+    assert "OPEN SLOT" in kwargs["embed"].description
+    assert "DJ 0" in kwargs["embed"].description
+    assert isinstance(kwargs["view"], OutreachView)
+    assert svc.log_service.post_dm_transcript.call_args.kwargs["content"] == kwargs["content"]
+
+
+@pytest.mark.asyncio
 async def test_contact_next_dj_handles_forbidden_dm():
     import disnake
     event = _make_event(days_ahead=5, slots=6, djs_booked=2)

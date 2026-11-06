@@ -251,7 +251,8 @@ class OutreachService:
         [Source: epics.md#Story 5.2 AC1–AC5]
         [Source: architecture.md#Stateless Services: All Per-User State in PostgreSQL]
         """
-        from bot.ui.embeds import ProactiveOutreachEmbed
+        from bot.ui import texts
+        from bot.ui.embeds import LineupUpdateEmbed
         from bot.ui.views import OutreachView
 
         event_id = event.page_id
@@ -317,16 +318,9 @@ class OutreachService:
             )
             return True
 
-        # Get event name for opener text
-        event_name = event.event_id or "an upcoming event"
-
-        # Build embed and view
-        embed = ProactiveOutreachEmbed(event)
+        embed = LineupUpdateEmbed(event)
         view = OutreachView(ctx=ctx, event=event, discord_user_id=discord_user_id)
-        opener = (
-            f"Hey! There's an open slot at **{event_name}** — "
-            "want to jump in? Take a look:"
-        )
+        opener = texts.invite_opener(event.event_id)
 
         # Send DM
         try:

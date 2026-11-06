@@ -6,6 +6,7 @@ import disnake
 import pytest
 
 from bot.notion.models import EventInfo
+from bot.ui import texts
 from tests.conftest import make_real_ctx
 from tests.notion.factories import make_event, make_slot
 
@@ -405,8 +406,8 @@ def _make_notion_event(
 
 @pytest.mark.asyncio
 async def test_show_lineup_sends_embed_for_first_event() -> None:
-    """Events returned → MissionOverviewEmbed sent for first event."""
-    from bot.ui.embeds import MissionOverviewEmbed
+    """Events returned → LineupUpdateEmbed sent for first event."""
+    from bot.ui.embeds import LineupUpdateEmbed
     from bot.ui.views import FallbackMenuView
 
     ctx = make_real_ctx(db=MagicMock())
@@ -423,7 +424,7 @@ async def test_show_lineup_sends_embed_for_first_event() -> None:
     inter.response.send_message.assert_awaited_once()
     call_kwargs = inter.response.send_message.call_args.kwargs
     assert "embed" in call_kwargs
-    assert isinstance(call_kwargs["embed"], MissionOverviewEmbed)
+    assert isinstance(call_kwargs["embed"], LineupUpdateEmbed)
 
 
 @pytest.mark.asyncio
@@ -688,8 +689,8 @@ async def test_event_selection_never_mind_releases_lock() -> None:
 
 @pytest.mark.asyncio
 async def test_event_selection_handle_event_sends_embed_and_slot_view() -> None:
-    """Event button tapped → MissionOverviewEmbed + SlotSelectionView sent. (AC2)"""
-    from bot.ui.embeds import MissionOverviewEmbed
+    """Event button tapped → PICK_SLOT + LineupUpdateEmbed + SlotSelectionView sent. (AC2)"""
+    from bot.ui.embeds import LineupUpdateEmbed
     from bot.ui.views import EventSelectionView, SlotSelectionView
 
     ctx = make_real_ctx(db=MagicMock())
@@ -706,7 +707,8 @@ async def test_event_selection_handle_event_sends_embed_and_slot_view() -> None:
     inter.response.send_message.assert_awaited_once()
     call_kwargs = inter.response.send_message.call_args.kwargs
     assert "embed" in call_kwargs
-    assert isinstance(call_kwargs["embed"], MissionOverviewEmbed)
+    assert isinstance(call_kwargs["embed"], LineupUpdateEmbed)
+    assert call_kwargs["content"] == texts.PICK_SLOT
     assert "view" in call_kwargs
     assert isinstance(call_kwargs["view"], SlotSelectionView)
     assert lock.locked()  # Lock still held — passed through to SlotSelectionView
@@ -1444,7 +1446,8 @@ async def test_event_selection_offers_exactly_the_open_gap_slot() -> None:
     slot_view = inter.response.send_message.call_args.kwargs["view"]
     assert isinstance(slot_view, SlotSelectionView)
     assert _slot_button_indices(slot_view) == [1]
-    assert [i.label for i in slot_view.children if i.custom_id.endswith(":1")] == ["Slot 2"]
+    labels = [i.label for i in slot_view.children if i.custom_id.endswith(":1")]
+    assert labels == [texts.slot_button(event, 1)]
     assert slot_view.children[0].custom_id == "slot_select:evt-gap:1"
 
 
@@ -1832,8 +1835,76 @@ async def test_outreach_accept_full_event_releases_lock() -> None:
 
     await view.accept.callback(inter)
 
-    assert "just got filled" in inter.response.send_message.call_args[0][0]
+    assert inter.response.send_message.call_args[0][0] == texts.INVITE_FILLED
     assert not ctx.get_user_lock(40011).locked()
+
+
+@pytest.mark.asyncio
+async def test_outreach_view_button_labels() -> None:
+    from bot.ui.views import OutreachView
+
+    view = OutreachView(ctx=make_real_ctx(db=None), event=make_event(), discord_user_id=1)
+    assert [c.label for c in view.children] == ["Pick a Slot", "Not this time"]
+
+
+@pytest.mark.asyncio
+async def test_outreach_pick_slot_sends_lineup_and_open_slot_buttons() -> None:
+    from bot.ui.embeds import LineupUpdateEmbed
+    from bot.ui.views import OutreachView
+
+    ctx = make_real_ctx(db=None)
+    event = make_event(
+        event_id="Rave", page_id="evt-p", slot_count=4,
+        slots=[make_slot(2, dj_page_id="dj-x", dj_name="Booked Bob")],
+    )
+    ctx.notion_client = MagicMock()
+    ctx.notion_client.list_events = AsyncMock(return_value=[event])
+    view = OutreachView(ctx=ctx, event=event, discord_user_id=40050)
+    inter = MagicMock(spec=disnake.MessageInteraction)
+    inter.author.id = 40050
+    inter.response.send_message = AsyncMock()
+
+    await view.accept.callback(inter)
+
+    kwargs = inter.response.send_message.call_args.kwargs
+    assert kwargs["content"] == texts.PICK_SLOT
+    assert isinstance(kwargs["embed"], LineupUpdateEmbed)
+    assert "Booked Bob" in kwargs["embed"].description
+    assert "OPEN SLOT" in kwargs["embed"].description
+    labels = [c.label for c in kwargs["view"].children]
+    assert labels == [
+        texts.slot_button(event, 0),
+        texts.slot_button(event, 2),
+        texts.slot_button(event, 3),
+        texts.BTN_NEVER_MIND,
+    ]
+    assert labels[0].startswith("Slot 1 · ")
+
+
+@pytest.mark.asyncio
+async def test_slot_selection_view_caps_at_discord_component_limit() -> None:
+    from bot.ui.views import SlotSelectionView
+
+    ctx = make_real_ctx(db=None)
+    event = make_event(page_id="evt-big", slot_count=40)
+    view = SlotSelectionView(ctx, event, list(range(40)), ctx.get_user_lock(1), 1)
+    assert len(_slot_button_indices(view)) == 24
+    assert view.children[-1].label == texts.BTN_NEVER_MIND
+    assert len(view.children) == 25  # Discord allows 25 components
+
+
+@pytest.mark.asyncio
+async def test_outreach_decline_replies_invite_declined() -> None:
+    from bot.ui.views import OutreachView
+
+    ctx = make_real_ctx(db=None)
+    view = OutreachView(ctx=ctx, event=make_event(), discord_user_id=40051)
+    inter = MagicMock(spec=disnake.MessageInteraction)
+    inter.response.send_message = AsyncMock()
+
+    await view.decline.callback(inter)
+
+    assert inter.response.send_message.call_args[0][0] == texts.INVITE_DECLINED
 
 
 # ---------------------------------------------------------------------------
