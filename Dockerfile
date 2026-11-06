@@ -29,7 +29,7 @@ RUN uv sync --frozen --no-dev --no-install-project
 # Copy application source after deps (better layer caching)
 COPY bot/ bot/
 COPY migrations/ migrations/
-COPY alembic.ini LICENSE NOTICE ./
+COPY alembic.ini LICENSE NOTICE COMMERCIAL-LICENSE.md ./
 
 # Install project itself
 RUN uv sync --frozen --no-dev
@@ -45,7 +45,7 @@ COPY --from=builder /app/.venv .venv
 # Copy application source
 COPY --from=builder /app/bot bot
 COPY --from=builder /app/migrations migrations
-COPY --from=builder /app/alembic.ini /app/LICENSE /app/NOTICE ./
+COPY --from=builder /app/alembic.ini /app/LICENSE /app/NOTICE /app/COMMERCIAL-LICENSE.md ./
 
 # Add .venv to PATH; disable stdout buffering for readable logs
 ENV PATH="/app/.venv/bin:$PATH" \

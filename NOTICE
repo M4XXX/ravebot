@@ -1,9 +1,21 @@
 RaveBot
 Copyright (c) 2026 M4XXX
 
-Licensed under the Creative Commons Attribution-NonCommercial-ShareAlike 4.0
-International License (CC BY-NC-SA 4.0). See the LICENSE file for the full text,
-or https://creativecommons.org/licenses/by-nc-sa/4.0/
+RaveBot is free software: you can redistribute it and/or modify it under the
+terms of the GNU Affero General Public License, version 3, as published by the
+Free Software Foundation. See the LICENSE file for the full text, or
+https://www.gnu.org/licenses/agpl-3.0.html
+
+RaveBot is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE.
+
+If you run a modified version of RaveBot so that others can interact with it
+over a network (for example as a Discord bot), section 13 of the license
+requires you to offer those users the source code of your modified version.
+
+Commercial use without these obligations is possible under a separate paid
+license. See COMMERCIAL-LICENSE.md.
 
 Source: https://github.com/M4XXX/ravebot
 

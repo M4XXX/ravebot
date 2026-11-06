@@ -116,10 +116,10 @@ A live lineup post in your DJ channel updates automatically whenever Notion chan
 
 Copyright © 2026 M4XXX.
 
-RaveBot is licensed under [CC BY-NC-SA 4.0](LICENSE):
+RaveBot is licensed under the [GNU AGPL-3.0](LICENSE):
 
-- **Attribution:** credit the author, link to the license and say if you changed anything.
-- **Non-commercial:** you may not use it primarily for commercial advantage or money.
-- **Share-alike:** if you share a changed version, it must use the same license.
+- **Free to use and change**, including commercially, as long as you follow the AGPL.
+- **Share changes:** if you distribute a changed version, or run one as a service others use over a network (for example a Discord bot), you must offer your users the full source under the AGPL.
+- **Credit:** keep the copyright and license notices.
 
-This is a summary; the [LICENSE](LICENSE) text is what applies. Because commercial use is excluded, RaveBot is source-available rather than open source under the [OSI definition](https://opensource.org/osd). For commercial use, ask the copyright holder for permission. Third-party dependencies keep their own licenses.
+This is a summary; the [LICENSE](LICENSE) text is what applies. To use RaveBot without these obligations, for example in a closed-source product, ask for a paid commercial license: see [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md). Third-party dependencies keep their own licenses.
