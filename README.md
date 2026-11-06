@@ -1,6 +1,6 @@
 # RaveBot
 
-Discord bot that automates DJ booking for recurring online rave events — onboarding, self-service slot booking, proactive outreach, and admin oversight, all via Discord slash commands and button-driven DM flows with Notion as the event database.
+Discord bot that automates DJ booking for recurring online rave events — onboarding, self-service slot booking, proactive outreach, and admin oversight, all via Discord slash commands and button-driven DM flows. Events, slots and DJs live in three Notion databases that the bot creates itself under one shared page (`NOTION_API_KEY` + `NOTION_PARENT_PAGE_ID`).
 
 ---
 

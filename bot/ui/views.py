@@ -1270,7 +1270,9 @@ class BookingConfirmView(disnake.ui.View):
                 return
             pg_released = True
             try:
-                await release_slot_lock(self._ctx.db, event_id, self._slot_index)
+                await release_slot_lock(
+                    self._ctx.db, event_id, self._slot_index, expected_holder=self._user_id
+                )
             except Exception:
                 logger.exception("BookingConfirmView: release_slot_lock failed")
 
@@ -1652,7 +1654,9 @@ class CancelConfirmView(disnake.ui.View):
         except NotionWriteError:
             logger.exception("CancelConfirmView: clear_slot failed")
             # Free the slot lock even on Notion failure — slot must become available
-            await release_slot_lock(self._ctx.db, event_id, self._slot_index)
+            await release_slot_lock(
+                self._ctx.db, event_id, self._slot_index, expected_holder=self._user_id
+            )
             if self._lock.locked():
                 self._lock.release()
             await inter.response.send_message(
@@ -1665,7 +1669,9 @@ class CancelConfirmView(disnake.ui.View):
             logger.exception("CancelConfirmView: unexpected error clearing Notion slot")
 
         # Free the slot_locks DB row — slot is now open (AC4)
-        await release_slot_lock(self._ctx.db, event_id, self._slot_index)
+        await release_slot_lock(
+            self._ctx.db, event_id, self._slot_index, expected_holder=self._user_id
+        )
 
         # Confirmation message (AC4)
         await inter.response.send_message(

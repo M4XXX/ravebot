@@ -23,7 +23,11 @@ class BotContext:
     Fields:
         config:       Immutable configuration loaded from env vars.
         db:           asyncpg connection pool (set in Story 1.2, None until then).
-        notion_client: Notion REST API client (set in Story 3.x, None until then).
+        notion_client: NotionClient for the Events, Slots and DJs databases (set in
+                      main.py after ensure_schema/ensure_views, None until then).
+        notion_sync_service: NotionSyncService that reconciles hand edits in Notion
+                      with the Postgres slot locks; run by the EventsCog poll loop
+                      before each lineup update (None until set in main.py).
         log_service:  AdminLogService (set in Story 1.3 main.py, None until then).
         user_locks:   Per-user asyncio.Lock dict — keyed by discord_user_id.
                       Prevents a DJ from running two concurrent DM flows simultaneously.
@@ -40,6 +44,7 @@ class BotContext:
     reminders_service: "Any | None" = None
     intervention_service: "Any | None" = None
     admin_booking_service: "Any | None" = None
+    notion_sync_service: "Any | None" = None
     user_locks: dict[int, asyncio.Lock] = field(default_factory=dict)
 
     def get_user_lock(self, user_id: int) -> asyncio.Lock:

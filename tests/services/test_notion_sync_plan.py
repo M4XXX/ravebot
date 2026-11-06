@@ -54,7 +54,8 @@ CASES = [
     ("dj_other_holder_reverts", dj("dj-x", X), lock(Y), [("revert", 0, Y, ())]),
     ("dj_other_holder_fresh_reverts", dj("dj-x", X), lock(Y, 1), [("revert", 0, Y, ())]),
     ("guest_no_holder_nothing", dj("dj-g", None), None, []),
-    ("guest_with_holder_nothing", dj("dj-g", None), lock(Y), []),
+    ("guest_with_holder_reverts", dj("dj-g", None), lock(Y), [("revert", 0, Y, ())]),
+    ("guest_with_fresh_holder_reverts", dj("dj-g", None), lock(Y, 1), [("revert", 0, Y, ())]),
     ("extras_with_holder_reverts_to_holder", dj("dj-x", X, ("dj-z",)), lock(Y),
      [("revert", 0, Y, ())]),
     ("extras_first_is_holder_reverts_to_holder", dj("dj-x", X, ("dj-z",)), lock(X),
@@ -250,3 +251,89 @@ def test_sync_action_is_frozen_with_defaults() -> None:
     assert action.discord_id is None and action.numbers == ()
     with pytest.raises(AttributeError):
         action.kind = "adopt"  # type: ignore[misc]
+
+
+# ---- event shape (Start / Slot length) -------------------------------------------
+
+
+def _shape(page_id: str = "ev", start: str = "20:00", minutes: int = 60, count: int = 2):
+    from bot.db.event_shapes import EventShapeRow
+
+    return {page_id: EventShapeRow(page_id, start, minutes, count)}
+
+
+def _shape_kinds(actions: list[SyncAction]) -> list:
+    return [(a.kind, a.restore) for a in actions if a.kind.endswith("_shape")]
+
+
+def test_shape_first_sight_is_accepted() -> None:
+    event = make_event(page_id="ev", slot_count=2, slots=full_rows(2, **{"1": dj("dj-x", X)}))
+    actions = plan_sync([event], {("ev", 0): lock(X)}, NOW, {})
+    assert _shape_kinds(actions) == [("accept_shape", None)]
+    assert actions[0].kind == "accept_shape" and actions[0].slot_index is None
+
+
+def test_shape_unchanged_emits_nothing() -> None:
+    event = make_event(page_id="ev", slot_count=2, slots=full_rows(2, **{"1": dj("dj-x", X)}))
+    assert plan_sync([event], {("ev", 0): lock(X)}, NOW, _shape()) == []
+
+
+def test_shape_without_shapes_argument_emits_nothing() -> None:
+    event = make_event(page_id="ev", slot_count=2, slots=full_rows(2))
+    assert plan_sync([event], {}, NOW) == []
+
+
+@pytest.mark.parametrize("start,minutes", [
+    (datetime.time(21, 0), 60), (datetime.time(20, 0), 90), (datetime.time(22, 30), 45),
+])
+def test_shape_change_without_dj_is_accepted(start, minutes) -> None:
+    event = make_event(page_id="ev", slot_count=2, start=start, slot_minutes=minutes,
+                       slots=full_rows(2))
+    actions = plan_sync([event], {("ev", 0): lock(None)}, NOW, _shape())
+    assert kinds(actions) == [("accept_shape", None, None, ())]
+
+
+@pytest.mark.parametrize("start,minutes", [
+    (datetime.time(21, 0), 60), (datetime.time(20, 0), 90), (datetime.time(22, 30), 45),
+])
+def test_shape_change_with_dj_is_restored(start, minutes) -> None:
+    event = make_event(page_id="ev", slot_count=2, start=start, slot_minutes=minutes,
+                       slots=full_rows(2, **{"2": dj("dj-g", None)}))
+    actions = plan_sync([event], {}, NOW, _shape())
+    assert _shape_kinds(actions) == [("restore_shape", (datetime.time(20, 0), 60))]
+    assert actions[0].event is event and actions[0].slot_index is None
+    assert event.event_id in actions[0].detail
+
+
+def test_shape_restore_counts_dj_on_row_above_slot_count() -> None:
+    event = make_event(page_id="ev", slot_count=1, start=datetime.time(21, 0),
+                       slots=full_rows(2, **{"2": dj("dj-x", X)}))
+    actions = plan_sync([event], {}, NOW, _shape(count=2))
+    assert [a.kind for a in actions] == ["restore_shape", "skip"]
+
+
+def test_shape_restore_later_slot_actions_use_stored_times() -> None:
+    event = make_event(page_id="ev", slot_count=2, start=datetime.time(23, 0),
+                       slots=full_rows(2, **{"1": dj("dj-x", X), "2": dj("dj-y", Y)}))
+    actions = plan_sync([event], {("ev", 0): lock(X)}, NOW, _shape())
+    assert [a.kind for a in actions] == ["restore_shape", "adopt"]
+    assert actions[1].event.start == datetime.time(20, 0)
+    assert actions[1].event.slot_minutes == 60
+
+
+def test_shape_slot_count_change_is_accepted_and_keeps_create_behaviour() -> None:
+    event = make_event(page_id="ev", slot_count=3, slots=full_rows(2, **{"1": dj("dj-x", X)}))
+    actions = plan_sync([event], {("ev", 0): lock(X)}, NOW, _shape(count=2))
+    assert kinds(actions) == [
+        ("accept_shape", None, None, ()),
+        ("create_slots", None, None, (3,)),
+    ]
+
+
+def test_shape_slot_count_change_keeps_trim_behaviour() -> None:
+    event = make_event(page_id="ev", slot_count=1, slots=full_rows(2, **{"1": dj("dj-x", X)}))
+    actions = plan_sync([event], {("ev", 0): lock(X)}, NOW, _shape(count=2))
+    assert kinds(actions) == [
+        ("accept_shape", None, None, ()),
+        ("trim_slots", None, None, (2,)),
+    ]

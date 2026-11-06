@@ -7,6 +7,7 @@ from typing import Any
 
 from bot.notion.api import NotionApi, NotionWriteError
 from bot.notion.models import (
+    MAX_SLOTS,
     PROP_DJ_DISCORD_ID,
     PROP_DJ_DISCORD_NAME,
     PROP_DJ_NAME,
@@ -163,8 +164,9 @@ class NotionClient:
     ) -> EventInfo:
         """Create the Events row, then one Slots row per slot (no DJ).
 
-        Raises ValueError for an empty ID or slot_count/slot_minutes below 1
-        (before any request), DuplicateEventError if the ID exists.
+        Raises ValueError for an empty ID, slot_count/slot_minutes below 1 or
+        slot_count above MAX_SLOTS (before any request), DuplicateEventError if
+        the ID exists.
         If a slot row fails after retries, NotionWriteError propagates and the
         already created event stays; list_events then shows it with missing
         slot rows. Calling create_event again with the same ID raises
@@ -176,6 +178,8 @@ class NotionClient:
             raise ValueError("event_id must not be empty")
         if slot_count < 1 or slot_minutes < 1:
             raise ValueError("slot_count and slot_minutes must be at least 1")
+        if slot_count > MAX_SLOTS:
+            raise ValueError(f"slot_count must be at most {MAX_SLOTS}")
         if await self.event_id_exists(event_id):
             raise DuplicateEventError(event_id)
 
@@ -209,6 +213,26 @@ class NotionClient:
         )
         slots = await self.create_slot_rows(event, list(range(1, slot_count + 1)))
         return dataclasses.replace(event, slots=tuple(slots))
+
+    async def restore_event_shape(
+        self, event: EventInfo, start: datetime.time, slot_minutes: int
+    ) -> None:
+        """PATCH the Events row's ``Start`` and ``Slot length`` back to the given values.
+
+        Used by the sync service when a hand edit changes them while DJs are booked.
+        Raises NotionWriteError after failed retries.
+        """
+        await self._api.request(
+            "PATCH",
+            f"/pages/{event.page_id}",
+            {
+                "properties": {
+                    PROP_EVENT_START: {"rich_text": _text(start.strftime("%H:%M"))},
+                    PROP_EVENT_SLOT_LENGTH: {"number": slot_minutes},
+                }
+            },
+            f"restore Start/Slot length of event {event.event_id}",
+        )
 
     async def create_slot_rows(self, event: EventInfo, numbers: list[int]) -> list[SlotInfo]:
         """Create one empty Slots row per given number, linked to the event.
@@ -309,6 +333,23 @@ class NotionClient:
         )
         return page["id"]
 
+    async def dj_page_alive(self, page_id: str) -> bool:
+        """True if the DJ page exists and is not in the trash.
+
+        GET /pages/{id}: 404 or ``in_trash``/``is_archived`` give False (a 404 is
+        not posted to the admin log). Other failures raise NotionWriteError.
+        """
+        try:
+            page = await self._api.request(
+                "GET", f"/pages/{page_id}", None, f"check DJ page {page_id}",
+                tolerate=(404,),
+            )
+        except NotionWriteError as exc:
+            if exc.status_code == 404:
+                return False
+            raise
+        return not _is_trashed(page)
+
     async def refresh_discord_name(self, dj_page_id: str, discord_name: str) -> None:
         """PATCH only the ``Discord name`` property of a DJ row."""
         await self._api.request(
@@ -318,14 +359,21 @@ class NotionClient:
             f"refresh Discord name of DJ page {dj_page_id}",
         )
 
+    @staticmethod
+    def _slot_row(event: EventInfo, number: int) -> SlotInfo:
+        """The event's Slots row with this number; duplicates resolve to the lowest
+        page id (the same rule as the sync planner). Raises SlotRowMissingError."""
+        rows = [s for s in event.slots if s.number == number]
+        if not rows:
+            raise SlotRowMissingError(event.event_id, number)
+        return min(rows, key=lambda s: s.page_id)
+
     async def _fresh_slot_dj_ids(
         self, event: EventInfo, slot_index: int
     ) -> tuple[str, list[str]]:
         """Return (slot row page id, DJ ids now in its relation), read just now."""
         number = slot_index + 1
-        row = next((s for s in event.slots if s.number == number), None)
-        if row is None:
-            raise SlotRowMissingError(event.event_id, number)
+        row = self._slot_row(event, number)
         page = await self._api.request(
             "GET", f"/pages/{row.page_id}", None, f"read slot {number} of {event.event_id}"
         )
@@ -389,9 +437,7 @@ class NotionClient:
         the slot, NotionWriteError after failed retries.
         """
         number = slot_index + 1
-        row = next((s for s in event.slots if s.number == number), None)
-        if row is None:
-            raise SlotRowMissingError(event.event_id, number)
+        row = self._slot_row(event, number)
         await self._write_slot_djs(
             row.page_id, [dj_page_id], f"admin book slot {number} of {event.event_id}"
         )

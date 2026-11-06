@@ -33,6 +33,8 @@ logger = logging.getLogger(__name__)
 class EventsCog(commands.Cog):
     """Notion polling, lineup post updates, and reminder scheduling."""
 
+    bot: commands.Bot  # injected by disnake when the cog is added
+
     def __init__(self, ctx: BotContext) -> None:
         self.ctx = ctx
 
@@ -131,7 +133,7 @@ class EventsCog(commands.Cog):
         Called from _poll_notion() after list_events() succeeds, before snapshot
         comparison — newly created events appear in the same cycle's snapshot.
 
-        On NotionWriteError: ERR_NOTION_WRITE is already posted by _write_with_retry.
+        On NotionWriteError: ERR_NOTION_WRITE is already posted by NotionApi.request.
         Logs a warning and continues — remaining events in the loop still attempted.
 
         [Source: epics.md#Story 7.1 AC1-AC4]
@@ -196,12 +198,40 @@ class EventsCog(commands.Cog):
             return
         await self.ctx.lineup_service.post_update(events)
 
+    async def _run_sync_cycle(self, guild_id: int) -> None:
+        """Run one NotionSyncService cycle; a failure is logged and never raised.
+
+        The lineup update must not depend on the sync succeeding.
+        """
+        sync = self.ctx.notion_sync_service
+        if sync is None:
+            return
+        try:
+            await sync.run_cycle(guild_id)
+        except Exception as exc:
+            logger.warning("Notion sync cycle failed — continuing with the poll: %s", exc)
+            if self.ctx.log_service is not None:
+                await self.ctx.log_service.post_error(
+                    error_code=ErrorCode.ERR_NOTION_WRITE,
+                    trigger=f"NotionSyncService.run_cycle() raised during notion_poll: {exc}",
+                    action_taken="Skipped the sync this cycle — lineup update continues.",
+                    manual_action=(
+                        "Check NOTION_API_KEY, NOTION_PARENT_PAGE_ID, and Notion API status."
+                    ),
+                )
+
     @tasks.loop(minutes=5)
     async def _poll_notion(self) -> None:
-        """Notion event polling — fetches future events, compares snapshot, triggers lineup update.
+        """Notion event polling — syncs hand edits, fetches events, updates the lineup.
+
+        Order per cycle: (1) NotionSyncService.run_cycle (skipped if the service is
+        None; a failure is posted and the cycle continues), (2) list_events() for the
+        state after the sync, (3) auto-create events, (4) snapshot and lineup update.
+        The first iteration runs after the bot is ready and is the startup reconcile.
 
         On DB unavailability: skips cycle (guard handles logging).
-        On Notion failure: logs warning, posts ERR_NOTION_WRITE, skips cycle (no snapshot update).
+        On Notion read failure: logs warning, posts ERR_NOTION_WRITE, skips cycle
+        (no snapshot update).
         On no change: silently returns.
         On change: triggers lineup update and persists new snapshot.
 
@@ -214,6 +244,9 @@ class EventsCog(commands.Cog):
         guild_id = self._get_guild_id()
         if guild_id is None:
             return
+
+        # Reconcile hand edits in Notion with Postgres before reading the events
+        await self._run_sync_cycle(guild_id)
 
         # Fetch events from Notion (AC1, AC4)
         try:
@@ -245,9 +278,13 @@ class EventsCog(commands.Cog):
         await self._trigger_lineup_update(events)
         await set_value(self.ctx.db, guild_id, "lineup_snapshot", new_snapshot)
 
+    @_poll_notion.before_loop
+    async def _before_poll_notion(self) -> None:
+        await self.bot.wait_until_ready()
+
     @tasks.loop(hours=1)
     async def _check_reminders(self) -> None:
-        """Day-before reminder scheduler loop — full implementation in Story 3.x.
+        """Reminder scheduler loop — delegates to RemindersService.send_reminders.
 
         Guard ensures DB is available before any DB-dependent work.
         """
@@ -263,3 +300,7 @@ class EventsCog(commands.Cog):
             await self.ctx.reminders_service.send_reminders(guild_id, self.ctx)
         except Exception as exc:
             logger.warning("_check_reminders: send_reminders raised: %s", exc)
+
+    @_check_reminders.before_loop
+    async def _before_check_reminders(self) -> None:
+        await self.bot.wait_until_ready()

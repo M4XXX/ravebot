@@ -241,3 +241,37 @@ async def test_invalid_sizes_raise_before_any_request(env, count, minutes):
     with pytest.raises(ValueError):
         await client.create_event("E1", FUTURE, datetime.time(18, 0), count, minutes)
     assert len(fake.requests) == n
+
+
+async def test_restore_event_shape_patches_start_and_slot_length_only(env):
+    fake, client, nids = env
+    ev = await client.create_event("2099-01-10 Rave", FUTURE, datetime.time(18, 0), 2, 60)
+    fake.pages[ev.page_id]["properties"]["Start"] = {
+        "rich_text": [{"text": {"content": "21:15"}, "plain_text": "21:15"}]}
+    fake.pages[ev.page_id]["properties"]["Slot length"] = {"number": 45}
+    n = len(fake.requests)
+    await client.restore_event_shape(ev, datetime.time(18, 0), 60)
+    reqs = fake.requests[n:]
+    assert len(reqs) == 1
+    method, path, body = reqs[0]
+    assert (method, path) == ("PATCH", f"/pages/{ev.page_id}")
+    assert set(body["properties"]) == {"Start", "Slot length"}
+    props = fake.pages[ev.page_id]["properties"]
+    assert props["Start"]["rich_text"][0]["plain_text"] == "18:00"
+    assert props["Slot length"] == {"number": 60}
+
+
+async def test_restore_event_shape_raises_on_failure(env):
+    fake, client, _ = env
+    ev = await client.create_event("2099-01-10 Rave", FUTURE, datetime.time(18, 0), 1, 60)
+    fake.fail_once("PATCH", f"/pages/{ev.page_id}", 400)
+    with pytest.raises(NotionWriteError):
+        await client.restore_event_shape(ev, datetime.time(18, 0), 60)
+
+
+async def test_slot_count_above_100_raises_before_any_request(env):
+    fake, client, _ = env
+    n = len(fake.requests)
+    with pytest.raises(ValueError):
+        await client.create_event("E1", FUTURE, datetime.time(18, 0), 101, 60)
+    assert len(fake.requests) == n

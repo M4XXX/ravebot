@@ -112,6 +112,16 @@ async def set_notion_dj_page_id(
     )
 
 
+async def clear_all_notion_dj_page_ids(pool: asyncpg.Pool) -> None:
+    """Clear every stored Notion DJ page id (all DJs).
+
+    Called by ensure_schema when it creates a fresh set of Notion databases: the
+    stored ids point into the abandoned DJs database. ensure_dj_page recreates
+    the rows on demand.
+    """
+    await pool.execute("UPDATE djs SET notion_dj_page_id = NULL")
+
+
 async def get_active_booking_djs(pool: asyncpg.Pool) -> list[dict]:
     """Return all DJs with active_booking=true, sorted by last_contacted_at ASC NULLS FIRST.
 

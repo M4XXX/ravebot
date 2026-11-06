@@ -171,7 +171,7 @@ async def test_callback_confirms_even_if_notion_fails() -> None:
 
     ctx = make_real_ctx(db=MagicMock())
 
-    # Simulate _write_with_retry behaviour: post ERR_NOTION_WRITE to admin log then raise
+    # Simulate NotionApi.request behaviour: post ERR_NOTION_WRITE to admin log then raise
     log_mock = MagicMock()
     log_mock.post_error = AsyncMock()
 
@@ -881,6 +881,7 @@ async def test_booking_confirm_notion_failure_releases_lock() -> None:
         await view._handle_confirm(inter)
 
     mock_release.assert_awaited_once()
+    assert mock_release.await_args.kwargs == {"expected_holder": 20004}
     inter.response.send_message.assert_awaited_once()
     msg = inter.response.send_message.call_args[0][0]
     assert "something went wrong" in msg.lower()
@@ -1265,7 +1266,7 @@ async def test_cancel_confirm_confirm_calls_clear_slot() -> None:
         await view._handle_confirm(inter)
 
     ctx.notion_client.clear_slot.assert_awaited_once_with(event, 0, "notion-page-dj")
-    mock_release.assert_awaited_once_with(ctx.db, "evt-cancel-04", 0)
+    mock_release.assert_awaited_once_with(ctx.db, "evt-cancel-04", 0, expected_holder=30006)
     inter.response.send_message.assert_awaited_once()
     msg = inter.response.send_message.call_args[0][0]
     assert "cancelled" in msg.lower()
@@ -1301,7 +1302,7 @@ async def test_cancel_confirm_notion_write_error_releases_lock() -> None:
         await view._handle_confirm(inter)
 
     # Even on Notion failure, slot lock must be freed
-    mock_release.assert_awaited_once_with(ctx.db, "evt-cancel-05", 0)
+    mock_release.assert_awaited_once_with(ctx.db, "evt-cancel-05", 0, expected_holder=30007)
     inter.response.send_message.assert_awaited_once()
     msg = inter.response.send_message.call_args[0][0]
     assert "something went wrong" in msg.lower() or "try again" in msg.lower()
@@ -1631,7 +1632,7 @@ async def test_booking_confirm_assign_false_releases_pg_lock_and_refreshes() -> 
         ctx, 40020, ensure=AsyncMock(return_value="dj-me"),
         assign=AsyncMock(return_value=False),
     )
-    rel.assert_awaited_once_with(ctx.db, "evt-gap", 1)
+    rel.assert_awaited_once_with(ctx.db, "evt-gap", 1, expected_holder=40020)
     msg = inter.response.send_message.call_args[0][0]
     assert "just taken" in msg
     assert isinstance(inter.response.send_message.call_args.kwargs["view"], SlotSelectionView)
@@ -1679,7 +1680,7 @@ async def test_booking_confirm_assign_errors_release_both_locks(exc_name) -> Non
     inter, lock, rel = await _run_booking(
         ctx, 40022, ensure=AsyncMock(return_value="dj-me"), assign=AsyncMock(side_effect=exc)
     )
-    rel.assert_awaited_once_with(ctx.db, "evt-gap", 1)
+    rel.assert_awaited_once_with(ctx.db, "evt-gap", 1, expected_holder=40022)
     assert "saving your booking" in inter.response.send_message.call_args[0][0]
     assert not lock.locked()
 
@@ -1691,7 +1692,7 @@ async def test_booking_confirm_assign_errors_release_both_locks(exc_name) -> Non
 async def test_booking_confirm_no_dj_page_releases_both_locks(ensure) -> None:
     ctx = make_real_ctx(db=MagicMock())
     inter, lock, rel = await _run_booking(ctx, 40023, ensure=ensure)
-    rel.assert_awaited_once_with(ctx.db, "evt-gap", 1)
+    rel.assert_awaited_once_with(ctx.db, "evt-gap", 1, expected_holder=40023)
     ctx.notion_client.assign_slot.assert_not_called()
     assert "saving your booking" in inter.response.send_message.call_args[0][0]
     assert not lock.locked()
@@ -1757,7 +1758,7 @@ async def test_cancel_confirm_clears_slot_with_dj_page_id() -> None:
     ctx, event, inter, lock, rel = await _run_cancel(40009, ensure=ensure, clear=clear)
     ensure.assert_awaited_once_with(ctx.db, ctx.notion_client, 40009, "Disp")
     clear.assert_awaited_once_with(event, 2, "dj-me")
-    rel.assert_awaited_once_with(ctx.db, "evt-gap", 2)
+    rel.assert_awaited_once_with(ctx.db, "evt-gap", 2, expected_holder=40009)
     assert "cancelled" in inter.response.send_message.call_args[0][0]
     assert not lock.locked()
 
@@ -1774,7 +1775,7 @@ async def test_cancel_confirm_clears_slot_with_dj_page_id() -> None:
 )
 async def test_cancel_confirm_always_releases_pg_lock(ensure, clear) -> None:
     ctx, event, inter, lock, rel = await _run_cancel(40030, ensure=ensure, clear=clear)
-    rel.assert_awaited_once_with(ctx.db, "evt-gap", 2)
+    rel.assert_awaited_once_with(ctx.db, "evt-gap", 2, expected_holder=40030)
     assert not lock.locked()
     inter.response.send_message.assert_awaited_once()
     if ensure.await_args is not None and ensure.return_value is None:
@@ -1789,7 +1790,7 @@ async def test_cancel_confirm_notion_write_error_still_releases_both_locks() -> 
     ctx, event, inter, lock, rel = await _run_cancel(
         40031, ensure=AsyncMock(return_value="dj-me"), clear=clear
     )
-    rel.assert_awaited_once_with(ctx.db, "evt-gap", 2)
+    rel.assert_awaited_once_with(ctx.db, "evt-gap", 2, expected_holder=40031)
     assert "cancelling your booking" in inter.response.send_message.call_args[0][0]
     assert not lock.locked()
 
@@ -1849,7 +1850,7 @@ async def test_booking_confirm_unexpected_assign_error_releases_both_locks(exc) 
     inter, lock, rel = await _run_booking(
         ctx, 40040, ensure=AsyncMock(return_value="dj-me"), assign=AsyncMock(side_effect=exc)
     )
-    rel.assert_awaited_once_with(ctx.db, "evt-gap", 1)
+    rel.assert_awaited_once_with(ctx.db, "evt-gap", 1, expected_holder=40040)
     assert "saving your booking" in inter.response.send_message.call_args[0][0]
     assert not lock.locked()
 
@@ -1885,7 +1886,8 @@ async def test_booking_confirm_assign_false_log_names_user_not_none_holder() -> 
         order.append("holder")
         return 40042
 
-    async def release(*a):
+    async def release(*a, **k):
+        assert k == {"expected_holder": 40042}
         order.append("release")
 
     view = BookingConfirmView(
@@ -1910,7 +1912,7 @@ async def test_cancel_confirm_unexpected_clear_error_still_releases_both_locks()
     ctx, event, inter, lock, rel = await _run_cancel(
         40043, ensure=AsyncMock(return_value="dj-me"), clear=clear
     )
-    rel.assert_awaited_once_with(ctx.db, "evt-gap", 2)
+    rel.assert_awaited_once_with(ctx.db, "evt-gap", 2, expected_holder=40043)
     assert "cancelled" in inter.response.send_message.call_args[0][0]
     assert not lock.locked()
 

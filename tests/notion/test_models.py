@@ -126,3 +126,17 @@ def test_second_dj_lands_in_extra_dj_page_ids():
     assert slot.dj_page_id == "dj-page-1"
     assert slot.extra_dj_page_ids == ("dj-2", "dj-3")
     assert parse_slot(load("slot"), {}).extra_dj_page_ids == ()
+
+
+def test_slots_above_100_returns_none_with_reason(caplog):
+    page = load("event")
+    page["properties"]["Slots"]["number"] = 101
+    assert parse_event(page) is None
+    assert "Slots" in caplog.text and "100" in caplog.text
+
+
+def test_slots_exactly_100_parses():
+    page = load("event")
+    page["properties"]["Slots"]["number"] = 100
+    ev = parse_event(page)
+    assert ev is not None and ev.slot_count == 100

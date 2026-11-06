@@ -232,3 +232,26 @@ class TestAdminLogServicePostIntervention:
         service = AdminLogService(bot=mock_bot, db=mock_pool)
         # Must not raise
         await service.post_intervention("Admin", "@DJ Mars", "Check your slot")
+
+
+class TestAdminLogServicePostAdminOverride:
+    @pytest.mark.asyncio
+    async def test_sends_text_without_pinging_anyone(self) -> None:
+        """post_admin_override() sends the line with all mentions disabled."""
+        import disnake
+
+        from bot.log import AdminLogService
+
+        mock_channel = _make_mock_channel()
+        service = AdminLogService(
+            bot=_make_mock_bot(channel=mock_channel), db=_make_mock_pool("111")
+        )
+        await service.post_admin_override("[NOTION SYNC] <@123> @everyone moved")
+
+        mock_channel.send.assert_awaited_once()
+        args, kwargs = mock_channel.send.call_args
+        assert args == ("[NOTION SYNC] <@123> @everyone moved",)
+        mentions = kwargs["allowed_mentions"]
+        assert isinstance(mentions, disnake.AllowedMentions)
+        none = disnake.AllowedMentions.none()
+        assert mentions.to_dict() == none.to_dict()

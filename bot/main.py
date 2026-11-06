@@ -1,4 +1,4 @@
-"""Bot entry point — migrations, BotContext init, cog loading, bot.run().
+"""Bot entry point — migrations, BotContext init, Notion setup, cog loading, bot.start().
 
 Startup sequence:
   1. Load config from env vars (exits with descriptive error if any required var missing)
@@ -6,19 +6,20 @@ Startup sequence:
   3. Create BotContext with config
   4. Run Alembic migrations (subprocess: alembic upgrade head) — exits on failure
   5. Open asyncpg pool — exits if PostgreSQL unreachable
-  6. Assign pool to BotContext.db
-  7. Create disnake Bot with correct intents
-  8. Start bot (Discord connects only AFTER DB is ready)
-  9. On shutdown: close pool gracefully
-
-Future stories extend the sequence:
-  - Story 3.x: add Notion poll(), read_slots(), write_booking() to NotionClient
+  6. Create disnake Bot with correct intents and the AdminLogService
+  7. Notion: NotionApi -> ensure_schema -> ensure_views -> NotionClient. The schema
+     and view config keys live under guild_id 0 (global), so this runs before
+     Discord connects. Exits with a clear message if the parent page is unusable.
+  8. Create the services (incl. NotionSyncService) and load the cogs
+  9. Start bot (Discord connects only AFTER DB and Notion are ready)
+ 10. On shutdown: close pool and Notion API client
 
 [Source: architecture.md#Implementation Sequence]
 [Source: architecture.md#Decision Impact Analysis]
 """
 import asyncio
 import logging
+import sys
 
 import disnake
 from disnake.ext import commands
@@ -27,10 +28,22 @@ from dotenv import load_dotenv
 from bot.config import Config
 from bot.context import BotContext
 from bot.db.pool import create_pool, run_migrations
+from bot.notion.api import NotionApi, NotionWriteError
+from bot.notion.client import NotionClient
+from bot.notion.schema import NotionSchemaError, ensure_schema
+from bot.notion.views import ensure_views
 
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+
+# Notion schema/view config keys are global (not per Discord guild).
+NOTION_CONFIG_GUILD_ID = 0
+
+NOTION_SETUP_FAILED = (
+    "Cannot use the Notion parent page: share the page with your integration "
+    "(page menu > Connections) and check NOTION_API_KEY and NOTION_PARENT_PAGE_ID."
+)
 
 
 def _setup_logging(level: str) -> None:
@@ -59,7 +72,8 @@ async def main() -> None:
 
     # Story 1.2: run migrations then open DB pool before Discord connects
     await run_migrations(config.postgres_url)
-    ctx.db = await create_pool(config)
+    db = await create_pool(config)
+    ctx.db = db
 
     bot = create_bot()
 
@@ -70,20 +84,35 @@ async def main() -> None:
     from bot.cogs.onboarding import OnboardingCog
     from bot.cogs.outreach_cog import OutreachCog
     from bot.log import AdminLogService
-    from bot.notion.legacy import LegacyNotionClient
 
     ctx.log_service = AdminLogService(bot=bot, db=ctx.db)
 
-    # Story 1.5: init NotionClient after log_service is ready
-    ctx.notion_client = LegacyNotionClient(  # TEMP until Task 13
-        api_key=config.notion_api_key,
-        database_id=config.notion_parent_page_id,  # TEMP until Task 13
-        log_service=ctx.log_service,
-    )
+    # Notion: ensure databases and views exist before Discord connects (Ruling 29)
+    notion_api = NotionApi(config.notion_api_key, ctx.log_service)
+    try:
+        ids = await ensure_schema(
+            notion_api, db, NOTION_CONFIG_GUILD_ID, config.notion_parent_page_id
+        )
+        await ensure_views(notion_api, db, NOTION_CONFIG_GUILD_ID, ids)
+    except (NotionSchemaError, NotionWriteError) as exc:
+        logger.error("Notion setup failed: %s", exc)
+        await db.close()
+        await notion_api.close()
+        sys.exit(f"{NOTION_SETUP_FAILED} (Cause: {exc})")
+    ctx.notion_client = NotionClient(notion_api, ids)
 
     # Story 3.2: init LineupService after DB and log_service are ready
     from bot.services.lineup import LineupService
     ctx.lineup_service = LineupService(bot=bot, db=ctx.db, log_service=ctx.log_service)
+
+    # Notion rework: reconcile hand edits in Notion with Postgres on every poll
+    from bot.services.notion_sync import NotionSyncService
+    ctx.notion_sync_service = NotionSyncService(
+        bot=bot,
+        db=ctx.db,
+        notion_client=ctx.notion_client,
+        log_service=ctx.log_service,
+    )
 
     # Story 5.1: init OutreachService after notion_client and log_service are ready
     from bot.services.outreach import OutreachService
@@ -127,15 +156,6 @@ async def main() -> None:
     @bot.event
     async def on_ready() -> None:  # noqa: RUF029
         logger.info("Bot ready")
-        # Story 1.5: validate Notion schema now that Discord is connected
-        # (admin log channel may already be configured for error posting)
-        if ctx.notion_client is not None:
-            bot.loop.create_task(
-                ctx.notion_client.validate_schema(
-                    # Minimum required Notion database properties — extend in Story 3.x
-                    required_properties=["Name", "Date", "Slots"],
-                )
-            )
 
     try:
         await bot.start(config.discord_bot_token)
@@ -143,9 +163,8 @@ async def main() -> None:
         if ctx.db is not None:
             await ctx.db.close()
             logger.info("asyncpg pool closed.")
-        if ctx.notion_client is not None:
-            await ctx.notion_client.close()
-            logger.info("LegacyNotionClient closed.")
+        await notion_api.close()
+        logger.info("Notion API client closed.")
 
 
 if __name__ == "__main__":

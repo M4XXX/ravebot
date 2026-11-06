@@ -108,6 +108,9 @@ def _make_cog_with_bot(guilds: list = None) -> "EventsCog":
     ctx.db = mock_db
     ctx.log_service = log
     ctx.notion_client = notion
+    sync = MagicMock()
+    sync.run_cycle = AsyncMock(return_value=[])
+    ctx.notion_sync_service = sync
 
     cog = EventsCog(ctx)
     mock_bot = MagicMock()
@@ -233,7 +236,7 @@ async def test_poll_notion_change_triggers_update() -> None:
 
 @pytest.mark.asyncio
 async def test_poll_notion_notion_failure_no_snapshot_update() -> None:
-    """_poll_notion: when poll_events raises, snapshot is NOT updated and ERR is posted."""
+    """_poll_notion: when list_events raises, snapshot is NOT updated and ERR is posted."""
     from bot.cogs.events import EventsCog
 
     import httpx
@@ -498,7 +501,7 @@ async def test_auto_create_events_value_error_does_not_abort_loop() -> None:
 
 @pytest.mark.asyncio
 async def test_poll_notion_uses_list_events() -> None:
-    """_poll_notion fetches via list_events() and never poll_events()."""
+    """_poll_notion fetches the events via list_events()."""
     from bot.cogs.events import EventsCog
 
     cog = _make_cog_with_bot()
@@ -512,7 +515,6 @@ async def test_poll_notion_uses_list_events() -> None:
         await EventsCog._poll_notion.coro(cog)
 
     cog.ctx.notion_client.list_events.assert_awaited_once_with()
-    cog.ctx.notion_client.poll_events.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -586,3 +588,102 @@ async def test_auto_create_events_defaults_to_6_slots_when_unset() -> None:
     assert len(init_calls) == 2
     assert init_calls[0][2] == 6   # default
     assert init_calls[1][2] == 6
+
+
+# ---------------------------------------------------------------------------
+# Notion rework Task 13: sync cycle before the lineup, wait for ready
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_poll_notion_runs_sync_cycle_before_list_and_snapshot() -> None:
+    """_poll_notion runs NotionSyncService.run_cycle first, then reads fresh events."""
+    from bot.cogs.events import EventsCog
+
+    cog = _make_cog_with_bot()
+    events = _make_pages("page-a")
+    order: list[str] = []
+
+    async def _sync(guild_id: int) -> list:
+        order.append(f"sync:{guild_id}")
+        return []
+
+    async def _list() -> list[EventInfo]:
+        order.append("list")
+        return events
+
+    async def _get(*_args: object) -> None:
+        order.append("snapshot")
+
+    cog.ctx.notion_sync_service.run_cycle = AsyncMock(side_effect=_sync)
+    cog.ctx.notion_client.list_events = AsyncMock(side_effect=_list)
+
+    with patch("bot.cogs.events.get_value", new=AsyncMock(side_effect=_get)), \
+         patch("bot.cogs.events.set_value", new=AsyncMock()), \
+         patch.object(cog, "_auto_create_events", new=AsyncMock()), \
+         patch.object(cog, "_trigger_lineup_update", new=AsyncMock()) as mock_trigger:
+        await EventsCog._poll_notion.coro(cog)
+
+    assert order == ["sync:99999", "list", "snapshot"]
+    mock_trigger.assert_awaited_once_with(events)
+
+
+@pytest.mark.asyncio
+async def test_poll_notion_sync_failure_does_not_stop_lineup_update() -> None:
+    """A failing run_cycle is logged and posted; the lineup update still runs."""
+    from bot.cogs.events import EventsCog
+
+    cog = _make_cog_with_bot()
+    events = _make_pages("page-a")
+    cog.ctx.notion_sync_service.run_cycle = AsyncMock(side_effect=RuntimeError("boom"))
+    cog.ctx.notion_client.list_events = AsyncMock(return_value=events)
+
+    with patch("bot.cogs.events.get_value", new=AsyncMock(return_value=None)), \
+         patch("bot.cogs.events.set_value", new=AsyncMock()) as mock_set, \
+         patch.object(cog, "_auto_create_events", new=AsyncMock()) as mock_auto, \
+         patch.object(cog, "_trigger_lineup_update", new=AsyncMock()) as mock_trigger:
+        await EventsCog._poll_notion.coro(cog)
+
+    mock_auto.assert_awaited_once()
+    mock_trigger.assert_awaited_once_with(events)
+    mock_set.assert_awaited_once()
+    cog.ctx.log_service.post_error.assert_awaited_once()
+    kwargs = cog.ctx.log_service.post_error.call_args.kwargs
+    assert kwargs["error_code"] == ErrorCode.ERR_NOTION_WRITE
+    assert "boom" in kwargs["trigger"]
+
+
+@pytest.mark.asyncio
+async def test_poll_notion_without_sync_service_still_updates_lineup() -> None:
+    """notion_sync_service=None skips the sync step; the poll works as before."""
+    from bot.cogs.events import EventsCog
+
+    cog = _make_cog_with_bot()
+    cog.ctx.notion_sync_service = None
+    events = _make_pages("page-a")
+    cog.ctx.notion_client.list_events = AsyncMock(return_value=events)
+
+    with patch("bot.cogs.events.get_value", new=AsyncMock(return_value=None)), \
+         patch("bot.cogs.events.set_value", new=AsyncMock()), \
+         patch.object(cog, "_auto_create_events", new=AsyncMock()), \
+         patch.object(cog, "_trigger_lineup_update", new=AsyncMock()) as mock_trigger:
+        await EventsCog._poll_notion.coro(cog)
+
+    mock_trigger.assert_awaited_once_with(events)
+    cog.ctx.log_service.post_error.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("loop_name", ["_poll_notion", "_check_reminders"])
+async def test_loops_wait_until_ready_before_first_iteration(loop_name: str) -> None:
+    """Both loops register a before_loop hook that waits for the bot to be ready."""
+    from bot.cogs.events import EventsCog
+
+    loop = getattr(EventsCog, loop_name)
+    assert loop._before_loop is not None
+
+    cog = _make_cog_with_bot()
+    cog.bot.wait_until_ready = AsyncMock()
+    await loop._before_loop(cog)
+
+    cog.bot.wait_until_ready.assert_awaited_once()

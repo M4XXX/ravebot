@@ -4,6 +4,8 @@
 config table, verifies every property, adds what is missing, recreates data
 sources that no longer exist (404) and refuses to touch properties that have
 the wrong type (reported to the admin log, raises NotionSchemaError).
+A fresh set of databases also clears the stored DJ page ids and the views
+marker, so ensure_views creates the views in the new databases.
 
 Request shapes and formula expressions come from the API spike
 (tests/notion/fixtures/NOTES.md).
@@ -16,6 +18,7 @@ from urllib.parse import unquote
 import asyncpg
 
 from bot.db.config import get_value, set_value
+from bot.db.djs import clear_all_notion_dj_page_ids
 from bot.notion.api import NotionApi, NotionWriteError
 from bot.ui.embeds import ErrorCode
 
@@ -43,6 +46,8 @@ _KEYS = {
 
 
 _COMPLETE_KEY = "notion_schema_complete"
+# Set by bot.notion.views.ensure_views once all views exist; cleared for a fresh set.
+VIEWS_MARKER_KEY = "notion_views_created"
 
 
 class NotionSchemaError(Exception):
@@ -114,11 +119,16 @@ def _rollup(relation: str, prop: str, function: str) -> dict[str, Any]:
     }
 
 
-def _slots_helpers() -> dict[str, Any]:
+def _slots_rollups() -> dict[str, Any]:
     return {
         "Event start": _rollup("Event", "Start", "show_original"),
         "Event slot length": _rollup("Event", "Slot length", "max"),
         "Event date src": _rollup("Event", "Date", "latest_date"),
+    }
+
+
+def _slots_formulas() -> dict[str, Any]:
+    return {
         "Event date": {"formula": {"expression": 'prop("Event date src")'}},
         "Time": {"formula": {"expression": TIME_FORMULA}},
         "Slot status": {"formula": {"expression": SLOT_STATUS_FORMULA}},
@@ -195,12 +205,19 @@ async def _reconcile(
             "Fix or delete the mismatching property in Notion, then restart the bot.",
         )
         raise NotionSchemaError(detail)
-    if to_patch:
-        logger.info("Adding Notion properties to %s: %s", label, ", ".join(to_patch))
-        ds = await api.request(
-            "PATCH", f"/data_sources/{ds_id}", {"properties": to_patch},
-            f"add properties to {label}",
-        )
+    # The API rejects formulas/rollups that read properties added in the same
+    # request, so patch plain properties, then rollups, then formulas.
+    for group in ("plain", "rollup", "formula"):
+        batch = {
+            n: sp for n, sp in to_patch.items()
+            if (_kind(sp) if _kind(sp) in ("rollup", "formula") else "plain") == group
+        }
+        if batch:
+            logger.info("Adding Notion properties to %s: %s", label, ", ".join(batch))
+            ds = await api.request(
+                "PATCH", f"/data_sources/{ds_id}", {"properties": batch},
+                f"add properties to {label}",
+            )
     return ds
 
 
@@ -279,8 +296,11 @@ async def ensure_schema(
             "archive them in Notion if no longer needed.",
         )
         await set_value(db, guild_id, _COMPLETE_KEY, "0")
+        await set_value(db, guild_id, VIEWS_MARKER_KEY, "0")
         for key in _KEYS.values():
             await set_value(db, guild_id, key, "")
+        # Stored DJ page ids point into the abandoned DJs database.
+        await clear_all_notion_dj_page_ids(db)
         stored = {n: None for n in labels}
     elif not complete:
         await set_value(db, guild_id, _COMPLETE_KEY, "0")
@@ -301,7 +321,8 @@ async def ensure_schema(
     events = await _reconcile(api, events_ds, "Events", _events_props())
     djs = await _reconcile(api, djs_ds, "DJs", _djs_props())
     await _reconcile(api, slots_ds, "Slots", _slots_props(events_ds, djs_ds, dj_dual=True))
-    await _reconcile(api, slots_ds, "Slots", _slots_helpers())
+    await _reconcile(api, slots_ds, "Slots", _slots_rollups())
+    await _reconcile(api, slots_ds, "Slots", _slots_formulas())
     await _reconcile(api, djs_ds, "DJs", _djs_rollups())
     slots = await api.request("GET", f"/data_sources/{slots_ds}", None, "retrieve Slots")
 

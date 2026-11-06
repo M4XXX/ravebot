@@ -110,26 +110,43 @@ async def release_slot_lock(
     pool: asyncpg.Pool,
     event_id: str,
     slot_index: int,
+    expected_holder: int | None = None,
 ) -> None:
     """Release a previously claimed slot lock — sets discord_user_id back to NULL.
 
     Called when:
       - The Notion booking write fails after a successful acquire_slot_lock()
       - A DJ self-cancels (Story 4.4)
+      - The Notion sync frees a slot cleared by hand, or an admin cancels
+
+    ``expected_holder`` set: only release if that user still holds the slot, so a
+    stale caller never frees a slot someone else took in the meantime.
 
     Idempotent: safe to call even if the row does not exist or is already NULL.
 
     [Source: epics.md#Story 4.2 AC3 (rollback on Notion failure)]
     [Source: epics.md#Story 4.4 (cancellation flow)]
     """
+    if expected_holder is None:
+        await pool.execute(
+            """
+            UPDATE slot_locks
+            SET discord_user_id = NULL, booked_at = NULL
+            WHERE event_id = $1 AND slot_index = $2
+            """,
+            event_id,
+            slot_index,
+        )
+        return
     await pool.execute(
         """
         UPDATE slot_locks
         SET discord_user_id = NULL, booked_at = NULL
-        WHERE event_id = $1 AND slot_index = $2
+        WHERE event_id = $1 AND slot_index = $2 AND discord_user_id = $3
         """,
         event_id,
         slot_index,
+        expected_holder,
     )
 
 

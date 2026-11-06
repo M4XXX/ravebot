@@ -55,7 +55,7 @@ uv run python -m bot.main
 ## 3. Tests, Linting, Type Checking
 
 ```bash
-# Run the full test suite (360 tests)
+# Run the full test suite
 uv run pytest
 
 # Verbose output with per-test names
@@ -91,20 +91,32 @@ output/ravebot/
 │   │   ├── onboarding.py   # DJ onboarding DM flow
 │   │   └── outreach_cog.py # Proactive outreach background loop
 │   ├── db/                 # asyncpg repository layer
-│   ├── notion/             # Notion REST API client
+│   ├── notion/             # Notion integration (API version 2026-03-11)
+│   │   ├── api.py          # NotionApi: httpx wrapper, retry/backoff, pagination
+│   │   ├── models.py       # Property names, typed EventInfo/SlotInfo/DjInfo, parsers
+│   │   ├── schema.py       # ensure_schema(): creates/verifies Events, Slots, DJs
+│   │   ├── views.py        # ensure_views(): Overview, Lineup, All DJs
+│   │   └── client.py       # NotionClient: reads and writes events, slots, DJs
 │   ├── services/           # Business logic
 │   │   ├── admin_booking.py
+│   │   ├── dj_pages.py     # ensure_dj_page(): a DJ's row in the DJs database
+│   │   ├── event_defaults.py # default start, slot length, slots per event (config)
 │   │   ├── intervention.py
 │   │   ├── lineup.py
+│   │   ├── notion_sync.py  # NotionSyncService: applies hand edits from Notion
+│   │   ├── notion_sync_plan.py # plan_sync(): pure Notion-vs-Postgres planner
 │   │   ├── onboarding.py
 │   │   ├── outreach.py
 │   │   └── reminders.py
 │   ├── ui/
 │   │   └── views.py        # All Discord UI: buttons, modals, views
-│   └── main.py             # Bot entry point, startup validation
+│   └── main.py             # Bot entry point: migrations, Notion setup, services, cogs
 ├── migrations/
-│   └── versions/           # 6 Alembic migration files (Epics 1–7)
-├── tests/                  # 360 tests mirroring bot/ structure
+│   └── versions/           # Alembic migration files
+├── tests/                  # Tests mirroring bot/ structure
+│   └── notion/
+│       ├── fake_notion.py  # In-memory fake of the Notion API (httpx transport)
+│       └── fixtures/       # Real API responses; NOTES.md records the API facts
 ├── Dockerfile              # Multi-stage build
 ├── docker-compose.yml      # Postgres-only (local dev)
 ├── pyproject.toml          # Dependencies and tool config
@@ -115,7 +127,15 @@ output/ravebot/
 - Cogs are thin command handlers that delegate to `services/` and `db/` repositories.
 - All Discord UI interaction (buttons, modals, select menus) lives in `bot/ui/views.py`.
 - Runtime configuration is stored in the PostgreSQL `config(guild_id, key, value)` table, read via `db_config.get_value()`.
-- Notion holds event metadata only. Slot assignments are authoritative in the `slot_locks` PostgreSQL table.
+- Notion is the source of truth for slot assignments (one Slots row per slot, `DJ` relation). The PostgreSQL `slot_locks` table only guards against two DJs taking one slot at the same moment.
+
+### Notion setup and sync
+
+- The bot uses the Notion API version `2026-03-11` (databases and data sources are separate; views are created via `POST /v1/views`). The only Notion settings are `NOTION_API_KEY` and `NOTION_PARENT_PAGE_ID`.
+- At startup, before Discord connects, `main()` runs `ensure_schema(api, db, 0, parent_page_id)` and then `ensure_views(api, db, 0, ids)`. The data source and database ids are stored in the `config` table under `guild_id = 0` (global). `ensure_schema` creates the Events, DJs and Slots databases under the parent page if none are stored, adds missing properties, starts a fresh set if a stored database is gone, and raises `NotionSchemaError` on a property with the wrong type. `ensure_views` creates only missing views and sets a marker once all three exist.
+- If `ensure_schema`/`ensure_views` raise `NotionSchemaError` or `NotionWriteError`, the bot closes the pool and the Notion client and exits with a message that names the parent page sharing and both env vars.
+- `EventsCog._poll_notion` (every 5 minutes, first run once the bot is ready) runs `NotionSyncService.run_cycle()` (adopt hand entries, free hand removals, revert conflicts, create/trim Slots rows), then reads the events, auto-creates future events and updates the lineup post. A sync failure is posted to the admin log and does not stop the lineup update.
+- Tests use `tests/notion/fake_notion.py`, an in-memory Notion behind an httpx transport, so no test talks to the real API.
 
 ---
 
@@ -168,7 +188,7 @@ uv run alembic revision --autogenerate -m "add_some_table"
 uv run alembic upgrade head
 ```
 
-Migration files live in `migrations/versions/`. There are currently 6 migration files covering the full schema through Epics 1–7.
+Migration files live in `migrations/versions/`.
 
 ---
 

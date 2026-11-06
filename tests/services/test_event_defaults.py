@@ -60,3 +60,18 @@ async def test_invalid_or_non_positive_numbers_fall_back(
     messages = " ".join(r.getMessage() for r in caplog.records)
     assert "slot_duration_minutes" in messages
     assert "slots_per_event" in messages
+
+
+@pytest.mark.asyncio
+async def test_slots_per_event_above_100_falls_back(caplog: pytest.LogCaptureFixture) -> None:
+    with _cfg({"slots_per_event": "101"}), caplog.at_level(logging.WARNING):
+        shape = await default_event_shape(object(), 1)
+    assert shape.slot_count == 6
+    assert "slots_per_event" in " ".join(r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_slots_per_event_100_is_kept() -> None:
+    with _cfg({"slots_per_event": "100"}):
+        shape = await default_event_shape(object(), 1)
+    assert shape.slot_count == 100

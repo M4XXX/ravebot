@@ -207,3 +207,13 @@ async def test_get_all_djs_returns_empty_when_no_djs():
     result = await get_all_djs(pool)
 
     assert result == []
+
+
+@pytest.mark.asyncio
+async def test_clear_all_notion_dj_page_ids_clears_every_row() -> None:
+    from bot.db.djs import clear_all_notion_dj_page_ids
+
+    pool = MagicMock()
+    pool.execute = AsyncMock()
+    await clear_all_notion_dj_page_ids(pool)
+    pool.execute.assert_awaited_once_with("UPDATE djs SET notion_dj_page_id = NULL")

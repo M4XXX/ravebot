@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import asyncpg
 
 from bot.db.config import get_value
+from bot.notion.models import MAX_SLOTS
 
 logger = logging.getLogger(__name__)
 
@@ -40,14 +41,16 @@ def _parse_start(raw: str | None) -> datetime.time:
     return DEFAULT_START
 
 
-def _parse_positive(key: str, raw: str | None, default: int) -> int:
+def _parse_positive(
+    key: str, raw: str | None, default: int, maximum: int | None = None
+) -> int:
     if not raw:
         return default
     try:
         value = int(raw)
     except (TypeError, ValueError):
         value = 0
-    if value < 1:
+    if value < 1 or (maximum is not None and value > maximum):
         logger.warning("Invalid %s config %r — using default %d", key, raw, default)
         return default
     return value
@@ -57,7 +60,7 @@ async def default_event_shape(db: asyncpg.Pool, guild_id: int) -> EventShape:
     """Read the configured shape for new events; invalid values fall back to defaults.
 
     Keys: default_start_time (HH:MM, default 20:00), slot_duration_minutes
-    (default 60), slots_per_event (default 6).
+    (default 60), slots_per_event (default 6, at most MAX_SLOTS = 100).
     """
     raw_start = await get_value(db, guild_id, "default_start_time")
     raw_minutes = await get_value(db, guild_id, "slot_duration_minutes")
@@ -65,5 +68,7 @@ async def default_event_shape(db: asyncpg.Pool, guild_id: int) -> EventShape:
     return EventShape(
         start=_parse_start(raw_start),
         slot_minutes=_parse_positive("slot_duration_minutes", raw_minutes, DEFAULT_SLOT_MINUTES),
-        slot_count=_parse_positive("slots_per_event", raw_slots, DEFAULT_SLOT_COUNT),
+        slot_count=_parse_positive(
+            "slots_per_event", raw_slots, DEFAULT_SLOT_COUNT, maximum=MAX_SLOTS
+        ),
     )

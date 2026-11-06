@@ -56,6 +56,13 @@ def store() -> Iterator[dict[tuple[int, str], str]]:
         yield data
 
 
+@pytest.fixture(autouse=True)
+def clear_ids() -> Iterator[AsyncMock]:
+    mock = AsyncMock()
+    with patch("bot.notion.schema.clear_all_notion_dj_page_ids", new=mock, create=True):
+        yield mock
+
+
 def make(fake: FakeNotion) -> tuple[NotionApi, MagicMock]:
     log = MagicMock()
     log.post_error = AsyncMock(return_value=None)
@@ -155,11 +162,12 @@ async def _run(api: NotionApi) -> NotionIds:
 
 @pytest.mark.parametrize("mode", ["404", "trashed"])
 async def test_missing_database_creates_fresh_set_of_all_three(
-    store: dict, caplog: pytest.LogCaptureFixture, mode: str
+    store: dict, caplog: pytest.LogCaptureFixture, mode: str, clear_ids: AsyncMock
 ) -> None:
     fake = FakeNotion()
     api, log = make(fake)
     first = await _run(api)
+    store[(GUILD, "notion_views_created")] = "1"
     if mode == "404":
         fake.trash_data_source(first.djs_ds)
     else:
@@ -174,6 +182,8 @@ async def test_missing_database_creates_fresh_set_of_all_three(
     )
     assert store[(GUILD, "notion_djs_ds")] == second.djs_ds
     assert store[(GUILD, "notion_schema_complete")] == "1"
+    assert store[(GUILD, "notion_views_created")] == "0"
+    clear_ids.assert_awaited_once()
     assert any("fresh set" in r.message for r in caplog.records)
     log.post_error.assert_awaited_once()
     trigger = log.post_error.await_args.kwargs["trigger"]
@@ -246,3 +256,111 @@ async def test_wrong_property_type_is_reported_and_raises(store: dict) -> None:
     kwargs = log.post_error.await_args.kwargs
     assert kwargs["error_code"] == ErrorCode.ERR_NOTION_WRITE
     assert "Genre" in kwargs["trigger"]
+
+
+def _patched_names(fake: FakeNotion) -> list[list[str]]:
+    return [list(body["properties"]) for _, _, body in fake.requests_to("PATCH", "/data_sources/")]
+
+
+async def test_patches_rollups_before_formulas_before_dj_rollups(store: dict) -> None:
+    fake = FakeNotion()
+    api, _ = make(fake)
+    await _run(api)
+
+    batches = _patched_names(fake)
+    rollups = batches.index(["Event start", "Event slot length", "Event date src"])
+    formulas = batches.index(["Event date", "Time", "Slot status"])
+    dj_rollups = batches.index(["Events booked", "Last booked"])
+    assert rollups < formulas < dj_rollups
+
+
+async def test_resume_never_mixes_formula_with_property_it_reads(store: dict) -> None:
+    fake = FakeNotion()
+    api, _ = make(fake)
+    await _run(api)
+    sl = fake.ds_by_title("Slots")
+    for name in ("Event start", "Event date src", "Event date", "Time"):
+        del sl["properties"][name]
+    fake.requests.clear()
+
+    await _run(api)
+
+    assert types(fake, "Slots") == SLOT_PROPS
+    assert _patched_names(fake) == [["Event start", "Event date src"], ["Event date", "Time"]]
+
+
+async def test_fake_rejects_old_single_patch_shape(store: dict) -> None:
+    fake = FakeNotion()
+    api, _ = make(fake)
+    ids = await _run(api)
+    sl = fake.data_sources[ids.slots_ds]
+    for name in ("Event start", "Event date src", "Event date", "Time", "Slot status"):
+        del sl["properties"][name]
+    props = {
+        "Event start": {"rollup": {
+            "relation_property_name": "Event", "rollup_property_name": "Start",
+            "function": "show_original",
+        }},
+        "Time": {"formula": {"expression": 'prop("Event start")'}},
+    }
+    with pytest.raises(NotionWriteError) as exc:
+        await api.request("PATCH", f"/data_sources/{ids.slots_ds}", {"properties": props}, "x")
+    assert exc.value.status_code == 400
+    # rollup alone is fine, then the formula alone is fine
+    path = f"/data_sources/{ids.slots_ds}"
+    await api.request("PATCH", path, {"properties": {"Event start": props["Event start"]}}, "x")
+    await api.request("PATCH", path, {"properties": {"Time": props["Time"]}}, "x")
+    bad = {"R": {"rollup": {
+        "relation_property_name": "Nope", "rollup_property_name": "Start", "function": "max",
+    }}}
+    with pytest.raises(NotionWriteError):
+        await api.request("PATCH", f"/data_sources/{ids.slots_ds}", {"properties": bad}, "x")
+
+
+async def test_rerun_without_problems_keeps_dj_page_ids_and_views_marker(
+    store: dict, clear_ids: AsyncMock
+) -> None:
+    fake = FakeNotion()
+    api, _ = make(fake)
+    await _run(api)
+    store[(GUILD, "notion_views_created")] = "1"
+    await _run(api)
+    clear_ids.assert_not_awaited()
+    assert store[(GUILD, "notion_views_created")] == "1"
+
+
+async def test_fresh_set_lets_ensure_views_recreate_views(
+    store: dict, clear_ids: AsyncMock
+) -> None:
+    from bot.notion.views import ensure_views
+
+    fake = FakeNotion()
+    api, _ = make(fake)
+    with (
+        patch("bot.notion.views.get_value", new=_store_get(store)),
+        patch("bot.notion.views.set_value", new=_store_put(store)),
+    ):
+        first = await _run(api)
+        await ensure_views(api, object(), GUILD, first)  # type: ignore[arg-type]
+        fake.trash_data_source(first.events_ds)
+        second = await _run(api)
+        await ensure_views(api, object(), GUILD, second)  # type: ignore[arg-type]
+    names = {
+        (v.get("database_id"), v["name"]) for v in fake.views.values()
+    }
+    for db_id, name in (
+        (second.events_db, "Overview"), (second.slots_db, "Lineup"), (second.djs_db, "All DJs"),
+    ):
+        assert (db_id, name) in names
+
+
+def _store_get(data: dict) -> Any:
+    async def get(_pool: Any, guild_id: int, key: str) -> str | None:
+        return data.get((guild_id, key))
+    return get
+
+
+def _store_put(data: dict) -> Any:
+    async def put(_pool: Any, guild_id: int, key: str, value: str) -> None:
+        data[(guild_id, key)] = value
+    return put

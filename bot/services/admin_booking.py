@@ -166,7 +166,9 @@ class AdminBookingService:
                     )
             else:
                 try:
-                    await release_slot_lock(self.db, event_id, slot_index)
+                    await release_slot_lock(
+                        self.db, event_id, slot_index, expected_holder=dj_id
+                    )
                 except Exception:
                     logger.exception(
                         "admin book: release_slot_lock failed after Notion error"
@@ -267,7 +269,7 @@ class AdminBookingService:
 
         # Step 5: always release slot lock even if Notion write failed
         try:
-            await release_slot_lock(self.db, event_id, slot_index)
+            await release_slot_lock(self.db, event_id, slot_index, expected_holder=dj_id)
         except Exception:
             logger.exception("admin cancel: release_slot_lock failed")
 

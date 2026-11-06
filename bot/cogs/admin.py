@@ -120,6 +120,16 @@ class AdminCog(commands.Cog):
                     "Something went wrong — please try again.",
                     ephemeral=True,
                 )
+            else:
+                try:
+                    await inter.followup.send(
+                        "Something went wrong — please try again.",
+                        ephemeral=True,
+                    )
+                except disnake.HTTPException:
+                    logger.warning(
+                        "AdminCog: could not send the error followup", exc_info=True
+                    )
 
     @commands.slash_command(name="config", description="Bot configuration commands (admin only)")
     async def config_base(self, inter: disnake.ApplicationCommandInteraction) -> None:
@@ -708,6 +718,8 @@ class AdminCog(commands.Cog):
                 "Bot is not ready — please try again.", ephemeral=True
             )
             return
+        # Notion work can exceed Discord's 3 s response deadline: defer first.
+        await inter.response.defer(ephemeral=True)
         success, msg = await self.ctx.admin_booking_service.book_slot_override(
             admin_name=inter.author.name,
             dj_id=dj.id,
@@ -716,12 +728,12 @@ class AdminCog(commands.Cog):
             slot_num=slot,
         )
         if success:
-            await inter.response.send_message(
+            await inter.followup.send(
                 f"Done — {dj.mention} booked into slot {slot} of '{event}'.",
                 ephemeral=True,
             )
         else:
-            await inter.response.send_message(msg, ephemeral=True)
+            await inter.followup.send(msg, ephemeral=True)
 
     @admin_base.sub_command(
         name="cancel", description="Force-cancel a DJ's event booking"
@@ -747,6 +759,8 @@ class AdminCog(commands.Cog):
                 "Bot is not ready — please try again.", ephemeral=True
             )
             return
+        # Notion work can exceed Discord's 3 s response deadline: defer first.
+        await inter.response.defer(ephemeral=True)
         success, msg = await self.ctx.admin_booking_service.cancel_slot_override(
             admin_name=inter.author.name,
             dj_id=dj.id,
@@ -755,12 +769,12 @@ class AdminCog(commands.Cog):
             slot_num=slot,
         )
         if success:
-            await inter.response.send_message(
+            await inter.followup.send(
                 f"Done — {dj.mention}'s booking in slot {slot} of '{event}' cancelled.",
                 ephemeral=True,
             )
         else:
-            await inter.response.send_message(msg, ephemeral=True)
+            await inter.followup.send(msg, ephemeral=True)
 
     # ---------------------------------------------------------------------------
     # Story 6.4: /admin dj sub-command-group — DJ status management
@@ -981,19 +995,21 @@ class AdminCog(commands.Cog):
         event_name = "Rave Night"
         event_id = f"{event_date.isoformat()} {event_name}"
         assert inter.guild_id is not None
+        # Creating the event and its slot rows can exceed Discord's 3 s deadline.
+        await inter.response.defer(ephemeral=True)
         shape = await default_event_shape(self.ctx.db, inter.guild_id)
         try:
             event = await self.ctx.notion_client.create_event(
                 event_id, event_date, shape.start, shape.slot_count, shape.slot_minutes
             )
         except DuplicateEventError:
-            await inter.response.send_message(
+            await inter.followup.send(
                 "An event with that ID already exists.", ephemeral=True
             )
             return
         except NotionWriteError:
             logger.exception("add_event: create_event() failed for %s", event_date)
-            await inter.response.send_message(
+            await inter.followup.send(
                 "Failed to create event in Notion — please try again.", ephemeral=True
             )
             return
@@ -1010,6 +1026,6 @@ class AdminCog(commands.Cog):
             )
 
         event_unix = int(event.slot_start(0).timestamp())
-        await inter.response.send_message(
+        await inter.followup.send(
             f"Event created in Notion for <t:{event_unix}:f>.", ephemeral=True
         )

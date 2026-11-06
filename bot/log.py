@@ -172,6 +172,7 @@ class AdminLogService:
           "[ADMIN OVERRIDE] @AdminName cancelled @DJName from EventName at <t:...:f>"
 
         Plain text (not embed) — consistent with post_dm_transcript and post_intervention.
+        Mentions in the text never ping anyone (the text can carry Notion content).
         Never raises.
 
         [Source: epics.md#Story 6.3 AC1, AC2]
@@ -181,7 +182,7 @@ class AdminLogService:
             logger.warning("Admin override log (no channel): %s", content)
             return
         try:
-            await channel.send(content)
+            await channel.send(content, allowed_mentions=disnake.AllowedMentions.none())
         except disnake.DiscordException as exc:
             logger.error("Failed to post admin override log: %s", exc)
 

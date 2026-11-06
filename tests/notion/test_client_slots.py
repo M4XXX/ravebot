@@ -285,3 +285,38 @@ async def test_keep_first_dj_missing_row_raises(env):
     with pytest.raises(SlotRowMissingError):
         await client.keep_first_dj(event, 3)
     assert patches(fake) == []
+
+
+async def _event_with_duplicate_row(fake, client):
+    """Slot 1 has two rows; the lower page id is listed second."""
+    import dataclasses
+
+    from bot.notion.models import SlotInfo
+
+    event = await make_event(client)
+    first = event.slots[0]
+    low = "00000000-0000-0000-0000-000000000000"  # sorts below every fake id
+    fake.pages[low] = {**fake.pages[first.page_id], "id": low,
+                       "properties": dict(fake.pages[first.page_id]["properties"])}
+    slots = (first, SlotInfo(low, 1, None, None, None), *event.slots[1:])
+    return dataclasses.replace(event, slots=slots), first.page_id, low
+
+
+@pytest.mark.parametrize("call", ["assign", "clear", "force", "keep_first"])
+@pytest.mark.asyncio
+async def test_duplicate_slot_number_uses_lowest_page_id(env, call):
+    fake, client = env
+    event, high, low = await _event_with_duplicate_row(fake, client)
+    if call in ("clear", "keep_first"):
+        for page in (high, low):
+            set_dj(fake, page, "dj-1", "dj-2")
+    if call == "assign":
+        await client.assign_slot(event, 0, "dj-1")
+    elif call == "clear":
+        await client.clear_slot(event, 0, "dj-1")
+    elif call == "force":
+        await client.force_assign_slot(event, 0, "dj-1")
+    else:
+        await client.keep_first_dj(event, 0)
+    touched = {path for _, path, _ in fake.requests if path in (f"/pages/{high}", f"/pages/{low}")}
+    assert touched == {f"/pages/{low}"}

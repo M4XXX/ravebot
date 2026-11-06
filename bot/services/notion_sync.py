@@ -14,8 +14,11 @@ and applies the actions:
                 logged. To replace a booked DJ by hand, clear the cell first, wait
                 for one sync cycle (the slot is freed), then enter the new DJ.
 - create_slots/trim_slots: Slots rows follow the event's slot count.
-- skip:         a row above the slot count that holds a DJ; logged once per
-                process, never posted to the admin channel.
+- skip:         a row above the slot count that holds a DJ; logged (WARNING) and
+                posted to the admin log once per process.
+- accept_shape: the event's Start / Slot length / Slots are stored as accepted.
+- restore_shape: Start or Slot length changed while a slot holds a DJ; the
+                stored values are written back to the Events row and logged.
 
 Every action runs in its own try/except: one failure never stops the others,
 and run_cycle only raises when the initial Notion read or lock query fails.
@@ -30,6 +33,7 @@ from bot.db.bookings import (
     init_event_slots,
     release_slot_lock,
 )
+from bot.db.event_shapes import get_event_shapes, upsert_event_shape
 from bot.notion.client import NotionWriteError
 from bot.services.dj_pages import ensure_dj_page
 from bot.services.dm import dm_user
@@ -65,10 +69,15 @@ class NotionSyncService:
         self._skips_logged: set[tuple[str, str]] = set()
 
     async def run_cycle(self, guild_id: int) -> list[SyncAction]:
-        """Plan and apply one sync cycle; return the planned actions."""
+        """Plan and apply one sync cycle; return the planned actions.
+
+        Raises only if the Notion read or the lock/shape queries fail.
+        """
         events = await self.notion_client.list_events()
-        locks = await get_slot_locks_for_events(self.db, [e.page_id for e in events])
-        actions = plan_sync(events, locks, datetime.datetime.now(datetime.UTC))
+        page_ids = [e.page_id for e in events]
+        locks = await get_slot_locks_for_events(self.db, page_ids)
+        shapes = await get_event_shapes(self.db, page_ids)
+        actions = plan_sync(events, locks, datetime.datetime.now(datetime.UTC), shapes)
         for action in actions:
             try:
                 await self._apply(action)
@@ -122,7 +131,11 @@ class NotionSyncService:
         elif action.kind == "trim_slots":
             await self._trim_slots(action)
         elif action.kind == "skip":
-            self._skip(action)
+            await self._skip(action)
+        elif action.kind == "accept_shape":
+            await self._accept_shape(action)
+        elif action.kind == "restore_shape":
+            await self._restore_shape(action)
 
     async def _adopt(self, action: SyncAction) -> None:
         event, index, dj = action.event, action.slot_index, action.discord_id
@@ -141,7 +154,7 @@ class NotionSyncService:
     async def _free(self, action: SyncAction) -> None:
         event, index, dj = action.event, action.slot_index, action.discord_id
         assert index is not None and dj is not None
-        await release_slot_lock(self.db, event.page_id, index)
+        await release_slot_lock(self.db, event.page_id, index, expected_holder=dj)
         await dm_user(
             self.bot,
             dj,
@@ -165,7 +178,8 @@ class NotionSyncService:
                 "the first DJ was kept"
             )
             return
-        name = str(self.bot.get_user(holder) or holder)
+        user = self.bot.get_user(holder)
+        name = user.display_name if user is not None else ""
         try:
             page_id = await ensure_dj_page(self.db, self.notion_client, holder, name)
         except Exception:
@@ -212,9 +226,36 @@ class NotionSyncService:
             return
         await self._log_line(action.detail)
 
-    def _skip(self, action: SyncAction) -> None:
+    async def _skip(self, action: SyncAction) -> None:
         key = (action.event.page_id, action.detail)
         if key in self._skips_logged:
             return
         self._skips_logged.add(key)
         logger.warning("Notion sync: %s", action.detail)
+        if self.log_service is not None:
+            await self.log_service.post_admin_override(f"{_PREFIX} {action.detail}")
+
+    async def _accept_shape(self, action: SyncAction) -> None:
+        event = action.event
+        await upsert_event_shape(
+            self.db,
+            event.page_id,
+            event.start.strftime("%H:%M"),
+            event.slot_minutes,
+            event.slot_count,
+        )
+        logger.info("Notion sync: %s", action.detail)
+
+    async def _restore_shape(self, action: SyncAction) -> None:
+        event = action.event
+        assert action.restore is not None
+        start, minutes = action.restore
+        try:
+            await self.notion_client.restore_event_shape(event, start, minutes)
+        except Exception as exc:
+            await self._notion_failed(action, exc)
+            return
+        await self._log_line(
+            f"Start/Slot length of {event.event_id} cannot change while DJs are booked; "
+            f"restored {start.strftime('%H:%M')} / {minutes} min, not applied"
+        )

@@ -31,50 +31,111 @@ Before deploying RaveBot you need:
 
 ## 2. Notion Setup
 
-RaveBot uses a **single Notion database** for both event pages and DJ profile pages. The same database serves both purposes — unused properties are simply left blank per page type.
+RaveBot keeps its events, slots and DJs in three Notion databases. You do not build them yourself: you give the bot one empty page, and on its first start the bot creates the databases and views under that page.
 
 ### 2.1 Create an Integration
 
-1. Go to [notion.so/my-integrations](https://www.notion.so/my-integrations)
-2. Click **New integration**
-3. Give it a name (e.g. "RaveBot"), select your workspace, set type to **Internal**
-4. Click **Submit**, then copy the **Internal Integration Secret** (starts with `secret_`)
+1. Go to [notion.so/my-integrations](https://www.notion.so/my-integrations) and click **New integration**.
+2. Name it (e.g. "RaveBot"), select your workspace and set the type to **Internal**.
+3. Under **Capabilities**, enable **Read content**, **Insert content** and **Update content**.
+4. Save, then copy the **Internal Integration Secret**. This is your `NOTION_API_KEY`.
 
-### 2.2 Create the Events + DJs Database
+### 2.2 Create and Share the Parent Page
 
-Create a new full-page database in Notion. This single database will hold both your rave event pages and your DJ profile pages.
+1. Create one new, empty page in your workspace (e.g. "RaveBot").
+2. Open the page menu (`...` top right) → **Connections** → add your integration.
 
-### 2.3 Share the Database with Your Integration
+The bot can only see pages that are shared with the integration. If this step is missing, the bot stops at startup with: *"Cannot use the Notion parent page: share the page with your integration (page menu > Connections) and check NOTION_API_KEY and NOTION_PARENT_PAGE_ID."*
 
-Open the database page in Notion, click the `...` menu (top right), select **Add connections**, and choose your integration.
+### 2.3 Find the Parent Page ID
 
-### 2.4 Required Database Properties
+Open the page in Notion (or **Share** → **Copy link**). The URL looks like:
 
-Add the following properties to your database:
+```
+https://www.notion.so/yourworkspace/RaveBot-0123456789abcdef0123456789abcdef
+```
+
+The page ID is the 32-character hex string at the end of the URL (after the last `-`, before any `?`). Set it as `NOTION_PARENT_PAGE_ID`.
+
+### 2.4 What the Bot Creates
+
+On the first start the bot creates three databases under the parent page:
+
+**Events** — one row per event
 
 | Property | Type | Notes |
 |---|---|---|
-| `Name` | Title | Auto-created on every Notion database — already present |
-| `Date` | Date | Event date (ISO format). Populated on event pages. |
-| `Slots` | Number | Validated at bot startup — bot logs a warning if missing. **Not used for booking logic** (slot assignments tracked in PostgreSQL). Add it as Number type to silence the startup warning. |
-| `DJs` | Relation | Self-relation within this same database. Links event pages to DJ profile pages. When creating, select the same database as the related database. |
-| `Discord ID` | Text (Rich Text) | Stored on DJ profile pages to link Discord accounts. |
+| `ID` | Title | Unique event ID, format `YYYY-MM-DD <name>`, e.g. `2026-11-14 Rave Night` |
+| `Date` | Date | Two events may share a date |
+| `Status` | Select | Planning not started, Planning stage, Ready, Done, Canceled |
+| `Genre` | Text | Optional |
+| `Notes` | Text | Optional |
+| `Slots` | Number | Number of DJ slots |
+| `Start` | Text | Start of slot 1, `HH:MM` (24 h) |
+| `Slot length` | Number | Minutes per slot |
 
-**How the dual-purpose pattern works:** Event pages populate `Date`, `Slots`, and `DJs`. DJ profile pages populate `Discord ID`. Each page type simply leaves the other properties empty.
+**Slots** — one row per slot of an event
 
-**About `Slots`:** The property is listed in the bot's startup schema validation (`main.py`). If missing, the bot logs a warning to the admin channel but continues running. Booking slots are tracked in the PostgreSQL `slot_locks` table — the Notion `Slots` value is not read by any booking logic.
+| Property | Type | Notes |
+|---|---|---|
+| `Event` | Relation → Events | The event this slot belongs to |
+| `Slot number` | Number | 1 to `Slots` |
+| `DJ` | Relation → DJs | Empty = open slot |
+| `Time` | Formula | Event start + (slot number − 1) × slot length |
+| `Slot status` | Formula | Open or Booked |
 
-**About the `DJs` relation:** This is a self-relation. In the Notion UI, when you create a Relation property and are asked "Select a database to relate to", choose the same database you are editing. This allows event pages to link to DJ profile pages within the same database.
+The Slots database also has a few helper columns (`Name`, `Event start`, `Event slot length`, `Event date`) that the formulas and rollups need. Leave them alone.
 
-### 2.5 Finding Your Database ID
+**DJs** — one row per DJ
 
-Open the database in Notion. The URL looks like:
+| Property | Type | Notes |
+|---|---|---|
+| `DJ name` | Title | |
+| `Discord name` | Text | Refreshed by the bot when it changes |
+| `Discord ID` | Text | Links the row to a Discord account; empty for guest DJs |
+| `VRChat name` | Text | Optional |
+| `Logo` | Files | Optional |
+| `Link` | URL | Primary stream link |
+| `Alternative link` | URL | Optional |
+| `Events booked` | Rollup | Events where the DJ holds at least one slot |
+| `Last booked` | Rollup | Latest event date of the DJ's slots |
 
-```
-https://www.notion.so/yourworkspace/32characterhexid?v=viewid
-```
+It also creates three views:
 
-The database ID is the 32-character hex string between the last `/` and the `?v=` query parameter.
+- **Overview** (Events): sorted by Date, newest first.
+- **Lineup** (Slots): grouped by event (newest first), sorted by slot number, showing Slot number, Time and DJ.
+- **All DJs** (DJs): sorted by Last booked, showing name, Discord name, VRChat name, links, Events booked and Last booked.
+
+The bot never recreates what already exists. On every start it checks the databases, adds missing properties and leaves your own views, columns and edits in place. The three views are created once; a view you delete later is not re-created, except when the bot creates a fresh set of databases (see 2.7), which gets new views. A DJ gets a row in DJs when they onboard or are booked; if that row was deleted, the bot creates a new one the next time the DJ books or cancels.
+
+### 2.5 Adding an Event by Hand
+
+The bot keeps the configured number of future events itself (see `/config set lookahead-count`). To add one by hand, create a row in **Events** and fill in:
+
+- `ID` — `YYYY-MM-DD <name>`, e.g. `2026-12-31 New Year Rave`. Must be unique.
+- `Date`
+- `Slots` — e.g. `6`
+- `Start` — `HH:MM`, e.g. `20:00`
+- `Slot length` — minutes, e.g. `60`
+
+On the next poll (every five minutes) the bot creates the Slots rows for the event. Later changes to `Slots`, `Start` or `Slot length` follow the rules in 2.6.
+
+### 2.6 Editing Bookings in Notion
+
+Notion is the source of truth for who plays which slot. The bot picks up hand edits on its next poll (every five minutes):
+
+- **Book by hand:** pick a DJ in the `DJ` cell of an open slot. The bot treats it as a booking: the slot leaves the booking menu and the DJ gets a DM.
+- **Free a slot by hand:** clear the `DJ` cell. The bot frees the slot like a cancellation (on the next poll; a slot booked in the last two minutes is left alone) and the DJ gets a DM.
+- **Replace a DJ:** clear the cell first, wait until the slot is freed, then enter the new DJ. Overwriting a booked DJ directly is reverted.
+- **Conflicts:** a different DJ entered on a booked slot, or several DJs in one cell, is reverted to the bot's booking and logged in the admin log channel.
+- **Guest DJs:** a DJ row without a `Discord ID` can be booked by hand on an open slot. It gets no DM; the slot just shows the name. A guest entered over a booked DJ is reverted like any other conflict.
+- **Start and Slot length:** a change is applied while no slot of the event has a DJ. Once a slot has a DJ, the bot writes the previous values back on the next poll and logs it in the admin log channel.
+- **Slots:** raising the number adds empty slot rows. Lowering it removes the empty rows above the new number; a row above it that still has a DJ is kept and logged once in the admin log channel.
+- **Status:** the event `Status` is yours. The bot only reads it.
+
+### 2.7 If Databases Were Deleted
+
+If one of the bot's databases is deleted or moved to the trash, the bot creates a fresh set of all three databases and their views under the parent page on its next start and logs a warning. Data in the old databases stays where it is; the bot does not copy it over. DJ rows are created again in the new DJs database when DJs book.
 
 ---
 
@@ -86,8 +147,8 @@ Copy `.env.example` to `.env` and fill in your values. **Never commit `.env` to 
 |---|---|---|---|
 | `DISCORD_BOT_TOKEN` | Yes | — | Bot token from Discord Developer Portal |
 | `POSTGRES_URL` | Yes | — | PostgreSQL connection string: `postgresql://user:pass@host:5432/dbname` |
-| `NOTION_API_KEY` | Yes | — | Notion integration secret (starts with `secret_`) |
-| `NOTION_PARENT_PAGE_ID` | Yes | — | ID of an empty Notion page shared with the integration; the bot creates its databases under it |
+| `NOTION_API_KEY` | Yes | — | Internal Integration Secret of your Notion integration (see [section 2.1](#21-create-an-integration)) |
+| `NOTION_PARENT_PAGE_ID` | Yes | — | 32-character ID of an empty Notion page shared with the integration; the bot creates its databases under it |
 | `ADMIN_USER_IDS` | Yes | — | Comma-separated Discord user IDs for admin slash commands |
 | `LOG_LEVEL` | No | `INFO` | Log verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 | `DB_POOL_MIN` | No | `5` | Minimum asyncpg connection pool size |
@@ -95,7 +156,7 @@ Copy `.env.example` to `.env` and fill in your values. **Never commit `.env` to 
 
 **Finding your Discord user ID:** Enable Developer Mode in Discord (**Settings** → **Advanced** → **Developer Mode**), then right-click your username and select **Copy User ID**.
 
-**Finding your Notion database ID:** See [section 2.5](#25-finding-your-database-id) above.
+**Finding your Notion parent page ID:** See [section 2.3](#23-find-the-parent-page-id) above.
 
 ---
 
@@ -148,7 +209,7 @@ In the Add Container form, click **"Add another Path, Port, Variable, Label or D
 |---|---|
 | `DISCORD_BOT_TOKEN` | `your_bot_token` |
 | `POSTGRES_URL` | `postgresql://ravebot:pass@192.168.1.100:5432/ravebot` |
-| `NOTION_API_KEY` | `secret_abc123...` |
+| `NOTION_API_KEY` | `your_notion_integration_secret` |
 | `NOTION_PARENT_PAGE_ID` | `your_notion_parent_page_id` |
 | `ADMIN_USER_IDS` | `123456789012345678` |
 | `LOG_LEVEL` | `INFO` |
@@ -210,7 +271,7 @@ Create a `.env` file in the same directory (fill in your values):
 
 ```env
 DISCORD_BOT_TOKEN=your_bot_token_here
-NOTION_API_KEY=secret_your_notion_key
+NOTION_API_KEY=your_notion_integration_secret
 NOTION_PARENT_PAGE_ID=your_notion_parent_page_id
 ADMIN_USER_IDS=your_discord_user_id
 LOG_LEVEL=INFO
@@ -261,7 +322,7 @@ After the bot comes online:
 - [ ] `/config set dj-channel #your-channel` — where the lineup post is published
 - [ ] `/config set log-channel #your-channel` — where admin alerts and DM transcripts go
 - [ ] Verify the bot has **Send Messages** and **Embed Links** permissions in both channels
-- [ ] Check the admin log channel for any Notion schema warnings (missing properties)
+- [ ] Check that the Events, Slots and DJs databases appeared under your Notion parent page
 
 **Optional tuning (defaults shown):**
 
@@ -297,16 +358,24 @@ The bot cannot connect to PostgreSQL at startup. Check:
 
 Same as above — the asyncpg pool could not be opened. Fix the connection string and restart.
 
-### Admin log channel shows a Notion schema warning on startup
+### Bot exits with "Cannot use the Notion parent page"
 
-The startup validation found a missing database property. The most common cause is a missing `Slots` (Number) property. Add the missing property to your Notion database (see [section 2.4](#24-required-database-properties)) and restart the bot.
+At startup the bot could not create or read its Notion databases. Check:
+- The parent page is shared with the integration (page menu → **Connections**)
+- `NOTION_API_KEY` is the Internal Integration Secret of that integration
+- `NOTION_PARENT_PAGE_ID` is the 32-character ID at the end of the page URL (see [section 2.3](#23-find-the-parent-page-id))
+- The integration has the Read, Insert and Update content capabilities
+- The Notion API is reachable from the bot container
 
-### "Could not fetch Notion database schema"
+The text after "Cause:" names the failing request. Fix the setting and restart the bot.
 
-Check:
-- `NOTION_API_KEY` is correct (starts with `secret_`)
-- `NOTION_PARENT_PAGE_ID` is the ID of an empty Notion page; the bot creates its databases under it
-- The integration has been shared with that page (page → `...` → **Add connections**)
+### Bot exits at startup and the cause names a property with the wrong type
+
+Someone changed the type of a property the bot needs (e.g. `Slots` from Number to Text). The bot never changes a property type back by itself. Change the type back to the one listed in [section 2.4](#24-what-the-bot-creates) and restart the bot.
+
+### A slot I edited in Notion went back to the old DJ
+
+The bot reverts a hand entry on a slot it has booked for another DJ. Clear the `DJ` cell first, wait for the next poll, then enter the new DJ (see [section 2.6](#26-editing-bookings-in-notion)).
 
 ### Admin log channel shows no messages
 

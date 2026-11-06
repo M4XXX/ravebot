@@ -191,7 +191,8 @@ async def test_book_slot_override_notion_write_fails(monkeypatch, error):
     assert success is False
     assert msg == "Notion write failed after 3 attempts — please try again."
     force.assert_awaited_once()
-    release.assert_awaited_once_with(svc.db, EVENT_PAGE_ID, 0)  # slot lock must be undone
+    # slot lock must be undone
+    release.assert_awaited_once_with(svc.db, EVENT_PAGE_ID, 0, expected_holder=42)
     svc.log_service.post_admin_override.assert_not_awaited()  # no log on failure
 
 
@@ -212,7 +213,7 @@ async def test_book_slot_override_no_dj_page_fails_and_releases(monkeypatch, ens
 
     assert success is False
     assert msg == "Notion write failed after 3 attempts — please try again."
-    release.assert_awaited_once_with(svc.db, EVENT_PAGE_ID, 0)
+    release.assert_awaited_once_with(svc.db, EVENT_PAGE_ID, 0, expected_holder=42)
     svc.notion_client.force_assign_slot.assert_not_awaited()
     svc.log_service.post_admin_override.assert_not_awaited()
 
@@ -260,7 +261,7 @@ async def test_book_slot_override_failure_same_dj_previous_holder_releases(monke
 
     assert success is False
     force.assert_awaited_once_with(svc.db, EVENT_PAGE_ID, 0, 42)
-    release.assert_awaited_once_with(svc.db, EVENT_PAGE_ID, 0)
+    release.assert_awaited_once_with(svc.db, EVENT_PAGE_ID, 0, expected_holder=42)
 
 
 @pytest.mark.asyncio
@@ -301,7 +302,7 @@ async def test_book_slot_override_holder_read_fails_falls_back_to_release(monkey
     )
 
     assert success is False
-    release.assert_awaited_once_with(svc.db, EVENT_PAGE_ID, 0)
+    release.assert_awaited_once_with(svc.db, EVENT_PAGE_ID, 0, expected_holder=42)
 
 
 @pytest.mark.asyncio
@@ -397,7 +398,7 @@ async def test_cancel_slot_override_success(monkeypatch):
     ensure.assert_awaited_once_with(svc.db, svc.notion_client, 42, "DJ Scope")
     event = svc.notion_client.list_events.return_value[0]
     svc.notion_client.clear_slot.assert_awaited_once_with(event, 1, "dj-notion-id")
-    release.assert_awaited_once_with(svc.db, EVENT_PAGE_ID, 1)
+    release.assert_awaited_once_with(svc.db, EVENT_PAGE_ID, 1, expected_holder=42)
     slot_unix = int(datetime.datetime(2026, 6, 14, 21, 0, tzinfo=datetime.UTC).timestamp())
     dm = svc.bot.get_user.return_value.send.call_args[0][0]
     assert dm == (
@@ -457,7 +458,7 @@ async def test_cancel_slot_override_notion_error_still_releases_lock(monkeypatch
 
     assert success is False
     assert msg == "Notion write failed — slot lock released but Notion may be out of sync."
-    release.assert_awaited_once_with(svc.db, EVENT_PAGE_ID, 0)  # MUST be freed
+    release.assert_awaited_once_with(svc.db, EVENT_PAGE_ID, 0, expected_holder=42)  # MUST be freed
     svc.log_service.post_admin_override.assert_not_awaited()  # no log on failure
 
 
@@ -478,7 +479,7 @@ async def test_cancel_slot_override_no_dj_page_still_releases_lock(monkeypatch, 
     assert success is False
     assert msg == "Notion write failed — slot lock released but Notion may be out of sync."
     svc.notion_client.clear_slot.assert_not_awaited()
-    release.assert_awaited_once_with(svc.db, EVENT_PAGE_ID, 0)
+    release.assert_awaited_once_with(svc.db, EVENT_PAGE_ID, 0, expected_holder=42)
 
 
 @pytest.mark.asyncio
@@ -494,7 +495,7 @@ async def test_cancel_slot_override_notion_row_held_by_other_dj_still_succeeds(m
 
     assert success is True
     assert msg == ""
-    release.assert_awaited_once_with(svc.db, EVENT_PAGE_ID, 0)
+    release.assert_awaited_once_with(svc.db, EVENT_PAGE_ID, 0, expected_holder=42)
 
 
 @pytest.mark.asyncio

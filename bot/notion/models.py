@@ -27,6 +27,9 @@ PROP_DJ_DISCORD_ID = "Discord ID"
 
 _START_RE = re.compile(r"^(\d{1,2}):(\d{2})$")
 
+# Upper bound for an event's slot count (Notion's Slots number is free text).
+MAX_SLOTS = 100
+
 
 @dataclass(frozen=True)
 class SlotInfo:
@@ -147,6 +150,9 @@ def parse_event(page: dict) -> EventInfo | None:
     slots = _number(page, PROP_EVENT_SLOTS)
     if slots is None or slots <= 0:
         reject(f"{PROP_EVENT_SLOTS} is empty or not positive")
+        return None
+    if slots > MAX_SLOTS:
+        reject(f"{PROP_EVENT_SLOTS} is {slots:g}, more than {MAX_SLOTS}")
         return None
     length = _number(page, PROP_EVENT_SLOT_LENGTH)
     if length is None or length <= 0:

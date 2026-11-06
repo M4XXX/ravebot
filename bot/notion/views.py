@@ -3,7 +3,8 @@
 ``ensure_views`` lists the existing views of each database by name and creates
 only the missing ones. Existing views (including Notion's "Default view") are
 never modified or deleted. The ``notion_views_created`` marker is set only when
-all three exist. Request shapes come from the API spike
+all three exist; ensure_schema clears it when it creates a fresh set of
+databases. Request shapes come from the API spike
 (tests/notion/fixtures/NOTES.md, views_real.json).
 """
 import logging
@@ -13,11 +14,11 @@ import asyncpg
 
 from bot.db.config import get_value, set_value
 from bot.notion.api import NotionApi
-from bot.notion.schema import NotionIds
+from bot.notion.schema import VIEWS_MARKER_KEY, NotionIds
 
 logger = logging.getLogger(__name__)
 
-_MARKER_KEY = "notion_views_created"
+_MARKER_KEY = VIEWS_MARKER_KEY
 
 _DJ_COLUMNS = (
     "DJ name", "Discord name", "VRChat name", "Link", "Alternative link",

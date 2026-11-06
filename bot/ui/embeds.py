@@ -127,6 +127,14 @@ def _slot_counts(event: EventInfo) -> tuple[int, int, int]:
 _MAX_FIELDS = 25
 _SHOWN_WHEN_CAPPED = _MAX_FIELDS - 1
 _MAX_DJ_NAME = 100
+_MAX_FIELD_NAME = 256  # Discord's limit for an embed field name
+
+
+def _field_name(text: str) -> str:
+    """Cap text used as an embed field name at Discord's 256 characters."""
+    if len(text) <= _MAX_FIELD_NAME:
+        return text
+    return text[: _MAX_FIELD_NAME - 1] + "\u2026"
 
 
 def _safe_dj_name(name: str | None) -> str:
@@ -164,7 +172,7 @@ class MissionRosterEmbed(disnake.Embed):
             booked, total, slots_open = _slot_counts(event)
             date_field = f"<t:{int(event.slot_start(0).timestamp())}:f>"
             field_value = f"{date_field}\n{booked} confirmed · {slots_open} open"
-            self.add_field(name=event.event_id, value=field_value, inline=False)
+            self.add_field(name=_field_name(event.event_id), value=field_value, inline=False)
         if capped:
             self.add_field(
                 name="More events",
@@ -177,9 +185,10 @@ class MissionRosterEmbed(disnake.Embed):
 class MissionOverviewEmbed(disnake.Embed):
     """Deep Space Blue embed — per-event slot display for Show Lineup flow.
 
-    Shows a single upcoming event with each slot's time (computed as
-    event_start + slot_index * 60 min) and booking status (Confirmed/Open).
-    DJ names are count-based at this stage — individual DJ lookup deferred to Story 4.x.
+    Shows a single upcoming event with each slot's start (event Start plus
+    slot_index * the event's Slot length) and the slot's DJ name, or "Open".
+    The description counts booked and open slots; more than 25 slots are
+    summarised in a final "More slots" field.
 
     Used by: FallbackMenuView.show_lineup() (Story 3.3)
     Future: proactive outreach, self-service booking (Epic 4, 5)

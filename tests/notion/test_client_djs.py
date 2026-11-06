@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from bot.notion.api import NotionApi
-from bot.notion.client import NotionClient
+from bot.notion.client import NotionClient, NotionWriteError
 from bot.notion.schema import NotionIds
 from tests.notion.fake_notion import FakeNotion
 
@@ -135,3 +135,38 @@ def test_migration_0007_clears_notion_dj_page_ids():
     with patch.object(mod, "op") as op:
         mod.downgrade()
     assert not op.method_calls
+
+
+async def test_dj_page_alive_true_for_live_page(env):
+    fake, client, nids = env
+    pid = await client.upsert_dj(1, "D", "d", **KW)
+    assert await client.dj_page_alive(pid) is True
+    assert fake.requests[-1][:2] == ("GET", f"/pages/{pid}")
+
+
+async def test_dj_page_alive_false_for_trashed_page(env):
+    fake, client, nids = env
+    pid = await client.upsert_dj(1, "D", "d", **KW)
+    fake.trash_page(pid)
+    assert await client.dj_page_alive(pid) is False
+
+
+async def test_dj_page_alive_false_for_archived_page(env):
+    fake, client, nids = env
+    pid = await client.upsert_dj(1, "D", "d", **KW)
+    fake.pages[pid]["is_archived"] = True
+    assert await client.dj_page_alive(pid) is False
+
+
+async def test_dj_page_alive_false_for_missing_page_without_admin_error(env):
+    fake, client, nids = env
+    assert await client.dj_page_alive("no-such-page") is False
+    client._api.log.post_error.assert_not_awaited()
+
+
+async def test_dj_page_alive_other_error_raises(env):
+    fake, client, nids = env
+    pid = await client.upsert_dj(1, "D", "d", **KW)
+    fake.fail_once("GET", f"/pages/{pid}", 403)
+    with pytest.raises(NotionWriteError):
+        await client.dj_page_alive(pid)

@@ -6,18 +6,23 @@ actions a sync service must apply. It performs no I/O.
 Keys: a lock is keyed by (event.page_id, slot_index); slot_index is 0-based and
 the Notion slot number is slot_index + 1.
 """
+import dataclasses
 import datetime
 from dataclasses import dataclass
 from typing import Literal
 
 from bot.db.bookings import SlotLock
+from bot.db.event_shapes import EventShapeRow
 from bot.notion.models import EventInfo, SlotInfo
 
 # A lock younger than this is a booking in flight: the bot may have taken the
 # Postgres lock but not yet written Notion, so an empty Notion row is not a removal.
 FREE_GRACE = datetime.timedelta(seconds=120)
 
-SyncKind = Literal["adopt", "free", "revert", "create_slots", "trim_slots", "skip"]
+SyncKind = Literal[
+    "adopt", "free", "revert", "create_slots", "trim_slots", "skip",
+    "accept_shape", "restore_shape",
+]
 
 
 @dataclass(frozen=True)
@@ -33,7 +38,8 @@ class SyncAction:
       revert        Rewrite the Notion row's DJ relation; never touches Postgres.
                     - ``discord_id`` set: the Postgres holder. Write exactly that DJ
                       (look up the holder's DJ page) into the row, replacing whatever
-                      Notion holds (another DJ and/or extra DJs). Log it.
+                      Notion holds (another DJ, a guest DJ without Discord ID and/or
+                      extra DJs). Log it.
                     - ``discord_id`` None: the "extras" case. The row holds more than one
                       DJ and Postgres has no holder. Keep the first DJ
                       (``row.dj_page_id`` of ``event.slots`` entry with number
@@ -47,7 +53,13 @@ class SyncAction:
                     (all above slot_count, no DJ, no Postgres holder).
       skip          A row above slot_count that holds a DJ or a Postgres holder; it is
                     not trimmed. slot_index = number - 1, ``numbers`` = (number,).
-                    Log only.
+                    Log only (admin log once per process).
+      accept_shape  Event-level. No stored shape yet, or the event's Start, Slot length
+                    or Slots differ from the stored shape and no Start/Slot length
+                    change is blocked. Store the event's current shape.
+      restore_shape Event-level. Start or Slot length differ from the stored shape and
+                    a slot row of the event holds a DJ. Write ``restore`` (stored
+                    start, slot minutes) back to the Events row; log it.
 
     ``detail`` is a human-readable English reason for the log.
     """
@@ -58,6 +70,7 @@ class SyncAction:
     detail: str
     discord_id: int | None = None
     numbers: tuple[int, ...] = ()
+    restore: tuple[datetime.time, int] | None = None
 
 
 def _holder(
@@ -105,7 +118,14 @@ def _slot_action(
             discord_id=holder,
         )
     if row.discord_id is None:
-        return None  # guest DJ: Notion only, no lock, no DM
+        if holder is None:
+            return None  # guest DJ: Notion only, no lock, no DM
+        return SyncAction(
+            "revert", event, index,
+            f"{label}: guest DJ {row.dj_name or row.dj_page_id} entered over Postgres "
+            f"holder {holder}, restoring the holder",
+            discord_id=holder,
+        )
     if holder is None:
         return SyncAction(
             "adopt", event, index,
@@ -122,11 +142,57 @@ def _slot_action(
     )
 
 
+def _hhmm(value: datetime.time) -> str:
+    return value.strftime("%H:%M")
+
+
+def _shape_action(
+    event: EventInfo, stored: EventShapeRow | None
+) -> SyncAction | None:
+    """accept_shape / restore_shape for the event, or None if the shape is unchanged."""
+    if stored is None:
+        return SyncAction(
+            "accept_shape", event, None,
+            f"{event.event_id}: storing shape {_hhmm(event.start)}, "
+            f"{event.slot_minutes} min, {event.slot_count} slots",
+        )
+    timing_changed = (
+        stored.start != _hhmm(event.start) or stored.slot_minutes != event.slot_minutes
+    )
+    if timing_changed and any(row.dj_page_id is not None for row in event.slots):
+        return SyncAction(
+            "restore_shape", event, None,
+            f"{event.event_id}: Start/Slot length changed to {_hhmm(event.start)} / "
+            f"{event.slot_minutes} min while DJs are booked, restoring "
+            f"{stored.start} / {stored.slot_minutes} min",
+            restore=(datetime.time.fromisoformat(stored.start), stored.slot_minutes),
+        )
+    if timing_changed or stored.slot_count != event.slot_count:
+        return SyncAction(
+            "accept_shape", event, None,
+            f"{event.event_id}: shape changed to {_hhmm(event.start)}, "
+            f"{event.slot_minutes} min, {event.slot_count} slots",
+        )
+    return None
+
+
 def _plan_event(
-    event: EventInfo, locks: dict[tuple[str, int], SlotLock], now: datetime.datetime
+    event: EventInfo,
+    locks: dict[tuple[str, int], SlotLock],
+    now: datetime.datetime,
+    shapes: dict[str, EventShapeRow] | None,
 ) -> list[SyncAction]:
     rows = _rows_by_number(event)
     actions: list[SyncAction] = []
+
+    if shapes is not None:
+        shape_action = _shape_action(event, shapes.get(event.page_id))
+        if shape_action is not None:
+            actions.append(shape_action)
+            if shape_action.restore is not None:
+                # The change is not applied: later actions (DM times) use the stored shape.
+                start, minutes = shape_action.restore
+                event = dataclasses.replace(event, start=start, slot_minutes=minutes)
 
     missing = tuple(n for n in range(1, event.slot_count + 1) if n not in rows)
     if missing:
@@ -173,15 +239,18 @@ def plan_sync(
     events: list[EventInfo],
     locks: dict[tuple[str, int], SlotLock],
     now: datetime.datetime,
+    shapes: dict[str, EventShapeRow] | None = None,
 ) -> list[SyncAction]:
     """Return the sync actions, ordered by event (date, start, ID) then slot.
 
-    Within one event: create_slots first, then slot actions by index, then skips
-    above slot_count by number, then trim_slots. Locks of events not in ``events``
-    and of indexes outside 0..slot_count-1 without a row are ignored.
+    Within one event: accept_shape/restore_shape first, then create_slots, then
+    slot actions by index, then skips above slot_count by number, then trim_slots.
+    Locks of events not in ``events`` and of indexes outside 0..slot_count-1
+    without a row are ignored. ``shapes`` holds the stored shapes keyed by event
+    page id (missing = first sight); None skips the shape check entirely.
     """
     ordered = sorted(events, key=lambda e: (e.date, e.start, e.event_id, e.page_id))
     actions: list[SyncAction] = []
     for event in ordered:
-        actions.extend(_plan_event(event, locks, now))
+        actions.extend(_plan_event(event, locks, now, shapes))
     return actions

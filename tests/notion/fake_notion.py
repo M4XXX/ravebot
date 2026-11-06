@@ -19,10 +19,13 @@ values written to pages are stored without validation; title/rich_text items get
 ``plain_text`` added. Dual relations
 create the reverse property on the target data source; a PATCH from
 single_property to dual_property creates it too. Select options are not
-validated. Unknown routes return 404 object_not_found. Failure injection:
+validated. Formulas and rollups are rejected (400 "Type error with formula" / rollup message)
+when they read a property that does not exist before the request, as the real
+API does. Unknown routes return 404 object_not_found. Failure injection:
 ``ignore_query_filters`` (True returns unfiltered rows),
 ``trash_data_source(id)`` makes a data source answer 404, ``mark_trashed(id)``
-reports ``in_trash: true``, ``fail_once(method, prefix, status, skip)`` fails
+reports ``in_trash: true``, ``trash_page(id)`` trashes a page (deleting it from
+``pages`` makes it answer 404), ``fail_once(method, prefix, status, skip)`` fails
 one matching request.
 """
 import json
@@ -88,6 +91,10 @@ class FakeNotion:
     def mark_trashed(self, ds_id: str) -> None:
         """Keep a data source but report ``in_trash: true`` on GET."""
         self.data_sources[ds_id]["in_trash"] = True
+
+    def trash_page(self, page_id: str) -> None:
+        """Move a page to the trash: excluded from queries, GET returns ``in_trash: true``."""
+        self.pages[page_id]["in_trash"] = True
 
     def fail_once(self, method: str, prefix: str, status: int = 400, skip: int = 0) -> None:
         """Fail one future request matching method and path prefix.
@@ -256,7 +263,35 @@ class FakeNotion:
         self.views[view["id"]] = view
         return httpx.Response(200, json=db)
 
+    def _validate_dependencies(
+        self, ds: dict[str, Any], props: dict[str, Any]
+    ) -> httpx.Response | None:
+        """Mimic the real API: formulas/rollups may only read properties that
+        already exist before this request (same-request additions do not count)."""
+        for name, spec in props.items():
+            if spec is None:
+                continue
+            if "formula" in spec:
+                refs = re.findall(r'prop\("([^"]+)"\)', spec["formula"]["expression"])
+                if any(r not in ds["properties"] for r in refs):
+                    return _err(400, "validation_error", "Type error with formula")
+            if "rollup" in spec:
+                cfg = spec["rollup"]
+                rel = ds["properties"].get(cfg["relation_property_name"])
+                target = (
+                    self.data_sources.get(rel["relation"]["data_source_id"])
+                    if rel and rel["type"] == "relation" else None
+                )
+                if target is None or cfg["rollup_property_name"] not in target["properties"]:
+                    return _err(
+                        400, "validation_error",
+                        f"Rollup {name}: relation or target property does not exist",
+                    )
+        return None
+
     def _patch_data_source(self, ds: dict[str, Any], body: dict[str, Any]) -> httpx.Response:
+        if (error := self._validate_dependencies(ds, (body or {}).get("properties", {}))):
+            return error
         for name, spec in (body or {}).get("properties", {}).items():
             if spec is None:
                 if name not in ds["properties"]:

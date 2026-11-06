@@ -451,3 +451,17 @@ class TestBookingConfirmedEmbed:
         assert "Event" in field_names
         assert "Your Slot" in field_names
         assert "Heads Up" in field_names
+
+
+def test_mission_roster_field_name_capped_at_256_characters() -> None:
+    long_id = "2026-12-31 " + "x" * 400
+    embed = MissionRosterEmbed([_booked_event(long_id), _booked_event("Short")])
+    assert len(embed.fields[0].name) == 256
+    assert embed.fields[0].name.startswith("2026-12-31 xxx")
+    assert embed.fields[1].name == "Short"
+
+
+def test_mission_roster_field_name_of_exactly_256_characters_is_kept() -> None:
+    exact = "y" * 256
+    embed = MissionRosterEmbed([_booked_event(exact)])
+    assert embed.fields[0].name == exact

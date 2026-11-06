@@ -16,12 +16,33 @@ def make_mock_ctx(admin_ids: frozenset[int]) -> MagicMock:
 
 
 def make_mock_inter(user_id: int, guild_id: int = 111) -> MagicMock:
-    """Build a minimal mock ApplicationCommandInteraction."""
+    """Build a minimal mock ApplicationCommandInteraction.
+
+    ``inter.order`` records "defer", "followup" and "send_message" in call order.
+    """
     inter = MagicMock()
     inter.author.id = user_id
     inter.guild_id = guild_id
     inter.response = AsyncMock()
+    inter.order = []
+    inter.response.defer.side_effect = lambda *a, **k: inter.order.append("defer")
+    inter.response.send_message.side_effect = (
+        lambda *a, **k: inter.order.append("send_message")
+    )
+    inter.followup = MagicMock()
+    inter.followup.send = AsyncMock(side_effect=lambda *a, **k: inter.order.append("followup"))
     return inter
+
+
+def assert_deferred_reply(inter: MagicMock) -> tuple[str, dict]:
+    """The handler deferred (ephemeral) first and replied once via followup; return it."""
+    inter.response.defer.assert_awaited_once_with(ephemeral=True)
+    inter.response.send_message.assert_not_awaited()
+    inter.followup.send.assert_awaited_once()
+    assert inter.order == ["defer", "followup"]
+    args, kwargs = inter.followup.send.call_args
+    assert kwargs.get("ephemeral") is True
+    return args[0], kwargs
 
 
 def test_cog_check_allows_admin() -> None:
@@ -248,10 +269,11 @@ async def test_admin_book_calls_service_and_replies() -> None:
 
     ctx = make_mock_ctx(frozenset({1}))
     ctx.admin_booking_service = MagicMock()
-    ctx.admin_booking_service.book_slot_override = AsyncMock(return_value=(True, ""))
-
     cog = AdminCog(ctx)
     inter = make_mock_inter(user_id=1)
+    ctx.admin_booking_service.book_slot_override = AsyncMock(
+        return_value=(True, ""), side_effect=lambda **k: inter.order.append("service") or (True, "")
+    )
     dj = make_mock_member(user_id=42, display_name="DJ Scope")
 
     await cog.admin_book.callback(cog, inter, dj, "Rave Night #12", 2)
@@ -263,10 +285,10 @@ async def test_admin_book_calls_service_and_replies() -> None:
         event_name="Rave Night #12",
         slot_num=2,
     )
-    inter.response.send_message.assert_awaited_once()
-    call_args = inter.response.send_message.call_args
-    assert "done" in call_args[0][0].lower()
-    assert call_args[1].get("ephemeral") is True
+    assert inter.order[:2] == ["defer", "service"]
+    inter.order.remove("service")
+    reply, _ = assert_deferred_reply(inter)
+    assert "done" in reply.lower()
 
 
 @pytest.mark.asyncio
@@ -286,9 +308,8 @@ async def test_admin_book_service_returns_error_replies_with_error() -> None:
 
     await cog.admin_book.callback(cog, inter, dj, "Ghost", 1)
 
-    call_args = inter.response.send_message.call_args
-    assert "not found" in call_args[0][0].lower()
-    assert call_args[1].get("ephemeral") is True
+    reply, _ = assert_deferred_reply(inter)
+    assert "not found" in reply.lower()
 
 
 @pytest.mark.asyncio
@@ -307,6 +328,7 @@ async def test_admin_book_returns_not_ready_when_service_none() -> None:
 
     inter.response.send_message.assert_awaited_once()
     assert "not ready" in inter.response.send_message.call_args[0][0].lower()
+    inter.response.defer.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -316,10 +338,11 @@ async def test_admin_cancel_calls_service_and_replies() -> None:
 
     ctx = make_mock_ctx(frozenset({1}))
     ctx.admin_booking_service = MagicMock()
-    ctx.admin_booking_service.cancel_slot_override = AsyncMock(return_value=(True, ""))
-
     cog = AdminCog(ctx)
     inter = make_mock_inter(user_id=1)
+    ctx.admin_booking_service.cancel_slot_override = AsyncMock(
+        side_effect=lambda **k: inter.order.append("service") or (True, "")
+    )
     dj = make_mock_member(user_id=7, display_name="DJ Wave")
 
     await cog.admin_cancel.callback(cog, inter, dj, "Rave Night #12", 1)
@@ -331,10 +354,10 @@ async def test_admin_cancel_calls_service_and_replies() -> None:
         event_name="Rave Night #12",
         slot_num=1,
     )
-    inter.response.send_message.assert_awaited_once()
-    call_args = inter.response.send_message.call_args
-    assert "done" in call_args[0][0].lower()
-    assert call_args[1].get("ephemeral") is True
+    assert inter.order[:2] == ["defer", "service"]
+    inter.order.remove("service")
+    reply, _ = assert_deferred_reply(inter)
+    assert "done" in reply.lower()
 
 
 @pytest.mark.asyncio
@@ -354,9 +377,8 @@ async def test_admin_cancel_no_booking_replies_with_message() -> None:
 
     await cog.admin_cancel.callback(cog, inter, dj, "Rave Night #12", 1)
 
-    call_args = inter.response.send_message.call_args
-    assert "no booking found" in call_args[0][0].lower()
-    assert call_args[1].get("ephemeral") is True
+    reply, _ = assert_deferred_reply(inter)
+    assert "no booking found" in reply.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -486,7 +508,6 @@ async def test_status_returns_event_embed(monkeypatch: pytest.MonkeyPatch) -> No
     ctx = make_mock_ctx(frozenset({1}))
     ctx.notion_client = MagicMock()
     ctx.notion_client.list_events = AsyncMock(return_value=[_status_event()])
-    ctx.notion_client.poll_events = AsyncMock(side_effect=AssertionError("legacy read"))
     # Config says 6 slots; the slot rows (4) must win
     monkeypatch.setattr("bot.cogs.admin.db_config.get_value", AsyncMock(return_value="6"))
 
@@ -669,11 +690,15 @@ async def test_add_event_creates_event_and_replies(monkeypatch: pytest.MonkeyPat
 
     cog = AdminCog(ctx)
     inter = make_mock_inter(user_id=1, guild_id=111)
+    shape = shape_mock.return_value
+    shape_mock.side_effect = lambda *a: inter.order.append("shape") or shape
 
     future_date = datetime.date.today() + datetime.timedelta(days=7)
     date_str = future_date.isoformat()
 
     await cog.add_event.callback(cog, inter, date_str)
+    assert inter.order[:2] == ["defer", "shape"]
+    inter.order.remove("shape")
 
     shape_mock.assert_awaited_once_with(ctx.db, 111)
     ctx.notion_client.create_event.assert_awaited_once_with(
@@ -685,9 +710,8 @@ async def test_add_event_creates_event_and_replies(monkeypatch: pytest.MonkeyPat
     )
     init.assert_awaited_once_with(ctx.db, "new-evt-page", 5)
     created = ctx.notion_client.create_event.return_value
-    reply = inter.response.send_message.call_args[0][0]
+    reply, _ = assert_deferred_reply(inter)
     assert reply == f"Event created in Notion for <t:{int(created.slot_start(0).timestamp())}:f>."
-    assert inter.response.send_message.call_args[1].get("ephemeral") is True
 
 
 @pytest.mark.asyncio
@@ -708,7 +732,8 @@ async def test_add_event_duplicate_id_replies_message(monkeypatch: pytest.Monkey
     future_date = (datetime.date.today() + datetime.timedelta(days=7)).isoformat()
     await cog.add_event.callback(cog, inter, future_date)
 
-    inter.response.send_message.assert_awaited_once_with(
+    assert_deferred_reply(inter)
+    inter.followup.send.assert_awaited_once_with(
         "An event with that ID already exists.", ephemeral=True
     )
     init.assert_not_awaited()
@@ -736,7 +761,8 @@ async def test_add_event_init_slots_failure_still_replies_success(
     future_date = (datetime.date.today() + datetime.timedelta(days=7)).isoformat()
     await cog.add_event.callback(cog, inter, future_date)
 
-    assert "Event created in Notion" in inter.response.send_message.call_args[0][0]
+    reply, _ = assert_deferred_reply(inter)
+    assert "Event created in Notion" in reply
 
 
 @pytest.mark.asyncio
@@ -760,6 +786,7 @@ async def test_add_event_past_date_replies_error() -> None:
     reply = inter.response.send_message.call_args[0][0].lower()
     assert "invalid date" in reply
     assert inter.response.send_message.call_args[1].get("ephemeral") is True
+    inter.response.defer.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -780,6 +807,7 @@ async def test_add_event_invalid_format_replies_error() -> None:
     reply = inter.response.send_message.call_args[0][0].lower()
     assert "invalid date" in reply
     assert inter.response.send_message.call_args[1].get("ephemeral") is True
+    inter.response.defer.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -824,9 +852,8 @@ async def test_add_event_notion_write_error_replies_error(
     future_date = (datetime.date.today() + datetime.timedelta(days=7)).isoformat()
     await cog.add_event.callback(cog, inter, future_date)
 
-    reply = inter.response.send_message.call_args[0][0].lower()
-    assert "failed to create" in reply
-    assert inter.response.send_message.call_args[1].get("ephemeral") is True
+    reply, _ = assert_deferred_reply(inter)
+    assert "failed to create" in reply.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -1355,3 +1382,48 @@ async def test_config_show_includes_slot_config_fields(
     assert embed is not None
     assert embed.color.value == EmbedColors.NEBULA_WHITE
     assert len(embed.fields) == 11
+
+
+@pytest.mark.asyncio
+async def test_cog_error_after_defer_sends_followup() -> None:
+    """An unexpected error after defer is answered via followup, not send_message."""
+    from bot.cogs.admin import AdminCog
+
+    cog = AdminCog(make_mock_ctx(frozenset({1})))
+    inter = make_mock_inter(user_id=1)
+    inter.response.is_done = MagicMock(return_value=True)
+    await cog.cog_slash_command_error(inter, RuntimeError("boom"))
+    inter.followup.send.assert_awaited_once_with(
+        "Something went wrong — please try again.", ephemeral=True
+    )
+    inter.response.send_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cog_error_before_response_uses_send_message() -> None:
+    from bot.cogs.admin import AdminCog
+
+    cog = AdminCog(make_mock_ctx(frozenset({1})))
+    inter = make_mock_inter(user_id=1)
+    inter.response.is_done = MagicMock(return_value=False)
+    await cog.cog_slash_command_error(inter, RuntimeError("boom"))
+    inter.response.send_message.assert_awaited_once_with(
+        "Something went wrong — please try again.", ephemeral=True
+    )
+    inter.followup.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cog_error_followup_http_exception_does_not_propagate() -> None:
+    import disnake
+
+    from bot.cogs.admin import AdminCog
+
+    cog = AdminCog(make_mock_ctx(frozenset({1})))
+    inter = make_mock_inter(user_id=1)
+    inter.response.is_done = MagicMock(return_value=True)
+    inter.followup.send = AsyncMock(
+        side_effect=disnake.HTTPException(MagicMock(status=500, reason="x"), "boom")
+    )
+    await cog.cog_slash_command_error(inter, RuntimeError("boom"))
+    inter.followup.send.assert_awaited_once()

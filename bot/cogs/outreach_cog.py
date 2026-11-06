@@ -20,6 +20,8 @@ logger = logging.getLogger(__name__)
 class OutreachCog(commands.Cog):
     """Hosts the proactive outreach scheduler loop."""
 
+    bot: commands.Bot  # injected by disnake when the cog is added
+
     def __init__(self, ctx: BotContext) -> None:
         self.ctx = ctx
 
@@ -122,3 +124,7 @@ class OutreachCog(commands.Cog):
             dm_attempts,
             exhaustion_checks,
         )
+
+    @_outreach_check.before_loop
+    async def _before_outreach_check(self) -> None:
+        await self.bot.wait_until_ready()

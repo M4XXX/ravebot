@@ -85,6 +85,23 @@ async def test_release_slot_lock_clears_discord_user_id() -> None:
     assert "discord_user_id = NULL" in sql
     assert pool.execute.call_args[0][1] == "evt-001"
     assert pool.execute.call_args[0][2] == 2
+    assert "discord_user_id = $3" not in sql
+    assert len(pool.execute.call_args[0]) == 3
+
+
+@pytest.mark.asyncio
+async def test_release_slot_lock_with_expected_holder_only_matches_that_holder() -> None:
+    from bot.db.bookings import release_slot_lock
+
+    pool = MagicMock()
+    pool.execute = AsyncMock()
+
+    await release_slot_lock(pool, "evt-001", 2, expected_holder=777)
+
+    sql, *args = pool.execute.call_args[0]
+    assert "discord_user_id = NULL" in sql
+    assert "AND discord_user_id = $3" in sql
+    assert args == ["evt-001", 2, 777]
 
 
 @pytest.mark.asyncio
