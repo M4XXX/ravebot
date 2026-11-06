@@ -455,26 +455,39 @@ async def test_admin_dj_set_active_not_ready_when_service_none() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _status_event():
+    import datetime
+
+    from tests.notion.factories import make_event, make_slot
+
+    return make_event(
+        event_id="2026-06-14 Rave Night #12",
+        page_id="evt-001",
+        date=datetime.date(2026, 6, 14),
+        start=datetime.time(20, 0),
+        slot_minutes=30,
+        slot_count=4,
+        slots=[
+            make_slot(1, dj_page_id="dj-a", dj_name="DJ Scope", discord_id=42),
+            make_slot(2),
+            make_slot(3, dj_page_id="dj-a", dj_name="DJ Scope", discord_id=42),
+            make_slot(4, dj_page_id="dj-b", dj_name="DJ Wave", discord_id=99),
+        ],
+    )
+
+
 @pytest.mark.asyncio
 async def test_status_returns_event_embed(monkeypatch: pytest.MonkeyPatch) -> None:
-    """status_cmd builds a MISSION_GOLD embed for the next upcoming event."""
+    """status_cmd builds a MISSION_GOLD embed for the next event, counts from slot rows."""
+    import datetime
+
     from bot.cogs.admin import AdminCog
 
     ctx = make_mock_ctx(frozenset({1}))
     ctx.notion_client = MagicMock()
-    ctx.notion_client.poll_events = AsyncMock(return_value=[{
-        "id": "evt-001",
-        "properties": {
-            "Name": {"title": [{"plain_text": "Rave Night #12"}]},
-            "Date": {"date": {"start": "2026-06-14T20:00:00+00:00"}},
-        },
-    }])
-    monkeypatch.setattr(
-        "bot.cogs.admin.get_booked_djs_for_event",
-        AsyncMock(return_value=[
-            {"slot_index": 0, "dj_name": "DJ Scope", "discord_user_id": 42, "event_id": "evt-001"}
-        ]),
-    )
+    ctx.notion_client.list_events = AsyncMock(return_value=[_status_event()])
+    ctx.notion_client.poll_events = AsyncMock(side_effect=AssertionError("legacy read"))
+    # Config says 6 slots; the slot rows (4) must win
     monkeypatch.setattr("bot.cogs.admin.db_config.get_value", AsyncMock(return_value="6"))
 
     cog = AdminCog(ctx)
@@ -482,12 +495,26 @@ async def test_status_returns_event_embed(monkeypatch: pytest.MonkeyPatch) -> No
 
     await cog.status_cmd.callback(cog, inter)
 
+    ctx.notion_client.list_events.assert_awaited_once_with()
     inter.response.send_message.assert_awaited_once()
     call_kwargs = inter.response.send_message.call_args[1]
     assert call_kwargs.get("ephemeral") is True
     embed = call_kwargs.get("embed")
     assert embed is not None
-    assert "Rave Night #12" in embed.title
+    assert "2026-06-14 Rave Night #12" in embed.title
+    fields = {f.name: f.value for f in embed.fields}
+    start = datetime.datetime(2026, 6, 14, 20, 0, tzinfo=datetime.UTC)
+    assert fields["Event Date"] == f"<t:{int(start.timestamp())}:f>"
+    # Slot rows decide: 4 slots, 3 booked (DJ Scope holds two), 1 open
+    assert fields["Total Slots"] == "4"
+    assert fields["Booked"] == "3"
+    assert fields["Open"] == "1"
+    slot2 = int((start + datetime.timedelta(minutes=30)).timestamp())
+    assert fields[f"Slot 2 · <t:{slot2}:f>"] == "Open"
+    slot3 = int((start + datetime.timedelta(minutes=60)).timestamp())
+    assert fields[f"Slot 3 · <t:{slot3}:f>"] == "DJ Scope"
+    slot4 = int((start + datetime.timedelta(minutes=90)).timestamp())
+    assert fields[f"Slot 4 · <t:{slot4}:f>"] == "DJ Wave"
 
 
 @pytest.mark.asyncio
@@ -497,7 +524,7 @@ async def test_status_no_events_replies_message() -> None:
 
     ctx = make_mock_ctx(frozenset({1}))
     ctx.notion_client = MagicMock()
-    ctx.notion_client.poll_events = AsyncMock(return_value=[])
+    ctx.notion_client.list_events = AsyncMock(return_value=[])
 
     cog = AdminCog(ctx)
     inter = make_mock_inter(user_id=1, guild_id=111)
@@ -608,16 +635,37 @@ async def test_list_djs_not_ready_when_db_none() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _add_event_patches(monkeypatch: pytest.MonkeyPatch, shape=None):
+    """Patch default_event_shape and init_event_slots in the admin cog; return (shape, init)."""
+    import datetime
+
+    from bot.services.event_defaults import EventShape
+
+    shape = shape or EventShape(start=datetime.time(19, 30), slot_minutes=45, slot_count=5)
+    shape_mock = AsyncMock(return_value=shape)
+    init = AsyncMock()
+    monkeypatch.setattr("bot.cogs.admin.default_event_shape", shape_mock)
+    monkeypatch.setattr("bot.cogs.admin.init_event_slots", init)
+    return shape_mock, init
+
+
 @pytest.mark.asyncio
-async def test_add_event_creates_event_and_replies() -> None:
-    """add_event calls create_event with correct args and replies with timestamp on success."""
+async def test_add_event_creates_event_and_replies(monkeypatch: pytest.MonkeyPatch) -> None:
+    """add_event creates '<date> Rave Night' with the configured shape and inits slot locks."""
     import datetime
 
     from bot.cogs.admin import AdminCog
+    from tests.notion.factories import make_event
 
+    future_date = datetime.date.today() + datetime.timedelta(days=7)
     ctx = make_mock_ctx(frozenset({1}))
     ctx.notion_client = MagicMock()
-    ctx.notion_client.create_event = AsyncMock(return_value="new-evt-id")
+    ctx.notion_client.create_event = AsyncMock(
+        return_value=make_event(
+            page_id="new-evt-page", event_id="x", date=future_date, start=datetime.time(19, 30)
+        )
+    )
+    shape_mock, init = _add_event_patches(monkeypatch)
 
     cog = AdminCog(ctx)
     inter = make_mock_inter(user_id=1, guild_id=111)
@@ -627,13 +675,68 @@ async def test_add_event_creates_event_and_replies() -> None:
 
     await cog.add_event.callback(cog, inter, date_str)
 
-    ctx.notion_client.create_event.assert_awaited_once()
-    call_args = ctx.notion_client.create_event.call_args
-    assert call_args[0][1] == future_date  # event_date positional arg
-    assert "Rave Night" in call_args[0][0]  # event_name follows naming convention
+    shape_mock.assert_awaited_once_with(ctx.db, 111)
+    ctx.notion_client.create_event.assert_awaited_once_with(
+        f"{future_date.isoformat()} Rave Night",
+        future_date,
+        datetime.time(19, 30),
+        5,
+        45,
+    )
+    init.assert_awaited_once_with(ctx.db, "new-evt-page", 5)
+    created = ctx.notion_client.create_event.return_value
     reply = inter.response.send_message.call_args[0][0]
-    assert "<t:" in reply
+    assert reply == f"Event created in Notion for <t:{int(created.slot_start(0).timestamp())}:f>."
     assert inter.response.send_message.call_args[1].get("ephemeral") is True
+
+
+@pytest.mark.asyncio
+async def test_add_event_duplicate_id_replies_message(monkeypatch: pytest.MonkeyPatch) -> None:
+    import datetime
+
+    from bot.cogs.admin import AdminCog
+    from bot.notion.client import DuplicateEventError
+
+    ctx = make_mock_ctx(frozenset({1}))
+    ctx.notion_client = MagicMock()
+    ctx.notion_client.create_event = AsyncMock(side_effect=DuplicateEventError("dup"))
+    _, init = _add_event_patches(monkeypatch)
+
+    cog = AdminCog(ctx)
+    inter = make_mock_inter(user_id=1, guild_id=111)
+
+    future_date = (datetime.date.today() + datetime.timedelta(days=7)).isoformat()
+    await cog.add_event.callback(cog, inter, future_date)
+
+    inter.response.send_message.assert_awaited_once_with(
+        "An event with that ID already exists.", ephemeral=True
+    )
+    init.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_add_event_init_slots_failure_still_replies_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """init_event_slots failing is non-fatal (slots are created lazily on booking)."""
+    import datetime
+
+    from bot.cogs.admin import AdminCog
+    from tests.notion.factories import make_event
+
+    ctx = make_mock_ctx(frozenset({1}))
+    ctx.notion_client = MagicMock()
+    ctx.notion_client.create_event = AsyncMock(return_value=make_event(page_id="p"))
+    _, init = _add_event_patches(monkeypatch)
+    init.side_effect = RuntimeError("db down")
+
+    cog = AdminCog(ctx)
+    inter = make_mock_inter(user_id=1, guild_id=111)
+
+    future_date = (datetime.date.today() + datetime.timedelta(days=7)).isoformat()
+    await cog.add_event.callback(cog, inter, future_date)
+
+    assert "Event created in Notion" in inter.response.send_message.call_args[0][0]
 
 
 @pytest.mark.asyncio
@@ -701,7 +804,9 @@ async def test_add_event_not_ready_when_notion_none() -> None:
 
 
 @pytest.mark.asyncio
-async def test_add_event_notion_write_error_replies_error() -> None:
+async def test_add_event_notion_write_error_replies_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """add_event replies 'failed to create' when create_event raises NotionWriteError."""
     import datetime
 
@@ -711,6 +816,7 @@ async def test_add_event_notion_write_error_replies_error() -> None:
     ctx = make_mock_ctx(frozenset({1}))
     ctx.notion_client = MagicMock()
     ctx.notion_client.create_event = AsyncMock(side_effect=NotionWriteError("write failed"))
+    _add_event_patches(monkeypatch)
 
     cog = AdminCog(ctx)
     inter = make_mock_inter(user_id=1, guild_id=111)

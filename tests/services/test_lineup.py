@@ -5,7 +5,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import disnake
 import pytest
 
+from bot.notion.models import EventInfo
 from bot.services.lineup import LineupService
+from tests.notion.factories import make_event, make_slot
 
 
 def _make_bot(guilds: list | None = None, channel: MagicMock | None = None) -> MagicMock:
@@ -39,18 +41,15 @@ def _make_service(
     )
 
 
-def _make_events() -> list[dict]:
+def _make_events() -> list[EventInfo]:
     return [
-        {
-            "id": "page-1",
-            "last_edited_time": "2026-06-01T00:00:00.000Z",
-            "properties": {
-                "Name": {"title": [{"plain_text": "Friday Night Rave"}]},
-                "Date": {"date": {"start": "2026-06-13T20:00:00+00:00"}},
-                "Slots": {"number": 6},
-                "DJs": {"relation": [{"id": "dj-1"}, {"id": "dj-2"}]},
-            },
-        }
+        make_event(
+            event_id="Friday Night Rave",
+            slots=[
+                make_slot(1, dj_page_id="dj-1", dj_name="DJ One"),
+                make_slot(2, dj_page_id="dj-2", dj_name="DJ Two"),
+            ],
+        )
     ]
 
 

@@ -16,7 +16,9 @@ import datetime
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from bot.notion.models import EventInfo
 from bot.services.outreach import OutreachService
+from tests.notion.factories import make_event, make_slot
 
 
 # ---------------------------------------------------------------------------
@@ -25,31 +27,34 @@ from bot.services.outreach import OutreachService
 
 
 def _make_event(
-    event_id: str = "evt-001",
+    event_id: str = "Test Event",
     slots: int = 6,
     djs_booked: int = 0,
     days_ahead: int = 7,
-) -> dict:
-    """Build a minimal Notion event dict for testing."""
-    event_dt = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=days_ahead)
-    return {
-        "id": event_id,
-        "last_edited_time": event_dt.isoformat(),
-        "properties": {
-            "Name": {"title": [{"plain_text": "Test Event"}]},
-            "Date": {"date": {"start": event_dt.date().isoformat()}},
-            "Slots": {"number": slots},
-            "DJs": {"relation": [{"id": f"dj-{i}"} for i in range(djs_booked)]},
-        },
-    }
+    page_id: str = "evt-001",
+) -> EventInfo:
+    """Build a typed event with djs_booked filled slots (slots 1..djs_booked)."""
+    event_date = (
+        datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=days_ahead)
+    ).date()
+    return make_event(
+        event_id=event_id,
+        page_id=page_id,
+        date=event_date,
+        slot_count=slots,
+        slots=[
+            make_slot(number=i + 1, dj_page_id=f"dj-{i}", dj_name=f"DJ {i}")
+            for i in range(djs_booked)
+        ],
+    )
 
 
-def _make_service(poll_events_result: list | None = None) -> OutreachService:
+def _make_service(list_events_result: list | None = None) -> OutreachService:
     bot = MagicMock()
     bot.guilds = [MagicMock(id=1)]
     db = MagicMock()
     notion_client = MagicMock()
-    notion_client.poll_events = AsyncMock(return_value=poll_events_result or [])
+    notion_client.list_events = AsyncMock(return_value=list_events_result or [])
     log_service = MagicMock()
     log_service.post_error = AsyncMock()
     log_service.post_dm_transcript = AsyncMock()
@@ -68,7 +73,7 @@ def _active_seq(last_contact_at=None) -> dict:
 @pytest.mark.asyncio
 async def test_run_gap_detection_returns_empty_on_notion_failure():
     svc = _make_service()
-    svc.notion_client.poll_events = AsyncMock(side_effect=Exception("Notion down"))
+    svc.notion_client.list_events = AsyncMock(side_effect=Exception("Notion down"))
     with patch("bot.services.outreach.get_value", new=AsyncMock(return_value=None)):
         result = await svc.run_gap_detection(guild_id=1)
     assert result == []
@@ -78,7 +83,7 @@ async def test_run_gap_detection_returns_empty_on_notion_failure():
 async def test_run_gap_detection_skips_events_outside_window():
     # Event 20 days ahead, default window is 14 days
     event = _make_event(days_ahead=20)
-    svc = _make_service(poll_events_result=[event])
+    svc = _make_service(list_events_result=[event])
     with patch("bot.services.outreach.get_value", new=AsyncMock(return_value="14")), \
          patch("bot.services.outreach.upsert_sequence", new=AsyncMock()), \
          patch("bot.services.outreach.get_sequence", new=AsyncMock(return_value=None)), \
@@ -90,7 +95,7 @@ async def test_run_gap_detection_skips_events_outside_window():
 @pytest.mark.asyncio
 async def test_run_gap_detection_creates_sequence_for_new_event_with_open_slot():
     event = _make_event(days_ahead=5, slots=6, djs_booked=2)
-    svc = _make_service(poll_events_result=[event])
+    svc = _make_service(list_events_result=[event])
     seq = _active_seq(last_contact_at=None)
     with patch("bot.services.outreach.get_value", new=AsyncMock(return_value=None)), \
          patch("bot.services.outreach.upsert_sequence", new=AsyncMock()) as mock_upsert, \
@@ -99,13 +104,13 @@ async def test_run_gap_detection_creates_sequence_for_new_event_with_open_slot()
         result = await svc.run_gap_detection(guild_id=1)
     mock_upsert.assert_awaited_once_with(svc.db, "evt-001")
     assert len(result) == 1
-    assert result[0]["id"] == "evt-001"
+    assert result[0].page_id == "evt-001"
 
 
 @pytest.mark.asyncio
 async def test_run_gap_detection_marks_complete_when_all_slots_filled():
     event = _make_event(days_ahead=5, slots=2, djs_booked=2)  # fully booked
-    svc = _make_service(poll_events_result=[event])
+    svc = _make_service(list_events_result=[event])
     seq = _active_seq()
     with patch("bot.services.outreach.get_value", new=AsyncMock(return_value=None)), \
          patch("bot.services.outreach.get_sequence", new=AsyncMock(return_value=seq)), \
@@ -119,7 +124,7 @@ async def test_run_gap_detection_marks_complete_when_all_slots_filled():
 @pytest.mark.asyncio
 async def test_run_gap_detection_skips_event_within_cooldown():
     event = _make_event(days_ahead=5, slots=6, djs_booked=2)
-    svc = _make_service(poll_events_result=[event])
+    svc = _make_service(list_events_result=[event])
     recent = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=3)
     seq = _active_seq(last_contact_at=recent)
     with patch("bot.services.outreach.get_value", new=AsyncMock(return_value="12")), \
@@ -133,7 +138,7 @@ async def test_run_gap_detection_skips_event_within_cooldown():
 @pytest.mark.asyncio
 async def test_run_gap_detection_returns_event_past_cooldown():
     event = _make_event(days_ahead=5, slots=6, djs_booked=2)
-    svc = _make_service(poll_events_result=[event])
+    svc = _make_service(list_events_result=[event])
     old_contact = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=15)
     seq = _active_seq(last_contact_at=old_contact)
     with patch("bot.services.outreach.get_value", new=AsyncMock(return_value="12")), \
@@ -142,14 +147,14 @@ async def test_run_gap_detection_returns_event_past_cooldown():
          patch("bot.services.outreach.mark_sequence_complete", new=AsyncMock()):
         result = await svc.run_gap_detection(guild_id=1)
     assert len(result) == 1
-    assert result[0]["id"] == "evt-001"
+    assert result[0].page_id == "evt-001"
 
 
 @pytest.mark.asyncio
 async def test_run_gap_detection_returns_new_sequence_null_contact():
     """Newly inserted sequence (last_contact_at=NULL) is ready immediately."""
     event = _make_event(days_ahead=5, slots=6, djs_booked=0)
-    svc = _make_service(poll_events_result=[event])
+    svc = _make_service(list_events_result=[event])
     seq = _active_seq(last_contact_at=None)
     with patch("bot.services.outreach.get_value", new=AsyncMock(return_value=None)), \
          patch("bot.services.outreach.upsert_sequence", new=AsyncMock()), \
@@ -162,7 +167,7 @@ async def test_run_gap_detection_returns_new_sequence_null_contact():
 @pytest.mark.asyncio
 async def test_run_gap_detection_skips_complete_sequence():
     event = _make_event(days_ahead=5, slots=6, djs_booked=2)
-    svc = _make_service(poll_events_result=[event])
+    svc = _make_service(list_events_result=[event])
     complete_seq = {"event_id": "evt-001", "status": "complete", "last_contact_at": None}
     with patch("bot.services.outreach.get_value", new=AsyncMock(return_value=None)), \
          patch("bot.services.outreach.upsert_sequence", new=AsyncMock()), \
@@ -175,7 +180,7 @@ async def test_run_gap_detection_skips_complete_sequence():
 @pytest.mark.asyncio
 async def test_run_gap_detection_skips_exhausted_sequence():
     event = _make_event(days_ahead=5, slots=6, djs_booked=2)
-    svc = _make_service(poll_events_result=[event])
+    svc = _make_service(list_events_result=[event])
     exhausted_seq = {"event_id": "evt-001", "status": "exhausted", "last_contact_at": None}
     with patch("bot.services.outreach.get_value", new=AsyncMock(return_value=None)), \
          patch("bot.services.outreach.upsert_sequence", new=AsyncMock()), \
@@ -309,7 +314,7 @@ async def test_handle_exhaustion_skips_if_no_open_slots():
 async def test_run_gap_detection_reactivates_exhausted_seq_with_new_dj():
     """Exhausted sequence + new active DJ not in contacts → reactivated, event returned (AC3)."""
     event = _make_event(event_id="evt-001", slots=6, djs_booked=2, days_ahead=5)
-    svc = _make_service(poll_events_result=[event])
+    svc = _make_service(list_events_result=[event])
     exhausted_seq = {"event_id": "evt-001", "status": "exhausted", "last_contact_at": None}
     active_seq = {"event_id": "evt-001", "status": "active", "last_contact_at": None}
     new_dj = {"discord_user_id": 999, "dj_name": "New DJ", "last_contacted_at": None}
@@ -326,7 +331,7 @@ async def test_run_gap_detection_reactivates_exhausted_seq_with_new_dj():
 
     mock_reactivate.assert_awaited_once_with(svc.db, "evt-001")
     assert len(result) == 1
-    assert result[0]["id"] == "evt-001"
+    assert result[0].page_id == "evt-001"
 
 
 @pytest.mark.asyncio
@@ -345,3 +350,69 @@ async def test_contact_next_dj_marks_unreachable_if_user_not_found():
     mock_status.assert_awaited()
     # AC4: ERR_DM_FAILED must be logged to admin channel
     svc.log_service.post_error.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Typed-event slot counting
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_open_slots_counted_from_slot_rows_dj_with_two_slots_counts_two():
+    """Slots 1 and 2 held by the same DJ, 3 total -> one open slot, event is ready."""
+    event = make_event(
+        page_id="evt-001",
+        date=(datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=5)).date(),
+        slot_count=3,
+        slots=[
+            make_slot(number=1, dj_page_id="dj-a"),
+            make_slot(number=2, dj_page_id="dj-a"),
+            make_slot(number=3),
+        ],
+    )
+    svc = _make_service(list_events_result=[event])
+    with patch("bot.services.outreach.get_value", new=AsyncMock(return_value=None)), \
+         patch("bot.services.outreach.upsert_sequence", new=AsyncMock()), \
+         patch("bot.services.outreach.get_sequence", new=AsyncMock(return_value=_active_seq())), \
+         patch("bot.services.outreach.mark_sequence_complete", new=AsyncMock()) as mock_complete:
+        result = await svc.run_gap_detection(guild_id=1)
+    assert [e.page_id for e in result] == ["evt-001"]
+    mock_complete.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_open_slots_gap_in_middle_counts_as_open():
+    """Slots 1 and 3 filled, 2 empty, 3 total -> a gap is open, not complete."""
+    event = make_event(
+        page_id="evt-001",
+        date=(datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=5)).date(),
+        slot_count=3,
+        slots=[
+            make_slot(number=1, dj_page_id="dj-a"),
+            make_slot(number=2),
+            make_slot(number=3, dj_page_id="dj-b"),
+        ],
+    )
+    svc = _make_service(list_events_result=[event])
+    with patch("bot.services.outreach.get_value", new=AsyncMock(return_value=None)), \
+         patch("bot.services.outreach.upsert_sequence", new=AsyncMock()), \
+         patch("bot.services.outreach.get_sequence", new=AsyncMock(return_value=_active_seq())):
+        result = await svc.run_gap_detection(guild_id=1)
+    assert len(result) == 1
+
+
+@pytest.mark.asyncio
+async def test_handle_exhaustion_open_slots_from_slot_rows():
+    """Two slots held by one DJ out of 4 -> 2 open slots reported."""
+    event = make_event(
+        event_id="Rave", page_id="evt-001", slot_count=4,
+        slots=[make_slot(number=1, dj_page_id="dj-a"), make_slot(number=2, dj_page_id="dj-a")],
+    )
+    svc = _make_service()
+    with patch("bot.services.outreach.get_sequence", new=AsyncMock(return_value=_active_seq())), \
+         patch("bot.services.outreach.get_contacted_discord_ids", new=AsyncMock(return_value=[])), \
+         patch("bot.services.outreach.mark_sequence_exhausted", new=AsyncMock()):
+        await svc.handle_exhaustion(event, guild_id=1)
+    trigger = svc.log_service.post_error.call_args.kwargs["trigger"]
+    assert "Open slots remaining: 2." in trigger
+    assert "'Rave'" in trigger

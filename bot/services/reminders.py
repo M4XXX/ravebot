@@ -14,9 +14,9 @@ from typing import TYPE_CHECKING, Any
 import disnake
 
 from bot.db.bookings import get_booked_djs_for_event
-from bot.db.config import get_value
 from bot.db.interventions import is_under_intervention
 from bot.db.reminders import has_reminder_been_sent, record_reminder_sent
+from bot.notion.models import EventInfo
 from bot.ui.embeds import ErrorCode
 
 if TYPE_CHECKING:
@@ -49,29 +49,11 @@ class RemindersService:
         self.log_service = log_service
 
     @staticmethod
-    def _event_midnight_utc(event: dict) -> datetime.datetime | None:
-        """Parse event Date property → midnight UTC datetime.
-
-        Notion Date field is a date string (YYYY-MM-DD). We treat midnight UTC
-        of that date as the reference point for the 20-28 hour window check.
-
-        Returns None if the Date property is missing or malformed.
-
-        [Source: epics.md#Story 5.4 AC1 — 'events occurring within the next 20-28 hours']
-        """
-        try:
-            date_str = event["properties"]["Date"]["date"]["start"]
-            d = datetime.date.fromisoformat(date_str)
-            return datetime.datetime(d.year, d.month, d.day, 0, 0, 0, tzinfo=UTC)
-        except (KeyError, ValueError, TypeError):
-            return None
-
-    @staticmethod
     def _is_in_reminder_window(
-        event: dict,
+        event: EventInfo,
         now: datetime.datetime,
     ) -> bool:
-        """Return True if event midnight UTC is 20-28 hours from now.
+        """Return True if the event start is 20-28 hours from now.
 
         The 8-hour window ensures the hourly task fires at least once per event
         while keeping reminders in the 'day before' range.
@@ -81,49 +63,8 @@ class RemindersService:
 
         [Source: epics.md#Story 5.4 AC1]
         """
-        event_dt = RemindersService._event_midnight_utc(event)
-        if event_dt is None:
-            return False
-        delta = event_dt - now
+        delta = event.slot_start(0) - now
         return timedelta(hours=20) <= delta <= timedelta(hours=28)
-
-    async def _compute_slot_unix(
-        self,
-        event: dict,
-        slot_index: int,
-        guild_id: int,
-    ) -> int:
-        """Compute the unix timestamp for a specific slot.
-
-        Uses event date + config default_start_time + slot_index * slot_duration_minutes.
-        Fallbacks: default_start_time='20:00', slot_duration_minutes=60.
-
-        These config keys are set via /config commands (Epic 7). Until then, the
-        fallback values produce a reasonable 8-PM-based slot time.
-
-        [Source: epics.md#Story 5.4 AC2 — <t:{unix}:f> in reminder DM]
-        [Source: architecture.md#Config Storage: PostgreSQL Config Table]
-        """
-        event_dt = self._event_midnight_utc(event)
-        if event_dt is None:
-            return int(datetime.datetime.now(UTC).timestamp())
-
-        start_time_str = await get_value(self.db, guild_id, "default_start_time") or "20:00"
-        slot_dur_str = await get_value(self.db, guild_id, "slot_duration_minutes") or "60"
-
-        try:
-            hour, minute = (int(x) for x in start_time_str.split(":"))
-        except (ValueError, AttributeError):
-            hour, minute = 20, 0
-
-        try:
-            slot_duration = int(slot_dur_str)
-        except (ValueError, TypeError):
-            slot_duration = 60
-
-        event_start = event_dt.replace(hour=hour, minute=minute)
-        slot_time = event_start + timedelta(minutes=slot_index * slot_duration)
-        return int(slot_time.timestamp())
 
     async def send_reminders(
         self,
@@ -135,7 +76,7 @@ class RemindersService:
 
         Algorithm:
           1. Fetch all future events from Notion.
-          2. Filter to events whose midnight UTC is 20-28 hours from now.
+          2. Filter to events whose start is 20-28 hours from now.
           3. For each matching event, fetch booked DJs from slot_locks JOIN djs.
           4. For each booked DJ, skip if reminder already sent (AC2, AC4).
           5. Compute slot_unix; send DM.
@@ -144,7 +85,7 @@ class RemindersService:
              on subsequent cycles still within the 20-28h window).
 
         ctx: BotContext — accepted for API consistency with other service methods.
-        guild_id: used for config DB lookups (default_start_time, slot_duration_minutes).
+        guild_id: accepted for API consistency (slot times come from the event itself).
         _now: injectable for testing; defaults to datetime.now(UTC).
 
         [Source: epics.md#Story 5.4 AC1-AC4]
@@ -152,9 +93,9 @@ class RemindersService:
         """
         # Step 1: fetch events
         try:
-            events = await self.notion_client.poll_events()
+            events = await self.notion_client.list_events()
         except Exception as exc:
-            logger.warning("RemindersService.send_reminders: Notion poll failed: %s", exc)
+            logger.warning("RemindersService.send_reminders: list_events failed: %s", exc)
             return
 
         # Step 2: filter to 20-28h window (compute 'now' once for the whole cycle)
@@ -166,7 +107,7 @@ class RemindersService:
         reminder_count = 0
 
         for event in upcoming:
-            event_id = event.get("id", "")
+            event_id = event.page_id
             if not event_id:
                 continue
 
@@ -202,7 +143,7 @@ class RemindersService:
 
                 # Step 5: compute slot time
                 try:
-                    slot_unix = await self._compute_slot_unix(event, slot_index, guild_id)
+                    slot_unix = int(event.slot_start(slot_index).timestamp())
                 except Exception as exc:
                     logger.warning(
                         "RemindersService.send_reminders: slot_unix failed for DJ %s: %s",

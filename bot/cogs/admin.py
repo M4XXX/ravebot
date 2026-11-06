@@ -60,16 +60,17 @@ disnake 2.12.0 slash command hierarchy:
 [Source: epics.md#Story 7.2 Acceptance Criteria]
 """
 import logging
-from datetime import UTC, date, datetime, timedelta
+from datetime import date
 
 import disnake
 from disnake.ext import commands
 
 from bot.context import BotContext
 from bot.db import config as db_config
-from bot.db.bookings import get_booked_djs_for_event
+from bot.db.bookings import init_event_slots
 from bot.db.djs import get_all_djs
-from bot.notion.client import NotionWriteError
+from bot.notion.client import DuplicateEventError, NotionWriteError
+from bot.services.event_defaults import default_event_shape
 from bot.ui.embeds import EmbedColors
 
 logger = logging.getLogger(__name__)
@@ -826,7 +827,8 @@ class AdminCog(commands.Cog):
     ) -> None:
         """Fetch next event from Notion and display slot-by-slot booking status.
 
-        Uses MISSION_GOLD embed. Slot count from config (default 6).
+        Uses MISSION_GOLD embed. Slot counts and holders come from the event's
+        Notion slot rows.
         Protected by cog_slash_command_check — admin-only.
 
         [Source: epics.md#Story 6.5 AC1, AC2, AC5 — FR38]
@@ -838,9 +840,9 @@ class AdminCog(commands.Cog):
             return
 
         try:
-            events = await self.ctx.notion_client.poll_events()
+            events = await self.ctx.notion_client.list_events()
         except Exception:
-            logger.exception("status_cmd: poll_events() failed")
+            logger.exception("status_cmd: list_events() failed")
             await inter.response.send_message(
                 "Could not fetch events from Notion — please try again.", ephemeral=True
             )
@@ -853,54 +855,34 @@ class AdminCog(commands.Cog):
             return
 
         event = events[0]
-        event_id = event["id"]
+        event_name = event.event_id
+        event_unix = int(event.slot_start(0).timestamp())
 
-        # Parse event name
-        try:
-            event_name = event["properties"]["Name"]["title"][0]["plain_text"]
-        except (KeyError, IndexError, TypeError):
-            event_name = "Unknown Event"
-
-        # Parse event start datetime
-        try:
-            date_str = event["properties"]["Date"]["date"]["start"]
-            event_start = datetime.fromisoformat(date_str)
-            if event_start.tzinfo is None:
-                event_start = event_start.replace(tzinfo=UTC)
-            event_unix = int(event_start.timestamp())
-        except (KeyError, TypeError, ValueError):
-            event_start = None
-            event_unix = 0
-
-        # Get slots_per_event from config (default 6)
-        assert inter.guild_id is not None
-        raw_slots = await db_config.get_value(self.ctx.db, inter.guild_id, "slots_per_event")
-        slots_per_event = int(raw_slots) if raw_slots else 6
-
-        # Get booked slots from DB
-        booked = await get_booked_djs_for_event(self.ctx.db, event_id)
-        booked_by_slot: dict[int, str] = {b["slot_index"]: b["dj_name"] for b in booked}
+        # Slot rows are the truth: booked = rows with a DJ (a DJ with two slots counts two)
+        slots = sorted(event.slots, key=lambda s: s.number)
+        total_slots = len(slots)
+        booked_count = sum(1 for s in slots if s.dj_page_id is not None)
 
         # Build embed
         embed = disnake.Embed(
             title=f"🌌 {event_name}",
             color=EmbedColors.MISSION_GOLD,
         )
-        date_display = f"<t:{event_unix}:f>" if event_unix else "Unknown"
+        date_display = f"<t:{event_unix}:f>"
         embed.add_field(name="Event Date", value=date_display, inline=False)
-        embed.add_field(name="Total Slots", value=str(slots_per_event), inline=True)
-        embed.add_field(name="Booked", value=str(len(booked_by_slot)), inline=True)
-        embed.add_field(name="Open", value=str(slots_per_event - len(booked_by_slot)), inline=True)
+        embed.add_field(name="Total Slots", value=str(total_slots), inline=True)
+        embed.add_field(name="Booked", value=str(booked_count), inline=True)
+        embed.add_field(name="Open", value=str(total_slots - booked_count), inline=True)
 
-        for slot_index in range(slots_per_event):
-            if event_start is not None:
-                slot_unix = int((event_start + timedelta(hours=slot_index)).timestamp())
-                slot_time = f"<t:{slot_unix}:f>"
+        for slot in slots:
+            slot_unix = int(event.slot_start(slot.number - 1).timestamp())
+            slot_time = f"<t:{slot_unix}:f>"
+            if slot.dj_page_id is None:
+                dj_name = "Open"
             else:
-                slot_time = f"Slot {slot_index + 1}"
-            dj_name = booked_by_slot.get(slot_index, "Open")
+                dj_name = slot.dj_name or "Unknown DJ"
             embed.add_field(
-                name=f"Slot {slot_index + 1} · {slot_time}",
+                name=f"Slot {slot.number} · {slot_time}",
                 value=dj_name,
                 inline=True,
             )
@@ -967,13 +949,14 @@ class AdminCog(commands.Cog):
         """Create a new event page in Notion on the specified future date.
 
         Validates date format and that it is strictly in the future.
-        Event name is auto-generated: "Rave Night {DD Mon YYYY}".
+        Event ID is auto-generated: "YYYY-MM-DD Rave Night"; start, slot length and
+        slot count come from default_event_shape() (config).
         Uses MISSION_GOLD Discord timestamp in success reply.
         Protected by cog_slash_command_check — admin-only.
 
         [Source: epics.md#Story 7.1 AC5, AC6, AC7 — FR40]
         """
-        if self.ctx.notion_client is None:
+        if self.ctx.notion_client is None or self.ctx.db is None:
             await inter.response.send_message(
                 "Bot is not ready — please try again.", ephemeral=True
             )
@@ -995,9 +978,19 @@ class AdminCog(commands.Cog):
             )
             return
 
-        event_name = f"Rave Night {event_date.strftime('%d %b %Y')}"
+        event_name = "Rave Night"
+        event_id = f"{event_date.isoformat()} {event_name}"
+        assert inter.guild_id is not None
+        shape = await default_event_shape(self.ctx.db, inter.guild_id)
         try:
-            await self.ctx.notion_client.create_event(event_name, event_date)
+            event = await self.ctx.notion_client.create_event(
+                event_id, event_date, shape.start, shape.slot_count, shape.slot_minutes
+            )
+        except DuplicateEventError:
+            await inter.response.send_message(
+                "An event with that ID already exists.", ephemeral=True
+            )
+            return
         except NotionWriteError:
             logger.exception("add_event: create_event() failed for %s", event_date)
             await inter.response.send_message(
@@ -1005,9 +998,18 @@ class AdminCog(commands.Cog):
             )
             return
 
-        event_unix = int(
-            datetime.combine(event_date, datetime.min.time(), tzinfo=UTC).timestamp()
-        )
+        # Pre-initialize slot_locks rows, as the auto-create path does (Story 7.3 AC2)
+        try:
+            await init_event_slots(self.ctx.db, event.page_id, shape.slot_count)
+        except Exception as exc:
+            logger.warning(
+                "add_event: init_event_slots failed for %r: %s"
+                " — slots will be lazily created on booking",
+                event_id,
+                exc,
+            )
+
+        event_unix = int(event.slot_start(0).timestamp())
         await inter.response.send_message(
             f"Event created in Notion for <t:{event_unix}:f>.", ephemeral=True
         )

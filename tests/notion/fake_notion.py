@@ -8,7 +8,8 @@ State lives in plain dicts so tests can assert on it: ``databases``,
 
 Implemented endpoints: POST /databases, GET/PATCH /data_sources/{id},
 POST /data_sources/{id}/query (page_size + start_cursor pagination, trashed
-pages excluded, only a title-equals filter, no sort support), POST /pages, GET/PATCH /pages/{id}
+pages excluded, only a title/rich_text equals filter, no sort support),
+POST /pages, GET/PATCH /pages/{id}
 (property merge and ``in_trash``), POST /views, GET /views (?database_id=,
 ?data_source_id=, returns ``{id}`` items only, paginated by ``views_page_size``), GET /views/{id}.
 
@@ -50,12 +51,13 @@ def _to_read_shape(value: Any) -> Any:
 
 
 def _matches_filter(page: dict[str, Any], flt: dict[str, Any] | None) -> bool:
-    """Only ``{"property": n, "title": {"equals": v}}`` is supported."""
+    """Only ``{"property": n, "title"|"rich_text": {"equals": v}}`` is supported."""
     if not flt:
         return True
     prop = page["properties"].get(flt["property"], {})
-    text = "".join(i.get("plain_text", "") for i in prop.get("title", []))
-    return text == flt["title"]["equals"]
+    kind = "title" if "title" in flt else "rich_text"
+    text = "".join(i.get("plain_text", "") for i in prop.get(kind, []))
+    return text == flt[kind]["equals"]
 
 
 def _err(status: int, code: str, message: str) -> httpx.Response:
@@ -219,7 +221,7 @@ class FakeNotion:
                 return _err(404, "object_not_found", "page not found")
             if method == "PATCH":
                 for k, v in (body or {}).get("properties", {}).items():
-                    page["properties"][k] = v
+                    page["properties"][k] = _to_read_shape(v)
                 if "in_trash" in (body or {}):
                     page["in_trash"] = body["in_trash"]
             return httpx.Response(200, json=page)

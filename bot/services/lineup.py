@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 import disnake
 
 from bot.db.config import get_value, set_value
+from bot.notion.models import EventInfo
 from bot.ui.embeds import ErrorCode, MissionRosterEmbed
 
 if TYPE_CHECKING:
@@ -39,7 +40,7 @@ class LineupService:
             return None
         return self.bot.guilds[0].id
 
-    async def post_update(self, events: list[dict]) -> None:
+    async def post_update(self, events: list[EventInfo]) -> None:
         """Post (or edit) the lineup embed to the DJ channel.
 
         Daily cap: at most one post per calendar day (UTC).

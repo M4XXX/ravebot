@@ -29,6 +29,7 @@ from bot.db.outreach import (
     update_outreach_contact_status,
     upsert_sequence,
 )
+from bot.notion.models import EventInfo
 
 if TYPE_CHECKING:
     from bot.log import AdminLogService
@@ -61,12 +62,18 @@ class OutreachService:
         self.notion_client = notion_client
         self.log_service = log_service
 
-    async def run_gap_detection(self, guild_id: int) -> list[dict]:
+    @staticmethod
+    def _open_slots(event: EventInfo) -> int:
+        """Open slots = slot_count minus slot rows holding a DJ (a DJ with two slots counts two)."""
+        filled = sum(1 for slot in event.slots if slot.dj_page_id is not None)
+        return event.slot_count - filled
+
+    async def run_gap_detection(self, guild_id: int) -> list[EventInfo]:
         """Detect events with open slots within the outreach window.
 
-        Returns a list of Notion event dicts that are ready for outreach:
+        Returns a list of typed events that are ready for outreach:
           - event is within the outreach window (now <= event_date <= now + outreach_days)
-          - event has at least one open slot (slots_total - djs_booked > 0)
+          - event has at least one open slot (slot_count - filled slot rows > 0)
           - outreach sequence is active (status == 'active')
           - cooldown has elapsed (last_contact_at is NULL or > cooldown_hours ago)
 
@@ -94,45 +101,26 @@ class OutreachService:
 
         # Fetch all future events from Notion (AC1)
         try:
-            events = await self.notion_client.poll_events()
+            events = await self.notion_client.list_events()
         except Exception as exc:
-            logger.warning("OutreachService.run_gap_detection: poll_events failed: %s", exc)
+            logger.warning("OutreachService.run_gap_detection: list_events failed: %s", exc)
             return []
 
         now_utc = datetime.datetime.now(datetime.timezone.utc)
         window_end = now_utc + datetime.timedelta(days=outreach_days)
-        ready: list[dict] = []
+        ready: list[EventInfo] = []
 
         for event in events:
-            event_id = event.get("id", "")
+            event_id = event.page_id
             if not event_id:
                 continue
 
-            # Parse event date — skip if missing or outside window (AC1)
-            try:
-                date_str = event["properties"]["Date"]["date"]["start"]
-                event_dt = datetime.datetime.fromisoformat(date_str)
-                if event_dt.tzinfo is None:
-                    event_dt = event_dt.replace(tzinfo=datetime.timezone.utc)
-            except (KeyError, TypeError, ValueError):
-                continue
-
+            # Event time = start of the first slot — skip if outside window (AC1)
+            event_dt = event.slot_start(0)
             if not (now_utc <= event_dt <= window_end):
                 continue
 
-            # Compute open slots — mirrors _filter_events_with_open_slots in views.py
-            # [Source: bot/ui/views.py:728–749]
-            try:
-                raw_slots = event["properties"]["Slots"]["number"]
-                slots_total = max(1, int(raw_slots) if raw_slots is not None else 6)
-            except (KeyError, TypeError, ValueError):
-                slots_total = 6
-            try:
-                djs_booked = len(event["properties"]["DJs"]["relation"])
-            except (KeyError, TypeError):
-                djs_booked = 0
-
-            open_slots = slots_total - djs_booked
+            open_slots = self._open_slots(event)
 
             # AC4: all slots filled — mark active sequence complete
             if open_slots <= 0:
@@ -235,7 +223,7 @@ class OutreachService:
         )
         return ready
 
-    async def contact_next_dj(self, event: dict, guild_id: int, ctx: "Any") -> bool:
+    async def contact_next_dj(self, event: EventInfo, guild_id: int, ctx: "Any") -> bool:
         """Select next eligible DJ and send proactive outreach DM.
 
         Returns True if a DJ was selected (regardless of DM success/failure).
@@ -254,7 +242,7 @@ class OutreachService:
         from bot.ui.embeds import ProactiveOutreachEmbed
         from bot.ui.views import OutreachView
 
-        event_id = event.get("id", "")
+        event_id = event.page_id
         if not event_id:
             return False
 
@@ -318,10 +306,7 @@ class OutreachService:
             return True
 
         # Get event name for opener text
-        try:
-            event_name = event["properties"]["Name"]["title"][0]["plain_text"]
-        except (KeyError, IndexError):
-            event_name = "an upcoming event"
+        event_name = event.event_id or "an upcoming event"
 
         # Build embed and view
         embed = ProactiveOutreachEmbed(event)
@@ -371,7 +356,7 @@ class OutreachService:
         )
         return True
 
-    async def handle_exhaustion(self, event: dict, guild_id: int) -> None:  # noqa: ARG002
+    async def handle_exhaustion(self, event: EventInfo, guild_id: int) -> None:  # noqa: ARG002
         """Check outreach exhaustion and post ERR_OUTREACH_EXHAUSTED if warranted.
 
         guild_id is accepted for API consistency with other service methods and
@@ -390,7 +375,7 @@ class OutreachService:
         """
         from bot.ui.embeds import ErrorCode
 
-        event_id = event.get("id", "")
+        event_id = event.page_id
         if not event_id:
             return
 
@@ -406,17 +391,7 @@ class OutreachService:
         if seq is None or seq["status"] != "active":
             return  # Already exhausted, complete, or no sequence
 
-        # Compute open slots (same formula as run_gap_detection)
-        try:
-            raw_slots = event["properties"]["Slots"]["number"]
-            slots_total = max(1, int(raw_slots) if raw_slots is not None else 6)
-        except (KeyError, TypeError, ValueError):
-            slots_total = 6
-        try:
-            djs_booked = len(event["properties"]["DJs"]["relation"])
-        except (KeyError, TypeError):
-            djs_booked = 0
-        open_slots = slots_total - djs_booked
+        open_slots = self._open_slots(event)
 
         if open_slots <= 0:
             # Race: slots filled between contact_next_dj call and here — no alert needed
@@ -442,18 +417,8 @@ class OutreachService:
             return
 
         # Build alert context from event
-        try:
-            event_name = event["properties"]["Name"]["title"][0]["plain_text"]
-        except (KeyError, IndexError):
-            event_name = event_id
-        try:
-            date_str = event["properties"]["Date"]["date"]["start"]
-            unix_ts = int(
-                datetime.datetime.fromisoformat(date_str).timestamp()
-            )
-            date_display = f"<t:{unix_ts}:f>"
-        except (KeyError, TypeError, ValueError):
-            date_display = "TBD"
+        event_name = event.event_id or event_id
+        date_display = f"<t:{int(event.slot_start(0).timestamp())}:f>"
 
         # Post ERR_OUTREACH_EXHAUSTED to admin log (AC1)
         if self.log_service is not None:

@@ -2,10 +2,14 @@
 import dataclasses
 import datetime
 import logging
+import urllib.parse
 from typing import Any
 
 from bot.notion.api import NotionApi, NotionWriteError
 from bot.notion.models import (
+    PROP_DJ_DISCORD_ID,
+    PROP_DJ_DISCORD_NAME,
+    PROP_DJ_NAME,
     PROP_EVENT_DATE,
     PROP_EVENT_GENRE,
     PROP_EVENT_ID,
@@ -13,11 +17,13 @@ from bot.notion.models import (
     PROP_EVENT_SLOTS,
     PROP_EVENT_START,
     PROP_EVENT_STATUS,
+    PROP_SLOT_DJ,
     PROP_SLOT_EVENT,
     PROP_SLOT_NUMBER,
     DjInfo,
     EventInfo,
     SlotInfo,
+    _relation_ids,
     _title,
     parse_dj,
     parse_event,
@@ -25,12 +31,21 @@ from bot.notion.models import (
 )
 from bot.notion.schema import NotionIds
 
-__all__ = ["DuplicateEventError", "NotionClient", "NotionWriteError"]
+__all__ = [
+    "DuplicateEventError",
+    "NotionClient",
+    "NotionWriteError",
+    "SlotRowMissingError",
+]
 
 logger = logging.getLogger(__name__)
 
 INITIAL_STATUS = "Planning not started"
 PROP_SLOT_NAME = "Name"
+PROP_DJ_VRCHAT_NAME = "VRChat name"
+PROP_DJ_LOGO = "Logo"
+PROP_DJ_LINK = "Link"
+PROP_DJ_ALT_LINK = "Alternative link"
 
 
 class DuplicateEventError(Exception):
@@ -41,12 +56,32 @@ class DuplicateEventError(Exception):
         self.event_id = event_id
 
 
+class SlotRowMissingError(Exception):
+    """The event has no Slots row with the requested slot number."""
+
+    def __init__(self, event_id: str, number: int) -> None:
+        super().__init__(f"Event {event_id!r} has no slot row number {number}")
+        self.event_id = event_id
+        self.number = number
+
+
 def _is_trashed(page: dict[str, Any]) -> bool:
     return bool(page.get("in_trash") or page.get("is_archived"))
 
 
 def _text(content: str) -> list[dict[str, Any]]:
     return [{"type": "text", "text": {"content": content}}]
+
+
+def _is_http_url(value: str | None) -> bool:
+    if not value:
+        return False
+    parts = urllib.parse.urlsplit(value.strip())
+    return parts.scheme in ("http", "https") and bool(parts.netloc)
+
+
+def _url_prop(value: str | None) -> dict[str, Any]:
+    return {"url": value.strip() if value and _is_http_url(value) else None}
 
 
 class NotionClient:
@@ -189,6 +224,158 @@ class NotionClient:
             start=start,
             slot_minutes=slot_minutes,
             slots=tuple(slots),
+        )
+
+    async def upsert_dj(
+        self,
+        discord_id: int,
+        dj_name: str,
+        discord_name: str,
+        *,
+        vrchat_name: str | None,
+        logo_url: str | None,
+        link: str | None,
+        alt_link: str | None,
+    ) -> str:
+        """Create or update the DJs row matched by ``Discord ID``; return its page id.
+
+        Never creates a duplicate. ``Logo``/``Link``/``Alternative link`` are only
+        written for http(s) URLs, otherwise left empty. Rollups are never written.
+        """
+        digits = str(discord_id)
+        pages = await self._api.query_all(
+            self._ids.djs_ds,
+            {"filter": {"property": PROP_DJ_DISCORD_ID, "rich_text": {"equals": digits}}},
+        )
+        # Compare again: do not rely on the server applying the filter.
+        existing = next(
+            (
+                p
+                for p in pages
+                if not _is_trashed(p) and parse_dj(p).discord_id == discord_id
+            ),
+            None,
+        )
+        props: dict[str, Any] = {
+            PROP_DJ_NAME: {"title": _text(dj_name)},
+            PROP_DJ_DISCORD_NAME: {"rich_text": _text(discord_name) if discord_name else []},
+            PROP_DJ_DISCORD_ID: {"rich_text": _text(digits)},
+            PROP_DJ_VRCHAT_NAME: {"rich_text": _text(vrchat_name) if vrchat_name else []},
+            PROP_DJ_LOGO: {
+                "files": [
+                    {
+                        "name": "logo",
+                        "type": "external",
+                        "external": {"url": logo_url.strip()},
+                    }
+                ]
+                if logo_url and _is_http_url(logo_url)
+                else []
+            },
+            PROP_DJ_LINK: _url_prop(link),
+            PROP_DJ_ALT_LINK: _url_prop(alt_link),
+        }
+        if existing is not None:
+            await self._api.request(
+                "PATCH",
+                f"/pages/{existing['id']}",
+                {"properties": props},
+                f"update DJ {discord_id}",
+            )
+            return existing["id"]
+        page = await self._api.request(
+            "POST",
+            "/pages",
+            {"parent": self._parent(self._ids.djs_ds), "properties": props},
+            f"create DJ {discord_id}",
+        )
+        return page["id"]
+
+    async def refresh_discord_name(self, dj_page_id: str, discord_name: str) -> None:
+        """PATCH only the ``Discord name`` property of a DJ row."""
+        await self._api.request(
+            "PATCH",
+            f"/pages/{dj_page_id}",
+            {"properties": {PROP_DJ_DISCORD_NAME: {"rich_text": _text(discord_name)}}},
+            f"refresh Discord name of DJ page {dj_page_id}",
+        )
+
+    async def _fresh_slot_dj_ids(
+        self, event: EventInfo, slot_index: int
+    ) -> tuple[str, list[str]]:
+        """Return (slot row page id, DJ ids now in its relation), read just now."""
+        number = slot_index + 1
+        row = next((s for s in event.slots if s.number == number), None)
+        if row is None:
+            raise SlotRowMissingError(event.event_id, number)
+        page = await self._api.request(
+            "GET", f"/pages/{row.page_id}", None, f"read slot {number} of {event.event_id}"
+        )
+        if _is_trashed(page):
+            raise SlotRowMissingError(event.event_id, number)
+        return row.page_id, _relation_ids(page, PROP_SLOT_DJ)
+
+    async def _write_slot_djs(
+        self, page_id: str, dj_page_ids: list[str], what: str
+    ) -> None:
+        await self._api.request(
+            "PATCH",
+            f"/pages/{page_id}",
+            {"properties": {PROP_SLOT_DJ: {"relation": [{"id": i} for i in dj_page_ids]}}},
+            what,
+        )
+
+    async def assign_slot(self, event: EventInfo, slot_index: int, dj_page_id: str) -> bool:
+        """Put the DJ on the slot row; False (nothing written) if it already has any DJ.
+
+        Re-reads the row right before writing, so a stale ``event`` cannot
+        overwrite a booking made in the meantime. The remaining gap between the
+        GET and the PATCH is closed for DJ bookings by the Postgres FOR UPDATE
+        slot lock taken before this call; callers that do not take that lock
+        (admin bookings, Task 11) must take it or accept the race. Raises SlotRowMissingError if
+        the event has no row for the slot, NotionWriteError after failed retries.
+        """
+        page_id, current = await self._fresh_slot_dj_ids(event, slot_index)
+        if current:
+            return False
+        await self._write_slot_djs(
+            page_id, [dj_page_id], f"book slot {slot_index + 1} of {event.event_id}"
+        )
+        return True
+
+    async def clear_slot(self, event: EventInfo, slot_index: int, dj_page_id: str) -> bool:
+        """Remove only this DJ from the slot row.
+
+        True if the DJ was removed or the row was already empty; False (nothing
+        written) if the row holds only other DJs. Re-reads the row first.
+        """
+        page_id, current = await self._fresh_slot_dj_ids(event, slot_index)
+        if not current:
+            return True
+        if dj_page_id not in current:
+            return False
+        await self._write_slot_djs(
+            page_id,
+            [i for i in current if i != dj_page_id],
+            f"cancel slot {slot_index + 1} of {event.event_id}",
+        )
+        return True
+
+    async def force_assign_slot(
+        self, event: EventInfo, slot_index: int, dj_page_id: str
+    ) -> None:
+        """Set the slot row's DJ relation to exactly this DJ (admin override only).
+
+        Unconditionally replaces any holder and any extra DJs; no re-read, no
+        conflict check. Raises SlotRowMissingError if the event has no row for
+        the slot, NotionWriteError after failed retries.
+        """
+        number = slot_index + 1
+        row = next((s for s in event.slots if s.number == number), None)
+        if row is None:
+            raise SlotRowMissingError(event.event_id, number)
+        await self._write_slot_djs(
+            row.page_id, [dj_page_id], f"admin book slot {number} of {event.event_id}"
         )
 
     @staticmethod

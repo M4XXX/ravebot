@@ -12,7 +12,6 @@ RULE: Every View subclass MUST:
 """
 import asyncio
 import logging
-from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 import disnake
@@ -22,6 +21,7 @@ from bot.ui.embeds import ErrorCode
 
 if TYPE_CHECKING:
     from bot.context import BotContext
+    from bot.notion.models import EventInfo
 
 logger = logging.getLogger(__name__)
 
@@ -292,9 +292,14 @@ class OnboardingModal(disnake.ui.Modal):
         # Story 2.3 / 4.2: Notion DJ record sync + store returned page ID (best-effort)
         if self._ctx.notion_client is not None:
             try:
-                notion_page_id = await self._ctx.notion_client.write_dj_record(
-                    discord_user_id=inter.author.id,
-                    dj_name=dj_name,
+                notion_page_id = await self._ctx.notion_client.upsert_dj(
+                    inter.author.id,
+                    dj_name,
+                    inter.author.display_name or inter.author.name,
+                    vrchat_name=vrchat_name,
+                    logo_url=logo_url,
+                    link=stream_url_primary,
+                    alt_link=stream_url_backup,
                 )
                 # Story 4.2: persist the Notion page ID so BookingConfirmView can later
                 # append this DJ to the event's DJs relation
@@ -441,9 +446,9 @@ class FallbackMenuView(disnake.ui.View):
             return
 
         try:
-            events = await self.ctx.notion_client.poll_events()
+            events = await self.ctx.notion_client.list_events()
         except Exception:
-            logger.exception("book_slot: poll_events() failed")
+            logger.exception("book_slot: list_events() failed")
             lock.release()
             await inter.response.send_message(
                 "Something went wrong fetching events — try again in a moment.",
@@ -468,19 +473,8 @@ class FallbackMenuView(disnake.ui.View):
         # Build message listing events with Discord timestamps
         lines = ["**Pick an event to book:**"]
         for i, event in enumerate(events_with_open_slots, 1):
-            try:
-                name = event["properties"]["Name"]["title"][0]["plain_text"]
-            except (KeyError, IndexError):
-                name = "Unknown Event"
-            try:
-                date_str = event["properties"]["Date"]["date"]["start"]
-                dt = datetime.fromisoformat(date_str)
-                if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=UTC)
-                date_display = f"<t:{int(dt.timestamp())}:f>"
-            except (KeyError, TypeError, ValueError):
-                date_display = "(date unknown)"
-            lines.append(f"{i}. {name} — {date_display}")
+            date_display = f"<t:{int(event.slot_start(0).timestamp())}:f>"
+            lines.append(f"{i}. {event.event_id} — {date_display}")
 
         content = "\n".join(lines)
         view = EventSelectionView(self.ctx, events_with_open_slots, lock, inter.author.id)
@@ -570,9 +564,9 @@ class FallbackMenuView(disnake.ui.View):
 
         # Fetch Notion events to get names and slot times
         try:
-            events = await self.ctx.notion_client.poll_events()
+            events = await self.ctx.notion_client.list_events()
         except Exception:
-            logger.exception("cancel_slot: poll_events() failed")
+            logger.exception("cancel_slot: list_events() failed")
             lock.release()
             await inter.response.send_message(
                 "Something went wrong fetching the lineup — try again in a moment.",
@@ -581,22 +575,14 @@ class FallbackMenuView(disnake.ui.View):
             return
 
         # Build bookings list by matching slot_lock rows to Notion events
-        events_by_id = {e["id"]: e for e in events}
+        events_by_id = {e.page_id: e for e in events}
         bookings = []
         for row in slot_lock_rows:
             event = events_by_id.get(row["event_id"])
             if event is None:
                 continue  # event no longer in future — skip
             slot_index = row["slot_index"]
-            try:
-                date_str = event["properties"]["Date"]["date"]["start"]
-                event_start = datetime.fromisoformat(date_str)
-                if event_start.tzinfo is None:
-                    event_start = event_start.replace(tzinfo=UTC)
-                slot_dt = event_start + timedelta(hours=slot_index)
-                slot_unix = int(slot_dt.timestamp())
-            except (KeyError, TypeError, ValueError):
-                slot_unix = 0
+            slot_unix = int(event.slot_start(slot_index).timestamp())
             bookings.append({"event": event, "slot_index": slot_index, "slot_unix": slot_unix})
 
         if not bookings:
@@ -765,7 +751,7 @@ class FallbackMenuView(disnake.ui.View):
     ) -> None:
         """Show the first upcoming event's slot overview via MissionOverviewEmbed.
 
-        Uses poll_events() to fetch live Notion data. Falls back gracefully
+        Uses list_events() to fetch live Notion data. Falls back gracefully
         when Notion is unavailable or returns no events.
 
         [Source: epics.md#Story 3.3 AC1, AC5, AC6]
@@ -787,9 +773,9 @@ class FallbackMenuView(disnake.ui.View):
             return
 
         try:
-            events = await self.ctx.notion_client.poll_events()
+            events = await self.ctx.notion_client.list_events()
         except Exception:
-            logger.exception("show_lineup: poll_events() failed")
+            logger.exception("show_lineup: list_events() failed")
             await inter.response.send_message(
                 "Something went wrong fetching the lineup — try again in a moment.",
                 ephemeral=True,
@@ -811,28 +797,15 @@ class FallbackMenuView(disnake.ui.View):
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _filter_events_with_open_slots(events: list[dict]) -> list[dict]:
-    """Return only events that have at least one open slot.
+def _open_slot_indices(event: "EventInfo") -> list[int]:
+    """Zero-based indices of open slots: no slot row with number index+1 holds a DJ."""
+    held = {slot.number for slot in event.slots if slot.dj_page_id is not None}
+    return [i for i in range(event.slot_count) if i + 1 not in held]
 
-    Uses the same defensive Notion property parsing as MissionOverviewEmbed.
-    Open slots = max(0, slots_total - djs_booked).
 
-    [Source: 3-3-missionoverviewembed-for-individual-event-display.md#Slot Open Detection]
-    """
-    result = []
-    for event in events:
-        try:
-            raw_slots = event["properties"]["Slots"]["number"]
-            slots_total = max(1, int(raw_slots) if raw_slots is not None else 6)
-        except (KeyError, TypeError, ValueError):
-            slots_total = 6
-        try:
-            djs_booked = len(event["properties"]["DJs"]["relation"])
-        except (KeyError, TypeError):
-            djs_booked = 0
-        if slots_total - djs_booked > 0:
-            result.append(event)
-    return result
+def _filter_events_with_open_slots(events: list["EventInfo"]) -> list["EventInfo"]:
+    """Return only events that have at least one open slot (see _open_slot_indices)."""
+    return [event for event in events if _open_slot_indices(event)]
 
 
 # ---------------------------------------------------------------------------
@@ -859,7 +832,7 @@ class EventSelectionView(disnake.ui.View):
     def __init__(
         self,
         ctx: "BotContext",
-        events: list[dict],
+        events: list["EventInfo"],
         lock: asyncio.Lock,
         user_id: int,
     ) -> None:
@@ -869,21 +842,16 @@ class EventSelectionView(disnake.ui.View):
         self._user_id = user_id
 
         for i, event in enumerate(events):
-            try:
-                name = event["properties"]["Name"]["title"][0]["plain_text"]
-            except (KeyError, IndexError):
-                name = "Unknown Event"
-
             btn = disnake.ui.Button(
-                label=name[:80],
+                label=event.event_id[:80],
                 style=disnake.ButtonStyle.secondary,
-                custom_id=f"event_select:{event['id']}",
+                custom_id=f"event_select:{event.page_id}",
                 row=min(i, 3),
             )
 
             async def _cb(
                 inter: disnake.MessageInteraction,
-                e: dict = event,
+                e: "EventInfo" = event,
             ) -> None:
                 await self._handle_event(inter, e)
 
@@ -916,7 +884,7 @@ class EventSelectionView(disnake.ui.View):
     async def _handle_event(
         self,
         inter: disnake.MessageInteraction,
-        event: dict,
+        event: "EventInfo",
     ) -> None:
         """Event selected — compute open slots and present SlotSelectionView. (AC2)
 
@@ -924,17 +892,7 @@ class EventSelectionView(disnake.ui.View):
         """
         from bot.ui.embeds import MissionOverviewEmbed
 
-        try:
-            raw_slots = event["properties"]["Slots"]["number"]
-            slots_total = max(1, int(raw_slots) if raw_slots is not None else 6)
-        except (KeyError, TypeError, ValueError):
-            slots_total = 6
-        try:
-            djs_booked = len(event["properties"]["DJs"]["relation"])
-        except (KeyError, TypeError):
-            djs_booked = 0
-
-        open_slot_indices = list(range(djs_booked, slots_total))
+        open_slot_indices = _open_slot_indices(event)
 
         embed = MissionOverviewEmbed(event)
         slot_view = SlotSelectionView(
@@ -976,7 +934,7 @@ class SlotSelectionView(disnake.ui.View):
     def __init__(
         self,
         ctx: "BotContext",
-        event: dict,
+        event: "EventInfo",
         open_slot_indices: list[int],
         lock: asyncio.Lock,
         user_id: int,
@@ -987,7 +945,7 @@ class SlotSelectionView(disnake.ui.View):
         self._lock = lock
         self._user_id = user_id
 
-        event_id = event.get("id", "unknown")
+        event_id = event.page_id
 
         for row_idx, slot_index in enumerate(open_slot_indices[:20]):  # guard
             btn = disnake.ui.Button(
@@ -1036,7 +994,7 @@ class SlotSelectionView(disnake.ui.View):
     ) -> None:
         """Slot selected — present BookingConfirmView for this slot. (Story 4.2)
 
-        Computes the slot's Unix timestamp from the event start time + slot_index hours,
+        Computes the slot's Unix timestamp from the event start + slot_index slot lengths,
         then presents BookingConfirmEmbed + BookingConfirmView. The per-user lock remains
         held and is passed into BookingConfirmView (not released here).
 
@@ -1045,22 +1003,8 @@ class SlotSelectionView(disnake.ui.View):
         """
         from bot.ui.embeds import BookingConfirmEmbed
 
-        # Parse event name
-        try:
-            event_name = self._event["properties"]["Name"]["title"][0]["plain_text"]
-        except (KeyError, IndexError):
-            event_name = "Unknown Event"
-
-        # Compute slot unix timestamp: event_start + slot_index hours
-        try:
-            date_str = self._event["properties"]["Date"]["date"]["start"]
-            event_start = datetime.fromisoformat(date_str)
-            if event_start.tzinfo is None:
-                event_start = event_start.replace(tzinfo=UTC)
-            slot_dt = event_start + timedelta(hours=slot_index)
-            slot_unix = int(slot_dt.timestamp())
-        except (KeyError, TypeError, ValueError):
-            slot_unix = 0
+        event_name = self._event.event_id
+        slot_unix = int(self._event.slot_start(slot_index).timestamp())
 
         embed = BookingConfirmEmbed(event_name=event_name, slot_unix=slot_unix)
         view = BookingConfirmView(
@@ -1098,7 +1042,7 @@ class BookingConfirmView(disnake.ui.View):
       2. acquire_slot_lock() via SELECT...FOR UPDATE
       3. If slot taken → warm message, release per-user lock (basic; Story 4.3 adds full race)
       4. get_notion_dj_page_id() for the DJ
-      5. write_booking() to Notion (PATCH event DJs relation)
+      5. assign_slot() on the Notion Slots row
       6. On NotionWriteError → release_slot_lock() to undo DB claim → error msg → release lock
       7. On success → BookingConfirmedEmbed → trigger lineup post → admin log → release lock
 
@@ -1113,7 +1057,7 @@ class BookingConfirmView(disnake.ui.View):
     def __init__(
         self,
         ctx: "BotContext",
-        event: dict,
+        event: "EventInfo",
         slot_index: int,
         slot_unix: int,
         lock: asyncio.Lock,
@@ -1183,6 +1127,77 @@ class BookingConfirmView(disnake.ui.View):
             ephemeral=True,
         )
 
+    async def _present_slot_taken(
+        self, inter: disnake.MessageInteraction, trigger: str | None = None
+    ) -> None:
+        """Tell the DJ the slot was taken and offer the remaining open slots.
+
+        Shared by a lost Postgres lock and an already-filled Notion slot row.
+        Logs ERR_SLOT_CONFLICT best-effort; ``trigger`` overrides the log text
+        (used when the Postgres lock holder is not the one to name).
+        """
+        event_id = self._event.page_id
+        # AC2: Log ERR_SLOT_CONFLICT to admin channel — best-effort, never blocks DJ
+        if self._ctx.log_service is not None:
+            try:
+                from bot.db.bookings import get_slot_lock_holder
+                from bot.ui.embeds import ErrorCode
+                if trigger is None:
+                    winner_id = await get_slot_lock_holder(
+                        self._ctx.db, event_id, self._slot_index
+                    )
+                    trigger = (
+                        f"DJ {self._user_id} attempted slot {self._slot_index} in event "
+                        f"{event_id!r}, but slot was already locked by DJ {winner_id}"
+                    )
+                await self._ctx.log_service.post_error(
+                    error_code=ErrorCode.ERR_SLOT_CONFLICT,
+                    trigger=trigger,
+                    action_taken="Presented updated slot selection to losing DJ",
+                    manual_action="No manual action required.",
+                )
+            except Exception:
+                logger.exception(
+                    "BookingConfirmView: failed to post ERR_SLOT_CONFLICT"
+                )
+
+        # AC1: Get fresh event data from Notion — best-effort, fall back to stale self._event
+        event_for_refresh = self._event
+        if self._ctx.notion_client is not None:
+            try:
+                fresh_events = await self._ctx.notion_client.list_events()
+                for fresh_event in fresh_events:
+                    if fresh_event.page_id == event_id:
+                        event_for_refresh = fresh_event
+                        break
+            except Exception:
+                logger.exception(
+                    "BookingConfirmView: failed to refresh events for slot conflict view"
+                )
+
+        # Compute remaining open slots from (possibly fresh) event data
+        remaining = [
+            i for i in _open_slot_indices(event_for_refresh) if i != self._slot_index
+        ]
+
+        if not remaining:
+            if self._lock.locked():
+                self._lock.release()
+            await inter.response.send_message(
+                "Sorry, all slots for this event are now fully booked.",
+                ephemeral=True,
+            )
+            return
+
+        refresh_view = SlotSelectionView(
+            self._ctx, event_for_refresh, remaining, self._lock, self._user_id
+        )
+        await inter.response.send_message(
+            "Sorry, that slot was just taken! Here are the remaining open slots:",
+            view=refresh_view,
+            ephemeral=True,
+        )
+
     async def _handle_confirm(self, inter: disnake.MessageInteraction) -> None:
         """[✅ Confirm Booking] — full booking flow with PG lock + Notion write. (AC2–AC3, AC5–AC6)
 
@@ -1191,8 +1206,8 @@ class BookingConfirmView(disnake.ui.View):
         [Source: architecture.md#Gap Analysis — PG lock vs Notion write boundary]
         """
         from bot.db.bookings import acquire_slot_lock, release_slot_lock
-        from bot.db.djs import get_notion_dj_page_id
-        from bot.notion.client import NotionWriteError
+        from bot.notion.client import NotionWriteError, SlotRowMissingError
+        from bot.services.dj_pages import ensure_dj_page
         from bot.ui.embeds import BookingConfirmedEmbed
 
         # Guard: DB must be available (AC6)
@@ -1205,7 +1220,7 @@ class BookingConfirmView(disnake.ui.View):
             )
             return
 
-        event_id = self._event.get("id", "unknown")
+        event_id = self._event.page_id
 
         # Guard: Notion client must be available — without it we cannot write the booking (AC2)
         if self._ctx.notion_client is None:
@@ -1239,120 +1254,113 @@ class BookingConfirmView(disnake.ui.View):
             return
 
         if not slot_acquired:
-            # AC2: Log ERR_SLOT_CONFLICT to admin channel — best-effort, never blocks DJ
-            if self._ctx.log_service is not None:
-                try:
-                    from bot.db.bookings import get_slot_lock_holder
-                    from bot.ui.embeds import ErrorCode
-                    winner_id = await get_slot_lock_holder(
-                        self._ctx.db, event_id, self._slot_index
-                    )
-                    trigger = (
-                        f"DJ {self._user_id} attempted slot {self._slot_index} in event "
-                        f"{event_id!r}, but slot was already locked by DJ {winner_id}"
-                    )
-                    await self._ctx.log_service.post_error(
-                        error_code=ErrorCode.ERR_SLOT_CONFLICT,
-                        trigger=trigger,
-                        action_taken="Presented updated slot selection to losing DJ",
-                        manual_action="No manual action required.",
-                    )
-                except Exception:
-                    logger.exception(
-                        "BookingConfirmView: failed to post ERR_SLOT_CONFLICT"
-                    )
-
-            # AC1: Get fresh event data from Notion — best-effort, fall back to stale self._event
-            event_for_refresh = self._event
-            if self._ctx.notion_client is not None:
-                try:
-                    fresh_events = await self._ctx.notion_client.poll_events()
-                    for fresh_event in fresh_events:
-                        if fresh_event.get("id") == event_id:
-                            event_for_refresh = fresh_event
-                            break
-                except Exception:
-                    logger.exception(
-                        "BookingConfirmView: failed to refresh events for slot conflict view"
-                    )
-
-            # Compute remaining open slots from (possibly fresh) event data
-            try:
-                raw_slots = event_for_refresh["properties"]["Slots"]["number"]
-                slots_total = max(1, int(raw_slots) if raw_slots is not None else 6)
-            except (KeyError, TypeError, ValueError):
-                slots_total = 6
-            try:
-                djs_booked = len(event_for_refresh["properties"]["DJs"]["relation"])
-            except (KeyError, TypeError):
-                djs_booked = 0
-            remaining = [i for i in range(djs_booked, slots_total) if i != self._slot_index]
-
-            if not remaining:
-                if self._lock.locked():
-                    self._lock.release()
-                await inter.response.send_message(
-                    "Sorry, all slots for this event are now fully booked.",
-                    ephemeral=True,
-                )
-                return
-
-            refresh_view = SlotSelectionView(
-                self._ctx, event_for_refresh, remaining, self._lock, self._user_id
-            )
-            await inter.response.send_message(
-                "Sorry, that slot was just taken! Here are the remaining open slots:",
-                view=refresh_view,
-                ephemeral=True,
-            )
+            await self._present_slot_taken(inter)
             return
 
-        # Get DJ's Notion page ID (may be None for DJs onboarded before Story 4.2)
-        dj_notion_page_id = await get_notion_dj_page_id(self._ctx.db, self._user_id)
-
-        # Extract current DJs relation IDs from the event (so we don't overwrite them)
-        try:
-            current_dj_ids = [
-                r["id"] for r in self._event["properties"]["DJs"]["relation"]
-            ]
-        except (KeyError, TypeError):
-            current_dj_ids = []
-
         # Get event name for embed + admin log
-        try:
-            event_name = self._event["properties"]["Name"]["title"][0]["plain_text"]
-        except (KeyError, IndexError):
-            event_name = "Unknown Event"
+        event_name = self._event.event_id
 
-        # Write booking to Notion (AC2–AC3); notion_client is guaranteed non-None by guard above
-        try:
-            await self._ctx.notion_client.write_booking(
-                event_id=event_id,
-                slot_index=self._slot_index,
-                dj_notion_page_id=dj_notion_page_id,
-                current_dj_ids=current_dj_ids,
-                event_name=event_name,
-                slot_unix=self._slot_unix,
-            )
-        except NotionWriteError:
-            # Undo the DB slot lock so the slot is available again
-            await release_slot_lock(self._ctx.db, event_id, self._slot_index)
+        pg_released = False  # Postgres lock freed (never free it twice)
+        responded = False  # an error response has gone out
+        booked = False  # assign_slot succeeded: the booking exists in Notion
+
+        async def _release_pg_lock() -> None:
+            nonlocal pg_released
+            if pg_released:
+                return
+            pg_released = True
+            try:
+                await release_slot_lock(self._ctx.db, event_id, self._slot_index)
+            except Exception:
+                logger.exception("BookingConfirmView: release_slot_lock failed")
+
+        def _release_user_lock() -> None:
             if self._lock.locked():
                 self._lock.release()
+
+        async def _abort_with_error() -> None:
+            nonlocal responded
+            await _release_pg_lock()
+            _release_user_lock()
+            if responded:
+                return
+            responded = True
             await inter.response.send_message(
                 "Something went wrong saving your booking — please try again in a moment.",
                 ephemeral=True,
             )
-            return
 
-        # Send booking confirmed embed (AC3)
-        embed = BookingConfirmedEmbed(event_name=event_name, slot_unix=self._slot_unix)
-        await inter.response.send_message(embed=embed)
+        # From here until the confirmation is sent, every exit must free both locks.
+        try:
+            # DJ's Notion page id (creates the DJs row if needed); never fatal to the flow
+            try:
+                dj_page_id = await ensure_dj_page(
+                    self._ctx.db,
+                    self._ctx.notion_client,
+                    self._user_id,
+                    inter.author.display_name,
+                )
+            except Exception:
+                logger.exception("BookingConfirmView: ensure_dj_page raised")
+                dj_page_id = None
+            if dj_page_id is None:
+                await _abort_with_error()
+                return
+
+            # Write to the Slots database; the row is re-read right before writing
+            try:
+                assigned = await self._ctx.notion_client.assign_slot(
+                    self._event, self._slot_index, dj_page_id
+                )
+            except (NotionWriteError, SlotRowMissingError):
+                logger.exception("BookingConfirmView: assign_slot failed")
+                await _abort_with_error()
+                return
+            booked = assigned
+            if not assigned:
+                # Someone else already holds the Notion row. Read the Postgres holder
+                # BEFORE freeing our lock so the conflict log names real DJs.
+                try:
+                    from bot.db.bookings import get_slot_lock_holder
+                    pg_holder = await get_slot_lock_holder(
+                        self._ctx.db, event_id, self._slot_index
+                    )
+                except Exception:
+                    pg_holder = None
+                notion_slot = next(
+                    (x for x in self._event.slots if x.number == self._slot_index + 1), None
+                )
+                trigger = (
+                    f"DJ {self._user_id} attempted slot {self._slot_index} in event "
+                    f"{event_id!r}, but the Notion slot row already holds a DJ "
+                    f"(Postgres lock holder: {pg_holder}; "
+                    f"Notion slot DJ: {notion_slot.dj_name if notion_slot else None})"
+                )
+                await _release_pg_lock()
+                await self._present_slot_taken(inter, trigger=trigger)
+                return
+
+            # Send booking confirmed embed (AC3)
+            embed = BookingConfirmedEmbed(event_name=event_name, slot_unix=self._slot_unix)
+            await inter.response.send_message(embed=embed)
+        except asyncio.CancelledError:
+            if not booked:
+                await _release_pg_lock()
+            _release_user_lock()
+            raise
+        except Exception:
+            logger.exception("BookingConfirmView: unexpected error while saving booking")
+            if booked:
+                # The booking exists in Notion: keep the Postgres lock, no failure message
+                _release_user_lock()
+                return
+            await _abort_with_error()
+            return
 
         # Trigger lineup channel post — best-effort, failure must not block confirmation (AC3)
         if self._ctx.lineup_service is not None and self._ctx.notion_client is not None:
             try:
-                fresh_events = await self._ctx.notion_client.poll_events()
+                fresh_events = await self._ctx.notion_client.list_events()
                 await self._ctx.lineup_service.post_update(fresh_events)
             except Exception:
                 logger.exception("BookingConfirmView: lineup post failed after booking")
@@ -1409,17 +1417,14 @@ class CancellationView(disnake.ui.View):
         for i, booking in enumerate(bookings[:4]):  # max 4 booking buttons on rows 0-3
             event = booking["event"]
             slot_unix = booking["slot_unix"]
-            try:
-                event_name = event["properties"]["Name"]["title"][0]["plain_text"]
-            except (KeyError, IndexError):
-                event_name = "Unknown Event"
+            event_name = event.event_id
             time_display = f"<t:{slot_unix}:f>" if slot_unix else "(time unknown)"
             label = f"{event_name} · {time_display}"[:80]
 
             btn = disnake.ui.Button(
                 label=label,
                 style=disnake.ButtonStyle.secondary,
-                custom_id=f"cancel_select:{event['id']}:{booking['slot_index']}",
+                custom_id=f"cancel_select:{event.page_id}:{booking['slot_index']}",
                 row=i,
             )
 
@@ -1512,7 +1517,7 @@ class CancelConfirmView(disnake.ui.View):
     def __init__(
         self,
         ctx: "BotContext",
-        event: dict,
+        event: "EventInfo",
         slot_index: int,
         slot_unix: int,
         lock: asyncio.Lock,
@@ -1588,10 +1593,10 @@ class CancelConfirmView(disnake.ui.View):
         [Source: architecture.md#Gap Analysis — PG lock vs Notion write boundary]
         """
         from bot.db.bookings import release_slot_lock
-        from bot.db.djs import get_notion_dj_page_id
-        from bot.notion.client import NotionWriteError
+        from bot.notion.client import NotionWriteError, SlotRowMissingError
+        from bot.services.dj_pages import ensure_dj_page
 
-        event_id = self._event.get("id", "unknown")
+        event_id = self._event.page_id
 
         # Guard: DB must be available
         if self._ctx.db is None:
@@ -1613,44 +1618,39 @@ class CancelConfirmView(disnake.ui.View):
             )
             return
 
-        # Get DJ's Notion page ID (may be None for DJs onboarded before Story 4.2)
-        dj_notion_page_id = await get_notion_dj_page_id(self._ctx.db, self._user_id)
-
         # Get event name for messages and admin log
-        try:
-            event_name = self._event["properties"]["Name"]["title"][0]["plain_text"]
-        except (KeyError, IndexError):
-            event_name = "Unknown Event"
-
-        # Fetch fresh event data for current DJs relation — best-effort
-        event_for_write = self._event
-        try:
-            fresh_events = await self._ctx.notion_client.poll_events()
-            for fresh_event in fresh_events:
-                if fresh_event.get("id") == event_id:
-                    event_for_write = fresh_event
-                    break
-        except Exception:
-            logger.exception("CancelConfirmView: poll_events failed — using stale event data")
-
-        # Extract current DJs relation IDs
-        try:
-            current_dj_ids = [
-                r["id"] for r in event_for_write["properties"]["DJs"]["relation"]
-            ]
-        except (KeyError, TypeError):
-            current_dj_ids = []
+        event_name = self._event.event_id
 
         # Remove from Notion — best-effort; slot lock MUST be freed regardless
         try:
-            await self._ctx.notion_client.delete_booking(
-                event_id=event_id,
-                dj_notion_page_id=dj_notion_page_id,
-                current_dj_ids=current_dj_ids,
-                event_name=event_name,
-                slot_unix=self._slot_unix,
+            dj_page_id = await ensure_dj_page(
+                self._ctx.db, self._ctx.notion_client, self._user_id, inter.author.display_name
+            )
+        except Exception:
+            logger.exception("CancelConfirmView: ensure_dj_page raised")
+            dj_page_id = None
+        try:
+            if dj_page_id is None:
+                logger.warning(
+                    "CancelConfirmView: no DJ page for user %s — Notion slot not cleared",
+                    self._user_id,
+                )
+            elif not await self._ctx.notion_client.clear_slot(
+                self._event, self._slot_index, dj_page_id
+            ):
+                logger.warning(
+                    "CancelConfirmView: slot %s of %r is held by another DJ — Notion unchanged",
+                    self._slot_index + 1,
+                    event_name,
+                )
+        except SlotRowMissingError:
+            logger.warning(
+                "CancelConfirmView: slot row %s of %r is missing — Notion unchanged",
+                self._slot_index + 1,
+                event_name,
             )
         except NotionWriteError:
+            logger.exception("CancelConfirmView: clear_slot failed")
             # Free the slot lock even on Notion failure — slot must become available
             await release_slot_lock(self._ctx.db, event_id, self._slot_index)
             if self._lock.locked():
@@ -1660,6 +1660,9 @@ class CancelConfirmView(disnake.ui.View):
                 ephemeral=True,
             )
             return
+        except Exception:
+            # Any other failure: keep going, the slot lock is freed below regardless
+            logger.exception("CancelConfirmView: unexpected error clearing Notion slot")
 
         # Free the slot_locks DB row — slot is now open (AC4)
         await release_slot_lock(self._ctx.db, event_id, self._slot_index)
@@ -1672,7 +1675,7 @@ class CancelConfirmView(disnake.ui.View):
         # Trigger lineup channel post — best-effort (AC4)
         if self._ctx.lineup_service is not None and self._ctx.notion_client is not None:
             try:
-                fresh_events = await self._ctx.notion_client.poll_events()
+                fresh_events = await self._ctx.notion_client.list_events()
                 await self._ctx.lineup_service.post_update(fresh_events)
             except Exception:
                 logger.exception("CancelConfirmView: lineup post failed after cancellation")
@@ -1718,7 +1721,7 @@ class OutreachView(disnake.ui.View):
     def __init__(
         self,
         ctx: "BotContext",
-        event: dict,
+        event: "EventInfo",
         discord_user_id: int,
     ) -> None:
         super().__init__(timeout=43200)  # 12 hours — UX-DR2
@@ -1737,7 +1740,7 @@ class OutreachView(disnake.ui.View):
         from bot.db.outreach import update_outreach_contact_status
         from bot.ui.embeds import ErrorCode
 
-        event_id = self._event.get("id", "")
+        event_id = self._event.page_id
         if self._ctx.db is not None and event_id:
             try:
                 await update_outreach_contact_status(
@@ -1749,10 +1752,7 @@ class OutreachView(disnake.ui.View):
                 )
 
         if self._ctx.log_service is not None:
-            try:
-                event_name = self._event["properties"]["Name"]["title"][0]["plain_text"]
-            except (KeyError, IndexError):
-                event_name = event_id
+            event_name = self._event.event_id or event_id
             try:
                 await self._ctx.log_service.post_error(
                     error_code=ErrorCode.ERR_BUTTON_TIMEOUT,
@@ -1793,7 +1793,7 @@ class OutreachView(disnake.ui.View):
         from bot.db.outreach import update_outreach_contact_status
         from bot.ui.embeds import MissionOverviewEmbed
 
-        event_id = self._event.get("id", "")
+        event_id = self._event.page_id
 
         # Acquire per-user lock FIRST — prevents false 'accepted' when another flow is open
         lock = self._ctx.get_user_lock(inter.author.id)
@@ -1819,25 +1819,15 @@ class OutreachView(disnake.ui.View):
         event = self._event
         if self._ctx.notion_client is not None:
             try:
-                events = await self._ctx.notion_client.poll_events()
-                fresh = next((e for e in events if e.get("id") == event_id), None)
+                events = await self._ctx.notion_client.list_events()
+                fresh = next((e for e in events if e.page_id == event_id), None)
                 if fresh is not None:
                     event = fresh
             except Exception as exc:
-                logger.warning("OutreachView.accept: poll_events failed: %s", exc)
+                logger.warning("OutreachView.accept: list_events failed: %s", exc)
 
         # Compute open slot indices
-        try:
-            raw_slots = event["properties"]["Slots"]["number"]
-            slots_total = max(1, int(raw_slots) if raw_slots is not None else 6)
-        except (KeyError, TypeError, ValueError):
-            slots_total = 6
-        try:
-            djs_booked = len(event["properties"]["DJs"]["relation"])
-        except (KeyError, TypeError):
-            djs_booked = 0
-
-        open_slot_indices = list(range(djs_booked, slots_total))
+        open_slot_indices = _open_slot_indices(event)
 
         if not open_slot_indices:
             lock.release()
@@ -1882,7 +1872,7 @@ class OutreachView(disnake.ui.View):
         self.stop()  # Prevent re-use after DJ responds
         from bot.db.outreach import update_outreach_contact_status
 
-        event_id = self._event.get("id", "")
+        event_id = self._event.page_id
         if self._ctx.db is not None and event_id:
             try:
                 await update_outreach_contact_status(

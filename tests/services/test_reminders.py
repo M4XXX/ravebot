@@ -15,8 +15,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from bot.notion.models import EventInfo
 from bot.services.reminders import RemindersService
 from bot.ui.embeds import ErrorCode
+from tests.notion.factories import make_event
 
 # Fixed reference: 2026-05-21 02:00 UTC
 # "2026-05-22" midnight = 22h away → squarely in the 20-28h window
@@ -28,24 +30,26 @@ FIXED_NOW = datetime.datetime(2026, 5, 21, 2, 0, 0, tzinfo=UTC)
 # ---------------------------------------------------------------------------
 
 
-def _make_event(event_id: str = "evt-001", event_date: str = "2026-05-22") -> dict:
-    """Build a minimal Notion event dict."""
-    return {
-        "id": event_id,
-        "properties": {
-            "Name": {"title": [{"plain_text": "Test Event"}]},
-            "Date": {"date": {"start": event_date}},
-            "Slots": {"number": 6},
-            "DJs": {"relation": []},
-        },
-    }
+def _make_event(
+    page_id: str = "evt-001",
+    event_date: str = "2026-05-22",
+    start: datetime.time = datetime.time(0, 0),
+    slot_minutes: int = 60,
+) -> EventInfo:
+    """Build a typed event; start defaults to midnight so the date is the window reference."""
+    return make_event(
+        page_id=page_id,
+        date=datetime.date.fromisoformat(event_date),
+        start=start,
+        slot_minutes=slot_minutes,
+    )
 
 
-def _make_service(poll_events_result: list | None = None) -> RemindersService:
+def _make_service(list_events_result: list | None = None) -> RemindersService:
     bot = MagicMock()
     db = MagicMock()
     notion_client = MagicMock()
-    notion_client.poll_events = AsyncMock(return_value=poll_events_result or [])
+    notion_client.list_events = AsyncMock(return_value=list_events_result or [])
     log_service = MagicMock()
     log_service.post_error = AsyncMock()
     log_service.post_dm_transcript = AsyncMock()
@@ -77,12 +81,6 @@ def test_is_in_reminder_window_false_for_past_event():
     assert RemindersService._is_in_reminder_window(event, FIXED_NOW) is False
 
 
-def test_is_in_reminder_window_false_for_malformed_date():
-    """Missing Date property → False (no crash)."""
-    event = {"id": "evt-bad", "properties": {}}
-    assert RemindersService._is_in_reminder_window(event, FIXED_NOW) is False
-
-
 # ---------------------------------------------------------------------------
 # send_reminders integration tests
 # ---------------------------------------------------------------------------
@@ -90,9 +88,9 @@ def test_is_in_reminder_window_false_for_malformed_date():
 
 @pytest.mark.asyncio
 async def test_send_reminders_skips_on_notion_failure():
-    """Notion poll raises → no crash, no reminders sent."""
+    """list_events raises → no crash, no reminders sent."""
     svc = _make_service()
-    svc.notion_client.poll_events = AsyncMock(side_effect=Exception("API down"))
+    svc.notion_client.list_events = AsyncMock(side_effect=Exception("API down"))
 
     with patch("bot.services.reminders.get_booked_djs_for_event", new=AsyncMock()) as mock_get:
         await svc.send_reminders(guild_id=1, ctx=MagicMock(), _now=FIXED_NOW)
@@ -104,7 +102,7 @@ async def test_send_reminders_skips_on_notion_failure():
 async def test_send_reminders_skips_event_outside_window():
     """Event date 46h away → booked DJs never queried."""
     event = _make_event(event_date="2026-05-23")  # 46h away
-    svc = _make_service(poll_events_result=[event])
+    svc = _make_service(list_events_result=[event])
 
     with patch("bot.services.reminders.get_booked_djs_for_event", new=AsyncMock()) as mock_get:
         await svc.send_reminders(guild_id=1, ctx=MagicMock(), _now=FIXED_NOW)
@@ -115,8 +113,8 @@ async def test_send_reminders_skips_event_outside_window():
 @pytest.mark.asyncio
 async def test_send_reminders_sends_dm_and_records_sent():
     """Event in window, DJ booked, no prior reminder → DM sent + reminder recorded (AC2)."""
-    event = _make_event(event_id="evt-001", event_date="2026-05-22")
-    svc = _make_service(poll_events_result=[event])
+    event = _make_event(page_id="evt-001", event_date="2026-05-22")
+    svc = _make_service(list_events_result=[event])
 
     user_mock = MagicMock()
     user_mock.send = AsyncMock()
@@ -138,10 +136,7 @@ async def test_send_reminders_sends_dm_and_records_sent():
     ), patch(
         "bot.services.reminders.record_reminder_sent",
         new=AsyncMock(),
-    ) as mock_record, patch(
-        "bot.services.reminders.get_value",
-        new=AsyncMock(return_value=None),
-    ):
+    ) as mock_record:
         await svc.send_reminders(guild_id=1, ctx=MagicMock(), _now=FIXED_NOW)
 
     user_mock.send.assert_awaited_once()
@@ -160,7 +155,7 @@ async def test_send_reminders_sends_dm_and_records_sent():
 async def test_send_reminders_skips_if_already_sent():
     """Reminder already recorded → DJ skipped, no DM (AC2, AC4)."""
     event = _make_event(event_date="2026-05-22")
-    svc = _make_service(poll_events_result=[event])
+    svc = _make_service(list_events_result=[event])
 
     user_mock = MagicMock()
     user_mock.send = AsyncMock()
@@ -190,8 +185,8 @@ async def test_send_reminders_handles_dm_forbidden():
     """DM blocked (Forbidden) → ERR_DM_FAILED posted, reminder NOT recorded (AC3)."""
     import disnake
 
-    event = _make_event(event_id="evt-001", event_date="2026-05-22")
-    svc = _make_service(poll_events_result=[event])
+    event = _make_event(page_id="evt-001", event_date="2026-05-22")
+    svc = _make_service(list_events_result=[event])
 
     resp_mock = MagicMock()
     resp_mock.status = 403
@@ -218,10 +213,7 @@ async def test_send_reminders_handles_dm_forbidden():
     ), patch(
         "bot.services.reminders.record_reminder_sent",
         new=AsyncMock(),
-    ) as mock_record, patch(
-        "bot.services.reminders.get_value",
-        new=AsyncMock(return_value=None),
-    ):
+    ) as mock_record:
         await svc.send_reminders(guild_id=1, ctx=MagicMock(), _now=FIXED_NOW)
 
     # Reminder must NOT be recorded on DM failure (AC3)
@@ -240,7 +232,7 @@ async def test_send_reminders_handles_dm_forbidden():
 async def test_send_reminders_skips_user_not_in_cache():
     """bot.get_user returns None → DJ skipped, no crash, no reminder recorded."""
     event = _make_event(event_date="2026-05-22")
-    svc = _make_service(poll_events_result=[event])
+    svc = _make_service(list_events_result=[event])
     svc.bot.get_user = MagicMock(return_value=None)
 
     booked_dj = {
@@ -259,10 +251,35 @@ async def test_send_reminders_skips_user_not_in_cache():
     ), patch(
         "bot.services.reminders.record_reminder_sent",
         new=AsyncMock(),
-    ) as mock_record, patch(
-        "bot.services.reminders.get_value",
-        new=AsyncMock(return_value=None),
-    ):
+    ) as mock_record:
         await svc.send_reminders(guild_id=1, ctx=MagicMock(), _now=FIXED_NOW)
 
     mock_record.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_send_reminders_slot_unix_from_typed_event():
+    """DM carries slot_start(slot_index) of the typed event; booked DJs looked up by page_id."""
+    event = _make_event(page_id="page-xyz", event_date="2026-05-22", start=datetime.time(0, 0))
+    # event starts 00:00 on 5/22; slot 2 at 60 min slots = 02:00
+    expected = int(event.slot_start(2).timestamp())
+    assert expected == int(datetime.datetime(2026, 5, 22, 2, 0, tzinfo=UTC).timestamp())
+    svc = _make_service(list_events_result=[event])
+    user_mock = MagicMock()
+    user_mock.send = AsyncMock()
+    svc.bot.get_user = MagicMock(return_value=user_mock)
+    booked_dj = {"discord_user_id": 7, "dj_name": "DJ X", "slot_index": 2}
+    with patch(
+        "bot.services.reminders.get_booked_djs_for_event",
+        new=AsyncMock(return_value=[booked_dj]),
+    ) as mock_get, patch(
+        "bot.services.reminders.has_reminder_been_sent", new=AsyncMock(return_value=False),
+    ), patch(
+        "bot.services.reminders.record_reminder_sent", new=AsyncMock(),
+    ) as mock_record, patch(
+        "bot.services.reminders.is_under_intervention", new=AsyncMock(return_value=False),
+    ):
+        await svc.send_reminders(guild_id=1, ctx=MagicMock(), _now=FIXED_NOW)
+    mock_get.assert_awaited_once_with(svc.db, "page-xyz")
+    assert f"<t:{expected}:f>" in user_mock.send.call_args[0][0]
+    mock_record.assert_awaited_once_with(svc.db, "page-xyz", 7, 2)

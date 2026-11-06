@@ -14,9 +14,11 @@ Classes:
     ProactiveOutreachEmbed — Deep Space Blue outreach invitation embed (Story 5.2)
 """
 import enum
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import disnake
+
+from bot.notion.models import EventInfo
 
 
 class EmbedColors(enum.IntEnum):
@@ -115,6 +117,29 @@ class AdminLogEmbed(disnake.Embed):
         self.set_footer(text="RaveBot")
 
 
+def _slot_counts(event: EventInfo) -> tuple[int, int, int]:
+    """Return (booked, total, open) for an event; a DJ with two slots counts two."""
+    total = event.slot_count
+    booked = min(sum(1 for slot in event.slots if slot.dj_page_id is not None), total)
+    return booked, total, total - booked
+
+
+_MAX_FIELDS = 25
+_SHOWN_WHEN_CAPPED = _MAX_FIELDS - 1
+_MAX_DJ_NAME = 100
+
+
+def _safe_dj_name(name: str | None) -> str:
+    """DJ-controlled text rendered literally: truncated, markdown/mentions/tokens escaped."""
+    if not name:
+        return "Guest DJ"
+    truncated = len(name) > _MAX_DJ_NAME
+    text = name[:_MAX_DJ_NAME]
+    text = disnake.utils.escape_mentions(disnake.utils.escape_markdown(text))
+    text = text.replace("<", "<\u200b")  # break <@id>, <t:..>, <#id> tokens
+    return text + "\u2026" if truncated else text
+
+
 class MissionRosterEmbed(disnake.Embed):
     """Mission Gold lineup embed — lists upcoming events with slot status.
 
@@ -125,7 +150,7 @@ class MissionRosterEmbed(disnake.Embed):
     [Source: epics.md#Story 3.2 AC1]
     """
 
-    def __init__(self, events: list[dict]) -> None:
+    def __init__(self, events: list[EventInfo]) -> None:
         super().__init__(
             color=EmbedColors.MISSION_GOLD,
             title="\U0001f30c Mission Roster",
@@ -133,29 +158,19 @@ class MissionRosterEmbed(disnake.Embed):
         )
         if not events:
             self.description = "No upcoming events scheduled."
-        for event in events:
-            try:
-                name = event["properties"]["Name"]["title"][0]["plain_text"]
-            except (KeyError, IndexError):
-                name = "Unnamed Event"
-            try:
-                date_str = event["properties"]["Date"]["date"]["start"]
-                unix_ts = int(datetime.fromisoformat(date_str).timestamp())
-                date_field = f"<t:{unix_ts}:f>"
-            except (KeyError, TypeError, ValueError):
-                date_field = "TBD"
-            try:
-                raw_slots = event["properties"]["Slots"]["number"]
-                slots_total = int(raw_slots) if raw_slots is not None else 6
-            except (KeyError, TypeError, ValueError):
-                slots_total = 6
-            try:
-                djs_booked = len(event["properties"]["DJs"]["relation"])
-            except (KeyError, TypeError):
-                djs_booked = 0
-            slots_open = max(0, slots_total - djs_booked)
-            field_value = f"{date_field}\n{djs_booked} confirmed · {slots_open} open"
-            self.add_field(name=name, value=field_value, inline=False)
+        capped = len(events) > _MAX_FIELDS
+        shown = events[:_SHOWN_WHEN_CAPPED] if capped else events
+        for event in shown:
+            booked, total, slots_open = _slot_counts(event)
+            date_field = f"<t:{int(event.slot_start(0).timestamp())}:f>"
+            field_value = f"{date_field}\n{booked} confirmed · {slots_open} open"
+            self.add_field(name=event.event_id, value=field_value, inline=False)
+        if capped:
+            self.add_field(
+                name="More events",
+                value=f"{len(events) - len(shown)} more events not shown.",
+                inline=False,
+            )
         self.set_footer(text="RaveBot")
 
 
@@ -173,60 +188,49 @@ class MissionOverviewEmbed(disnake.Embed):
     [Source: epics.md#Story 3.3 AC1–AC4]
     """
 
-    def __init__(self, event: dict) -> None:
+    def __init__(self, event: EventInfo) -> None:
         super().__init__(
             color=EmbedColors.DEEP_SPACE_BLUE,
             timestamp=datetime.now(tz=UTC),
         )
-        # Parse event name
-        try:
-            name = event["properties"]["Name"]["title"][0]["plain_text"]
-        except (KeyError, IndexError):
-            name = "Unknown Event"
-        self.title = f"\U0001f6f0\ufe0f {name}"  # 🛰️
+        self.title = f"\U0001f6f0\ufe0f {event.event_id}"  # 🛰️
 
-        # Parse event start time for slot time computation
-        try:
-            date_str = event["properties"]["Date"]["date"]["start"]
-            event_start = datetime.fromisoformat(date_str)
-            if event_start.tzinfo is None:
-                event_start = event_start.replace(tzinfo=UTC)
-        except (KeyError, TypeError, ValueError):
-            event_start = None
+        booked, slots_total, slots_open = _slot_counts(event)
+        date_display = f"<t:{int(event.slot_start(0).timestamp())}:f>"
+        if slots_total == 0:
+            self.description = f"{date_display} · No slots."
+        elif slots_open == 0:
+            self.description = f"{date_display} · All slots filled"
+        else:
+            self.description = (
+                f"{date_display} · {booked}/{slots_total} confirmed · {slots_open} open"
+            )
 
-        # Parse slot counts
-        try:
-            raw_slots = event["properties"]["Slots"]["number"]
-            slots_total = max(1, int(raw_slots) if raw_slots is not None else 6)
-        except (KeyError, TypeError, ValueError):
-            slots_total = 6
-        try:
-            djs_booked = len(event["properties"]["DJs"]["relation"])
-        except (KeyError, TypeError):
-            djs_booked = 0
-        slots_open = max(0, slots_total - djs_booked)
-
-        date_display = (
-            f"<t:{int(event_start.timestamp())}:f>" if event_start is not None else "TBD"
-        )
-        self.description = (
-            f"{date_display} · All slots filled"
-            if slots_open == 0
-            else f"{date_display} · {djs_booked}/{slots_total} confirmed · {slots_open} open"
-        )
-
-        for i in range(slots_total):
-            if event_start is not None:
-                slot_dt = event_start + timedelta(minutes=60 * i)
-                unix_ts = int(slot_dt.timestamp())
-                time_str = f"<t:{unix_ts}:R>"
+        by_number = {slot.number: slot for slot in event.slots}
+        shown_slots = _SHOWN_WHEN_CAPPED if slots_total > _MAX_FIELDS else slots_total
+        for i in range(shown_slots):
+            time_str = f"<t:{int(event.slot_start(i).timestamp())}:R>"
+            slot = by_number.get(i + 1)
+            if slot is not None and slot.dj_page_id is not None:
+                status = _safe_dj_name(slot.dj_name)
             else:
-                time_str = "TBD"
-            status = "✓ Confirmed" if i < djs_booked else "Open"
+                status = "Open"
             self.add_field(
                 name=f"Slot {i + 1}",
                 value=f"{status} · {time_str}",
                 inline=True,
+            )
+        if slots_total > _MAX_FIELDS:
+            hidden = slots_total - shown_slots
+            hidden_open = sum(
+                1
+                for n in range(shown_slots + 1, slots_total + 1)
+                if n not in by_number or by_number[n].dj_page_id is None
+            )
+            self.add_field(
+                name="More slots",
+                value=f"{hidden} more slots not shown · {hidden_open} open",
+                inline=False,
             )
         self.set_footer(text="RaveBot")
 
@@ -295,34 +299,16 @@ class ProactiveOutreachEmbed(disnake.Embed):
     [Source: epics.md#UX-DR18 — color + text label, never color-only]
     """
 
-    def __init__(self, event: dict) -> None:
+    def __init__(self, event: EventInfo) -> None:
         super().__init__(
             color=EmbedColors.DEEP_SPACE_BLUE,
             title="\U0001f30c Mission Opportunity",  # 🌌
             timestamp=datetime.now(tz=UTC),
         )
-        try:
-            name = event["properties"]["Name"]["title"][0]["plain_text"]
-        except (KeyError, IndexError):
-            name = "Upcoming Event"
-        try:
-            date_str = event["properties"]["Date"]["date"]["start"]
-            unix_ts = int(datetime.fromisoformat(date_str).timestamp())
-            date_display = f"<t:{unix_ts}:f>"
-        except (KeyError, TypeError, ValueError):
-            date_display = "TBD"
-        try:
-            raw_slots = event["properties"]["Slots"]["number"]
-            slots_total = max(1, int(raw_slots) if raw_slots is not None else 6)
-        except (KeyError, TypeError, ValueError):
-            slots_total = 6
-        try:
-            djs_booked = len(event["properties"]["DJs"]["relation"])
-        except (KeyError, TypeError):
-            djs_booked = 0
-        open_slots = max(0, slots_total - djs_booked)
+        _, slots_total, open_slots = _slot_counts(event)
+        date_display = f"<t:{int(event.slot_start(0).timestamp())}:f>"
 
-        self.add_field(name="Event", value=name, inline=True)
+        self.add_field(name="Event", value=event.event_id, inline=True)
         self.add_field(name="Date", value=date_display, inline=True)
         self.add_field(
             name="Open Slots",

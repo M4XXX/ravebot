@@ -14,6 +14,7 @@ import datetime
 import json
 import logging
 from datetime import timedelta
+from typing import Any
 
 import asyncpg
 from disnake.ext import commands, tasks
@@ -21,7 +22,9 @@ from disnake.ext import commands, tasks
 from bot.context import BotContext
 from bot.db.bookings import init_event_slots
 from bot.db.config import get_value, set_value
-from bot.notion.client import NotionWriteError
+from bot.notion.client import DuplicateEventError, NotionWriteError
+from bot.notion.models import EventInfo
+from bot.services.event_defaults import default_event_shape
 from bot.ui.embeds import ErrorCode
 
 logger = logging.getLogger(__name__)
@@ -75,17 +78,33 @@ class EventsCog(commands.Cog):
             return False
 
     @staticmethod
-    def _build_snapshot(events: list[dict]) -> str:
-        """Stable JSON snapshot of event IDs + last_edited_time, sorted by id.
+    def _build_snapshot(events: list[EventInfo]) -> str:
+        """Stable, content-based JSON snapshot of events and their slot assignments.
 
-        Sorting by id ensures the result is order-independent — two fetches
-        returning the same events in different order produce identical snapshots.
+        One entry per event (sorted by page_id), including the list of
+        [slot number, dj_page_id] pairs sorted by slot number. Order-independent
+        and changes whenever an assignment or schedule field changes.
 
         [Source: epics.md#Story 3.1 AC1]
         """
-        entries = sorted(
-            [{"id": e["id"], "last_edited_time": e["last_edited_time"]} for e in events],
-            key=lambda x: x["id"],
+        entries: list[dict[str, Any]] = sorted(
+            (
+                {
+                    "page_id": e.page_id,
+                    "event_id": e.event_id,
+                    "date": e.date.isoformat(),
+                    "start": e.start.strftime("%H:%M"),
+                    "slot_count": e.slot_count,
+                    "slot_minutes": e.slot_minutes,
+                    "status": e.status,
+                    "slots": [
+                        [s.number, s.dj_page_id]
+                        for s in sorted(e.slots, key=lambda s: s.number)
+                    ],
+                }
+                for e in events
+            ),
+            key=lambda x: x["page_id"],
         )
         return json.dumps(entries)
 
@@ -99,16 +118,17 @@ class EventsCog(commands.Cog):
             return None
         return self.bot.guilds[0].id
 
-    async def _auto_create_events(self, events: list[dict], guild_id: int) -> None:
+    async def _auto_create_events(self, events: list[EventInfo], guild_id: int) -> None:
         """Create Notion events to maintain the configured look-ahead count.
 
-        Reads event_lookahead_count (default 6), event_interval_days (default 7),
-        and slots_per_event (default 6) from config. Finds the latest existing event
-        date and creates new events spaced by interval_days until the count reaches
+        Reads event_lookahead_count (default 6) and event_interval_days (default 7)
+        from config; start, slot length and slot count come from
+        default_event_shape() (config, not the latest event). Finds the latest
+        existing event date and creates new events spaced by interval_days until the count reaches
         the look-ahead target. After each successful Notion write, pre-initializes
         slot_locks rows via init_event_slots() (Story 7.3 AC2).
 
-        Called from _poll_notion() after poll_events() succeeds, before snapshot
+        Called from _poll_notion() after list_events() succeeds, before snapshot
         comparison — newly created events appear in the same cycle's snapshot.
 
         On NotionWriteError: ERR_NOTION_WRITE is already posted by _write_with_retry.
@@ -125,30 +145,32 @@ class EventsCog(commands.Cog):
         raw_interval = await get_value(self.ctx.db, guild_id, "event_interval_days")
         interval_days = int(raw_interval) if raw_interval else 7
 
-        raw_slots = await get_value(self.ctx.db, guild_id, "slots_per_event")
-        slots_per_event = int(raw_slots) if raw_slots else 6
+        # Find latest event date; events are sorted ascending by list_events()
+        latest_date: datetime.date = events[-1].date if events else datetime.date.today()
 
-        # Find latest event date; events are sorted ascending by poll_events()
-        latest_date: datetime.date = datetime.date.today()
-        if events:
-            try:
-                date_str = events[-1]["properties"]["Date"]["date"]["start"]
-                latest_date = datetime.date.fromisoformat(date_str[:10])
-            except (KeyError, TypeError, ValueError):
-                pass  # fallback to today
+        client = self.ctx.notion_client
+        db = self.ctx.db
+        if client is None or db is None:
+            return
+
+        # Start, slot length and slot count come from config (Ruling 25)
+        shape = await default_event_shape(db, guild_id)
 
         events_to_create = lookahead - len(events)
         for i in range(1, events_to_create + 1):
             new_date = latest_date + timedelta(days=interval_days * i)
-            event_name = f"Rave Night {new_date.strftime('%d %b %Y')}"
+            event_id = f"{new_date.isoformat()} Rave Night"
             try:
-                event_id = await self.ctx.notion_client.create_event(event_name, new_date)
-                logger.info(
-                    "Auto-created Notion event: %r on %s", event_name, new_date.isoformat()
+                if await client.event_id_exists(event_id):
+                    logger.info("Auto-create skipped: event ID %r already exists", event_id)
+                    continue
+                event = await client.create_event(
+                    event_id, new_date, shape.start, shape.slot_count, shape.slot_minutes
                 )
+                logger.info("Auto-created Notion event: %r", event_id)
                 # Pre-initialize slot_locks rows (Story 7.3 AC2)
                 try:
-                    await init_event_slots(self.ctx.db, event_id, slots_per_event)
+                    await init_event_slots(db, event.page_id, shape.slot_count)
                 except Exception as exc:
                     logger.warning(
                         "init_event_slots failed for event %r: %s"
@@ -156,13 +178,15 @@ class EventsCog(commands.Cog):
                         event_id,
                         exc,
                     )
-            except NotionWriteError:
+            except (NotionWriteError, DuplicateEventError):
                 logger.warning(
                     "Auto event creation failed for %s — ERR_NOTION_WRITE posted to admin log",
                     new_date.isoformat(),
                 )
+            except ValueError:
+                logger.exception("Auto event creation rejected for %s", new_date.isoformat())
 
-    async def _trigger_lineup_update(self, events: list[dict]) -> None:
+    async def _trigger_lineup_update(self, events: list[EventInfo]) -> None:
         """Trigger lineup channel post update via LineupService.
 
         [Source: epics.md#Story 3.2]
@@ -193,13 +217,13 @@ class EventsCog(commands.Cog):
 
         # Fetch events from Notion (AC1, AC4)
         try:
-            events = await self.ctx.notion_client.poll_events()
+            events = await self.ctx.notion_client.list_events()
         except Exception as exc:
             logger.warning("Notion poll failed — skipping cycle: %s", exc)
             if self.ctx.log_service is not None:
                 await self.ctx.log_service.post_error(
                     error_code=ErrorCode.ERR_NOTION_WRITE,
-                    trigger=f"Notion poll_events() raised during notion_poll: {exc}",
+                    trigger=f"Notion list_events() raised during notion_poll: {exc}",
                     action_taken="Skipped this cycle — will retry on next scheduled run.",
                     manual_action=(
                         "Check NOTION_API_KEY, NOTION_PARENT_PAGE_ID, and Notion API status."

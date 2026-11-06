@@ -73,11 +73,10 @@ async def get_notion_dj_page_id(
 ) -> str | None:
     """Return the stored Notion page ID for this DJ, or None if not set.
 
-    Used by BookingConfirmView to look up the DJ's Notion page ID before
-    writing the booking to the Notion event's DJs relation.
+    Used to look up the DJ's row in the Notion DJs database (see ensure_dj_page).
 
-    None is returned for DJs onboarded before Story 4.2 (notion_dj_page_id
-    column was NULL at migration time). The booking flow handles None gracefully.
+    None is returned for DJs without a Notion row yet (migration 0007 cleared the
+    IDs of the old Notion database). ensure_dj_page creates the row on demand.
 
     Ownership-scoped: only returns data for the requesting user's ID.
     [Source: epics.md#Story 4.2 AC2]
@@ -99,8 +98,8 @@ async def set_notion_dj_page_id(
 ) -> None:
     """Store the Notion page ID for this DJ after onboarding Notion sync.
 
-    Called from OnboardingModal.callback() after write_dj_record() succeeds.
-    Enables BookingConfirmView to later look up the DJ's Notion page ID.
+    Called from OnboardingModal.callback() after NotionClient.upsert_dj() succeeds,
+    and by ensure_dj_page(). The ID points to a row in the Notion DJs database.
 
     Ownership-scoped: WHERE discord_user_id = $2.
     [Source: epics.md#Story 4.2 AC2]
