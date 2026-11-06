@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 
 import disnake
 
-from bot.db.djs import insert_dj, set_notion_dj_page_id, update_active_booking
+from bot.db.djs import get_dj_by_discord_id, insert_dj, set_notion_dj_page_id, update_active_booking
 from bot.ui import texts
 from bot.ui.embeds import ErrorCode
 
@@ -772,9 +772,13 @@ class LineupEventPickView(disnake.ui.View):
 # ---------------------------------------------------------------------------
 
 def _open_slot_indices(event: "EventInfo") -> list[int]:
-    """Zero-based indices of open slots: no slot row with number index+1 holds a DJ."""
-    held = {slot.number for slot in event.slots if slot.dj_page_id is not None}
-    return [i for i in range(event.slot_count) if i + 1 not in held]
+    """Zero-based indices of open slots: the resolved row for index+1 holds no DJ."""
+    rows = event.resolved_slots()
+    return [
+        i
+        for i in range(event.slot_count)
+        if rows.get(i + 1) is None or rows[i + 1].dj_page_id is None
+    ]
 
 
 MAX_SLOT_BUTTONS = 24  # Discord allows 25 components per message, one is Never mind
@@ -859,14 +863,40 @@ class LineupPostView(disnake.ui.View):
     ) -> None:
         await inter.response.defer(ephemeral=True)
         user = inter.author
+        if not await self._is_onboarded(user.id):
+            await self._dm_or_report(inter, texts.NO_PROFILE, None, release_lock=False)
+            return
         start = await prepare_booking(self.ctx, user.id)
         if start.error is not None:
             await inter.followup.send(start.error, ephemeral=True)
             return
+        await self._dm_or_report(inter, start.content, start.view, release_lock=True)
+
+    async def _is_onboarded(self, user_id: int) -> bool:
+        """True when a DJ record exists. A lookup failure counts as onboarded so the
+        booking flow's own checks decide."""
         try:
-            await user.send(start.content, view=start.view)
+            return await get_dj_by_discord_id(self.ctx.db, user_id) is not None
+        except Exception:
+            logger.exception("LineupPostView: DJ lookup failed for %s", user_id)
+            return True
+
+    async def _dm_or_report(
+        self,
+        inter: disnake.MessageInteraction,
+        content: str,
+        view: disnake.ui.View | None,
+        *,
+        release_lock: bool,
+    ) -> None:
+        """DM the user, then reply privately; blocked or failed DMs are reported."""
+        user = inter.author
+        kwargs = {"view": view} if view is not None else {}
+        try:
+            await user.send(content, **kwargs)
         except disnake.Forbidden:
-            self.ctx.get_user_lock(user.id).release()
+            if release_lock:
+                self.ctx.get_user_lock(user.id).release()
             await inter.followup.send(texts.POST_DM_BLOCKED, ephemeral=True)
             if self.ctx.log_service is not None:
                 await self.ctx.log_service.post_error(
@@ -884,7 +914,8 @@ class LineupPostView(disnake.ui.View):
             return
         except Exception:
             logger.exception("LineupPostView: DM to %s failed", user.id)
-            self.ctx.get_user_lock(user.id).release()
+            if release_lock:
+                self.ctx.get_user_lock(user.id).release()
             await inter.followup.send(texts.GENERIC_ERROR, ephemeral=True)
             return
         await inter.followup.send(texts.POST_DM_SENT, ephemeral=True)
@@ -1124,7 +1155,7 @@ class BookingConfirmView(disnake.ui.View):
       4. get_notion_dj_page_id() for the DJ
       5. assign_slot() on the Notion Slots row
       6. On NotionWriteError → release_slot_lock() to undo DB claim → error msg → release lock
-      7. On success → BookingConfirmedEmbed → trigger lineup post → admin log → release lock
+      7. On success → BookedEmbed → trigger lineup post → admin log → release lock
 
     timeout=None: DJ-facing views never expire (UX-DR16).
 
@@ -1790,7 +1821,7 @@ class OutreachView(disnake.ui.View):
     On timeout: log ERR_BUTTON_TIMEOUT and mark contact as 'timeout'.
 
     Buttons:
-      [🎧 Accept — Show Slots]  — success style — AC2
+      [🎧 Pick a Slot]          — success style — AC2
       [Not this time]           — secondary style — AC3
 
     [Source: epics.md#Story 5.2 AC2, AC3, AC5]

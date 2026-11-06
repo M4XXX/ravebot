@@ -138,7 +138,9 @@ class AdminBookingService:
             await admin_force_book_slot(self.db, event_id, slot_index, dj_id)
         except Exception:
             logger.exception("admin book: admin_force_book_slot failed")
-            return False, "Database error while writing the slot lock. Please try again in a moment."
+            return False, (
+                "Database error while writing the slot lock. Please try again in a moment."
+            )
 
         # Step 4: write to Notion — the slot row's DJ becomes exactly this DJ,
         # replacing any displaced holder (retry x3 built into the API layer)
@@ -275,7 +277,10 @@ class AdminBookingService:
             logger.exception("admin cancel: release_slot_lock failed")
 
         if notion_error:
-            return False, "Notion write failed. The slot lock is released, but Notion may be out of sync. Check the slot in Notion."
+            return False, (
+                "Notion write failed. The slot lock is released, but Notion may be out of sync. "
+                "Check the slot in Notion."
+            )
 
         # Step 6: DM the DJ (non-fatal)
         slot_display = f"<t:{slot_unix}:f>" if slot_unix else "your slot"

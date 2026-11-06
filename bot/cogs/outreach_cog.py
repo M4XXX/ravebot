@@ -95,7 +95,12 @@ class OutreachCog(commands.Cog):
 
         # Global switch, read fresh each cycle. Off: no gap detection, no invites,
         # no exhaustion handling. Nothing else in the bot depends on this.
-        if not await outreach_enabled(self.ctx.db, guild_id):
+        try:
+            enabled = await outreach_enabled(self.ctx.db, guild_id)
+        except Exception as exc:
+            logger.warning("OutreachCog._outreach_check: reading the switch failed: %s", exc)
+            return
+        if not enabled:
             logger.debug("OutreachCog._outreach_check: automatic outreach is off, skipping")
             return
 

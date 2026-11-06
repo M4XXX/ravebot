@@ -1054,7 +1054,8 @@ class AdminCog(commands.Cog):
         except NotionWriteError:
             logger.exception("add_event: create_event() failed for %s", event_date)
             await inter.followup.send(
-                "Could not create the event in Notion. Please try again in a moment.", ephemeral=True
+                "Could not create the event in Notion. Please try again in a moment.",
+                ephemeral=True,
             )
             return
 

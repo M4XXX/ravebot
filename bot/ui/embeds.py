@@ -157,7 +157,7 @@ _MAX_DESCRIPTION = 4096
 
 def lineup_text(event: EventInfo) -> str:
     """Lineup body: event line plus one line per slot; whole lines, capped at 4096 chars."""
-    by_number = {slot.number: slot for slot in event.slots}
+    by_number = event.resolved_slots()
     lines = [f"Event {texts.fmt_date(event)}"]
     for index in range(event.slot_count):
         slot = by_number.get(index + 1)
@@ -173,7 +173,7 @@ def lineup_text(event: EventInfo) -> str:
     slot_lines = lines[1:]
     for keep in range(len(slot_lines), -1, -1):
         hidden = len(slot_lines) - keep
-        note = f"{hidden} slots not shown"
+        note = f"{hidden} slot not shown" if hidden == 1 else f"{hidden} slots not shown"
         candidate = "\n".join([lines[0], *slot_lines[:keep], note])
         if len(candidate) <= _MAX_DESCRIPTION:
             return candidate

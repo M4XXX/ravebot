@@ -54,6 +54,16 @@ class EventInfo:
     slot_minutes: int
     slots: tuple[SlotInfo, ...]
 
+    def resolved_slots(self) -> dict[int, SlotInfo]:
+        """One slot row per number; duplicates resolve to the lowest page id.
+
+        The same rule the Notion client and the sync planner use for writes.
+        """
+        rows: dict[int, SlotInfo] = {}
+        for row in sorted(self.slots, key=lambda r: (r.number, r.page_id)):
+            rows.setdefault(row.number, row)
+        return rows
+
     def slot_start(self, slot_index: int) -> datetime.datetime:
         """UTC start of the zero-based slot_index."""
         base = datetime.datetime.combine(self.date, self.start, tzinfo=datetime.UTC)

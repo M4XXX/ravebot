@@ -86,3 +86,15 @@ async def test_outreach_enabled_helper(
     monkeypatch.setattr("bot.services.outreach.get_value", getter)
     assert await outreach_enabled(MagicMock(), 111) is expected
     assert getter.await_args.args[2] == "outreach_enabled"
+
+
+@pytest.mark.asyncio
+async def test_outreach_check_switch_read_failure_skips_cycle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cog, svc, _ = _make_cog(None)
+    monkeypatch.setattr(
+        "bot.services.outreach.get_value", AsyncMock(side_effect=RuntimeError("db"))
+    )
+    await cog._outreach_check.coro(cog)
+    svc.run_gap_detection.assert_not_called()

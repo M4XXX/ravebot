@@ -253,7 +253,39 @@ class TestLineupUpdateEmbed:
         embed = LineupUpdateEmbed(event)
         assert embed.description is not None
         assert len(embed.description) <= 4096
-        assert embed.description.splitlines()[-1].endswith(" slots not shown")
+        lines = embed.description.splitlines()
+        shown = len(lines) - 2  # event line and note
+        assert lines[-1] == f"{100 - shown} slots not shown"
+
+    def test_no_note_when_nothing_is_cut(self) -> None:
+        from bot.ui.embeds import lineup_text
+
+        slots = [make_slot(i, dj_page_id=f"d{i}", dj_name="n" * 100) for i in range(1, 11)]
+        assert "not shown" not in lineup_text(self._event(slots, slot_count=10))
+
+    def test_truncation_singular_note(self) -> None:
+        from bot.ui.embeds import lineup_text
+
+        notes = set()
+        for count in range(20, 60):
+            slots = [make_slot(i, dj_page_id=f"d{i}", dj_name="n" * 100) for i in range(1, count + 1)]
+            last = lineup_text(self._event(slots, slot_count=count)).splitlines()[-1]
+            if "not shown" in last:
+                notes.add(last)
+        assert "1 slot not shown" in notes
+        assert "1 slots not shown" not in notes
+
+    def test_duplicate_rows_render_lowest_page_id(self) -> None:
+        from bot.ui.embeds import lineup_text
+
+        event = self._event(
+            [
+                make_slot(1, dj_page_id="d1", dj_name="Nova", page_id="p2"),
+                make_slot(1, page_id="p1"),
+            ],
+            slot_count=1,
+        )
+        assert lineup_text(event).splitlines()[1] == "Slot 1  18:00  OPEN SLOT"
 
     def test_embed_title_footer_color(self) -> None:
         from bot.ui.embeds import LineupUpdateEmbed

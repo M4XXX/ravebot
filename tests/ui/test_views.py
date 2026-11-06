@@ -1817,7 +1817,7 @@ async def test_cancel_slot_matches_lock_rows_by_page_id_and_slot_time() -> None:
 from bot.notion.client import SlotRowMissingError  # noqa: E402
 
 
-async def _run_cancel(user_id, *, ensure, clear):
+async def _run_cancel(user_id, *, ensure, clear, lineup=None):
     from bot.ui.views import CancelConfirmView
 
     ctx = make_real_ctx(db=MagicMock())
@@ -1826,7 +1826,7 @@ async def _run_cancel(user_id, *, ensure, clear):
     ctx.notion_client.list_events = AsyncMock(return_value=[event])
     ctx.notion_client.clear_slot = clear
     ctx.log_service = None
-    ctx.lineup_service = None
+    ctx.lineup_service = lineup
     lock = ctx.get_user_lock(user_id)
     await lock.acquire()
     view = CancelConfirmView(
@@ -2186,6 +2186,13 @@ async def test_booking_cancel_after_booked_keeps_pg_lock_and_propagates() -> Non
 # Task 3: prepare_booking + LineupPostView
 # ---------------------------------------------------------------------------
 
+@pytest.fixture(autouse=True)
+def _dj_exists_by_default():
+    """LineupPostView checks onboarding; tests default to an onboarded DJ."""
+    with patch("bot.ui.views.get_dj_by_discord_id", new=AsyncMock(return_value={"id": 1})):
+        yield
+
+
 def _ctx_with_events(events: list[EventInfo] | Exception):
     ctx = make_real_ctx(db=MagicMock())
     ctx.notion_client = MagicMock()
@@ -2395,3 +2402,59 @@ async def test_picker_note_only_when_slots_hidden(slot_count: int, note: bool) -
     inter2.response.send_message = AsyncMock()
     await OutreachView(ctx=ctx2, event=event, discord_user_id=40061).accept.callback(inter2)
     assert inter2.response.send_message.call_args.kwargs["content"] == expected
+
+
+@pytest.mark.asyncio
+async def test_post_button_not_onboarded_gets_no_profile_dm_and_no_lock() -> None:
+    from bot.ui import texts
+    from bot.ui.views import LineupPostView
+
+    ctx = _ctx_with_events([_make_event()])
+    inter = _post_inter()
+    with patch("bot.ui.views.get_dj_by_discord_id", new=AsyncMock(return_value=None)):
+        await LineupPostView(ctx).book_slot.callback(inter)
+
+    inter.author.send.assert_awaited_once_with(texts.NO_PROFILE)
+    inter.followup.send.assert_awaited_once_with(texts.POST_DM_SENT, ephemeral=True)
+    ctx.notion_client.list_events.assert_not_awaited()
+    assert not ctx.get_user_lock(77).locked()
+
+
+@pytest.mark.asyncio
+async def test_post_button_not_onboarded_dm_blocked_logs_and_no_lock() -> None:
+    from bot.ui import texts
+    from bot.ui.embeds import ErrorCode
+    from bot.ui.views import LineupPostView
+
+    ctx = _ctx_with_events([_make_event()])
+    inter = _post_inter()
+    inter.author.send = AsyncMock(
+        side_effect=disnake.Forbidden(MagicMock(status=403, reason="x"), "no")
+    )
+    with patch("bot.ui.views.get_dj_by_discord_id", new=AsyncMock(return_value=None)):
+        await LineupPostView(ctx).book_slot.callback(inter)
+
+    inter.followup.send.assert_awaited_once_with(texts.POST_DM_BLOCKED, ephemeral=True)
+    assert ctx.log_service.post_error.await_args.args[0] is ErrorCode.ERR_DM_FAILED
+    assert not ctx.get_user_lock(77).locked()
+
+
+def test_open_slot_indices_uses_lowest_page_id_row() -> None:
+    from bot.ui.views import _open_slot_indices
+
+    held_last = make_event(slot_count=2, slots=[
+        make_slot(1, dj_page_id="d", dj_name="X", page_id="p2"), make_slot(1, page_id="p1")])
+    held_first = make_event(slot_count=2, slots=[
+        make_slot(1, page_id="p2"), make_slot(1, dj_page_id="d", dj_name="X", page_id="p1")])
+    assert _open_slot_indices(held_last) == [0, 1]
+    assert _open_slot_indices(held_first) == [1]
+
+
+@pytest.mark.asyncio
+async def test_cancel_confirm_success_notifies_lineup() -> None:
+    lineup = MagicMock()
+    await _run_cancel(
+        40040, ensure=AsyncMock(return_value="dj-me"), clear=AsyncMock(return_value=True),
+        lineup=lineup,
+    )
+    lineup.notify_changed.assert_called_once_with()

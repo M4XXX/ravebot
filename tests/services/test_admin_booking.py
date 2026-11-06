@@ -457,7 +457,10 @@ async def test_cancel_slot_override_notion_error_still_releases_lock(monkeypatch
     )
 
     assert success is False
-    assert msg == "Notion write failed. The slot lock is released, but Notion may be out of sync. Check the slot in Notion."
+    assert msg == (
+        "Notion write failed. The slot lock is released, but Notion may be out of sync. "
+        "Check the slot in Notion."
+    )
     release.assert_awaited_once_with(svc.db, EVENT_PAGE_ID, 0, expected_holder=42)  # MUST be freed
     svc.log_service.post_admin_override.assert_not_awaited()  # no log on failure
 
@@ -477,7 +480,10 @@ async def test_cancel_slot_override_no_dj_page_still_releases_lock(monkeypatch, 
     )
 
     assert success is False
-    assert msg == "Notion write failed. The slot lock is released, but Notion may be out of sync. Check the slot in Notion."
+    assert msg == (
+        "Notion write failed. The slot lock is released, but Notion may be out of sync. "
+        "Check the slot in Notion."
+    )
     svc.notion_client.clear_slot.assert_not_awaited()
     release.assert_awaited_once_with(svc.db, EVENT_PAGE_ID, 0, expected_holder=42)
 

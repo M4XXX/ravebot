@@ -87,7 +87,7 @@ class EventsCog(commands.Cog):
             return None
         return self.bot.guilds[0].id
 
-    async def _auto_create_events(self, events: list[EventInfo], guild_id: int) -> None:
+    async def _auto_create_events(self, events: list[EventInfo], guild_id: int) -> int:
         """Create Notion events to maintain the configured look-ahead count.
 
         Reads event_lookahead_count (default 6) and event_interval_days (default 7)
@@ -98,7 +98,8 @@ class EventsCog(commands.Cog):
         slot_locks rows via init_event_slots() (Story 7.3 AC2).
 
         Called from _poll_notion() after list_events() succeeds, before the
-        lineup refresh — newly created events are part of the same cycle.
+        lineup refresh. Returns how many events were created; the caller's event
+        list does not include them, so a non-zero count makes it reload for the refresh.
 
         On NotionWriteError: ERR_NOTION_WRITE is already posted by NotionApi.request.
         Logs a warning and continues — remaining events in the loop still attempted.
@@ -109,7 +110,7 @@ class EventsCog(commands.Cog):
         lookahead = int(raw_lookahead) if raw_lookahead else 6
 
         if len(events) >= lookahead:
-            return  # AC4: already at or above target, no action
+            return 0  # AC4: already at or above target, no action
 
         raw_interval = await get_value(self.ctx.db, guild_id, "event_interval_days")
         interval_days = int(raw_interval) if raw_interval else 7
@@ -120,12 +121,13 @@ class EventsCog(commands.Cog):
         client = self.ctx.notion_client
         db = self.ctx.db
         if client is None or db is None:
-            return
+            return 0
 
         # Start, slot length and slot count come from config (Ruling 25)
         shape = await default_event_shape(db, guild_id)
 
         events_to_create = lookahead - len(events)
+        created = 0
         for i in range(1, events_to_create + 1):
             new_date = latest_date + timedelta(days=interval_days * i)
             event_id = f"{new_date.isoformat()} Rave Night"
@@ -137,6 +139,7 @@ class EventsCog(commands.Cog):
                     event_id, new_date, shape.start, shape.slot_count, shape.slot_minutes
                 )
                 logger.info("Auto-created Notion event: %r", event_id)
+                created += 1
                 # Pre-initialize slot_locks rows (Story 7.3 AC2)
                 try:
                     await init_event_slots(db, event.page_id, shape.slot_count)
@@ -154,6 +157,7 @@ class EventsCog(commands.Cog):
                 )
             except ValueError:
                 logger.exception("Auto event creation rejected for %s", new_date.isoformat())
+        return created
 
     async def _run_sync_cycle(self, guild_id: int) -> None:
         """Run one NotionSyncService cycle; a failure is logged and never raised.
@@ -221,13 +225,20 @@ class EventsCog(commands.Cog):
             return
 
         # Story 7.1: auto-create events to maintain look-ahead count (AC1-AC4)
-        await self._auto_create_events(events, guild_id)
+        created = await self._auto_create_events(events, guild_id)
 
         # Post a Lineup Update if the upcoming event changed since the last post
         if self.ctx.lineup_service is None:
             logger.warning("lineup_service not available — skipping lineup update")
             return
-        await self.ctx.lineup_service.refresh(events)
+        try:
+            if created:
+                # The list loaded above lacks the new events: let refresh() reload it
+                await self.ctx.lineup_service.refresh()
+            else:
+                await self.ctx.lineup_service.refresh(events)
+        except Exception as exc:
+            logger.warning("Lineup refresh failed — retrying next cycle: %s", exc)
 
     @_poll_notion.before_loop
     async def _before_poll_notion(self) -> None:

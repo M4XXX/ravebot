@@ -340,7 +340,7 @@ After the bot comes online:
 
 ### 7.1 Lineup posts and booking button
 
-- Whenever the lineup of the upcoming event changes, the bot posts a new `Lineup Update` message in the DJ channel. Upcoming event means the earliest event whose date is today or later and whose status is not Done or Canceled. Older posts stay as they are.
+- Whenever the lineup of the upcoming event changes, the bot posts a new `Lineup Update` message in the DJ channel. Upcoming event means the earliest event whose date is today or later and whose status is not Done or Canceled. Older posts stay as they are. After you first set the DJ channel, nothing is posted until the lineup changes; run `/lineup post` to post it immediately.
 - Post format: line 1 is `Event Saturday 14.11.2026`, followed by one line per slot, for example `Slot 1  20:00  DJ Felix` or `Slot 2  21:00  OPEN SLOT`. Times are UTC.
 - Every post has a `Book a slot` button. A DJ who presses it gets the booking flow in DMs. If DMs are blocked, the bot says so privately.
 - `/lineup post` posts the upcoming event again. `/lineup post event:<event id>` posts any future event.

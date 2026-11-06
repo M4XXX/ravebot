@@ -280,3 +280,15 @@ async def test_post_event_false_when_channel_unset() -> None:
     with _Ctx(cfg):
         assert await service.post_event(_ev("e", datetime.date(2026, 11, 14))) is False
     channel.send.assert_not_awaited()
+
+
+def test_event_snapshot_duplicate_rows_do_not_raise_and_use_lowest_page_id() -> None:
+    d = datetime.date(2026, 11, 14)
+    a = _ev("e", d, slot_count=1, slots=[
+        make_slot(1, dj_page_id="dj", page_id="p2"), make_slot(1, page_id="p1")])
+    b = _ev("e", d, slot_count=1, slots=[
+        make_slot(1, page_id="p1"), make_slot(1, dj_page_id="dj", page_id="p2")])
+    c = _ev("e", d, slot_count=1, slots=[
+        make_slot(1, dj_page_id="dj", page_id="p1"), make_slot(1, page_id="p2")])
+    assert event_snapshot(a) == event_snapshot(b)
+    assert event_snapshot(c) != event_snapshot(a)
