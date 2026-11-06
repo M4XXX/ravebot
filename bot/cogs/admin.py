@@ -50,6 +50,8 @@ disnake 2.12.0 slash command hierarchy:
   /status                      <- @commands.slash_command()
   /list-djs                    <- @commands.slash_command()
   /add-event                   <- @commands.slash_command()
+  /lineup                      <- @commands.slash_command()
+    post                       <- .sub_command()  [optional event, autocomplete]
 
 [Source: architecture.md#Admin Whitelist: disnake Check Decorator]
 [Source: epics.md#Story 1.4 Acceptance Criteria]
@@ -60,7 +62,7 @@ disnake 2.12.0 slash command hierarchy:
 [Source: epics.md#Story 7.2 Acceptance Criteria]
 """
 import logging
-from datetime import date
+from datetime import UTC, date, datetime
 
 import disnake
 from disnake.ext import commands
@@ -71,9 +73,15 @@ from bot.db.bookings import init_event_slots
 from bot.db.djs import get_all_djs
 from bot.notion.client import DuplicateEventError, NotionWriteError
 from bot.services.event_defaults import default_event_shape
+from bot.services.lineup import future_events, upcoming_event
+from bot.ui import texts
 from bot.ui.embeds import EmbedColors
 
 logger = logging.getLogger(__name__)
+
+
+def _today() -> date:
+    return datetime.now(UTC).date()
 
 
 class AdminCog(commands.Cog):
@@ -1029,3 +1037,95 @@ class AdminCog(commands.Cog):
         await inter.followup.send(
             f"Event created in Notion for <t:{event_unix}:f>.", ephemeral=True
         )
+
+    # ---------------------------------------------------------------------------
+    # /lineup post: re-post the lineup of any future event
+    # ---------------------------------------------------------------------------
+
+    @commands.slash_command(name="lineup", description="Lineup posts (admin only)")
+    async def lineup_base(self, inter: disnake.ApplicationCommandInteraction) -> None:
+        """Top-level /lineup command group."""
+        pass
+
+    @lineup_base.sub_command(
+        name="post",
+        description="Post the lineup of the upcoming event (or a chosen future event)",
+    )
+    async def lineup_post(
+        self,
+        inter: disnake.ApplicationCommandInteraction,
+        event: str | None = commands.Param(
+            default=None,
+            description="Event ID (default: the upcoming event)",
+        ),
+    ) -> None:
+        """Post a new lineup message. Admin-only through the cog check."""
+        if (
+            self.ctx.notion_client is None
+            or self.ctx.db is None
+            or self.ctx.lineup_service is None
+        ):
+            await inter.response.send_message(
+                "Bot is not ready. Please try again.", ephemeral=True
+            )
+            return
+
+        await inter.response.defer(ephemeral=True)
+
+        try:
+            events = await self.ctx.notion_client.list_events()
+        except Exception:
+            logger.exception("lineup_post: list_events() failed")
+            await inter.followup.send(
+                "Could not fetch events from Notion. Please try again.", ephemeral=True
+            )
+            return
+
+        today = _today()
+        if event is None:
+            chosen = upcoming_event(events, today)
+            if chosen is None:
+                await inter.followup.send(texts.NO_LINEUP, ephemeral=True)
+                return
+        else:
+            wanted = event.strip().casefold()
+            chosen = next(
+                (e for e in future_events(events, today) if e.event_id.casefold() == wanted),
+                None,
+            )
+            if chosen is None:
+                await inter.followup.send(
+                    "That event is not available. Pick one from the list.", ephemeral=True
+                )
+                return
+
+        try:
+            posted = await self.ctx.lineup_service.post_event(chosen)
+        except Exception:
+            logger.exception("lineup_post: post_event failed")
+            posted = False
+
+        if posted:
+            await inter.followup.send("Lineup posted.", ephemeral=True)
+        else:
+            await inter.followup.send(
+                "Could not post the lineup. Check that the DJ channel is set and the bot "
+                "can write there.",
+                ephemeral=True,
+            )
+
+    @lineup_post.autocomplete("event")
+    async def lineup_post_autocomplete(
+        self, inter: disnake.ApplicationCommandInteraction, user_input: str
+    ) -> list[str]:
+        """Event IDs of future events matching the typed text (max 25)."""
+        if self.ctx.notion_client is None:
+            return []
+        try:
+            events = await self.ctx.notion_client.list_events()
+        except Exception:
+            logger.warning("lineup_post autocomplete: list_events() failed", exc_info=True)
+            return []
+        needle = user_input.strip().casefold()
+        ids = [e.event_id for e in future_events(events, _today())]
+        return [i for i in ids if needle in i.casefold()][:25]

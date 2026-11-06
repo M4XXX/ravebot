@@ -1427,3 +1427,166 @@ async def test_cog_error_followup_http_exception_does_not_propagate() -> None:
     )
     await cog.cog_slash_command_error(inter, RuntimeError("boom"))
     inter.followup.send.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# /lineup post
+# ---------------------------------------------------------------------------
+
+import datetime as _dt  # noqa: E402
+
+_TODAY = _dt.date(2026, 11, 6)
+
+
+def _lineup_event(event_id: str, days: int, status: str | None = "Planned"):
+    from bot.notion.models import EventInfo
+
+    return EventInfo(
+        page_id=f"page-{event_id}",
+        event_id=event_id,
+        date=_TODAY + _dt.timedelta(days=days),
+        status=status,
+        genre=None,
+        notes=None,
+        slot_count=2,
+        start=_dt.time(20, 0),
+        slot_minutes=60,
+        slots=(),
+    )
+
+
+def _lineup_cog(monkeypatch: pytest.MonkeyPatch, events, post_ok: bool = True):
+    from bot.cogs import admin as admin_mod
+    from bot.cogs.admin import AdminCog
+
+    monkeypatch.setattr(admin_mod, "_today", lambda: _TODAY)
+    ctx = make_mock_ctx(frozenset({1}))
+    ctx.notion_client = MagicMock()
+    ctx.notion_client.list_events = AsyncMock(return_value=events)
+    ctx.lineup_service = MagicMock()
+    ctx.lineup_service.post_event = AsyncMock(return_value=post_ok)
+    return AdminCog(ctx), ctx
+
+
+@pytest.mark.asyncio
+async def test_lineup_post_defaults_to_upcoming(monkeypatch: pytest.MonkeyPatch) -> None:
+    first, second = _lineup_event("E1", 3), _lineup_event("E2", 10)
+    cog, ctx = _lineup_cog(monkeypatch, [second, first])
+    inter = make_mock_inter(user_id=1)
+    await cog.lineup_post.callback(cog, inter, None)
+    ctx.lineup_service.post_event.assert_awaited_once_with(first)
+    assert assert_deferred_reply(inter)[0] == "Lineup posted."
+
+
+@pytest.mark.asyncio
+async def test_lineup_post_specific_event_case_insensitive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first, second = _lineup_event("E1", 3), _lineup_event("E2", 10)
+    cog, ctx = _lineup_cog(monkeypatch, [first, second])
+    inter = make_mock_inter(user_id=1)
+    await cog.lineup_post.callback(cog, inter, "e2")
+    ctx.lineup_service.post_event.assert_awaited_once_with(second)
+    assert assert_deferred_reply(inter)[0] == "Lineup posted."
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "event",
+    [
+        _lineup_event("UNKNOWN-NOT-IN-LIST", 5).event_id + "x",
+        "DONE1",
+        "CANC1",
+        "PAST1",
+    ],
+)
+async def test_lineup_post_unavailable_event(
+    monkeypatch: pytest.MonkeyPatch, event: str
+) -> None:
+    events = [
+        _lineup_event("E1", 3),
+        _lineup_event("DONE1", 4, "Done"),
+        _lineup_event("CANC1", 5, "Canceled"),
+        _lineup_event("PAST1", -2),
+    ]
+    cog, ctx = _lineup_cog(monkeypatch, events)
+    inter = make_mock_inter(user_id=1)
+    await cog.lineup_post.callback(cog, inter, event)
+    ctx.lineup_service.post_event.assert_not_awaited()
+    text = assert_deferred_reply(inter)[0]
+    assert text == "That event is not available. Pick one from the list."
+
+
+@pytest.mark.asyncio
+async def test_lineup_post_no_future_events(monkeypatch: pytest.MonkeyPatch) -> None:
+    from bot.ui import texts
+
+    cog, ctx = _lineup_cog(monkeypatch, [_lineup_event("PAST1", -2)])
+    inter = make_mock_inter(user_id=1)
+    await cog.lineup_post.callback(cog, inter, None)
+    ctx.lineup_service.post_event.assert_not_awaited()
+    assert assert_deferred_reply(inter)[0] == texts.NO_LINEUP
+
+
+@pytest.mark.asyncio
+async def test_lineup_post_failure_reply(monkeypatch: pytest.MonkeyPatch) -> None:
+    cog, _ = _lineup_cog(monkeypatch, [_lineup_event("E1", 3)], post_ok=False)
+    inter = make_mock_inter(user_id=1)
+    await cog.lineup_post.callback(cog, inter, None)
+    text = assert_deferred_reply(inter)[0]
+    assert "—" not in text
+    assert text != "Lineup posted."
+
+
+@pytest.mark.asyncio
+async def test_lineup_post_not_ready(monkeypatch: pytest.MonkeyPatch) -> None:
+    cog, ctx = _lineup_cog(monkeypatch, [])
+    ctx.lineup_service = None
+    inter = make_mock_inter(user_id=1)
+    await cog.lineup_post.callback(cog, inter, None)
+    text = inter.response.send_message.call_args[0][0]
+    assert "not ready" in text.lower() and "—" not in text
+
+
+@pytest.mark.asyncio
+async def test_lineup_post_notion_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    cog, ctx = _lineup_cog(monkeypatch, [])
+    ctx.notion_client.list_events = AsyncMock(side_effect=RuntimeError("boom"))
+    inter = make_mock_inter(user_id=1)
+    await cog.lineup_post.callback(cog, inter, None)
+    ctx.lineup_service.post_event.assert_not_awaited()
+    assert "—" not in assert_deferred_reply(inter)[0]
+
+
+@pytest.mark.asyncio
+async def test_lineup_autocomplete_filters_eligible(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events = [
+        _lineup_event("RAVE-1", 3),
+        _lineup_event("RAVE-2", 4),
+        _lineup_event("OTHER", 5),
+        _lineup_event("RAVE-DONE", 6, "Done"),
+        _lineup_event("RAVE-OLD", -1),
+    ]
+    cog, _ = _lineup_cog(monkeypatch, events)
+    inter = make_mock_inter(user_id=1)
+    assert await cog.lineup_post_autocomplete(inter, "rave") == ["RAVE-1", "RAVE-2"]
+    assert await cog.lineup_post_autocomplete(inter, "") == ["RAVE-1", "RAVE-2", "OTHER"]
+
+
+@pytest.mark.asyncio
+async def test_lineup_autocomplete_max_25_and_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cog, ctx = _lineup_cog(monkeypatch, [_lineup_event(f"E{i}", i) for i in range(40)])
+    assert len(await cog.lineup_post_autocomplete(make_mock_inter(1), "")) == 25
+    ctx.notion_client.list_events = AsyncMock(side_effect=RuntimeError("x"))
+    assert await cog.lineup_post_autocomplete(make_mock_inter(1), "") == []
+
+
+def test_lineup_post_is_admin_gated() -> None:
+    from bot.cogs.admin import AdminCog
+
+    cog = AdminCog(make_mock_ctx(frozenset({1})))
+    assert cog.cog_slash_command_check(make_mock_inter(user_id=2)) is False
