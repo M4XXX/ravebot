@@ -103,8 +103,13 @@ async def main() -> None:
 
     # Story 3.2: init LineupService after DB and log_service are ready
     from bot.services.lineup import LineupService
+    from bot.ui.views import LineupPostView
+
+    post_view = LineupPostView(ctx)
+    bot.add_view(post_view)  # persistent: the button keeps working after restarts
     ctx.lineup_service = LineupService(
         bot=bot,
+        view=post_view,
         db=ctx.db,
         log_service=ctx.log_service,
         notion_client=ctx.notion_client,

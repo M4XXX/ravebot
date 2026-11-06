@@ -12,11 +12,13 @@ RULE: Every View subclass MUST:
 """
 import asyncio
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import disnake
 
 from bot.db.djs import insert_dj, set_notion_dj_page_id, update_active_booking
+from bot.ui import texts
 from bot.ui.embeds import ErrorCode
 
 if TYPE_CHECKING:
@@ -427,58 +429,13 @@ class FallbackMenuView(disnake.ui.View):
                 direction="DJ",
                 content=f"[Button: {button.label}]",
             )
-        lock = self.ctx.get_user_lock(inter.author.id)
-        if lock.locked():
-            await inter.response.send_message(
-                "You already have an active booking session — please complete or dismiss it first.",
-                ephemeral=True,
-            )
+        start = await prepare_booking(self.ctx, inter.author.id)
+        if start.error is not None:
+            await inter.response.send_message(start.error, ephemeral=True)
             return
 
-        await lock.acquire()
-
-        if self.ctx.notion_client is None:
-            lock.release()
-            await inter.response.send_message(
-                "Something went wrong fetching events — try again in a moment.",
-                ephemeral=True,
-            )
-            return
-
-        try:
-            events = await self.ctx.notion_client.list_events()
-        except Exception:
-            logger.exception("book_slot: list_events() failed")
-            lock.release()
-            await inter.response.send_message(
-                "Something went wrong fetching events — try again in a moment.",
-                ephemeral=True,
-            )
-            return
-
-        # Filter to events with at least one open slot
-        events_with_open_slots = _filter_events_with_open_slots(events)
-
-        if not events_with_open_slots:
-            lock.release()
-            await inter.response.send_message(
-                "All slots are currently filled. I'll reach out if one opens up!",
-                ephemeral=True,
-            )
-            return
-
-        # Cap to 5 events (Discord limit: 5 buttons per row, one row for events)
-        events_with_open_slots = events_with_open_slots[:5]
-
-        # Build message listing events with Discord timestamps
-        lines = ["**Pick an event to book:**"]
-        for i, event in enumerate(events_with_open_slots, 1):
-            date_display = f"<t:{int(event.slot_start(0).timestamp())}:f>"
-            lines.append(f"{i}. {event.event_id} — {date_display}")
-
-        content = "\n".join(lines)
-        view = EventSelectionView(self.ctx, events_with_open_slots, lock, inter.author.id)
-        await inter.response.send_message(content, view=view, ephemeral=True)
+        content = start.content
+        await inter.response.send_message(content, view=start.view, ephemeral=True)
         # Story 6.1 AC1: log bot response
         if self.ctx.log_service is not None:
             await self.ctx.log_service.post_dm_transcript(
@@ -806,6 +763,104 @@ def _open_slot_indices(event: "EventInfo") -> list[int]:
 def _filter_events_with_open_slots(events: list["EventInfo"]) -> list["EventInfo"]:
     """Return only events that have at least one open slot (see _open_slot_indices)."""
     return [event for event in events if _open_slot_indices(event)]
+
+
+@dataclass
+class BookingStart:
+    """Result of prepare_booking: either an error text or the event picker."""
+
+    error: str | None
+    content: str
+    view: "EventSelectionView | None"
+
+
+async def prepare_booking(ctx: "BotContext", user_id: int) -> BookingStart:
+    """Start the booking flow for a user.
+
+    On error: returns the error text and holds no lock (a lock held by an already
+    open flow is left untouched). On success the per-user lock is held and handed
+    to the returned EventSelectionView.
+    """
+    lock = ctx.get_user_lock(user_id)
+    if lock.locked():
+        return BookingStart(texts.FLOW_OPEN, "", None)
+    await lock.acquire()
+    try:
+        if ctx.notion_client is None:
+            raise RuntimeError("notion_client is not configured")
+        events = await ctx.notion_client.list_events()
+        if not events:
+            lock.release()
+            return BookingStart(texts.NO_EVENTS, "", None)
+        with_open = _filter_events_with_open_slots(events)
+        if not with_open:
+            lock.release()
+            return BookingStart(texts.ALL_BOOKED, "", None)
+        # Cap to 5 events (Discord limit: 5 buttons per row)
+        with_open = with_open[:5]
+        lines = [texts.PICK_EVENT]
+        for i, event in enumerate(with_open, 1):
+            lines.append(texts.event_line(i, event, len(_open_slot_indices(event))))
+        view = EventSelectionView(ctx, with_open, lock, user_id)
+    except Exception:
+        logger.exception("prepare_booking failed")
+        if lock.locked():
+            lock.release()
+        return BookingStart(texts.GENERIC_ERROR, "", None)
+    return BookingStart(None, "\n".join(lines), view)
+
+
+class LineupPostView(disnake.ui.View):
+    """Persistent view under the Lineup Update post: one Book a slot button.
+
+    The DM goes to the clicking user; the channel only gets ephemeral replies.
+    """
+
+    def __init__(self, ctx: "BotContext") -> None:
+        super().__init__(timeout=None)
+        self.ctx = ctx
+
+    @disnake.ui.button(
+        label=texts.BTN_BOOK_POST,
+        style=disnake.ButtonStyle.primary,
+        custom_id="lineup:book_slot",
+    )
+    async def book_slot(
+        self,
+        button: disnake.ui.Button,
+        inter: disnake.MessageInteraction,
+    ) -> None:
+        await inter.response.defer(ephemeral=True)
+        user = inter.author
+        start = await prepare_booking(self.ctx, user.id)
+        if start.error is not None:
+            await inter.followup.send(start.error, ephemeral=True)
+            return
+        try:
+            await user.send(start.content, view=start.view)
+        except disnake.Forbidden:
+            self.ctx.get_user_lock(user.id).release()
+            await inter.followup.send(texts.POST_DM_BLOCKED, ephemeral=True)
+            if self.ctx.log_service is not None:
+                await self.ctx.log_service.post_error(
+                    ErrorCode.ERR_DM_FAILED,
+                    trigger=(
+                        f"{user.name} pressed 'Book a slot' on the Lineup Update "
+                        "but I can't DM them."
+                    ),
+                    action_taken="Told them privately to allow DMs.",
+                    manual_action=(
+                        "They need to allow DMs from server members (Discord Settings, "
+                        "Privacy & Safety), then press the button again."
+                    ),
+                )
+            return
+        except Exception:
+            logger.exception("LineupPostView: DM to %s failed", user.id)
+            self.ctx.get_user_lock(user.id).release()
+            await inter.followup.send(texts.GENERIC_ERROR, ephemeral=True)
+            return
+        await inter.followup.send(texts.POST_DM_SENT, ephemeral=True)
 
 
 # ---------------------------------------------------------------------------

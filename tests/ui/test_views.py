@@ -658,9 +658,8 @@ async def test_book_slot_open_slots_shows_event_selection_view() -> None:
     call_kwargs = call_args.kwargs
     assert "view" in call_kwargs
     assert isinstance(call_kwargs["view"], EventSelectionView)
-    # Message content must include a Discord timestamp
     content = call_args[0][0] if call_args[0] else call_kwargs.get("content", "")
-    assert "<t:" in content
+    assert "1. Test Rave · " in content and "4 slots open" in content
     # Lock is held (passed to EventSelectionView)
     assert ctx.get_user_lock(66666).locked()
 
@@ -1502,7 +1501,7 @@ async def test_book_slot_lists_event_name_and_start_timestamp() -> None:
     await view.book_slot.callback(inter)
 
     content = inter.response.send_message.call_args[0][0]
-    assert f"1. Gap Rave — <t:{int(event.slot_start(0).timestamp())}:f>" in content
+    assert content.splitlines()[1].startswith("1. Gap Rave · ")
 
 
 @pytest.mark.asyncio
@@ -2021,3 +2020,192 @@ async def test_booking_cancel_after_booked_keeps_pg_lock_and_propagates() -> Non
     rel.assert_not_awaited()
     assert not lock.locked()
     assert isinstance(raised, asyncio.CancelledError)
+
+
+# ---------------------------------------------------------------------------
+# Task 3: prepare_booking + LineupPostView
+# ---------------------------------------------------------------------------
+
+def _ctx_with_events(events: list[EventInfo] | Exception):
+    ctx = make_real_ctx(db=MagicMock())
+    ctx.notion_client = MagicMock()
+    if isinstance(events, Exception):
+        ctx.notion_client.list_events = AsyncMock(side_effect=events)
+    else:
+        ctx.notion_client.list_events = AsyncMock(return_value=events)
+    ctx.log_service = MagicMock()
+    ctx.log_service.post_error = AsyncMock()
+    ctx.log_service.post_dm_transcript = AsyncMock()
+    return ctx
+
+
+@pytest.mark.asyncio
+async def test_prepare_booking_open_events_returns_text_and_view() -> None:
+    from bot.ui import texts
+    from bot.ui.views import EventSelectionView, prepare_booking
+
+    event = _make_event(slots=6, djs_booked=2)
+    ctx = _ctx_with_events([event])
+    start = await prepare_booking(ctx, 1)
+    assert start.error is None
+    assert isinstance(start.view, EventSelectionView)
+    assert start.content == "\n".join([texts.PICK_EVENT, texts.event_line(1, event, 4)])
+    assert ctx.get_user_lock(1).locked()
+
+
+@pytest.mark.asyncio
+async def test_prepare_booking_flow_open() -> None:
+    from bot.ui import texts
+    from bot.ui.views import prepare_booking
+
+    ctx = _ctx_with_events([_make_event()])
+    await ctx.get_user_lock(2).acquire()
+    start = await prepare_booking(ctx, 2)
+    assert start.error == texts.FLOW_OPEN
+    assert start.view is None
+    assert ctx.get_user_lock(2).locked()  # the open flow's lock is untouched
+
+
+@pytest.mark.asyncio
+async def test_prepare_booking_all_booked_releases_lock() -> None:
+    from bot.ui import texts
+    from bot.ui.views import prepare_booking
+
+    ctx = _ctx_with_events([_make_event(slots=3, djs_booked=3)])
+    start = await prepare_booking(ctx, 3)
+    assert start.error == texts.ALL_BOOKED
+    assert not ctx.get_user_lock(3).locked()
+
+
+@pytest.mark.asyncio
+async def test_prepare_booking_no_events_releases_lock() -> None:
+    from bot.ui import texts
+    from bot.ui.views import prepare_booking
+
+    ctx = _ctx_with_events([])
+    start = await prepare_booking(ctx, 4)
+    assert start.error == texts.NO_EVENTS
+    assert not ctx.get_user_lock(4).locked()
+
+
+@pytest.mark.asyncio
+async def test_prepare_booking_notion_failure_releases_lock() -> None:
+    from bot.ui import texts
+    from bot.ui.views import prepare_booking
+
+    ctx = _ctx_with_events(Exception("down"))
+    start = await prepare_booking(ctx, 5)
+    assert start.error == texts.GENERIC_ERROR
+    assert not ctx.get_user_lock(5).locked()
+
+
+def _post_inter(user_id: int = 77, name: str = "Alice") -> MagicMock:
+    inter = MagicMock(spec=disnake.MessageInteraction)
+    inter.author = MagicMock()
+    inter.author.id = user_id
+    inter.author.name = name
+    inter.author.send = AsyncMock()
+    inter.response.defer = AsyncMock()
+    inter.followup.send = AsyncMock()
+    return inter
+
+
+@pytest.mark.asyncio
+async def test_lineup_post_view_is_persistent() -> None:
+    from bot.ui import texts
+    from bot.ui.views import LineupPostView
+
+    view = LineupPostView(make_real_ctx(db=MagicMock()))
+    assert view.timeout is None
+    assert view.is_persistent()
+    assert [c.custom_id for c in view.children] == ["lineup:book_slot"]
+    assert view.children[0].label == texts.BTN_BOOK_POST
+
+
+@pytest.mark.asyncio
+async def test_post_button_sends_dm_and_private_reply() -> None:
+    from bot.ui import texts
+    from bot.ui.views import EventSelectionView, LineupPostView
+
+    ctx = _ctx_with_events([_make_event()])
+    view = LineupPostView(ctx)
+    inter = _post_inter()
+    await view.book_slot.callback(inter)
+
+    inter.response.defer.assert_awaited_once_with(ephemeral=True)
+    inter.author.send.assert_awaited_once()
+    assert isinstance(inter.author.send.call_args.kwargs["view"], EventSelectionView)
+    assert texts.PICK_EVENT in inter.author.send.call_args.args[0]
+    inter.followup.send.assert_awaited_once_with(texts.POST_DM_SENT, ephemeral=True)
+    assert ctx.get_user_lock(77).locked()
+
+
+@pytest.mark.asyncio
+async def test_post_button_dm_forbidden_releases_lock_and_logs() -> None:
+    from bot.ui import texts
+    from bot.ui.embeds import ErrorCode
+    from bot.ui.views import LineupPostView
+
+    ctx = _ctx_with_events([_make_event()])
+    inter = _post_inter()
+    inter.author.send = AsyncMock(
+        side_effect=disnake.Forbidden(MagicMock(status=403, reason="x"), "no")
+    )
+    await LineupPostView(ctx).book_slot.callback(inter)
+
+    assert not ctx.get_user_lock(77).locked()
+    inter.followup.send.assert_awaited_once_with(texts.POST_DM_BLOCKED, ephemeral=True)
+    ctx.log_service.post_error.assert_awaited_once_with(
+        ErrorCode.ERR_DM_FAILED,
+        trigger="Alice pressed 'Book a slot' on the Lineup Update but I can't DM them.",
+        action_taken="Told them privately to allow DMs.",
+        manual_action=(
+            "They need to allow DMs from server members (Discord Settings, "
+            "Privacy & Safety), then press the button again."
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_post_button_other_dm_error_releases_lock() -> None:
+    from bot.ui import texts
+    from bot.ui.views import LineupPostView
+
+    ctx = _ctx_with_events([_make_event()])
+    inter = _post_inter()
+    inter.author.send = AsyncMock(
+        side_effect=disnake.HTTPException(MagicMock(status=500, reason="x"), "boom")
+    )
+    await LineupPostView(ctx).book_slot.callback(inter)
+
+    assert not ctx.get_user_lock(77).locked()
+    inter.followup.send.assert_awaited_once_with(texts.GENERIC_ERROR, ephemeral=True)
+
+
+@pytest.mark.asyncio
+async def test_post_button_flow_open_no_dm() -> None:
+    from bot.ui import texts
+    from bot.ui.views import LineupPostView
+
+    ctx = _ctx_with_events([_make_event()])
+    await ctx.get_user_lock(77).acquire()
+    inter = _post_inter()
+    await LineupPostView(ctx).book_slot.callback(inter)
+
+    inter.author.send.assert_not_awaited()
+    inter.followup.send.assert_awaited_once_with(texts.FLOW_OPEN, ephemeral=True)
+    assert ctx.get_user_lock(77).locked()
+
+
+@pytest.mark.asyncio
+async def test_post_button_no_open_events_replies_privately() -> None:
+    from bot.ui import texts
+    from bot.ui.views import LineupPostView
+
+    ctx = _ctx_with_events([])
+    inter = _post_inter()
+    await LineupPostView(ctx).book_slot.callback(inter)
+
+    inter.author.send.assert_not_awaited()
+    inter.followup.send.assert_awaited_once_with(texts.NO_EVENTS, ephemeral=True)
+    assert not ctx.get_user_lock(77).locked()
