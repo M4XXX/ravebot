@@ -133,4 +133,4 @@ async def test_end_calls_db_and_logs_to_admin(monkeypatch):
     call = svc.log_service.post_intervention.call_args
     assert call.kwargs["sender"] == "BOT"
     assert "DJ Exit" in call.kwargs["content"]
-    assert "resumed" in call.kwargs["content"].lower()
+    assert call.kwargs["content"] == "Intervention ended for @DJ Exit. Automated flows are back on."

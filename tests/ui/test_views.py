@@ -61,7 +61,7 @@ async def test_modal_callback_inserts_dj_and_confirms() -> None:
 
     inter.response.send_message.assert_awaited_once()
     msg = inter.response.send_message.call_args[0][0]
-    assert "all set" in msg.lower()
+    assert msg == texts.ONBOARD_DONE
 
     assert not lock.locked()  # Lock must be released
 
@@ -159,7 +159,7 @@ async def test_callback_assigns_role_and_writes_notion() -> None:
     )
     inter.response.send_message.assert_awaited_once()
     msg = inter.response.send_message.call_args[0][0]
-    assert "all set" in msg.lower()
+    assert msg == texts.ONBOARD_DONE
     assert not lock.locked()
 
 
@@ -204,7 +204,7 @@ async def test_callback_confirms_even_if_notion_fails() -> None:
     # Confirmation must still be sent despite Notion failure
     inter.response.send_message.assert_awaited_once()
     msg = inter.response.send_message.call_args[0][0]
-    assert "all set" in msg.lower()
+    assert msg == texts.ONBOARD_DONE
     assert not lock.locked()
 
 
@@ -257,7 +257,7 @@ async def test_callback_continues_if_add_roles_raises_http_error() -> None:
     # Confirmation must still be sent despite HTTP error on role assignment
     inter.response.send_message.assert_awaited_once()
     msg = inter.response.send_message.call_args[0][0]
-    assert "all set" in msg.lower()
+    assert msg == texts.ONBOARD_DONE
     assert not lock.locked()
 
 
@@ -302,7 +302,7 @@ async def test_pass_for_now_sends_warm_response() -> None:
 
     inter.response.send_message.assert_awaited_once()
     msg = inter.response.send_message.call_args[0][0]
-    assert "no problem" in msg.lower() or "later" in msg.lower()
+    assert msg == texts.ONBOARD_DECLINED
     assert not ctx.get_user_lock(12345).locked()
 
 

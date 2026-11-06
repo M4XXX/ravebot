@@ -111,7 +111,7 @@ async def test_adopt_writes_lock_dms_and_logs_one_line(monkeypatch):
     assert [a.kind for a in actions] == ["adopt"]
     env.acquire.assert_awaited_once_with(env.db, PAGE, 0, X)
     env.user.send.assert_awaited_once_with(
-        f"An organizer has added you to the lineup for Rave at <t:{unix(event, 0)}:f>."
+        "You are in the lineup: Rave, slot 1 at 20:00 (added by an organizer)."
     )
     assert env.overrides() == [f"[NOTION SYNC] {X} was added to Rave slot 1 in Notion"]
     env.release.assert_not_awaited()
@@ -173,7 +173,7 @@ async def test_free_releases_lock_dms_and_logs(monkeypatch):
     env.release.assert_awaited_once_with(env.db, PAGE, 0, expected_holder=Y)
     env.bot.get_user.assert_any_call(Y)
     env.user.send.assert_awaited_once_with(
-        f"Your booking for Rave at <t:{unix(event, 0)}:f> was removed in Notion."
+        "You were removed from Rave, slot 1 at 20:00 (by an organizer)."
     )
     assert env.overrides() == [f"[NOTION SYNC] {Y} was removed from Rave slot 1 in Notion"]
 

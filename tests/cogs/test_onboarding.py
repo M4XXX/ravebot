@@ -107,8 +107,11 @@ async def test_on_member_update_sends_dm_to_new_dj() -> None:
 
     after.send.assert_awaited_once()
     sent_content = after.send.call_args[0][0]
-    assert "RaveBot" in sent_content
-    assert "booking pool" in sent_content
+    assert sent_content == (
+        "Welcome! I'm RaveBot and I handle DJ bookings on this server.\n"
+        "Join the DJ pool to get invites when a slot is open. "
+        "You can also book and cancel slots yourself at any time."
+    )
 
 
 @pytest.mark.asyncio
@@ -186,7 +189,7 @@ async def test_go_active_concurrent_guard() -> None:
     inter.response.send_modal.assert_not_called()
     inter.response.send_message.assert_awaited_once()
     sent_content = inter.response.send_message.call_args[0][0]
-    assert "flow" in sent_content.lower() or "open" in sent_content.lower()
+    assert sent_content == "You already have a booking open. Finish or dismiss it first."
 
 
 # ---------------------------------------------------------------------------

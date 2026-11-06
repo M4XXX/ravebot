@@ -141,8 +141,12 @@ async def test_send_reminders_sends_dm_and_records_sent():
 
     user_mock.send.assert_awaited_once()
     dm_text = user_mock.send.call_args[0][0]
-    assert "tomorrow at" in dm_text
-    assert "\U0001f3a7" in dm_text  # 🎧
+    assert dm_text == (
+        "**You're on tomorrow!** \U0001f3a7\n"
+        "Friday Night Rave\n"
+        "Friday 22.05.2026, slot 1 at 00:00\n"
+        "Check your gear and your stream link. Have a great set!"
+    )
     mock_record.assert_awaited_once_with(svc.db, "evt-001", 123, 0)
     # Story 6.1 AC1: outgoing reminder DM must be transcribed
     svc.log_service.post_dm_transcript.assert_awaited_once()
@@ -281,5 +285,6 @@ async def test_send_reminders_slot_unix_from_typed_event():
     ):
         await svc.send_reminders(guild_id=1, ctx=MagicMock(), _now=FIXED_NOW)
     mock_get.assert_awaited_once_with(svc.db, "page-xyz")
-    assert f"<t:{expected}:f>" in user_mock.send.call_args[0][0]
+    assert "Friday 22.05.2026, slot 3 at 02:00" in user_mock.send.call_args[0][0]
+    assert "<t:" not in user_mock.send.call_args[0][0]
     mock_record.assert_awaited_once_with(svc.db, "page-xyz", 7, 2)

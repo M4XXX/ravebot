@@ -68,10 +68,7 @@ class OnboardingCog(commands.Cog):
 
         # Attempt to send onboarding DM
         try:
-            onboarding_text = (
-                "Hey! I'm RaveBot — I handle all DJ bookings here. "
-                "Want me to add you to the booking pool?"
-            )
+            onboarding_text = texts.WELCOME
             await after.send(
                 onboarding_text,
                 view=OnboardingIntroView(self.ctx, after.id, after.guild.id),
@@ -95,7 +92,7 @@ class OnboardingCog(commands.Cog):
                     error_code=ErrorCode.ERR_DM_FAILED,
                     trigger=(
                         f"Onboarding DM to {after.name} (user_id={after.id}) "
-                        "was blocked — user has DMs from server members disabled."
+                        "was blocked. The user has DMs from server members disabled."
                     ),
                     action_taken="Onboarding DM skipped. DJ was not added to the booking pool.",
                     manual_action=(

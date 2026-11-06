@@ -22,6 +22,7 @@ from bot.db.djs import update_active_booking
 from bot.notion.client import NotionWriteError, SlotRowMissingError
 from bot.services.dj_pages import ensure_dj_page
 from bot.services.dm import dm_user
+from bot.ui import texts
 
 if TYPE_CHECKING:
     import asyncpg
@@ -107,14 +108,14 @@ class AdminBookingService:
         [Source: epics.md#Story 6.3 AC1]
         """
         if self.notion_client is None:
-            return False, "Bot is still connecting to Notion — please try again."
+            return False, "The bot is still connecting to Notion. Please try again in a moment."
 
         # Step 1: fetch future events
         try:
             events = await self.notion_client.list_events()
         except Exception:
             logger.exception("admin book: list_events failed")
-            return False, "Could not fetch events from Notion — please try again."
+            return False, "Could not fetch events from Notion. Please try again in a moment."
 
         # Step 2: find matching event
         event = self._find_event(events, event_name)
@@ -137,7 +138,7 @@ class AdminBookingService:
             await admin_force_book_slot(self.db, event_id, slot_index, dj_id)
         except Exception:
             logger.exception("admin book: admin_force_book_slot failed")
-            return False, "Database error writing slot lock — please try again."
+            return False, "Database error while writing the slot lock. Please try again in a moment."
 
         # Step 4: write to Notion — the slot row's DJ becomes exactly this DJ,
         # replacing any displaced holder (retry x3 built into the API layer)
@@ -173,13 +174,13 @@ class AdminBookingService:
                     logger.exception(
                         "admin book: release_slot_lock failed after Notion error"
                     )
-            return False, "Notion write failed after 3 attempts — please try again."
+            return False, "Notion write failed after 3 attempts. Please try again in a moment."
 
         # Step 5: DM the DJ (non-fatal)
         slot_display = f"<t:{slot_unix}:f>" if slot_unix else "your slot"
         await self._dm_dj(
             dj_id,
-            f"An organizer has booked you for {event_name} at {slot_display}.",
+            texts.dm_booked(event, slot_index),
         )
 
         # Step 6: log override to admin channel
@@ -216,14 +217,14 @@ class AdminBookingService:
         [Source: epics.md#Story 6.3 AC2, AC3]
         """
         if self.notion_client is None:
-            return False, "Bot is still connecting to Notion — please try again."
+            return False, "The bot is still connecting to Notion. Please try again in a moment."
 
         # Step 1: fetch future events
         try:
             events = await self.notion_client.list_events()
         except Exception:
             logger.exception("admin cancel: list_events failed")
-            return False, "Could not fetch events from Notion — please try again."
+            return False, "Could not fetch events from Notion. Please try again in a moment."
 
         # Step 2: find matching event
         event = self._find_event(events, event_name)
@@ -238,7 +239,7 @@ class AdminBookingService:
             holder = await get_slot_lock_holder(self.db, event_id, slot_index)
         except Exception:
             logger.exception("admin cancel: get_slot_lock_holder failed")
-            return False, "Database error checking slot — please try again."
+            return False, "Database error while checking the slot. Please try again in a moment."
 
         if holder != dj_id:
             return False, f"No booking found for @{dj_name} in that slot."
@@ -274,13 +275,13 @@ class AdminBookingService:
             logger.exception("admin cancel: release_slot_lock failed")
 
         if notion_error:
-            return False, "Notion write failed — slot lock released but Notion may be out of sync."
+            return False, "Notion write failed. The slot lock is released, but Notion may be out of sync. Check the slot in Notion."
 
         # Step 6: DM the DJ (non-fatal)
         slot_display = f"<t:{slot_unix}:f>" if slot_unix else "your slot"
         await self._dm_dj(
             dj_id,
-            f"An organizer has cancelled your booking for {event_name} at {slot_display}.",
+            texts.dm_cancelled(event, slot_index),
         )
 
         # Step 7: log override to admin channel

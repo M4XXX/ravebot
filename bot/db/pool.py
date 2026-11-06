@@ -57,7 +57,7 @@ async def run_migrations(postgres_url: str) -> None:
         error_detail = result.stderr.strip() or result.stdout.strip()
         logger.error("Migration failed:\nstdout: %s\nstderr: %s", result.stdout, result.stderr)
         sys.exit(
-            f"Database migration failed — is PostgreSQL reachable?\n"
+            f"Database migration failed. Is PostgreSQL reachable?\n"
             f"Check POSTGRES_URL and ensure the database exists.\n"
             f"Error: {error_detail}"
         )
@@ -94,14 +94,14 @@ async def create_pool(config: "Config") -> asyncpg.Pool:
         )
     except (OSError, asyncpg.PostgresConnectionError, asyncpg.InvalidCatalogNameError) as exc:
         sys.exit(
-            f"Failed to connect to PostgreSQL — cannot start bot.\n"
+            f"Failed to connect to PostgreSQL. Cannot start bot.\n"
             f"Check POSTGRES_URL: {config.postgres_url}\n"
             f"Error: {exc}"
         )
     if pool is None:
         sys.exit(
-            "asyncpg.create_pool() returned None unexpectedly — "
-            "check POSTGRES_URL and database availability."
+            "asyncpg.create_pool() returned None unexpectedly. "
+            "Check POSTGRES_URL and database availability."
         )
     logger.info("asyncpg pool opened successfully.")
     return pool

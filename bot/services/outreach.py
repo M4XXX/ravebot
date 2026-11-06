@@ -478,6 +478,6 @@ class OutreachService:
                     f"Outreach DM failed for DJ '{dj_name}' (ID: {discord_user_id})"
                     f" on event '{event_id}': {reason}"
                 ),
-                action_taken="DJ marked as unreachable for this sequence. Outreach will proceed to next eligible DJ.",
+                action_taken="DJ marked as unreachable for this sequence. Outreach continues with the next eligible DJ.",
                 manual_action="Verify the DJ's Discord privacy settings or their presence in the server.",
             )

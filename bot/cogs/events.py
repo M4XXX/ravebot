@@ -59,7 +59,7 @@ class EventsCog(commands.Cog):
                 await self.ctx.log_service.post_error(
                     error_code=ErrorCode.ERR_DB_UNAVAILABLE,
                     trigger=f"DB pool is None at start of {operation}",
-                    action_taken="Skipped this cycle — will retry on next scheduled run.",
+                    action_taken="Skipped this cycle. It will retry on the next scheduled run.",
                     manual_action="Check PostgreSQL connectivity and POSTGRES_URL.",
                 )
             return False
@@ -72,7 +72,7 @@ class EventsCog(commands.Cog):
                 await self.ctx.log_service.post_error(
                     error_code=ErrorCode.ERR_DB_UNAVAILABLE,
                     trigger=f"PostgreSQL connection failed during {operation}: {exc}",
-                    action_taken="Paused this cycle — will retry on next scheduled run.",
+                    action_taken="Paused this cycle. It will retry on the next scheduled run.",
                     manual_action="Check PostgreSQL connectivity.",
                 )
             return False
@@ -171,7 +171,7 @@ class EventsCog(commands.Cog):
                 await self.ctx.log_service.post_error(
                     error_code=ErrorCode.ERR_NOTION_WRITE,
                     trigger=f"NotionSyncService.run_cycle() raised during notion_poll: {exc}",
-                    action_taken="Skipped the sync this cycle — lineup update continues.",
+                    action_taken="Skipped the sync this cycle. The lineup update continues.",
                     manual_action=(
                         "Check NOTION_API_KEY, NOTION_PARENT_PAGE_ID, and Notion API status."
                     ),
@@ -213,7 +213,7 @@ class EventsCog(commands.Cog):
                 await self.ctx.log_service.post_error(
                     error_code=ErrorCode.ERR_NOTION_WRITE,
                     trigger=f"Notion list_events() raised during notion_poll: {exc}",
-                    action_taken="Skipped this cycle — will retry on next scheduled run.",
+                    action_taken="Skipped this cycle. It will retry on the next scheduled run.",
                     manual_action=(
                         "Check NOTION_API_KEY, NOTION_PARENT_PAGE_ID, and Notion API status."
                     ),

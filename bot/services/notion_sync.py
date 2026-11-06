@@ -38,6 +38,7 @@ from bot.notion.client import NotionWriteError
 from bot.services.dj_pages import ensure_dj_page
 from bot.services.dm import dm_user
 from bot.services.notion_sync_plan import SyncAction, plan_sync
+from bot.ui import texts
 from bot.ui.embeds import ErrorCode
 
 if TYPE_CHECKING:
@@ -113,10 +114,6 @@ class NotionSyncService:
             "Check the event's Slots rows in Notion; the next sync retries.",
         )
 
-    def _when(self, action: SyncAction) -> str:
-        assert action.slot_index is not None
-        return f"<t:{int(action.event.slot_start(action.slot_index).timestamp())}:f>"
-
     # ------------------------------------------------------------------ actions
 
     async def _apply(self, action: SyncAction) -> None:
@@ -146,8 +143,7 @@ class NotionSyncService:
         await dm_user(
             self.bot,
             dj,
-            f"An organizer has added you to the lineup for {event.event_id} "
-            f"at {self._when(action)}.",
+            texts.dm_added(event, index),
         )
         await self._log_line(f"{dj} was added to {event.event_id} slot {index + 1} in Notion")
 
@@ -158,7 +154,7 @@ class NotionSyncService:
         await dm_user(
             self.bot,
             dj,
-            f"Your booking for {event.event_id} at {self._when(action)} was removed in Notion.",
+            texts.dm_removed(event, index),
         )
         await self._log_line(
             f"{dj} was removed from {event.event_id} slot {index + 1} in Notion"

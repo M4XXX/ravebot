@@ -61,7 +61,7 @@ class OnboardingIntroView(disnake.ui.View):
         """
 
     @disnake.ui.button(
-        label="✅ Go Active",
+        label=texts.BTN_JOIN_POOL,
         style=disnake.ButtonStyle.success,
         custom_id="onboarding:go_active",
     )
@@ -85,7 +85,7 @@ class OnboardingIntroView(disnake.ui.View):
         lock = self.ctx.get_user_lock(inter.author.id)
         if lock.locked():
             await inter.response.send_message(
-                "Looks like you've got a flow already open — let's finish that one first.",
+                texts.FLOW_OPEN,
                 ephemeral=True,
             )
             return
@@ -95,7 +95,7 @@ class OnboardingIntroView(disnake.ui.View):
         )
 
     @disnake.ui.button(
-        label="Pass for now",
+        label=texts.BTN_NOT_NOW,
         style=disnake.ButtonStyle.secondary,
         custom_id="onboarding:pass_for_now",
     )
@@ -112,7 +112,7 @@ class OnboardingIntroView(disnake.ui.View):
                 direction="DJ",
                 content=f"[Button: {button.label}]",
             )
-        response_text = "No problem — you can always join later if you change your mind."
+        response_text = texts.ONBOARD_DECLINED
         await inter.response.send_message(response_text)
         # Story 6.1 AC1: log bot response
         if self.ctx.log_service is not None:
@@ -160,7 +160,7 @@ class OnboardingModal(disnake.ui.Modal):
                 ),
                 disnake.ui.TextInput(
                     label="VRChat Username",
-                    placeholder="Your VRChat username (optional — skip if not applicable)",
+                    placeholder="Your VRChat username (optional, skip if not applicable)",
                     custom_id="vrchat_name",
                     style=disnake.TextInputStyle.short,
                     max_length=100,
@@ -184,7 +184,7 @@ class OnboardingModal(disnake.ui.Modal):
                 ),
                 disnake.ui.TextInput(
                     label="Backup Stream URL",
-                    placeholder="https://twitch.tv/yourname (optional — skip if not applicable)",
+                    placeholder="https://twitch.tv/yourname (optional, skip if not applicable)",
                     custom_id="stream_url_backup",
                     style=disnake.TextInputStyle.short,
                     max_length=512,
@@ -220,12 +220,8 @@ class OnboardingModal(disnake.ui.Modal):
 
         if invalid_fields:
             self._lock.release()
-            field_list = " and ".join(invalid_fields)
-            plural = "don't" if len(invalid_fields) > 1 else "doesn't"
             await inter.response.send_message(
-                f"Hmm, {field_list} {plural} look right — "
-                "URLs should start with https://. "
-                "Tap the button below to try again.",
+                texts.link_invalid(", ".join(invalid_fields)),
                 view=RetryOnboardingModalView(self._ctx, inter.author.id, self._guild_id),
             )
             return
@@ -317,10 +313,7 @@ class OnboardingModal(disnake.ui.Modal):
                     inter.author.id,
                 )
 
-        await inter.response.send_message(
-            "You're all set! I'll reach out when there's an open slot, "
-            "or you can start a booking anytime.",
-        )
+        await inter.response.send_message(texts.ONBOARD_DONE)
 
 
 class RetryOnboardingModalView(disnake.ui.View):
@@ -346,7 +339,7 @@ class RetryOnboardingModalView(disnake.ui.View):
         """
 
     @disnake.ui.button(
-        label="Try again",
+        label=texts.BTN_TRY_AGAIN,
         style=disnake.ButtonStyle.primary,
         custom_id="onboarding:retry_modal",
     )
@@ -366,7 +359,7 @@ class RetryOnboardingModalView(disnake.ui.View):
         lock = self._ctx.get_user_lock(inter.author.id)
         if lock.locked():
             await inter.response.send_message(
-                "Looks like you've got a flow already open — let's finish that one first.",
+                texts.FLOW_OPEN,
                 ephemeral=True,
             )
             return

@@ -51,7 +51,7 @@ class InterventionService:
             await self.log_service.post_intervention(
                 sender="ADMIN",
                 recipient=f"@{dj_name}",
-                content="Intervention started -- automated DMs paused.",
+                content="Intervention started. Automated DMs are paused.",
             )
         logger.info(
             "Intervention started for DJ %s (user_id=%s)", dj_name, discord_user_id
@@ -116,7 +116,7 @@ class InterventionService:
             await self.log_service.post_intervention(
                 sender="BOT",
                 recipient="ADMIN",
-                content=f"Intervention ended for @{dj_name} -- automated flows resumed.",
+                content=f"Intervention ended for @{dj_name}. Automated flows are back on.",
             )
         logger.info(
             "Intervention ended for DJ %s (user_id=%s)", dj_name, discord_user_id

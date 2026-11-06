@@ -47,7 +47,7 @@ class OutreachCog(commands.Cog):
                 await self.ctx.log_service.post_error(
                     error_code=ErrorCode.ERR_DB_UNAVAILABLE,
                     trigger=f"DB pool is None at start of {operation}",
-                    action_taken="Skipped this cycle — will retry on next scheduled run.",
+                    action_taken="Skipped this cycle. It will retry on the next scheduled run.",
                     manual_action="Check PostgreSQL connectivity and POSTGRES_URL.",
                 )
             return False
@@ -60,7 +60,7 @@ class OutreachCog(commands.Cog):
                 await self.ctx.log_service.post_error(
                     error_code=ErrorCode.ERR_DB_UNAVAILABLE,
                     trigger=f"PostgreSQL connection failed during {operation}: {exc}",
-                    action_taken="Paused this cycle — will retry on next scheduled run.",
+                    action_taken="Paused this cycle. It will retry on the next scheduled run.",
                     manual_action="Check PostgreSQL connectivity.",
                 )
             return False

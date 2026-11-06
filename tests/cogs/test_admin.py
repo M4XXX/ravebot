@@ -853,7 +853,7 @@ async def test_add_event_notion_write_error_replies_error(
     await cog.add_event.callback(cog, inter, future_date)
 
     reply, _ = assert_deferred_reply(inter)
-    assert "failed to create" in reply.lower()
+    assert "could not create the event" in reply.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -1394,7 +1394,7 @@ async def test_cog_error_after_defer_sends_followup() -> None:
     inter.response.is_done = MagicMock(return_value=True)
     await cog.cog_slash_command_error(inter, RuntimeError("boom"))
     inter.followup.send.assert_awaited_once_with(
-        "Something went wrong — please try again.", ephemeral=True
+        "Something went wrong. Please try again in a moment.", ephemeral=True
     )
     inter.response.send_message.assert_not_awaited()
 
@@ -1408,7 +1408,7 @@ async def test_cog_error_before_response_uses_send_message() -> None:
     inter.response.is_done = MagicMock(return_value=False)
     await cog.cog_slash_command_error(inter, RuntimeError("boom"))
     inter.response.send_message.assert_awaited_once_with(
-        "Something went wrong — please try again.", ephemeral=True
+        "Something went wrong. Please try again in a moment.", ephemeral=True
     )
     inter.followup.send.assert_not_awaited()
 
