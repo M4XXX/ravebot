@@ -24,7 +24,10 @@ def _user(side_effect=None):
 async def test_dm_user_sends_and_returns_true():
     user = _user()
     assert await dm_user(_bot(user), 5, "hi") is True
-    user.send.assert_awaited_once_with("hi")
+    user.send.assert_awaited_once()
+    assert user.send.await_args.args == ("hi",)
+    mentions = user.send.await_args.kwargs["allowed_mentions"]
+    assert mentions.everyone is False and mentions.users is False and mentions.roles is False
 
 
 @pytest.mark.asyncio
@@ -33,7 +36,7 @@ async def test_dm_user_fetches_uncached_user():
     bot = _bot(None, user)
     assert await dm_user(bot, 5, "hi") is True
     bot.fetch_user.assert_awaited_once_with(5)
-    user.send.assert_awaited_once_with("hi")
+    assert user.send.await_args.args == ("hi",)
 
 
 @pytest.mark.asyncio

@@ -114,9 +114,11 @@ async def test_adopt_writes_lock_dms_and_logs_one_line(monkeypatch):
     actions = await env.svc.run_cycle(1)
     assert [a.kind for a in actions] == ["adopt"]
     env.acquire.assert_awaited_once_with(env.db, PAGE, 0, X)
-    env.user.send.assert_awaited_once_with(
-        "You are in the lineup: Rave, slot 1 at 20:00 (added by an organizer)."
+    env.user.send.assert_awaited_once()
+    assert env.user.send.await_args.args == (
+        "You are in the lineup: Rave, slot 1 at 20:00 (added by an organizer).",
     )
+    assert env.user.send.await_args.kwargs["allowed_mentions"].users is False
     assert env.entries() == [("log_booked", ("holder-name", event, 0, "Notion"))]
     env.release.assert_not_awaited()
 
@@ -181,9 +183,11 @@ async def test_free_releases_lock_dms_and_logs(monkeypatch):
     assert [a.kind for a in actions] == ["free"]
     env.release.assert_awaited_once_with(env.db, PAGE, 0, expected_holder=Y)
     env.bot.get_user.assert_any_call(Y)
-    env.user.send.assert_awaited_once_with(
-        "You were removed from Rave, slot 1 at 20:00 (by an organizer)."
+    env.user.send.assert_awaited_once()
+    assert env.user.send.await_args.args == (
+        "You were removed from Rave, slot 1 at 20:00 (by an organizer).",
     )
+    assert env.user.send.await_args.kwargs["allowed_mentions"].users is False
     assert env.entries() == [("log_changed_in_notion", ("holder-name", event, 0))]
 
 

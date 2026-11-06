@@ -107,6 +107,9 @@ async def main() -> None:
 
     post_view = LineupPostView(ctx)
     bot.add_view(post_view)  # persistent: the button keeps working after restarts
+    from bot.ui.log_reply import LogReplyView
+
+    bot.add_view(LogReplyView(ctx))  # persistent: Reply works on old log entries
     ctx.lineup_service = LineupService(
         bot=bot,
         view=post_view,

@@ -16,7 +16,7 @@ async def dm_user(bot: "commands.Bot", user_id: int, text: str) -> bool:
         user = bot.get_user(user_id)
         if user is None:
             user = await bot.fetch_user(user_id)
-        await user.send(text)
+        await user.send(text, allowed_mentions=disnake.AllowedMentions.none())
     except disnake.NotFound:
         logger.warning("DM: user %s not found", user_id)
         return False

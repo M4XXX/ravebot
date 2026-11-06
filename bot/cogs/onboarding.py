@@ -16,8 +16,10 @@ from disnake.ext import commands
 from bot.context import BotContext
 from bot.db.djs import get_dj_by_discord_id
 from bot.db.interventions import is_under_intervention
+from bot.db.log_replies import save_log_reply
 from bot.ui import texts
 from bot.ui.embeds import ErrorCode
+from bot.ui.log_reply import LogReplyView
 from bot.ui.views import FallbackMenuView, OnboardingIntroView
 
 logger = logging.getLogger(__name__)
@@ -94,6 +96,36 @@ class OnboardingCog(commands.Cog):
                     ),
                 )
 
+    async def _log_incoming(self, message: disnake.Message) -> None:
+        """Post the typed DM (text and/or attachments) to the log channel. Never raises."""
+        log_service = self.ctx.log_service
+        content = message.content or ""
+        attachments = list(message.attachments or [])
+        if log_service is None or not (content or attachments):
+            return
+        try:
+            dj_name = None
+            if self.ctx.db is not None:
+                try:
+                    dj = await get_dj_by_discord_id(self.ctx.db, message.author.id)
+                except Exception:
+                    logger.exception("on_message: DJ lookup failed for %s", message.author.id)
+                    dj = None
+                shown = getattr(message.author, "display_name", None) or message.author.name
+                if dj is not None and dj["dj_name"] != shown:
+                    dj_name = dj["dj_name"]
+            logged = await log_service.log_user_message(
+                message.author,
+                content,
+                [a.filename for a in attachments],
+                dj_name,
+                LogReplyView(self.ctx),
+            )
+            if logged is not None and self.ctx.db is not None:
+                await save_log_reply(self.ctx.db, logged.id, message.author.id)
+        except Exception:
+            logger.exception("on_message: could not log DM from %s", message.author.id)
+
     @commands.Cog.listener()
     async def on_message(self, message: disnake.Message) -> None:
         """Respond to free-text DMs with FallbackMenuView.
@@ -112,15 +144,11 @@ class OnboardingCog(commands.Cog):
         if message.author.bot:
             return
 
-        # Story 6.2 AC3: if DJ is under admin intervention, forward to admin log and suppress
+        await self._log_incoming(message)
+
+        # Story 6.2 AC3: a DJ under admin intervention gets no menu
         if self.ctx.db is not None:
             if await is_under_intervention(self.ctx.db, message.author.id):
-                if self.ctx.log_service is not None:
-                    await self.ctx.log_service.post_intervention(
-                        sender=f"@{message.author.name}",
-                        recipient="ADMIN",
-                        content=message.content,
-                    )
                 return
 
         # If user is in an active multi-step flow, do not interrupt

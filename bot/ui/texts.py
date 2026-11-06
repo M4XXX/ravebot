@@ -225,3 +225,10 @@ def log_message_text(text: str, attachment_names: list[str]) -> str:
     lines = [text] if text else []
     lines.extend(f"(attachment: {name})" for name in attachment_names)
     return "\n".join(lines)
+
+LOG_REPLY_ORGANIZERS_ONLY = "Only organizers can reply."
+LOG_REPLY_NO_USER = "I cannot find the user for this message."
+LOG_REPLY_SENT = "Sent."
+LOG_REPLY_FAILED = (
+    "I could not send the message. The user may have DMs from server members turned off."
+)

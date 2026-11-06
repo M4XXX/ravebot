@@ -390,43 +390,16 @@ async def test_on_message_menu_matches_dj_state(
 
 
 @pytest.mark.asyncio
-async def test_on_message_under_intervention_forwards_to_admin_no_fallback(
+async def test_on_message_under_intervention_logs_entry_no_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Story 6.2 AC3: DJ under intervention → forward to admin log, no FallbackMenuView."""
-    from bot.cogs.onboarding import OnboardingCog
-
-    monkeypatch.setattr(
-        "bot.cogs.onboarding.is_under_intervention",
-        AsyncMock(return_value=True),
-    )
-
-    log_service = MagicMock()
-    log_service.post_intervention = AsyncMock()
-
-    ctx = make_real_ctx(db=MagicMock())
-    ctx.log_service = log_service
-
-    message = MagicMock(spec=disnake.Message)
-    message.guild = None
-    message.author.id = 99
-    message.author.name = "DJ Blocked"
-    message.author.bot = False
-    message.content = "I need help"
-    message.channel.send = AsyncMock()
-
-    cog = OnboardingCog(ctx)
-    await cog.on_message(message)
-
-    # post_intervention called to forward to admin
-    log_service.post_intervention.assert_awaited_once()
-    call = log_service.post_intervention.call_args
-    assert call.kwargs["sender"] == "@DJ Blocked"
-    assert call.kwargs["recipient"] == "ADMIN"
-    assert call.kwargs["content"] == "I need help"
-
-    # No FallbackMenuView sent
-    message.channel.send.assert_not_awaited()
+    log_service = _log_service()
+    msg = _dm(content="I need help", user_id=99)
+    monkeypatch.setattr("bot.cogs.onboarding.is_under_intervention", AsyncMock(return_value=True))
+    await _cog(log_service).on_message(msg)
+    log_service.log_user_message.assert_awaited_once()
+    assert log_service.log_user_message.await_args.args[1] == "I need help"
+    msg.channel.send.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -488,3 +461,144 @@ async def test_on_message_not_under_intervention_shows_fallback(
     message.channel.send.assert_awaited_once()
     view = message.channel.send.call_args.kwargs.get("view")
     assert isinstance(view, FallbackMenuView)
+
+
+# ---------------------------------------------------------------------------
+# Log channel: every typed DM is logged first
+# ---------------------------------------------------------------------------
+
+
+def _log_service() -> MagicMock:
+    log_service = MagicMock()
+    logged = MagicMock()
+    logged.id = 777
+    log_service.log_user_message = AsyncMock(return_value=logged)
+    log_service.post_intervention = AsyncMock()
+    return log_service
+
+
+def _dm(content: str = "hello", attachments: list | None = None, user_id: int = 5,
+        name: str = "Sam", bot: bool = False, guild: object = None) -> MagicMock:
+    message = MagicMock(spec=disnake.Message)
+    message.guild = guild
+    message.author.id = user_id
+    message.author.name = name
+    message.author.display_name = name
+    message.author.bot = bot
+    message.content = content
+    message.attachments = attachments or []
+    message.channel.send = AsyncMock()
+    return message
+
+
+def _cog(log_service: MagicMock):
+    from bot.cogs.onboarding import OnboardingCog
+
+    ctx = make_real_ctx(db=MagicMock())
+    ctx.log_service = log_service
+    return OnboardingCog(ctx)
+
+
+@pytest.fixture
+def _plain(monkeypatch: pytest.MonkeyPatch) -> dict:
+    mocks = {
+        "intervention": AsyncMock(return_value=False),
+        "dj": AsyncMock(return_value=None),
+        "save": AsyncMock(),
+    }
+    monkeypatch.setattr("bot.cogs.onboarding.is_under_intervention", mocks["intervention"])
+    monkeypatch.setattr("bot.cogs.onboarding.get_dj_by_discord_id", mocks["dj"])
+    monkeypatch.setattr("bot.cogs.onboarding.save_log_reply", mocks["save"])
+    return mocks
+
+
+@pytest.mark.asyncio
+async def test_on_message_logs_plain_text_saves_mapping_and_sends_menu(_plain: dict) -> None:
+    from bot.ui.log_reply import LogReplyView
+
+    log_service = _log_service()
+    msg = _dm(content="hi there")
+    await _cog(log_service).on_message(msg)
+
+    log_service.log_user_message.assert_awaited_once()
+    args = log_service.log_user_message.await_args.args
+    assert args[:4] == (msg.author, "hi there", [], None)
+    assert isinstance(args[4], LogReplyView)
+    _plain["save"].assert_awaited_once()
+    assert _plain["save"].await_args.args[1:] == (777, 5)
+    msg.channel.send.assert_awaited_once()
+    assert msg.channel.send.call_args.args[0] == texts.MENU
+
+
+@pytest.mark.asyncio
+async def test_on_message_logs_attachment_only(_plain: dict) -> None:
+    att = MagicMock()
+    att.filename = "flyer.png"
+    log_service = _log_service()
+    msg = _dm(content="", attachments=[att])
+    await _cog(log_service).on_message(msg)
+    args = log_service.log_user_message.await_args.args
+    assert args[1] == "" and args[2] == ["flyer.png"]
+    msg.channel.send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_on_message_empty_without_attachments_logs_nothing(_plain: dict) -> None:
+    log_service = _log_service()
+    await _cog(log_service).on_message(_dm(content=""))
+    log_service.log_user_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_on_message_flow_lock_logs_but_no_menu(_plain: dict) -> None:
+    log_service = _log_service()
+    cog = _cog(log_service)
+    await cog.ctx.get_user_lock(5).acquire()
+    msg = _dm()
+    await cog.on_message(msg)
+    log_service.log_user_message.assert_awaited_once()
+    msg.channel.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_on_message_bot_and_guild_log_nothing(_plain: dict) -> None:
+    log_service = _log_service()
+    cog = _cog(log_service)
+    await cog.on_message(_dm(bot=True))
+    await cog.on_message(_dm(guild=MagicMock()))
+    log_service.log_user_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_on_message_no_mapping_when_post_failed(_plain: dict) -> None:
+    log_service = _log_service()
+    log_service.log_user_message = AsyncMock(return_value=None)
+    msg = _dm()
+    await _cog(log_service).on_message(msg)
+    _plain["save"].assert_not_awaited()
+    msg.channel.send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("row", "expected"),
+    [({"dj_name": "DJ Sam", "active_booking": False}, "DJ Sam"),
+     ({"dj_name": "Sam", "active_booking": False}, None), (None, None)],
+)
+async def test_on_message_passes_dj_name_only_when_different(
+    _plain: dict, row: object, expected: object
+) -> None:
+    _plain["dj"].return_value = row
+    log_service = _log_service()
+    await _cog(log_service).on_message(_dm(name="Sam"))
+    assert log_service.log_user_message.await_args.args[3] == expected
+
+
+@pytest.mark.asyncio
+async def test_on_message_dj_lookup_failure_gives_none_and_still_logs(_plain: dict) -> None:
+    _plain["dj"].side_effect = RuntimeError("db")
+    log_service = _log_service()
+    msg = _dm()
+    await _cog(log_service).on_message(msg)
+    assert log_service.log_user_message.await_args.args[3] is None
+    msg.channel.send.assert_awaited_once()
