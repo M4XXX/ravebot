@@ -17,9 +17,6 @@ async def start_admin_page(ctx: "BotContext", bot: Any) -> web.AppRunner | None:
 
     Never raises and never logs the password.
     """
-    from bot.web.app import create_app
-    from bot.web.service import AdminPageService
-
     password = ctx.config.admin_page_password
     if not password:
         logger.info("Admin page is off (ADMIN_PAGE_PASSWORD is not set).")
@@ -39,13 +36,21 @@ async def start_admin_page(ctx: "BotContext", bot: Any) -> web.AppRunner | None:
 
     runner: web.AppRunner | None = None
     try:
+        from bot.web.app import create_app
+        from bot.web.service import AdminPageService
+
         app = create_app(AdminPageService(ctx, bot), password)
         runner = web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(runner, HOST, port)
         await site.start()
     except Exception as exc:
-        logger.error("Admin page not started: could not listen on port %s (%s).", port, exc)
+        if isinstance(exc, OSError):
+            logger.error(
+                "Admin page not started: could not listen on port %s (%s).", port, exc
+            )
+        else:
+            logger.error("Admin page could not start: %s", exc)
         if runner is not None:
             try:
                 await runner.cleanup()

@@ -135,3 +135,60 @@ async def test_add_existing_row_still_caches_but_returns_false() -> None:
     with patch("bot.services.admin_registry.add_web_admin", AsyncMock(return_value=False)):
         assert await r.add(55) is False
     assert r.is_admin(55)
+
+
+class _SlowDb:
+    """list_web_admins replacement: returns the snapshot taken at call time, after a delay."""
+
+    def __init__(self, rows: list[int]) -> None:
+        self.rows = rows
+        self.calls = 0
+
+    async def __call__(self, db):
+        import asyncio
+
+        self.calls += 1
+        snapshot = list(self.rows)
+        await asyncio.sleep(0.05)
+        return snapshot
+
+
+@pytest.mark.asyncio
+async def test_concurrent_ensure_loaded_loads_once() -> None:
+    import asyncio
+
+    r = _registry()
+    slow = _SlowDb([7])
+    with patch("bot.services.admin_registry.list_web_admins", slow):
+        await asyncio.gather(r.ensure_loaded(), r.ensure_loaded())
+    assert slow.calls == 1
+    assert r.added == frozenset({7})
+
+
+@pytest.mark.asyncio
+async def test_concurrent_loads_do_not_overwrite_newer_with_older() -> None:
+    import asyncio
+
+    r = _registry()
+    slow = _SlowDb([7])
+
+    async def change_rows() -> None:
+        await asyncio.sleep(0.02)
+        slow.rows = [7, 8]
+
+    with patch("bot.services.admin_registry.list_web_admins", slow):
+        await asyncio.gather(r.load(), change_rows(), r.load())
+    # the second load ran after the first finished and saw the newer rows
+    assert r.added == frozenset({7, 8})
+
+
+@pytest.mark.asyncio
+async def test_add_during_a_load_is_not_lost() -> None:
+    import asyncio
+
+    r = _registry()
+    slow = _SlowDb([7])
+    with patch("bot.services.admin_registry.list_web_admins", slow), \
+         patch("bot.services.admin_registry.add_web_admin", AsyncMock(return_value=True)):
+        await asyncio.gather(r.load(), r.add(9))
+    assert r.added == frozenset({7, 9})

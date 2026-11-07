@@ -90,6 +90,30 @@ async def test_cog_check_accepts_an_added_admin_and_rejects_a_stranger() -> None
 
 
 @pytest.mark.asyncio
+async def test_event_autocomplete_without_a_guild_returns_empty(monkeypatch) -> None:
+    cog, _ = _lineup_cog(monkeypatch, [_lineup_event("E1", 3)])
+    monkeypatch.setattr("bot.services.activation.is_active", AsyncMock(return_value=True))
+    inter = make_mock_inter(user_id=123)
+    inter.guild_id = None
+    assert await cog.post_event_autocomplete(inter, "") == []
+
+
+@pytest.mark.asyncio
+async def test_registry_add_and_remove_change_the_next_cog_check() -> None:
+    from bot.cogs.admin import AdminCog
+
+    ctx = await _registry_ctx(777)  # 777 is added through the registry
+    cog = AdminCog(ctx)
+    assert await cog.cog_slash_command_check(make_mock_inter(user_id=777)) is True
+    with patch("bot.services.admin_registry.remove_web_admin", AsyncMock(return_value=True)):
+        assert await ctx.admins.remove(777) is True
+    assert await cog.cog_slash_command_check(make_mock_inter(user_id=777)) is False
+    with patch("bot.services.admin_registry.add_web_admin", AsyncMock(return_value=True)):
+        await ctx.admins.add(777)
+    assert await cog.cog_slash_command_check(make_mock_inter(user_id=777)) is True
+
+
+@pytest.mark.asyncio
 async def test_event_autocomplete_accepts_an_added_admin(monkeypatch) -> None:
     cog, _ = _lineup_cog(monkeypatch, [_lineup_event("E1", 3)])
     registry_ctx = await _registry_ctx(777)

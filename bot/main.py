@@ -234,6 +234,12 @@ async def main() -> None:
         # on_ready fires again on every reconnect: the admin DM goes out once per process
         if not startup_dm_sent:
             startup_dm_sent = True
+            # Recover from a failed startup load so cogs see the added admins.
+            try:
+                if ctx.admins is not None:
+                    await ctx.admins.ensure_loaded()
+            except Exception:
+                logger.warning("Could not load the added admins", exc_info=True)
             await notify_admins_if_idle(bot, ctx.db, ctx.admin_ids())
             await _retry_logos_if_active(bot, ctx)
 

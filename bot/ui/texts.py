@@ -347,7 +347,7 @@ def log_new_dj_text(name: str, vrchat_name: str | None) -> str:
 
 
 def log_admin_added_text(name: str, user_id: int) -> str:
-    return f"{name} (ID {user_id}) was added as an admin of the admin page."
+    return f"{name} (ID {user_id}) was added as an admin."
 
 
 def log_message_title(display_name: str, dj_name: str | None) -> str:

@@ -60,6 +60,7 @@ async def test_port_in_use_returns_none_without_raising(
         blocker.close()
     assert runner is None
     assert any(r.levelno == logging.ERROR for r in caplog.records)
+    assert "could not listen on port" in caplog.text
     assert PASSWORD not in caplog.text
 
 
@@ -89,3 +90,17 @@ async def test_normal_start_serves_login_and_stop_frees_port(
 @pytest.mark.asyncio
 async def test_stop_accepts_none() -> None:
     await stop_admin_page(None)
+
+
+@pytest.mark.asyncio
+async def test_missing_registry_returns_none_with_generic_message(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    ctx = _ctx(port=str(_free_port()))
+    ctx.admins = None
+    with caplog.at_level(logging.INFO):
+        runner = await start_admin_page(ctx, object())
+    assert runner is None
+    assert "Admin page could not start" in caplog.text
+    assert "could not listen" not in caplog.text
+    assert PASSWORD not in caplog.text

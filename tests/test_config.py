@@ -199,3 +199,14 @@ class TestAdminPageConfig:
         self._env(monkeypatch)
         monkeypatch.setenv("ADMIN_PAGE_PORT", "   ")
         assert _fresh_config(monkeypatch).from_env().admin_page_port == "8080"
+
+
+def test_repr_does_not_contain_the_admin_page_password() -> None:
+    from bot.config import Config
+
+    config = Config(
+        discord_bot_token="t", postgres_url="p", notion_api_key="n",
+        notion_parent_page_id="x", admin_user_ids=frozenset({1}), log_level="INFO",
+        db_pool_min=1, db_pool_max=2, admin_page_password="hunter2-secret",
+    )
+    assert "hunter2-secret" not in repr(config)

@@ -264,6 +264,26 @@ async def test_on_ready_retries_unsynced_logos_once_per_process() -> None:
 
 
 @pytest.mark.asyncio
+async def test_on_ready_retries_the_admin_registry_load_once_per_process() -> None:
+    s = _Startup()
+    await s.run()
+    s.ctx.admins = MagicMock()
+    s.ctx.admins.ensure_loaded = AsyncMock()
+    await _ready(s, active=True, times=2)
+    s.ctx.admins.ensure_loaded.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_on_ready_survives_a_failing_admin_registry_load() -> None:
+    s = _Startup()
+    await s.run()
+    s.ctx.admins = MagicMock()
+    s.ctx.admins.ensure_loaded = AsyncMock(side_effect=RuntimeError("db"))
+    retry = await _ready(s, active=True, times=1)
+    retry.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_on_ready_skips_logo_retry_while_idle() -> None:
     s = _Startup()
     await s.run()

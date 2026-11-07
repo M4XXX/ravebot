@@ -6,7 +6,7 @@ All secrets (token, API key, DB URL) come exclusively from env vars — never fr
 """
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -25,7 +25,7 @@ class Config:
     log_level: str
     db_pool_min: int
     db_pool_max: int
-    admin_page_password: str = ""
+    admin_page_password: str = field(default="", repr=False)
     admin_page_port: str = "8080"
 
     @classmethod
