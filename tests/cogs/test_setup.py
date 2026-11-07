@@ -120,7 +120,9 @@ async def test_setup_in_a_dm_replies_privately(store):  # noqa: F811
 
 
 def test_setup_command_is_server_only():
-    assert SetupCog(make_ctx()).setup.dm_permission is False
+    ctx = SetupCog(make_ctx()).setup.body.contexts
+    assert ctx is not None
+    assert (ctx.guild, ctx.bot_dm, ctx.private_channel) == (True, False, False)
 
 
 @pytest.mark.parametrize("user", [ADMIN, 999])

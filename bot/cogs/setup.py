@@ -19,6 +19,9 @@ from bot.ui.setup_wizard import (
 
 logger = logging.getLogger(__name__)
 
+# Server only: Discord hides the command in private messages
+SERVER_ONLY = disnake.InteractionContextTypes(guild=True)
+
 
 class SetupCog(commands.Cog):
     """/setup works while the bot is idle (no activation gate here)."""
@@ -61,7 +64,7 @@ class SetupCog(commands.Cog):
             return None
 
     @commands.slash_command(
-        name="setup", description="Guided setup for the bot (admin only)", dm_permission=False
+        name="setup", description="Guided setup for the bot (admin only)", contexts=SERVER_ONLY
     )
     async def setup(self, inter: disnake.ApplicationCommandInteraction) -> None:
         db: Any = self.ctx.db

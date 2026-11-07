@@ -1229,7 +1229,10 @@ def test_every_admin_command_is_server_only() -> None:
     found = {c.name: c for c in cog.get_slash_commands()}
     assert names <= set(found)
     for name in names:
-        assert found[name].dm_permission is False, name
+        ctx = found[name].body.contexts
+        assert ctx is not None, name
+        assert (ctx.guild, ctx.bot_dm, ctx.private_channel) == (True, False, False), name
+        assert found[name].body.to_dict()["contexts"] == [0], name
 
 
 @pytest.mark.asyncio

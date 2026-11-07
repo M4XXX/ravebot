@@ -35,6 +35,9 @@ from bot.ui.gates import ADMIN_IDLE_REPLY
 
 logger = logging.getLogger(__name__)
 
+# Server only: Discord hides the command in private messages
+SERVER_ONLY = disnake.InteractionContextTypes(guild=True)
+
 # Commands that work while the bot is idle (identified by qualified name)
 IDLE_EXEMPT_COMMANDS = frozenset({"setup", "config show"})
 
@@ -127,7 +130,7 @@ class AdminCog(commands.Cog):
                     )
 
     @commands.slash_command(
-        name="config", description="Show the bot settings (admin only)", dm_permission=False
+        name="config", description="Show the bot settings (admin only)", contexts=SERVER_ONLY
     )
     async def config_base(self, inter: disnake.ApplicationCommandInteraction) -> None:
         """Top-level /config command."""
@@ -188,7 +191,7 @@ class AdminCog(commands.Cog):
         await inter.response.send_message("\n".join(lines), ephemeral=True)
 
     @commands.slash_command(
-        name="create", description="Create things by hand (admin only)", dm_permission=False
+        name="create", description="Create things by hand (admin only)", contexts=SERVER_ONLY
     )
     async def create_base(self, inter: disnake.ApplicationCommandInteraction) -> None:
         pass
@@ -273,7 +276,7 @@ class AdminCog(commands.Cog):
         )
 
     @commands.slash_command(
-        name="post", description="Post to the DJ channel (admin only)", dm_permission=False
+        name="post", description="Post to the DJ channel (admin only)", contexts=SERVER_ONLY
     )
     async def post_base(self, inter: disnake.ApplicationCommandInteraction) -> None:
         pass
@@ -382,7 +385,7 @@ class AdminCog(commands.Cog):
         return [i for i in ids if needle in i.casefold()][:25]
 
     @commands.slash_command(
-        name="book", description="Book DJs (admin only)", dm_permission=False
+        name="book", description="Book DJs (admin only)", contexts=SERVER_ONLY
     )
     async def book_base(self, inter: disnake.ApplicationCommandInteraction) -> None:
         pass
@@ -392,7 +395,7 @@ class AdminCog(commands.Cog):
         pass
 
     @commands.slash_command(
-        name="cancel", description="Cancel bookings (admin only)", dm_permission=False
+        name="cancel", description="Cancel bookings (admin only)", contexts=SERVER_ONLY
     )
     async def cancel_base(self, inter: disnake.ApplicationCommandInteraction) -> None:
         pass
@@ -495,7 +498,7 @@ class AdminCog(commands.Cog):
         return await self.future_event_autocomplete(inter, user_input)
 
     @commands.slash_command(
-        name="automatic", description="Automatic bookings (admin only)", dm_permission=False
+        name="automatic", description="Automatic bookings (admin only)", contexts=SERVER_ONLY
     )
     async def automatic_base(self, inter: disnake.ApplicationCommandInteraction) -> None:
         pass
@@ -545,7 +548,7 @@ class AdminCog(commands.Cog):
             await inter.response.send_message(msg, ephemeral=True)
 
     @commands.slash_command(
-        name="list", description="Lists (admin only)", dm_permission=False
+        name="list", description="Lists (admin only)", contexts=SERVER_ONLY
     )
     async def list_base(self, inter: disnake.ApplicationCommandInteraction) -> None:
         pass
