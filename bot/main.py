@@ -66,6 +66,15 @@ def create_bot() -> commands.Bot:
     return commands.Bot(command_prefix="!", intents=intents)
 
 
+def _add_cog(bot: commands.Bot, cog: commands.Cog) -> None:
+    """Add a cog with a real `bot` attribute (disnake does not set one).
+
+    Set before add_cog because the cog loops start in cog_load and read self.bot.
+    """
+    cog.bot = bot  # type: ignore[attr-defined]
+    bot.add_cog(cog)
+
+
 async def notify_admins_if_idle(bot: commands.Bot, db: object, admin_ids: object) -> None:
     """While the bot is idle, DM every admin that setup is missing. Never raises."""
     try:
@@ -179,11 +188,11 @@ async def main() -> None:
         log_service=ctx.log_service,
     )
 
-    bot.add_cog(OnboardingCog(ctx))
-    bot.add_cog(BookingCog(ctx))
-    bot.add_cog(OutreachCog(ctx))
-    bot.add_cog(AdminCog(ctx))
-    bot.add_cog(EventsCog(ctx))
+    _add_cog(bot, OnboardingCog(ctx))
+    _add_cog(bot, BookingCog(ctx))
+    _add_cog(bot, OutreachCog(ctx))
+    _add_cog(bot, AdminCog(ctx))
+    _add_cog(bot, EventsCog(ctx))
 
     startup_dm_sent = False
 

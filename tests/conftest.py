@@ -43,9 +43,14 @@ def _bot_is_active(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPat
     Tests of the activation logic itself (test_activation) use the real functions;
     idle behaviour is tested by overriding these patches in the test.
     """
-    if request.module.__name__.endswith("test_activation"):
+    if request.module.__name__.endswith(("test_activation", "test_cog_bot")):
         return
     from unittest.mock import AsyncMock
+
+    from bot.cogs.onboarding import OnboardingCog
+
+    # disnake does not set cog.bot; main.py does. Give directly built cogs a bot.
+    monkeypatch.setattr(OnboardingCog, "bot", MagicMock(), raising=False)
 
     from bot.services import activation
 

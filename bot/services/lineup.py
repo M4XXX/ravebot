@@ -13,8 +13,8 @@ from typing import TYPE_CHECKING, Any
 import disnake
 
 from bot.db.config import get_value, set_value
-from bot.services import activation
 from bot.notion.models import EventInfo
+from bot.services import activation
 from bot.timezone import local_today
 from bot.ui import texts
 from bot.ui.embeds import LineupUpdateEmbed

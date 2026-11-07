@@ -77,3 +77,34 @@ async def test_gate_reads_db_from_view_ctx(monkeypatch) -> None:
     inter = _inter()
     await view.interaction_check(inter)
     assert seen.await_args.args[1] is ctx.db
+
+
+def _build(cls):
+    ctx = MagicMock()
+    if cls is views.LineupEventPickView:
+        return cls([], ctx)
+    if cls is views.FallbackMenuView:
+        return cls(ctx, None)
+    return MagicMock(spec=cls, ctx=ctx, _ctx=ctx)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cls", DJ_VIEWS)
+async def test_each_dj_view_blocks_idle_and_passes_active(cls, monkeypatch) -> None:
+    view = _build(cls)
+    check = GatedView.interaction_check
+    inter = _inter()
+    assert await check(view, inter) is True
+    _idle(monkeypatch)
+    inter = _inter()
+    assert await check(view, inter) is False
+    inter.response.send_message.assert_awaited_once_with(IDLE_REPLY, ephemeral=True)
+
+
+@pytest.mark.asyncio
+async def test_gate_fails_closed_when_check_raises(monkeypatch) -> None:
+    monkeypatch.setattr(activation, "bot_is_active", AsyncMock(side_effect=RuntimeError("db")))
+    view = views.LineupEventPickView([], MagicMock())
+    inter = _inter()
+    assert await view.interaction_check(inter) is False
+    inter.response.send_message.assert_awaited_once_with(IDLE_REPLY, ephemeral=True)

@@ -71,7 +71,7 @@ class OnboardingCog(commands.Cog):
             return
 
         # Idle: the role assignment sends nothing
-        if not await activation.bot_is_active(getattr(self, "bot", None), self.ctx.db):
+        if not await activation.bot_is_active(self.bot, self.ctx.db):
             logger.debug("on_member_update: bot is idle — no onboarding DM for %s", after.id)
             return
 
@@ -158,7 +158,7 @@ class OnboardingCog(commands.Cog):
             return
 
         # Idle: only the idle reply, nothing is logged and no menu is sent
-        if not await activation.bot_is_active(getattr(self, "bot", None), self.ctx.db):
+        if not await activation.bot_is_active(self.bot, self.ctx.db):
             await message.channel.send(IDLE_REPLY)
             return
 

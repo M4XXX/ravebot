@@ -1,7 +1,11 @@
 """Idle gate shared by every DJ-facing view and the admin check."""
+import logging
+
 import disnake
 
 from bot.services import activation
+
+logger = logging.getLogger(__name__)
 
 IDLE_REPLY = "I can't answer right now. Please try again later."
 ADMIN_IDLE_REPLY = "The bot is not active yet. Run /setup to finish the setup."
@@ -19,8 +23,11 @@ class GatedView(disnake.ui.View):
         ctx = getattr(self, "ctx", None) or getattr(self, "_ctx", None)
         db = getattr(ctx, "db", None)
         bot = getattr(interaction, "bot", None) or getattr(interaction, "client", None)
-        if await activation.bot_is_active(bot, db):
-            return True
+        try:
+            if await activation.bot_is_active(bot, db):
+                return True
+        except Exception:
+            logger.warning("GatedView: could not read the activation state", exc_info=True)
         try:
             if interaction.response.is_done():
                 await interaction.followup.send(IDLE_REPLY, ephemeral=True)
