@@ -25,6 +25,8 @@ class Config:
     log_level: str
     db_pool_min: int
     db_pool_max: int
+    admin_page_password: str = ""
+    admin_page_port: str = "8080"
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -66,4 +68,6 @@ class Config:
             log_level=os.getenv("LOG_LEVEL", "INFO"),
             db_pool_min=int(os.getenv("DB_POOL_MIN", "5")),
             db_pool_max=int(os.getenv("DB_POOL_MAX", "20")),
+            admin_page_password=os.getenv("ADMIN_PAGE_PASSWORD", "").strip(),
+            admin_page_port=os.getenv("ADMIN_PAGE_PORT", "").strip() or "8080",
         )

@@ -55,4 +55,7 @@ ENV PATH="/app/.venv/bin:$PATH" \
 RUN useradd --no-create-home --shell /bin/false ravebot
 USER ravebot
 
+# Admin page (default port 8080; change with ADMIN_PAGE_PORT and map it in the container settings)
+EXPOSE 8080
+
 CMD ["python", "-m", "bot.main"]

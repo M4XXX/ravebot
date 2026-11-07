@@ -166,3 +166,36 @@ class TestNotionParentPage:
         monkeypatch.setenv("NOTION_PARENT_PAGE_ID", "page-123")
         Config = _fresh_config(monkeypatch)
         assert Config.from_env().notion_parent_page_id == "page-123"
+
+
+class TestAdminPageConfig:
+    def _env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        for k, v in {
+            "DISCORD_BOT_TOKEN": "t",
+            "POSTGRES_URL": "postgresql://x",
+            "NOTION_API_KEY": "k",
+            "NOTION_PARENT_PAGE_ID": "p",
+            "ADMIN_USER_IDS": "1",
+        }.items():
+            monkeypatch.setenv(k, v)
+        monkeypatch.delenv("ADMIN_PAGE_PASSWORD", raising=False)
+        monkeypatch.delenv("ADMIN_PAGE_PORT", raising=False)
+
+    def test_defaults(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._env(monkeypatch)
+        cfg = _fresh_config(monkeypatch).from_env()
+        assert cfg.admin_page_password == ""
+        assert cfg.admin_page_port == "8080"
+
+    def test_reads_and_strips_both_keys(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._env(monkeypatch)
+        monkeypatch.setenv("ADMIN_PAGE_PASSWORD", "  pw  ")
+        monkeypatch.setenv("ADMIN_PAGE_PORT", " 9090 ")
+        cfg = _fresh_config(monkeypatch).from_env()
+        assert cfg.admin_page_password == "pw"
+        assert cfg.admin_page_port == "9090"
+
+    def test_empty_port_means_8080(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._env(monkeypatch)
+        monkeypatch.setenv("ADMIN_PAGE_PORT", "   ")
+        assert _fresh_config(monkeypatch).from_env().admin_page_port == "8080"

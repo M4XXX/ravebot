@@ -36,6 +36,7 @@ from bot.services import activation
 from bot.services.dj_sync import retry_unsynced_logos
 from bot.timezone import load_stored_timezone
 from bot.ui.gates import STARTUP_ADMIN_DM
+from bot.web import start_admin_page, stop_admin_page
 
 load_dotenv()
 
@@ -236,9 +237,11 @@ async def main() -> None:
             await notify_admins_if_idle(bot, ctx.db, ctx.admin_ids())
             await _retry_logos_if_active(bot, ctx)
 
+    runner = await start_admin_page(ctx, bot)
     try:
         await bot.start(config.discord_bot_token)
     finally:
+        await stop_admin_page(runner)
         if ctx.db is not None:
             await ctx.db.close()
             logger.info("asyncpg pool closed.")

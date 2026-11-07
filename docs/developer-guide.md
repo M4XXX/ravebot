@@ -92,6 +92,7 @@ output/ravebot/
 │   │   ├── outreach_cog.py # Proactive outreach background loop
 │   │   └── setup.py        # /setup (wizard entry point)
 │   ├── db/                 # asyncpg repository layer
+│   ├── web/                # Admin page (aiohttp): app.py routes and middlewares, auth.py, pages.py, service.py
 │   ├── notion/             # Notion integration (API version 2026-03-11)
 │   │   ├── api.py          # NotionApi: httpx wrapper, retry/backoff, pagination
 │   │   ├── models.py       # Property names, typed EventInfo/SlotInfo/DjInfo, parsers
@@ -204,6 +205,14 @@ An event's `Start` is a local wall-clock `HH:MM`; `EventInfo` in `bot/notion/mod
 - Tests use `tests/notion/fake_notion.py`, an in-memory Notion behind an httpx transport, so no test talks to the real API.
 
 ---
+
+### Admin registry and admin page
+
+- `bot/services/admin_registry.py`: `AdminRegistry` holds the owners (`ADMIN_USER_IDS`, fixed) and the added admins (table from migration `0014`, loaded at start). `main` creates it as `ctx.admins`.
+- `BotContext.is_admin(user_id)` is the single check for every admin command and gate; `ctx.admin_ids()` lists owners plus added admins (startup DM).
+- `bot/web/`: `start_admin_page(ctx, bot)` and `stop_admin_page(runner)` in `__init__.py`; `main` starts the page right before `bot.start(...)` and stops it first in the `finally` block. No `ADMIN_PAGE_PASSWORD` means no page; a bad port or a port in use logs an ERROR and returns `None`, the bot keeps running. It binds `0.0.0.0` (`web.TCPSite`), `Dockerfile` has `EXPOSE 8080`.
+- `AdminPageService` (`bot/web/service.py`) wraps the registry, the Discord lookups and the admin log entry for added admins.
+- Security measures: login throttle (`LoginThrottle`, also closes the parallel attempt bypass) plus a fixed delay on a wrong password; stateless signed session cookies (the signing key is random per process, so sessions end at restart; logout clears the cookie only); CSRF token on every POST; security headers on every response (CSP, `X-Frame-Options`, `nosniff`, no-store); all user-controlled text is HTML-escaped. There is no HTTPS, so the page is for the local network only.
 
 ## 5. Manual Docker Build & Release
 

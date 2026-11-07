@@ -49,10 +49,20 @@ class _Startup:
         self.api.close = AsyncMock()
         self.client = MagicMock()
         self.ctx = None
+        self.runner = object()
+        self.start_page = AsyncMock(side_effect=self._start_page)
+        self.stop_page = AsyncMock(side_effect=self._stop_page)
         self._schema_error = schema_error
 
     async def _start(self, token: str) -> None:
         self.calls.append("start")
+
+    async def _start_page(self, ctx, bot):  # noqa: ANN001, ANN202
+        self.calls.append("page_start")
+        return self.runner
+
+    async def _stop_page(self, runner):  # noqa: ANN001, ANN202
+        self.calls.append("page_stop")
 
     async def _ensure_schema(self, api, db, guild_id, parent):  # noqa: ANN001, ANN202
         self.calls.append("ensure_schema")
@@ -89,7 +99,9 @@ class _Startup:
              patch.object(main_mod, "NotionApi", return_value=self.api) as api_cls, \
              patch.object(main_mod, "ensure_schema", side_effect=self._ensure_schema), \
              patch.object(main_mod, "ensure_views", side_effect=self._ensure_views), \
-             patch.object(main_mod, "NotionClient", side_effect=self._make_client):
+             patch.object(main_mod, "NotionClient", side_effect=self._make_client), \
+             patch.object(main_mod, "start_admin_page", new=self.start_page), \
+             patch.object(main_mod, "stop_admin_page", new=self.stop_page):
             self.api_cls = api_cls
             await main_mod.main()
 
@@ -99,7 +111,9 @@ async def test_startup_ensures_schema_then_views_for_guild_zero() -> None:
     s = _Startup()
     await s.run()
 
-    assert s.calls == ["ensure_schema", "ensure_views", "client", "start"]
+    assert s.calls == [
+        "ensure_schema", "ensure_views", "client", "page_start", "start", "page_stop",
+    ]
     assert s.api_cls.call_args.args[0] == "key"
 
 
@@ -285,3 +299,22 @@ async def test_startup_dm_goes_to_owners_plus_added_admins() -> None:
          patch.object(main_mod.activation, "bot_is_active", new=AsyncMock(return_value=False)):
         await s.bot.event.call_args.args[0]()
     notify.assert_awaited_once_with(s.bot, s.ctx.db, [10, 30, 7])
+
+
+@pytest.mark.asyncio
+async def test_admin_page_starts_before_the_bot_and_stops_first_in_finally() -> None:
+    s = _Startup()
+    await s.run()
+    s.start_page.assert_awaited_once_with(s.ctx, s.bot)
+    s.stop_page.assert_awaited_once_with(s.runner)
+    assert s.calls.index("page_start") < s.calls.index("start") < s.calls.index("page_stop")
+
+
+@pytest.mark.asyncio
+async def test_admin_page_stops_even_when_the_bot_fails() -> None:
+    s = _Startup()
+    s.bot.start = AsyncMock(side_effect=RuntimeError("boom"))
+    with pytest.raises(RuntimeError):
+        await s.run()
+    s.stop_page.assert_awaited_once_with(s.runner)
+    s.pool.close.assert_awaited_once()

@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Admin page: a web page (port `ADMIN_PAGE_PORT`, default `8080`, password `ADMIN_PAGE_PASSWORD`) to add and remove admins. Off while the password is empty. No HTTPS: local network only. New package `bot/web/`.
+- Shared admin list: owners from `ADMIN_USER_IDS` plus admins added on the page, stored in the new table of migration `0014`. Added admins can use every admin command, including `/setup`. Adding an admin writes an admin log entry.
+- `aiohttp` is now declared as a dependency.
 - Guided `/setup` wizard (admins only): welcome and checks, DJ channel, log channel, roles, events with a time zone button, automatic invites, summary with Activate. Run it again (`Change settings`) to edit settings; it then ends with Save. The wizard keeps its state in the new table `setup_drafts` and survives restarts.
 - The bot stays idle until it is activated. While idle it sends no posts, invites, reminders or onboarding DMs, answers buttons and DMs with "I can't answer right now. Please try again later." and answers admin commands other than `/setup` and `/config show` with a hint to run `/setup`. At start an idle bot DMs every admin in `ADMIN_USER_IDS`. A server that already has a DJ channel and a log channel stored counts as active.
 - Local time: event start times, slot times, reminders and "today" use a time zone (setting `timezone`, default `Europe/Berlin`). `21:00` stays `21:00` in CET and CEST. The zone is set in `/setup`. New module `bot/timezone.py`.
@@ -33,6 +36,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Admin commands work on the server only, not in DMs. The key `GUILD_ID` is not read and can be removed.
 - An open change under `My DJ profile` expires after 1 hour without an answer: the change is dropped, nothing is saved, and the next DM is handled as a normal DM (log entry and menu). Buttons of the expired question answer that the message is out of date. Onboarding conversations do not expire.
 - Start times are local time, not UTC. Existing `Start` values are kept as they are, so an event entered as `20:00` now means 20:00 local time. Lineup posts and reminders show local times. Discord timestamps are no longer used.
 - `/config` has only `show` now; it lists the new settings and the bot status. All settings are changed in `/setup`.

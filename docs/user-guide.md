@@ -154,10 +154,14 @@ Copy `.env.example` to `.env` and fill in your values. **Never commit `.env` to 
 | `POSTGRES_URL` | Yes | - | PostgreSQL connection string: `postgresql://user:pass@host:5432/dbname` |
 | `NOTION_API_KEY` | Yes | - | Internal Integration Secret of your Notion integration (see [section 2.1](#21-create-an-integration)) |
 | `NOTION_PARENT_PAGE_ID` | Yes | - | 32-character ID of an empty Notion page shared with the integration; the bot creates its databases under it |
-| `ADMIN_USER_IDS` | Yes | - | Comma-separated Discord user IDs for admin slash commands |
+| `ADMIN_USER_IDS` | Yes | - | Comma-separated Discord user IDs of the owners: they are always admins and cannot be removed on the admin page |
+| `ADMIN_PAGE_PASSWORD` | No | - | Password of the admin page. While empty, the page is off. Choose a long random value |
+| `ADMIN_PAGE_PORT` | No | `8080` | Port of the admin page inside the container (1 to 65535) |
 | `LOG_LEVEL` | No | `INFO` | Log verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 | `DB_POOL_MIN` | No | `5` | Minimum asyncpg connection pool size |
 | `DB_POOL_MAX` | No | `20` | Maximum asyncpg connection pool size |
+
+The key `GUILD_ID` is not read by the bot. If it is still in your `.env` or container settings, you can delete it.
 
 **Finding your Discord user ID:** Enable Developer Mode in Discord (**Settings** → **Advanced** → **Developer Mode**), then right-click your username and select **Copy User ID**.
 
@@ -204,7 +208,7 @@ docker push ghcr.io/YOUR_USER/ravebot:latest
 2. Set **Name**: `ravebot`
 3. Set **Repository**: `ravebot:latest` (or your registry path)
 4. Set **Network Type**: `bridge`
-5. Leave **Port Mappings** empty - the bot makes no inbound connections
+5. Port mappings: leave them empty if you do not use the admin page. To use it, add a **Port** with container port `8080` and a free host port (for example `8080` or `8095`), and set the variable `ADMIN_PAGE_PASSWORD` in step 4 (see [section 7.7](#77-the-admin-page))
 
 ### Step 4: Configure Environment Variables
 
@@ -217,6 +221,7 @@ In the Add Container form, click **"Add another Path, Port, Variable, Label or D
 | `NOTION_API_KEY` | `your_notion_integration_secret` |
 | `NOTION_PARENT_PAGE_ID` | `your_notion_parent_page_id` |
 | `ADMIN_USER_IDS` | `123456789012345678` |
+| `ADMIN_PAGE_PASSWORD` | `a_long_random_password` (only for the admin page) |
 | `LOG_LEVEL` | `INFO` |
 
 Use your Unraid server's internal IP (e.g. `192.168.1.x`) for `POSTGRES_URL`, not `localhost` - containers on bridge networks cannot use `localhost` to reach other containers.
@@ -326,7 +331,7 @@ After a fresh deploy the bot is idle until an admin finishes `/setup`. While idl
 - Buttons and menus under old messages answer privately: "I can't answer right now. Please try again later."
 - A DJ who writes the bot a DM gets the same sentence. Nothing is logged.
 - Admin commands other than `/setup` and `/config show` answer privately: "The bot is not active yet. Run /setup to finish the setup."
-- When the bot starts idle, it sends every user ID in `ADMIN_USER_IDS` a DM: "RaveBot is not set up yet. Run /setup in the channel where you want to do it." The DM goes out once per start. If an admin has DMs from server members turned off, the bot only writes a warning to the container log.
+- When the bot starts idle, it sends every admin (`ADMIN_USER_IDS` and added admins) a DM: "RaveBot is not set up yet. Run /setup in the channel where you want to do it." The DM goes out once per start. If an admin has DMs from server members turned off, the bot only writes a warning to the container log.
 
 A server that already has both a DJ channel and a log channel stored (set up before `/setup` existed) counts as active, so an update does not interrupt it.
 
@@ -352,7 +357,7 @@ Finally check that the Events, Slots and DJs databases appeared under your Notio
 
 ### 7.3 Commands
 
-All commands are for the Discord user IDs in `ADMIN_USER_IDS`. Others see "You don't have permission to use this command."
+All commands are for admins: the user IDs in `ADMIN_USER_IDS` plus the admins added on the [admin page](#77-the-admin-page). Added admins can use every admin command, including `/setup`. The commands work on the server only, not in DMs. Others see "You don't have permission to use this command."
 
 | Command | What it does |
 |---|---|
@@ -396,6 +401,24 @@ Every question has a `Cancel` button; questions that can be skipped also have `S
 The DJ's answers during the conversation are not copied to the admin log channel. Buttons of older questions answer `This message is out of date. Use the latest message from me, or press Cancel there.` While a setup or a change is open, every DM is taken as the answer to the open question. A change of a profile value that is not answered within 1 hour is dropped and nothing changes; the next DM then opens the menu as usual.
 
 DJs that joined before this change keep their stored profile and stream links. The menu shows `My DJ profile` to every DJ with a profile. It lists the profile (with the logo) and has buttons to change the DJ name, VRChat name, logo, stream link and backup link, and `Leave the booking group` (`Join the Active DJ Booking Group` after leaving). Leaving stops invites and removes the Active Booking role; the profile stays.
+### 7.7 The admin page
+
+A small web page to manage the admin list. It is off until you set `ADMIN_PAGE_PASSWORD`.
+
+**Warning:** the page has no HTTPS. Use it only on your local network and never expose it to the internet (no port forwarding, no public reverse proxy).
+
+1. Set `ADMIN_PAGE_PASSWORD` (a long random value). Optionally set `ADMIN_PAGE_PORT` (default `8080`).
+2. In Unraid, map container port `8080` to a free host port. With Docker Compose use `ports: ["8080:8080"]`.
+3. Open `http://SERVER_IP:HOST_PORT/` in a browser and log in with the password. If the port is wrong or already in use, the container log shows an `Admin page not started` error and the bot keeps running without the page.
+
+What the page shows: the server name, the owners from `ADMIN_USER_IDS` (they cannot be removed) and the added admins with their Discord name when it can be found.
+
+What you can do:
+- Add an admin by Discord user ID (17 to 19 digits). The ID does not have to be a server member. An added admin can use every admin command, including `/setup`. Adding an admin writes an entry to the admin log channel; removals do not.
+- Remove an added admin.
+- Log out. This clears the cookie in your browser only.
+
+Sessions end when the bot restarts; you log in again. Repeated wrong passwords are slowed down.
 
 ---
 

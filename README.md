@@ -58,6 +58,7 @@ A live lineup post in your DJ channel updates automatically whenever Notion chan
 - `/list all djs` for the DJ roster with booking status
 - `/config show` to review all settings and the bot status
 - `/create event` to manually create a Notion event
+- Optional admin page (web, local network only) to add and remove admins; set `ADMIN_PAGE_PASSWORD` to turn it on
 - `/post lineup update` to post the lineup on demand
 
 **Automation**
