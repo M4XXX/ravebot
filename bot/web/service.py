@@ -130,6 +130,22 @@ class AdminPageService:
             for uid in self._ctx.admin_ids()
         ]
 
+    async def admin_row(self, raw_id: str) -> AdminRow | None:
+        """The row for a valid id that is an owner or an added admin, else None."""
+        try:
+            user_id = _parse_id(raw_id)
+            if user_id is None:
+                return None
+            registry = self._registry
+            await registry.ensure_loaded()
+            is_owner = registry.is_owner(user_id)
+            if not is_owner and user_id not in registry.added:
+                return None
+            return AdminRow(await self.describe(user_id), is_owner)
+        except Exception:
+            logger.warning("Could not look up an admin for the admin page", exc_info=True)
+            return None
+
     async def add_admin(self, raw_id: str) -> ActionResult:
         registry = self._registry
         await registry.ensure_loaded()

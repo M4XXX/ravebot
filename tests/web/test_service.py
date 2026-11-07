@@ -341,3 +341,23 @@ async def test_list_admins_owners_first() -> None:
     rows = await _svc(bot=bot, ctx=ctx).list_admins()
     assert [(r.info.user_id, r.is_owner) for r in rows] == [(10, True), (30, True), (7, False)]
     ctx.admins.ensure_loaded.assert_awaited_once()
+
+
+async def test_admin_row_owner_added_and_unknown() -> None:
+    ctx = _ctx(owners=frozenset({UID}), added=[UID + 1])
+    bot = _bot(_guild(), user=_user(uid=UID + 1))
+    svc = _svc(bot=bot, ctx=ctx)
+    owner = await svc.admin_row(str(UID))
+    assert owner is not None and owner.is_owner and owner.info.user_id == UID
+    added = await svc.admin_row(f" {UID + 1} ")
+    assert added is not None and not added.is_owner and added.info.name == "Glob"
+    assert await svc.admin_row(str(UID + 5)) is None
+    for raw in ("12", "", "abc", str(2**63), "1" * 20):
+        assert await svc.admin_row(raw) is None
+
+
+async def test_admin_row_never_raises() -> None:
+    ctx = _ctx(added=[UID])
+    assert ctx.admins is not None
+    ctx.admins.ensure_loaded = AsyncMock(side_effect=RuntimeError("db"))
+    assert await _svc(ctx=ctx).admin_row(str(UID)) is None
