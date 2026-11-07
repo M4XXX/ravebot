@@ -135,7 +135,7 @@ async def test_role_assignment_idle_sends_nothing(idle) -> None:
 @pytest.mark.parametrize(
     ("name", "allowed"),
     [("setup", True), ("config show", True), ("create event", False), ("list all djs", False),
-     ("config set dj-channel", False)],
+     ("book dj slot", False), ("automatic dj booking", False)],
 )
 async def test_admin_check_idle(idle, name, allowed) -> None:
     from bot.cogs.admin import AdminCog
@@ -195,7 +195,10 @@ async def test_config_show_idle_says_setup_not_finished(idle) -> None:
     inter = make_mock_inter(user_id=1)
     with patch("bot.cogs.admin.db_config.get_value", new=AsyncMock(return_value=None)):
         await cog.config_show.callback(cog, inter)
-    assert inter.response.send_message.call_args.args[0] == texts.SETUP_NOT_FINISHED
+    text = inter.response.send_message.call_args.args[0]
+    assert text.startswith(texts.SETUP_NOT_FINISHED)
+    assert text.endswith("To change a setting, run /setup again.")
+    assert "Bot status: idle" in text
 
 
 # --- lineup --------------------------------------------------------------

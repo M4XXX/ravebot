@@ -14,7 +14,6 @@ from typing import TYPE_CHECKING, Any
 import disnake
 
 from bot.db.bookings import get_booked_djs_for_event
-from bot.db.interventions import is_under_intervention
 from bot.db.reminders import has_reminder_been_sent, record_reminder_sent
 from bot.notion.models import EventInfo
 from bot.ui import texts
@@ -141,22 +140,6 @@ class RemindersService:
                         exc,
                     )
                     continue
-
-                # Story 6.2 AC7: skip DJs under admin intervention silently
-                try:
-                    if await is_under_intervention(self.db, discord_user_id):
-                        logger.info(
-                            "RemindersService.send_reminders: skipping DJ %s (%s) — under admin intervention",
-                            dj_name,
-                            discord_user_id,
-                        )
-                        continue
-                except Exception as exc:
-                    logger.warning(
-                        "RemindersService.send_reminders: intervention check failed for %s: %s",
-                        discord_user_id,
-                        exc,
-                    )
 
                 # Get Discord user from cache
                 user = self.bot.get_user(discord_user_id)

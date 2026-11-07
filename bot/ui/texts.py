@@ -113,6 +113,7 @@ CANCELLED = "Your booking is cancelled. The slot is open again."
 CANCEL_KEPT = "Nothing changed. You're still booked."
 NO_BOOKINGS = "You have no upcoming bookings."
 MENU = "I work with buttons. What do you want to do?"
+CONFIG_SHOW_HINT = "To change a setting, run /setup again."
 SETUP_NOT_FINISHED = "The setup is not finished yet. Run /setup to finish it."
 BTN_BOOK = "Book a slot"
 BTN_CANCEL = "Cancel a slot"
@@ -181,7 +182,7 @@ LOG_NO_MANUAL_ACTION = "No manual action required."
 LOG_FAILED_TITLE = "Something failed"
 LOG_NEW_DATABASES_TITLE = "New Notion databases created"
 NOTION_RETRY_TODO = "Check the Slots rows in Notion. The next sync retries."
-DJ_CHANNEL_TODO = "Run /config set dj-channel to set the DJ channel."
+DJ_CHANNEL_TODO = "Run /setup again to set the DJ channel."
 
 
 def dm_failed_todo(name: str) -> str:

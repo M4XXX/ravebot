@@ -178,12 +178,6 @@ async def main() -> None:
         log_service=ctx.log_service,
     )
 
-    # Story 6.2: init InterventionService
-    from bot.services.intervention import InterventionService
-    ctx.intervention_service = InterventionService(
-        bot=bot, db=ctx.db, log_service=ctx.log_service
-    )
-
     # Story 6.3: init AdminBookingService
     from bot.services.admin_booking import AdminBookingService
     ctx.admin_booking_service = AdminBookingService(

@@ -42,7 +42,6 @@ class BotContext:
     lineup_service: "Any | None" = None
     outreach_service: "Any | None" = None
     reminders_service: "Any | None" = None
-    intervention_service: "Any | None" = None
     admin_booking_service: "Any | None" = None
     notion_sync_service: "Any | None" = None
     user_locks: dict[int, asyncio.Lock] = field(default_factory=dict)

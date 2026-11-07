@@ -5,7 +5,6 @@ fully booked events, new DJs, users' DMs (with a Reply button) and critical
 problems. Typed entries are posted through the log_* methods. post_error()
 maps the error codes that matter to a plain attention entry; ERR_SLOT_CONFLICT
 and ERR_BUTTON_TIMEOUT only reach the Python logger.
-Admin intervention messages are posted through post_intervention().
 
 If no log channel is configured, all posts fall back to stdout (warning level).
 Never raises — errors in the log service must not crash the bot.
@@ -96,7 +95,7 @@ class AdminLogService:
         """Post a critical problem to the admin log channel as an attention entry.
 
         Falls back to a stdout warning if no channel is configured (e.g. before
-        Story 1.4 adds the /config set log-channel command).
+        the log channel is set in /setup).
         Never raises — log failures must not crash the bot.
 
         [Source: epics.md#Story 1.3 AC3]
@@ -260,27 +259,3 @@ class AdminLogService:
             )
 
         return await self._post_built(build, view)
-
-    async def post_intervention(
-        self,
-        sender: str,
-        recipient: str,
-        content: str,
-    ) -> None:
-        """Post an intervention transcript entry to the admin log channel.
-
-        Format: "**{sender} → {recipient}:** {content}"
-        Plain text (not embed) — keeps the transcript scannable.
-        Used by Story 6.2 /intervene flows.
-
-        [Source: epics.md#FR31, Story 6.2 AC]
-        """
-        message = f"**{sender} \u2192 {recipient}:** {content}"
-        channel = await self._get_log_channel()
-        if channel is None:
-            logger.warning("Intervention log: %s", message)
-            return
-        try:
-            await channel.send(message)
-        except disnake.DiscordException as exc:
-            logger.error("Failed to post intervention log: %s", exc)

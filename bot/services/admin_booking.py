@@ -1,6 +1,6 @@
 """AdminBookingService — admin booking, cancellation, and DJ status management.
 
-Handles /admin book, /admin cancel, and /admin dj set-active slash command logic.
+Handles /book dj slot, /cancel dj slot and /automatic dj booking slash command logic.
 Bypasses the confirmation dialog and DJ-facing race condition guard.
 
 [Source: epics.md#Story 6.3 — FR override commands]
@@ -364,11 +364,11 @@ class AdminBookingService:
         try:
             if active:
                 await member.add_roles(
-                    role, reason="Admin override via /admin dj set-active"
+                    role, reason="Admin override via /automatic dj booking"
                 )
             else:
                 await member.remove_roles(
-                    role, reason="Admin override via /admin dj set-active"
+                    role, reason="Admin override via /automatic dj booking"
                 )
         except (disnake.Forbidden, disnake.HTTPException) as exc:
             logger.warning(

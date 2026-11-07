@@ -116,64 +116,6 @@ class TestAdminLogServicePostError:
         await service.post_error(ErrorCode.ERR_DM_FAILED, "trigger", "action")
 
 
-class TestAdminLogServicePostIntervention:
-    @pytest.mark.asyncio
-    async def test_sends_plain_message_to_channel(self) -> None:
-        """post_intervention() sends a plain text message (no embed)."""
-        mock_channel = _make_mock_channel()
-        mock_bot = _make_mock_bot(channel=mock_channel)
-        mock_pool = _make_mock_pool(log_channel_value="333")
-        from bot.log import AdminLogService
-
-        service = AdminLogService(bot=mock_bot, db=mock_pool)
-        await service.post_intervention("BOT", "@DJ Felix", "Hello, you're booked!")
-
-        mock_channel.send.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_message_contains_sender_and_recipient(self) -> None:
-        """Intervention message includes sender and recipient names."""
-        mock_channel = _make_mock_channel()
-        mock_bot = _make_mock_bot(channel=mock_channel)
-        mock_pool = _make_mock_pool(log_channel_value="333")
-        from bot.log import AdminLogService
-
-        service = AdminLogService(bot=mock_bot, db=mock_pool)
-        await service.post_intervention("Admin", "@DJ Felix", "Check your slot time")
-
-        sent_text = mock_channel.send.call_args.args[0]
-        assert "Admin" in sent_text
-        assert "@DJ Felix" in sent_text
-
-    @pytest.mark.asyncio
-    async def test_falls_back_to_stdout_when_no_channel(self, caplog) -> None:
-        """post_intervention() logs a warning when no channel is configured."""
-        mock_bot = _make_mock_bot(has_guilds=False)
-        mock_pool = _make_mock_pool()
-        from bot.log import AdminLogService
-
-        service = AdminLogService(bot=mock_bot, db=mock_pool)
-        with caplog.at_level(logging.WARNING, logger="bot.log"):
-            await service.post_intervention("BOT", "@DJ Mars", "Reminder sent")
-
-        assert not any(r.levelno == logging.ERROR for r in caplog.records)
-
-    @pytest.mark.asyncio
-    async def test_does_not_raise_on_discord_exception(self) -> None:
-        """post_intervention() catches DiscordException and logs error instead of raising."""
-        import disnake
-
-        mock_channel = _make_mock_channel()
-        mock_channel.send = AsyncMock(side_effect=disnake.HTTPException(MagicMock(), "fail"))
-        mock_bot = _make_mock_bot(channel=mock_channel)
-        mock_pool = _make_mock_pool(log_channel_value="333")
-        from bot.log import AdminLogService
-
-        service = AdminLogService(bot=mock_bot, db=mock_pool)
-        # Must not raise
-        await service.post_intervention("Admin", "@DJ Mars", "Check your slot")
-
-
 # --- Typed entries (group 4) ---------------------------------------------------
 
 import datetime  # noqa: E402

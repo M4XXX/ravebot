@@ -21,7 +21,7 @@ DM_TODO = (
     "(Discord Settings, Privacy & Safety)."
 )
 NOTION_TODO = "Check the Slots rows in Notion. The next sync retries."
-DJ_CHANNEL_TODO = "Run /config set dj-channel to set the DJ channel."
+DJ_CHANNEL_TODO = "Run /setup again to set the DJ channel."
 SECRET_WORDS = re.compile(r"ERR_|Error|Exception|Forbidden|HTTP \d|Traceback|user_id|ID:")
 
 

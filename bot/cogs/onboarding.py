@@ -16,7 +16,6 @@ from disnake.ext import commands
 
 from bot.context import BotContext
 from bot.db.djs import get_dj_by_discord_id
-from bot.db.interventions import is_under_intervention
 from bot.db.log_replies import save_log_reply
 from bot.services import activation
 from bot.services.roles import get_dj_role
@@ -170,11 +169,6 @@ class OnboardingCog(commands.Cog):
         task = asyncio.create_task(self._log_incoming(message))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
-
-        # Story 6.2 AC3: a DJ under admin intervention gets no menu
-        if self.ctx.db is not None:
-            if await is_under_intervention(self.ctx.db, message.author.id):
-                return
 
         # If user is in an active multi-step flow, do not interrupt
         lock = self.ctx.get_user_lock(message.author.id)

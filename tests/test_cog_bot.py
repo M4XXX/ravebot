@@ -49,7 +49,6 @@ async def test_on_message_with_real_check_active_guild_answers_normally(monkeypa
     from bot.ui.views import FallbackMenuView
 
     _fake_config(monkeypatch, {"bot_active": "true"})
-    monkeypatch.setattr("bot.cogs.onboarding.is_under_intervention", AsyncMock(return_value=False))
     monkeypatch.setattr("bot.cogs.onboarding.get_dj_by_discord_id", AsyncMock(return_value=None))
     cog = OnboardingCog(make_real_ctx(db=MagicMock()))
     cog.bot = _bot_with_guild()

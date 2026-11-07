@@ -231,7 +231,7 @@ async def test_unset_channel_stores_snapshot_and_posts_admin_error_once() -> Non
     log.log_attention.assert_awaited_once_with(
         "Something failed",
         "The lineup could not be posted because no DJ channel is set.",
-        "Run /config set dj-channel to set the DJ channel.",
+        "Run /setup again to set the DJ channel.",
     )
 
 

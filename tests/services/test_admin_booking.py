@@ -550,7 +550,7 @@ async def test_set_dj_active_status_activates_dj(monkeypatch):
     assert success is True
     assert msg == ""
     mock_member.add_roles.assert_awaited_once_with(
-        mock_role, reason="Admin override via /admin dj set-active"
+        mock_role, reason="Admin override via /automatic dj booking"
     )
     mock_member.remove_roles.assert_not_awaited()
 
@@ -570,7 +570,7 @@ async def test_set_dj_active_status_deactivates_dj(monkeypatch):
     assert success is True
     assert msg == ""
     mock_member.remove_roles.assert_awaited_once_with(
-        mock_role, reason="Admin override via /admin dj set-active"
+        mock_role, reason="Admin override via /automatic dj booking"
     )
     mock_member.add_roles.assert_not_awaited()
 

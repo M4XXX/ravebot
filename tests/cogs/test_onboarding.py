@@ -240,11 +240,6 @@ async def test_on_message_dm_sends_fallback_menu(monkeypatch: pytest.MonkeyPatch
     from bot.cogs.onboarding import OnboardingCog
     from bot.ui.views import FallbackMenuView
 
-    monkeypatch.setattr(
-        "bot.cogs.onboarding.is_under_intervention",
-        AsyncMock(return_value=False),
-    )
-
     ctx = make_real_ctx(db=MagicMock())
     cog = OnboardingCog(ctx)
 
@@ -304,11 +299,6 @@ async def test_on_message_skips_during_active_flow(monkeypatch: pytest.MonkeyPat
     """FallbackMenuView NOT shown when user has an active flow (lock held)."""
     from bot.cogs.onboarding import OnboardingCog
 
-    monkeypatch.setattr(
-        "bot.cogs.onboarding.is_under_intervention",
-        AsyncMock(return_value=False),
-    )
-
     ctx = make_real_ctx(db=MagicMock())
     cog = OnboardingCog(ctx)
 
@@ -331,11 +321,6 @@ async def test_on_message_dm_logs_transcript_for_incoming_and_outgoing(
 ) -> None:
     """Story 6.1 AC2 + AC1: incoming DM and fallback menu response are both transcribed."""
     from bot.cogs.onboarding import OnboardingCog
-
-    monkeypatch.setattr(
-        "bot.cogs.onboarding.is_under_intervention",
-        AsyncMock(return_value=False),
-    )
 
     log_service = MagicMock()
     ctx = make_real_ctx(db=MagicMock())
@@ -370,9 +355,6 @@ async def test_on_message_menu_matches_dj_state(
 ) -> None:
     from bot.cogs.onboarding import OnboardingCog
 
-    monkeypatch.setattr(
-        "bot.cogs.onboarding.is_under_intervention", AsyncMock(return_value=False)
-    )
     monkeypatch.setattr("bot.cogs.onboarding.get_dj_by_discord_id", AsyncMock(return_value=row))
     cog = OnboardingCog(make_real_ctx(db=MagicMock()))
     message = MagicMock(spec=disnake.Message)
@@ -390,65 +372,17 @@ async def test_on_message_menu_matches_dj_state(
 
 
 # ---------------------------------------------------------------------------
-# Story 6.2: intervention check in on_message
+# The menu is always sent
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_on_message_under_intervention_logs_entry_no_fallback(
+async def test_on_message_always_shows_fallback_menu(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    log_service = _log_service()
-    msg = _dm(content="I need help", user_id=99)
-    monkeypatch.setattr("bot.cogs.onboarding.is_under_intervention", AsyncMock(return_value=True))
-    await _send(_cog(log_service), msg)
-    log_service.log_user_message.assert_awaited_once()
-    assert log_service.log_user_message.await_args.args[1] == "I need help"
-    msg.channel.send.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_on_message_under_intervention_suppresses_even_when_log_service_none(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Story 6.2 HIGH fix: intervention suppression fires even when log_service is None."""
-    from bot.cogs.onboarding import OnboardingCog
-
-    monkeypatch.setattr(
-        "bot.cogs.onboarding.is_under_intervention",
-        AsyncMock(return_value=True),
-    )
-
-    ctx = make_real_ctx(db=MagicMock())
-    ctx.log_service = None  # log_service absent — suppression must still work
-
-    message = MagicMock(spec=disnake.Message)
-    message.guild = None
-    message.author.id = 88
-    message.author.name = "DJ Silent"
-    message.author.bot = False
-    message.content = "any message"
-    message.channel.send = AsyncMock()
-
-    cog = OnboardingCog(ctx)
-    await _send(cog, message)
-
-    # No FallbackMenuView despite log_service being None
-    message.channel.send.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_on_message_not_under_intervention_shows_fallback(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """DJ NOT under intervention → normal FallbackMenuView shown."""
+    """Every DJ message gets the FallbackMenuView (no suppression path)."""
     from bot.cogs.onboarding import OnboardingCog
     from bot.ui.views import FallbackMenuView
-
-    monkeypatch.setattr(
-        "bot.cogs.onboarding.is_under_intervention",
-        AsyncMock(return_value=False),
-    )
 
     ctx = make_real_ctx(db=MagicMock())
 
@@ -478,7 +412,6 @@ def _log_service() -> MagicMock:
     logged = MagicMock()
     logged.id = 777
     log_service.log_user_message = AsyncMock(return_value=logged)
-    log_service.post_intervention = AsyncMock()
     return log_service
 
 
@@ -514,11 +447,9 @@ def _cog(log_service: MagicMock):
 @pytest.fixture
 def _plain(monkeypatch: pytest.MonkeyPatch) -> dict:
     mocks = {
-        "intervention": AsyncMock(return_value=False),
         "dj": AsyncMock(return_value=None),
         "save": AsyncMock(),
     }
-    monkeypatch.setattr("bot.cogs.onboarding.is_under_intervention", mocks["intervention"])
     monkeypatch.setattr("bot.cogs.onboarding.get_dj_by_discord_id", mocks["dj"])
     monkeypatch.setattr("bot.cogs.onboarding.save_log_reply", mocks["save"])
     return mocks

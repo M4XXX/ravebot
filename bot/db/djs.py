@@ -159,7 +159,7 @@ async def update_last_contacted_at(pool: asyncpg.Pool, discord_user_id: int) -> 
 async def get_all_djs(pool: asyncpg.Pool) -> list[dict]:
     """Return all registered DJ rows ordered alphabetically by dj_name.
 
-    Used by AdminCog /list-djs to show the full DJ pool with active status.
+    Used by AdminCog /list all djs to show the full DJ pool with active status.
     Returns empty list if no DJs are registered.
 
     [Source: epics.md#Story 6.5 AC3, AC4 — FR39]

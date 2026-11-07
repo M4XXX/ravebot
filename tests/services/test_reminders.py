@@ -278,9 +278,7 @@ async def test_send_reminders_slot_unix_from_typed_event():
         "bot.services.reminders.has_reminder_been_sent", new=AsyncMock(return_value=False),
     ), patch(
         "bot.services.reminders.record_reminder_sent", new=AsyncMock(),
-    ) as mock_record, patch(
-        "bot.services.reminders.is_under_intervention", new=AsyncMock(return_value=False),
-    ):
+    ) as mock_record:
         await svc.send_reminders(guild_id=1, ctx=MagicMock(), _now=FIXED_NOW)
     mock_get.assert_awaited_once_with(svc.db, "page-xyz")
     assert "Friday 22.05.2026, slot 3 at 02:00" in user_mock.send.call_args[0][0]
