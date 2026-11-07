@@ -9,6 +9,8 @@ To add a step, insert its key into STEPS (before "summary"), add a renderer bran
 """
 import asyncio
 import logging
+import re
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -16,8 +18,11 @@ import disnake
 
 from bot.db import config as db_config
 from bot.db.setup_drafts import SetupDraft, delete_draft, get_draft, save_draft
+from bot.notion.models import MAX_SLOTS
 from bot.services import activation
 from bot.services.event_replenish import replenish_events
+from bot.services.outreach import parse_outreach_enabled
+from bot.timezone import DEFAULT_TIMEZONE, is_valid_timezone, set_timezone
 from bot.ui import texts
 
 if TYPE_CHECKING:
@@ -25,19 +30,40 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Ordered step keys. "summary" stays last; the numbered steps are all before it.
-STEPS: list[str] = ["welcome", "dj_channel", "log_channel", "summary"]
+# Ordered step keys. "summary" stays last; the numbered steps are all before it
+# (the summary belongs to the last numbered step).
+STEPS: list[str] = [
+    "welcome",
+    "dj_channel",
+    "log_channel",
+    "roles",
+    "events",
+    "invites",
+    "summary",
+]
 
-# Event defaults written on activation, only when not stored yet.
-EVENT_DEFAULTS: dict[str, str] = {
-    "slots_per_event": "6",
+# Values a draft starts with (first run); a re-run starts from the stored values.
+DEFAULT_VALUES: dict[str, Any] = {
+    "slots_per_event": 6,
     "default_start_time": "20:00",
-    "slot_duration_minutes": "60",
-    "event_interval_days": "7",
-    "event_lookahead_count": "6",
+    "slot_duration_minutes": 60,
+    "event_interval_days": 7,
+    "event_lookahead_count": 6,
+    "timezone": DEFAULT_TIMEZONE,
+    "outreach_enabled": True,
+    "outreach_days_before": 14,
+    "outreach_cooldown_hours": 12,
 }
-
+_INT_VALUE_KEYS = (
+    "slots_per_event",
+    "slot_duration_minutes",
+    "event_interval_days",
+    "event_lookahead_count",
+    "outreach_days_before",
+    "outreach_cooldown_hours",
+)
 CHANNEL_KEYS = ("dj_channel", "log_channel")
+ROLE_KEYS = ("dj_role_id", "invites_role_id")
 
 _REQUIRED_PERMISSIONS = (("send_messages", "Send Messages"), ("embed_links", "Embed Links"))
 
@@ -45,9 +71,18 @@ ID_BACK = "setup:back"
 ID_NEXT = "setup:next"
 ID_DJ_CHANNEL = "setup:dj_channel"
 ID_LOG_CHANNEL = "setup:log_channel"
+ID_DJ_ROLE = "setup:dj_role"
+ID_INVITES_ROLE = "setup:invites_role"
+ID_CREATE_ROLE = "setup:create_role"
+ID_EVENTS_CHANGE = "setup:events_change"
+ID_ZONE = "setup:zone"
+ID_INVITES_TOGGLE = "setup:invites_toggle"
+ID_INVITES_CHANGE = "setup:invites_change"
 ID_ACTIVATE = "setup:activate"
 ID_SAVE = "setup:save"
 ID_CHANGE = "setup:change"
+
+_HHMM_RE = re.compile(r"^(\d{1,2}):(\d{2})$")
 
 # One lock per guild: the activation effects run once even on concurrent presses.
 _guild_locks: dict[int, asyncio.Lock] = {}
@@ -82,6 +117,82 @@ def step_key(step: int) -> str:
     return STEPS[max(0, min(step, len(STEPS) - 1))]
 
 
+def step_number(key: str) -> int:
+    return STEPS.index(key) + 1
+
+
+def values(data: dict[str, Any]) -> dict[str, Any]:
+    """The draft's values with the defaults filled in."""
+    merged = dict(DEFAULT_VALUES)
+    merged.update({k: data[k] for k in DEFAULT_VALUES if k in data})
+    return merged
+
+
+# --- validation of the popup fields ---
+
+def parse_events_fields(raw: dict[str, str]) -> tuple[dict[str, Any], list[str]]:
+    """Validate the five event fields; errors name the field."""
+    out: dict[str, Any] = {}
+    errors: list[str] = []
+
+    def number(field: str, label: str, key: str, maximum: int | None = None) -> None:
+        text = (raw.get(field) or "").strip()
+        rule = "enter a whole number of at least 1."
+        if maximum is not None:
+            rule = f"enter a whole number from 1 to {maximum}."
+        try:
+            value = int(text)
+        except ValueError:
+            errors.append(texts.setup_invalid(label, rule))
+            return
+        if value < 1 or (maximum is not None and value > maximum):
+            errors.append(texts.setup_invalid(label, rule))
+            return
+        out[key] = value
+
+    number("slots", "Slots per event", "slots_per_event", MAX_SLOTS)
+    number("length", "Slot length", "slot_duration_minutes")
+    number("interval", "One event every (days)", "event_interval_days")
+    number("ahead", "Future events kept ready", "event_lookahead_count")
+    match = _HHMM_RE.match((raw.get("start") or "").strip())
+    if match and int(match.group(1)) <= 23 and int(match.group(2)) <= 59:
+        out["default_start_time"] = f"{int(match.group(1)):02d}:{match.group(2)}"
+    else:
+        errors.append(
+            texts.setup_invalid("Start time (CET, HH:MM)", "enter a time from 00:00 to 23:59.")
+        )
+    return out, errors
+
+
+def parse_invites_fields(raw: dict[str, str]) -> tuple[dict[str, Any], list[str]]:
+    out: dict[str, Any] = {}
+    errors: list[str] = []
+    for fid, label, key in (
+        ("days", "Days before an event", "outreach_days_before"),
+        ("hours", "Hours between invites", "outreach_cooldown_hours"),
+    ):
+        try:
+            value = int((raw.get(fid) or "").strip())
+        except ValueError:
+            value = 0
+        if value < 1:
+            errors.append(texts.setup_invalid(label, "enter a whole number of at least 1."))
+        else:
+            out[key] = value
+    return out, errors
+
+
+def parse_zone_field(raw: dict[str, str]) -> tuple[dict[str, Any], list[str]]:
+    name = (raw.get("zone") or "").strip()
+    if not name or not is_valid_timezone(name):
+        return {}, [
+            texts.setup_invalid("Time zone", "enter a name like Europe/Berlin.")
+        ]
+    return {"timezone": name}, []
+
+
+# --- checks ---
+
 def missing_permissions(channel: Any, me: Any) -> list[str]:
     perms = channel.permissions_for(me)
     return [label for attr, label in _REQUIRED_PERMISSIONS if not getattr(perms, attr, False)]
@@ -89,12 +200,14 @@ def missing_permissions(channel: Any, me: Any) -> list[str]:
 
 @dataclass
 class StepView:
-    """What a step shows: its text and which controls are visible or disabled."""
+    """What a step shows: its text, its controls in order and their state."""
 
     content: str
-    visible: set[str] = field(default_factory=set)
+    visible: list[str] = field(default_factory=list)
     next_disabled: bool = False
     next_label: str = "Next"
+    toggle_label: str = "Turn off"
+    defaults: dict[str, int] = field(default_factory=dict)  # select id -> stored choice
 
 
 def _channel_check(guild: Any, channel_id: Any) -> tuple[bool, Any, str | None]:
@@ -108,6 +221,30 @@ def _channel_check(guild: Any, channel_id: Any) -> tuple[bool, Any, str | None]:
     if missing:
         return False, channel, texts.setup_channel_missing(channel.name, missing)
     return True, channel, texts.setup_channel_ok(channel.name)
+
+
+def _role_check(guild: Any, data: dict[str, Any]) -> tuple[bool, str | None]:
+    """(ok, check text): both roles chosen and manageable by the bot."""
+    chosen = [data[key] for key in ROLE_KEYS if data.get(key) is not None]
+    if len(chosen) < len(ROLE_KEYS):
+        return False, None
+    me = guild.me
+    if not me.guild_permissions.manage_roles:
+        return False, texts.SETUP_ROLE_MISSING_PERMISSION
+    for role_id in chosen:
+        role = guild.get_role(int(role_id))
+        if role is None:
+            return False, texts.SETUP_ROLE_GONE
+        if role.position >= me.top_role.position:
+            return False, texts.setup_role_too_high(role.name)
+    return True, texts.SETUP_ROLES_OK
+
+
+def _role_name(guild: Any, role_id: Any) -> str | None:
+    if role_id is None:
+        return None
+    role = guild.get_role(int(role_id)) if guild is not None else None
+    return f"@{role.name}" if role is not None else "a role that no longer exists"
 
 
 async def _welcome_checks(ctx: "BotContext") -> list[tuple[bool, str]]:
@@ -133,65 +270,183 @@ async def _welcome_checks(ctx: "BotContext") -> list[tuple[bool, str]]:
     ]
 
 
-def summary_lines(data: dict[str, Any]) -> list[str]:
+async def summary_lines(ctx: "BotContext", guild: Any, data: dict[str, Any]) -> list[str]:
     def chan(key: str) -> str:
         value = data.get(key)
         return f"<#{value}>" if value else "not set"
 
-    return [f"DJ channel: {chan('dj_channel')}", f"Log channel: {chan('log_channel')}"]
+    v = values(data)
+    dj = _role_name(guild, data.get("dj_role_id")) or "not set"
+    inv = _role_name(guild, data.get("invites_role_id")) or "not set"
+    invites = (
+        f"on, {v['outreach_days_before']} days before, {v['outreach_cooldown_hours']} h wait"
+        if v["outreach_enabled"]
+        else "off"
+    )
+    lines = [
+        f"DJ channel: {chan('dj_channel')}",
+        f"Log channel: {chan('log_channel')}",
+        f"DJ role: {dj} \u00b7 Invites role: {inv}",
+        f"Events: {v['slots_per_event']} slots, {v['default_start_time']} CET, "
+        f"{v['slot_duration_minutes']} min, every {v['event_interval_days']} days, "
+        f"{v['event_lookahead_count']} ahead",
+        f"Time zone: {v['timezone']}",
+        f"Automatic invites: {invites}",
+    ]
+    db = _db(ctx)
+    gid = getattr(guild, "id", None)
+    if gid is not None:
+        stored_zone = await db_config.get_value(db, gid, "timezone")
+        if stored_zone and stored_zone != v["timezone"]:
+            lines.append(texts.SETUP_ZONE_CHANGED_WARNING)
+        stored_role = await db_config.get_value(db, gid, "invites_role_id")
+        if (
+            stored_role is not None
+            and data.get("invites_role_id") is not None
+            and str(data["invites_role_id"]) != stored_role
+        ):
+            lines.append(texts.SETUP_INVITES_ROLE_WARNING)
+    return lines
 
 
 async def render_step(ctx: "BotContext", guild: Any, draft: SetupDraft) -> StepView:
     key = step_key(draft.step)
     total = total_steps()
+    data = draft.data
     if key == "welcome":
         checks = await _welcome_checks(ctx)
         return StepView(
-            texts.setup_welcome(total, checks, bool(draft.data.get("rerun"))),
-            {ID_NEXT},
+            texts.setup_welcome(total, checks, bool(data.get("rerun"))),
+            [ID_NEXT],
             next_disabled=not all(ok for ok, _ in checks),
             next_label="Start",
         )
     if key in CHANNEL_KEYS:
-        ok, channel, check = _channel_check(guild, draft.data.get(key))
+        ok, channel, check = _channel_check(guild, data.get(key))
         is_dj = key == "dj_channel"
         content = texts.setup_channel_step(
-            STEPS.index(key) + 1,
+            step_number(key),
             total,
             "DJ channel" if is_dj else "Log channel",
             texts.SETUP_DJ_CHANNEL_QUESTION if is_dj else texts.SETUP_LOG_CHANNEL_QUESTION,
-            f"<#{draft.data[key]}>" if draft.data.get(key) else None,
+            f"<#{data[key]}>" if data.get(key) else None,
             check,
         )
+        select_id = ID_DJ_CHANNEL if is_dj else ID_LOG_CHANNEL
         return StepView(
             content,
-            {ID_BACK, ID_NEXT, ID_DJ_CHANNEL if is_dj else ID_LOG_CHANNEL},
+            [select_id, ID_BACK, ID_NEXT],
             next_disabled=not ok,
+            defaults={select_id: int(data[key])} if data.get(key) else {},
         )
-    rerun = bool(draft.data.get("rerun"))
-    content = texts.setup_summary(summary_lines(draft.data), rerun)
-    return StepView(content, {ID_BACK, ID_SAVE if rerun else ID_ACTIVATE})
+    if key == "roles":
+        ok, check = _role_check(guild, data)
+        content = texts.setup_roles_step(
+            step_number(key),
+            total,
+            _role_name(guild, data.get("dj_role_id")),
+            _role_name(guild, data.get("invites_role_id")),
+            check,
+        )
+        defaults = {}
+        if data.get("dj_role_id"):
+            defaults[ID_DJ_ROLE] = int(data["dj_role_id"])
+        if data.get("invites_role_id"):
+            defaults[ID_INVITES_ROLE] = int(data["invites_role_id"])
+        return StepView(
+            content,
+            [ID_DJ_ROLE, ID_INVITES_ROLE, ID_CREATE_ROLE, ID_BACK, ID_NEXT],
+            next_disabled=not ok,
+            defaults=defaults,
+        )
+    if key == "events":
+        return StepView(
+            texts.setup_events_step(step_number(key), total, values(data)),
+            [ID_EVENTS_CHANGE, ID_ZONE, ID_BACK, ID_NEXT],
+        )
+    if key == "invites":
+        on = values(data)["outreach_enabled"]
+        return StepView(
+            texts.setup_invites_step(step_number(key), total, values(data)),
+            [ID_INVITES_TOGGLE, ID_INVITES_CHANGE, ID_BACK, ID_NEXT],
+            toggle_label="Turn off" if on else "Turn on",
+        )
+    rerun = bool(data.get("rerun"))
+    content = texts.setup_summary(await summary_lines(ctx, guild, data), rerun, total)
+    return StepView(content, [ID_BACK, ID_SAVE if rerun else ID_ACTIVATE])
+
+
+Handler = Callable[[Any], Awaitable[None]]
 
 
 class SetupWizardView(disnake.ui.View):
-    """Persistent wizard controls. Built with a StepView it shows only that step's controls.
+    """Persistent wizard controls for one step (all callbacks are stateless).
 
-    Built without one (for `bot.add_view`) it holds every control so any press on an
-    old wizard message is routed here after a restart.
+    Built with a StepView it shows that step's controls. Built without one it has no
+    controls: it only serves its handlers and the access check. `registered_views`
+    gives one view per step for `bot.add_view`, so every control id is routed here
+    after a restart.
     """
 
     def __init__(self, ctx: "BotContext", step: StepView | None = None) -> None:
         super().__init__(timeout=None)
         self.ctx = ctx
-        if step is None:
-            return
-        for item in list(self.children):
-            cid = getattr(item, "custom_id", None)
-            if cid not in step.visible:
-                self.remove_item(item)
-            elif cid == ID_NEXT:
-                item.disabled = step.next_disabled  # type: ignore[union-attr]
-                item.label = step.next_label  # type: ignore[union-attr]
+        for cid in step.visible if step else []:
+            self.add_item(self._make_item(cid, step))  # type: ignore[arg-type]
+
+    def _make_item(self, cid: str, step: StepView) -> disnake.ui.Item:
+        buttons: dict[str, tuple[str, disnake.ButtonStyle, Handler]] = {
+            ID_BACK: ("Back", disnake.ButtonStyle.secondary, self.on_back),
+            ID_NEXT: (step.next_label, disnake.ButtonStyle.primary, self.on_next),
+            ID_CREATE_ROLE: (
+                "Create it for me",
+                disnake.ButtonStyle.secondary,
+                self.on_create_role,
+            ),
+            ID_EVENTS_CHANGE: ("Change", disnake.ButtonStyle.secondary, self.on_events_change),
+            ID_ZONE: ("Time zone", disnake.ButtonStyle.secondary, self.on_zone),
+            ID_INVITES_TOGGLE: (step.toggle_label, disnake.ButtonStyle.secondary, self.on_toggle),
+            ID_INVITES_CHANGE: ("Change", disnake.ButtonStyle.secondary, self.on_invites_change),
+            ID_ACTIVATE: ("Activate", disnake.ButtonStyle.success, self.on_activate),
+            ID_SAVE: ("Save", disnake.ButtonStyle.success, self.on_save),
+            ID_CHANGE: (texts.SETUP_CHANGE_BUTTON, disnake.ButtonStyle.primary, self.on_change),
+        }
+        if cid in buttons:
+            label, style, handler = buttons[cid]
+            item: disnake.ui.Item = disnake.ui.Button(label=label, style=style, custom_id=cid)
+            if cid == ID_NEXT:
+                item.disabled = step.next_disabled  # type: ignore[attr-defined]
+            item.callback = handler  # type: ignore[method-assign,assignment]
+            return item
+        default = step.defaults.get(cid)
+        defaults = [disnake.Object(id=default)] if default else None
+        if cid in (ID_DJ_CHANNEL, ID_LOG_CHANNEL):
+            key = "dj_channel" if cid == ID_DJ_CHANNEL else "log_channel"
+            item = disnake.ui.ChannelSelect(
+                custom_id=cid,
+                placeholder="Select a channel",
+                channel_types=[disnake.ChannelType.text],
+                default_values=defaults,  # type: ignore[arg-type]
+            )
+            item.callback = self._select_handler(self._choose_channel, key)  # type: ignore[method-assign,assignment]
+            return item
+        key = "dj_role_id" if cid == ID_DJ_ROLE else "invites_role_id"
+        item = disnake.ui.RoleSelect(
+            custom_id=cid,
+            placeholder="Select the DJ role" if cid == ID_DJ_ROLE else "Select the invites role",
+            default_values=defaults,  # type: ignore[arg-type]
+        )
+        item.callback = self._select_handler(self._choose_role, key)  # type: ignore[method-assign,assignment]
+        return item
+
+    @staticmethod
+    def _select_handler(
+        method: Callable[[Any, str], Awaitable[None]], key: str
+    ) -> Handler:
+        async def handler(inter: Any) -> None:
+            await method(inter, key)
+
+        return handler
 
     # --- access and state ---
 
@@ -201,16 +456,16 @@ class SetupWizardView(disnake.ui.View):
         await _private(inter, texts.SETUP_ONLY_ORGANIZERS)
         return False
 
-    async def _draft(self, inter: disnake.MessageInteraction) -> SetupDraft | None:
+    async def _draft(self, inter: Any) -> SetupDraft | None:
         """The open draft of this message; otherwise the refusal is sent and None returned."""
-        draft = await get_draft(_db(self.ctx), inter.guild_id)  # type: ignore[arg-type]
+        draft = await get_draft(_db(self.ctx), inter.guild_id)
         refusal = _refusal(draft, inter.message.id)
         if refusal is not None:
             await _private(inter, refusal)
             return None
         return draft
 
-    async def _show(self, inter: disnake.MessageInteraction, draft: SetupDraft) -> None:
+    async def _show(self, inter: Any, draft: SetupDraft) -> None:
         """Persist the draft and edit the wizard message to the draft's step."""
         await save_draft(
             _db(self.ctx),
@@ -225,7 +480,7 @@ class SetupWizardView(disnake.ui.View):
             content=view.content, view=SetupWizardView(self.ctx, view)
         )
 
-    async def _navigate(self, inter: disnake.MessageInteraction, delta: int) -> None:
+    async def _navigate(self, inter: Any, delta: int) -> None:
         await inter.response.defer()
         draft = await self._draft(inter)
         if draft is None:
@@ -238,86 +493,217 @@ class SetupWizardView(disnake.ui.View):
         draft.step = max(0, min(draft.step + delta, len(STEPS) - 1))
         await self._show(inter, draft)
 
-    # --- controls ---
-
-    @disnake.ui.button(label="Back", style=disnake.ButtonStyle.secondary, custom_id=ID_BACK)
-    async def back(self, button: disnake.ui.Button, inter: disnake.MessageInteraction) -> None:
-        await self._navigate(inter, -1)
-
-    @disnake.ui.button(label="Next", style=disnake.ButtonStyle.primary, custom_id=ID_NEXT)
-    async def next(self, button: disnake.ui.Button, inter: disnake.MessageInteraction) -> None:
-        await self._navigate(inter, 1)
-
-    async def _choose_channel(
-        self, inter: disnake.MessageInteraction, key: str
-    ) -> None:
+    async def _choose(self, inter: Any, key: str) -> None:
         await inter.response.defer()
-        values = inter.values
-        if not values:
+        chosen = inter.values
+        if not chosen:
             return
         draft = await self._draft(inter)
         if draft is None:
             return
-        draft.data[key] = int(values[0])
+        draft.data[key] = int(chosen[0])
         await self._show(inter, draft)
 
-    @disnake.ui.channel_select(
-        custom_id=ID_DJ_CHANNEL,
-        placeholder="Select a channel",
-        channel_types=[disnake.ChannelType.text],
-    )
-    async def dj_channel(
-        self, select: disnake.ui.ChannelSelect, inter: disnake.MessageInteraction
-    ) -> None:
-        await self._choose_channel(inter, "dj_channel")
+    async def _choose_channel(self, inter: Any, key: str) -> None:
+        await self._choose(inter, key)
 
-    @disnake.ui.channel_select(
-        custom_id=ID_LOG_CHANNEL,
-        placeholder="Select a channel",
-        channel_types=[disnake.ChannelType.text],
-    )
-    async def log_channel(
-        self, select: disnake.ui.ChannelSelect, inter: disnake.MessageInteraction
-    ) -> None:
-        await self._choose_channel(inter, "log_channel")
+    async def _choose_role(self, inter: Any, key: str) -> None:
+        await self._choose(inter, key)
 
-    @disnake.ui.button(label="Activate", style=disnake.ButtonStyle.success, custom_id=ID_ACTIVATE)
-    async def activate(
-        self, button: disnake.ui.Button, inter: disnake.MessageInteraction
-    ) -> None:
+    # --- control handlers ---
+
+    async def on_back(self, inter: Any) -> None:
+        await self._navigate(inter, -1)
+
+    async def on_next(self, inter: Any) -> None:
+        await self._navigate(inter, 1)
+
+    async def on_create_role(self, inter: Any) -> None:
+        await inter.response.defer()
+        draft = await self._draft(inter)
+        if draft is None:
+            return
+        guild = inter.guild
+        if not guild.me.guild_permissions.manage_roles:
+            await _private(inter, texts.SETUP_CREATE_NEEDS_PERMISSION)
+            return
+        try:
+            role = await guild.create_role(
+                name=texts.INVITES_ROLE_NAME, reason="RaveBot setup"
+            )
+        except disnake.HTTPException:
+            logger.warning("Setup wizard: creating the invites role failed", exc_info=True)
+            await _private(inter, texts.SETUP_CREATE_FAILED)
+            return
+        draft.data["invites_role_id"] = role.id
+        await self._show(inter, draft)
+
+    async def on_events_change(self, inter: Any) -> None:
+        draft = await self._draft(inter)
+        if draft is None:
+            return
+        v = values(draft.data)
+        await inter.response.send_modal(
+            ValuesModal(
+                self,
+                inter.message.id,
+                "Event defaults",
+                f"setup_events:{inter.message.id}",
+                [
+                    ("slots", "Slots per event", str(v["slots_per_event"])),
+                    ("start", "Start time (CET, HH:MM)", v["default_start_time"]),
+                    ("length", "Slot length (minutes)", str(v["slot_duration_minutes"])),
+                    ("interval", "One event every (days)", str(v["event_interval_days"])),
+                    ("ahead", "Future events kept ready", str(v["event_lookahead_count"])),
+                ],
+                parse_events_fields,
+            )
+        )
+
+    async def on_zone(self, inter: Any) -> None:
+        draft = await self._draft(inter)
+        if draft is None:
+            return
+        await inter.response.send_modal(
+            ValuesModal(
+                self,
+                inter.message.id,
+                "Time zone",
+                f"setup_zone:{inter.message.id}",
+                [("zone", "Time zone (e.g. Europe/Berlin)", values(draft.data)["timezone"])],
+                parse_zone_field,
+            )
+        )
+
+    async def on_invites_change(self, inter: Any) -> None:
+        draft = await self._draft(inter)
+        if draft is None:
+            return
+        v = values(draft.data)
+        await inter.response.send_modal(
+            ValuesModal(
+                self,
+                inter.message.id,
+                "Automatic invites",
+                f"setup_invites:{inter.message.id}",
+                [
+                    ("days", "Days before an event", str(v["outreach_days_before"])),
+                    ("hours", "Hours between invites", str(v["outreach_cooldown_hours"])),
+                ],
+                parse_invites_fields,
+            )
+        )
+
+    async def on_toggle(self, inter: Any) -> None:
+        await inter.response.defer()
+        draft = await self._draft(inter)
+        if draft is None:
+            return
+        draft.data["outreach_enabled"] = not values(draft.data)["outreach_enabled"]
+        await self._show(inter, draft)
+
+    async def on_activate(self, inter: Any) -> None:
         await inter.response.defer()
         await activate_from_draft(self.ctx, inter)
 
-    @disnake.ui.button(label="Save", style=disnake.ButtonStyle.success, custom_id=ID_SAVE)
-    async def save(self, button: disnake.ui.Button, inter: disnake.MessageInteraction) -> None:
+    async def on_save(self, inter: Any) -> None:
         await inter.response.defer()
         await save_from_draft(self.ctx, inter)
 
-    @disnake.ui.button(
-        label=texts.SETUP_CHANGE_BUTTON, style=disnake.ButtonStyle.primary, custom_id=ID_CHANGE
-    )
-    async def change(self, button: disnake.ui.Button, inter: disnake.MessageInteraction) -> None:
+    async def on_change(self, inter: Any) -> None:
         await inter.response.defer()
-        async with guild_lock(inter.guild_id):  # type: ignore[arg-type]
-            existing = await get_draft(_db(self.ctx), inter.guild_id)  # type: ignore[arg-type]
+        async with guild_lock(inter.guild_id):
+            existing = await get_draft(_db(self.ctx), inter.guild_id)
             if existing is not None and existing.message_id != inter.message.id:
                 await _private(
                     inter, texts.SETUP_ALREADY_OPEN.format(url=_jump_url(inter, existing))
                 )
                 return
             draft = existing or SetupDraft(
-                inter.guild_id,  # type: ignore[arg-type]
+                inter.guild_id,
                 inter.message.id,
                 inter.channel_id,
                 0,
-                await prefilled_data(_db(self.ctx), inter.guild_id),  # type: ignore[arg-type]
+                await prefilled_data(_db(self.ctx), inter.guild_id, inter.guild),
             )
             await self._show(inter, draft)
 
 
+class ValuesModal(disnake.ui.Modal):
+    """A popup with short text fields; valid input goes into the draft, nothing else."""
+
+    def __init__(
+        self,
+        view: SetupWizardView,
+        message_id: int,
+        title: str,
+        custom_id: str,
+        fields: list[tuple[str, str, str]],
+        parser: Callable[[dict[str, str]], tuple[dict[str, Any], list[str]]],
+    ) -> None:
+        self._wizard = view
+        self._message_id = message_id
+        self._parser = parser
+        super().__init__(
+            title=title,
+            custom_id=custom_id,
+            components=[
+                disnake.ui.TextInput(
+                    label=label, custom_id=fid, value=current, max_length=40, required=True
+                )
+                for fid, label, current in fields
+            ],
+        )
+
+    async def callback(self, inter: disnake.ModalInteraction) -> None:
+        ctx = self._wizard.ctx
+        if inter.author.id not in ctx.config.admin_user_ids:
+            await _private(inter, texts.SETUP_ONLY_ORGANIZERS)
+            return
+        parsed, errors = self._parser(dict(inter.text_values))
+        if errors:
+            await _private(inter, "\n".join(errors))
+            return
+        await inter.response.defer()
+        guild_id: Any = inter.guild_id
+        draft = await get_draft(_db(ctx), guild_id)
+        refusal = _refusal(draft, self._message_id)
+        if refusal is not None or draft is None:
+            await _private(inter, refusal or texts.SETUP_ALREADY_DONE)
+            return
+        draft.data.update(parsed)
+        await self._wizard._show(inter, draft)
+
+
+def registered_views(ctx: "BotContext") -> list[SetupWizardView]:
+    """One view per step plus the entry view, for `bot.add_view` (persistence)."""
+    views = [entry_view(ctx)]
+    for step in range(len(STEPS)):
+        # Control ids per step; the content is irrelevant for routing.
+        probe = SetupDraft(0, 0, 0, step, {"rerun": step == len(STEPS) - 1})
+        views.append(SetupWizardView(ctx, _layout(probe)))
+    views.append(SetupWizardView(ctx, _layout(SetupDraft(0, 0, 0, len(STEPS) - 1, {}))))
+    return views
+
+
+def _layout(draft: SetupDraft) -> StepView:
+    """Control ids of a step without any checks (no Discord or database access)."""
+    key = step_key(draft.step)
+    layouts: dict[str, list[str]] = {
+        "welcome": [ID_NEXT],
+        "dj_channel": [ID_DJ_CHANNEL, ID_BACK, ID_NEXT],
+        "log_channel": [ID_LOG_CHANNEL, ID_BACK, ID_NEXT],
+        "roles": [ID_DJ_ROLE, ID_INVITES_ROLE, ID_CREATE_ROLE, ID_BACK, ID_NEXT],
+        "events": [ID_EVENTS_CHANGE, ID_ZONE, ID_BACK, ID_NEXT],
+        "invites": [ID_INVITES_TOGGLE, ID_INVITES_CHANGE, ID_BACK, ID_NEXT],
+        "summary": [ID_BACK, ID_SAVE if draft.data.get("rerun") else ID_ACTIVATE],
+    }
+    return StepView("", layouts[key])
+
+
 def entry_view(ctx: "BotContext") -> SetupWizardView:
     """The view of the "already active" message: only the Change settings button."""
-    return SetupWizardView(ctx, StepView("", {ID_CHANGE}))
+    return SetupWizardView(ctx, StepView("", [ID_CHANGE]))
 
 
 def _jump_url(inter: Any, draft: SetupDraft) -> str:
@@ -334,25 +720,63 @@ async def _private(inter: Any, text: str) -> None:
         logger.warning("Setup wizard: could not send a private reply", exc_info=True)
 
 
-async def prefilled_data(db: Any, guild_id: int) -> dict[str, Any]:
-    """Draft data of a re-run: the stored values, marked as a re-run."""
+def _stored_int(raw: str | None, default: int) -> int:
+    try:
+        value = int(raw) if raw is not None else default
+    except ValueError:
+        return default
+    return value if value >= 1 else default
+
+
+async def prefilled_data(db: Any, guild_id: int, guild: Any = None) -> dict[str, Any]:
+    """Draft data of a re-run: every stored value (default where missing or invalid)."""
     data: dict[str, Any] = {"rerun": True}
-    for key in CHANNEL_KEYS:
+    for key in (*CHANNEL_KEYS, *ROLE_KEYS):
         raw = await db_config.get_value(db, guild_id, key)
         if raw is not None:
             try:
                 data[key] = int(raw)
             except ValueError:
                 pass
+    if guild is not None:
+        # Servers set up before the wizard use the old role names
+        from bot.services import roles
+
+        if "dj_role_id" not in data:
+            role = await roles.get_dj_role(db, guild)
+            if role is not None:
+                data["dj_role_id"] = role.id
+        if "invites_role_id" not in data:
+            role = await roles.get_invites_role(db, guild)
+            if role is not None:
+                data["invites_role_id"] = role.id
+    for key in _INT_VALUE_KEYS:
+        data[key] = _stored_int(await db_config.get_value(db, guild_id, key), DEFAULT_VALUES[key])
+    start = await db_config.get_value(db, guild_id, "default_start_time")
+    parsed, errors = parse_events_fields({"start": start or "", "slots": "1", "length": "1",
+                                          "interval": "1", "ahead": "1"})
+    data["default_start_time"] = parsed["default_start_time"] if not errors else "20:00"
+    zone = await db_config.get_value(db, guild_id, "timezone")
+    data["timezone"] = zone if zone and is_valid_timezone(zone) else DEFAULT_TIMEZONE
+    data["outreach_enabled"] = parse_outreach_enabled(
+        await db_config.get_value(db, guild_id, "outreach_enabled")
+    )
     return data
 
 
-async def _write_channels(db: Any, guild_id: int, data: dict[str, Any]) -> bool:
-    if any(data.get(key) is None for key in CHANNEL_KEYS):
-        return False
-    for key in CHANNEL_KEYS:
+def _complete(data: dict[str, Any]) -> bool:
+    return all(data.get(key) is not None for key in (*CHANNEL_KEYS, *ROLE_KEYS))
+
+
+async def _write_all(db: Any, guild_id: int, data: dict[str, Any]) -> None:
+    """Write every setting of the draft and apply the time zone."""
+    v = values(data)
+    for key in (*CHANNEL_KEYS, *ROLE_KEYS):
         await db_config.set_value(db, guild_id, key, str(data[key]))
-    return True
+    for key, value in v.items():
+        text = ("true" if value else "false") if isinstance(value, bool) else str(value)
+        await db_config.set_value(db, guild_id, key, text)
+    set_timezone(v["timezone"])
 
 
 async def activate_from_draft(ctx: "BotContext", inter: Any) -> None:
@@ -367,14 +791,11 @@ async def activate_from_draft(ctx: "BotContext", inter: Any) -> None:
         if refusal is not None or draft is None:
             await _private(inter, refusal or texts.SETUP_ALREADY_DONE)
             return
-        if any(draft.data.get(key) is None for key in CHANNEL_KEYS):
+        if not _complete(draft.data):
             await _private(inter, texts.SETUP_MISSING_VALUES)
             return
         try:
-            await _write_channels(db, guild_id, draft.data)
-            for key, default in EVENT_DEFAULTS.items():
-                if await db_config.get_value(db, guild_id, key) is None:
-                    await db_config.set_value(db, guild_id, key, default)
+            await _write_all(db, guild_id, draft.data)
             await activation.set_active(db, guild_id)
             created, posted = await _run_effects(ctx, guild_id)
             await delete_draft(db, guild_id)
@@ -417,8 +838,9 @@ async def save_from_draft(ctx: "BotContext", inter: Any) -> None:
         if refusal is not None or draft is None:
             await _private(inter, refusal or texts.SETUP_ALREADY_DONE)
             return
-        if not await _write_channels(_db(ctx), guild_id, draft.data):
+        if not _complete(draft.data):
             await _private(inter, texts.SETUP_MISSING_VALUES)
             return
+        await _write_all(_db(ctx), guild_id, draft.data)
         await delete_draft(_db(ctx), guild_id)
         await inter.edit_original_message(content=texts.SETUP_SAVED, view=None)

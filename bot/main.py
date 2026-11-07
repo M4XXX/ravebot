@@ -139,9 +139,10 @@ async def main() -> None:
     from bot.ui.log_reply import LogReplyView
 
     bot.add_view(LogReplyView(ctx))  # persistent: Reply works on old log entries
-    from bot.ui.setup_wizard import SetupWizardView
+    from bot.ui.setup_wizard import registered_views
 
-    bot.add_view(SetupWizardView(ctx))  # persistent: the wizard works after restarts
+    for wizard_view in registered_views(ctx):  # persistent: the wizard works after restarts
+        bot.add_view(wizard_view)
     ctx.lineup_service = LineupService(
         bot=bot,
         view=post_view,

@@ -324,9 +324,90 @@ def setup_channel_missing(channel_name: str, missing: list[str]) -> str:
 SETUP_CHANNEL_GONE = f"{SETUP_CHECK_FAIL}I can't see that channel. Select another one."
 
 
-def setup_summary(lines: list[str], rerun: bool) -> str:
-    head = "**Ready to save**" if rerun else "**Ready to activate**"
-    return "\n".join([head, *lines])
+def setup_roles_step(
+    number: int, total: int, dj: str | None, invites: str | None, check: str | None
+) -> str:
+    lines = [
+        f"**Step {number} of {total}: Roles**",
+        "**DJ role:** when someone gets this role, I send them the welcome DM.",
+        "**Invites role:** I give this role to DJs who want automatic booking invites.",
+        "",
+        f"DJ role: {dj or 'not selected'}",
+        f"Invites role: {invites or 'not selected'}",
+    ]
+    if check:
+        lines.append(check)
+    return "\n".join(lines)
+
+
+SETUP_ROLES_OK = f"{SETUP_CHECK_OK}I can manage these roles"
+SETUP_ROLE_MISSING_PERMISSION = (
+    f"{SETUP_CHECK_FAIL}I am missing the permission Manage Roles. "
+    "Give it to my role and select the roles again."
+)
+SETUP_ROLE_GONE = f"{SETUP_CHECK_FAIL}A selected role no longer exists. Select it again."
+SETUP_CREATE_NEEDS_PERMISSION = (
+    "I can't create the role: I am missing the permission Manage Roles."
+)
+SETUP_CREATE_FAILED = "I could not create the role. Check my permissions and try again."
+INVITES_ROLE_NAME = "Active Booking"
+
+
+def setup_role_too_high(role_name: str) -> str:
+    return (
+        f"{SETUP_CHECK_FAIL}I can't manage the role @{role_name}: "
+        "move my role above it in the server settings."
+    )
+
+
+def setup_events_step(number: int, total: int, v: dict) -> str:
+    return "\n".join(
+        [
+            f"**Step {number} of {total}: Events**",
+            "New events are created automatically with these settings:",
+            f"Slots per event: {v['slots_per_event']}",
+            f"Start time (CET): {v['default_start_time']}",
+            f"Slot length: {v['slot_duration_minutes']} minutes",
+            f"One event every: {v['event_interval_days']} days",
+            f"Future events kept ready: {v['event_lookahead_count']}",
+            f"Time zone: {v['timezone']}",
+            "",
+            "Start times are local time in Germany (CET in winter, CEST in summer): "
+            f"{v['default_start_time']} stays {v['default_start_time']} all year. "
+            "When an event is done or canceled, I create the next one so the number "
+            f"stays at {v['event_lookahead_count']}.",
+        ]
+    )
+
+
+def setup_invites_step(number: int, total: int, v: dict) -> str:
+    return "\n".join(
+        [
+            f"**Step {number} of {total}: Automatic invites**",
+            "I can message DJs when an event has open slots.",
+            f"Automatic invites: {'on' if v['outreach_enabled'] else 'off'}",
+            f"Start asking: {v['outreach_days_before']} days before an event",
+            "Wait between two invites to the same DJ: "
+            f"{v['outreach_cooldown_hours']} hours",
+        ]
+    )
+
+
+def setup_invalid(field: str, rule: str) -> str:
+    return f"{field}: {rule}"
+
+
+SETUP_ZONE_CHANGED_WARNING = (
+    "Warning: the time zone changed, so the real times of existing events change."
+)
+SETUP_INVITES_ROLE_WARNING = (
+    "Warning: the invites role changed, so members are not moved to the new role."
+)
+
+
+def setup_summary(lines: list[str], rerun: bool, total: int = 6) -> str:
+    head = "Ready to save" if rerun else "Ready to activate"
+    return "\n".join([f"**Step {total} of {total}: {head}**", *lines])
 
 
 def setup_active_message(created: int, posted: bool, channel: str | None) -> str:
