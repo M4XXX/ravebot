@@ -1,5 +1,6 @@
 """Download and sanitise DJ logo images uploaded to Discord."""
 
+import asyncio
 import io
 from typing import Literal
 from urllib.parse import urlsplit
@@ -47,8 +48,9 @@ def process_logo(data: bytes) -> bytes:
                 image.mode == "P" and "transparency" in image.info
             )
             converted = image.convert("RGBA" if has_alpha else "RGB")
+            clean = Image.frombytes(converted.mode, converted.size, converted.tobytes())
             out = io.BytesIO()
-            converted.save(out, format="PNG")
+            clean.save(out, format="PNG")
             return out.getvalue()
     except LogoError:
         raise
@@ -62,6 +64,7 @@ def _is_allowed_url(url: str) -> bool:
         return (
             parts.scheme == "https"
             and parts.hostname in ALLOWED_HOSTS
+            and parts.port in (None, 443)
             and parts.username is None
             and parts.password is None
         )
@@ -84,7 +87,7 @@ async def _fetch(client: httpx.AsyncClient, url: str) -> bytes:
                     raise LogoError("too_big")
                 chunks.append(chunk)
             return b"".join(chunks)
-    except httpx.HTTPError as exc:
+    except (httpx.HTTPError, httpx.InvalidURL, httpx.StreamError) as exc:
         raise LogoError("download_failed") from exc
 
 
@@ -95,10 +98,14 @@ async def download_attachment(
         raise LogoError("bad_source")
     if attachment.size > MAX_LOGO_BYTES:
         raise LogoError("too_big")
-    if client is not None:
-        return await _fetch(client, attachment.url)
-    async with httpx.AsyncClient() as own_client:
-        return await _fetch(own_client, attachment.url)
+    try:
+        async with asyncio.timeout(_DOWNLOAD_TIMEOUT_SECONDS):
+            if client is not None:
+                return await _fetch(client, attachment.url)
+            async with httpx.AsyncClient() as own_client:
+                return await _fetch(own_client, attachment.url)
+    except TimeoutError as exc:
+        raise LogoError("download_failed") from exc
 
 
 async def logo_from_message(message: disnake.Message) -> bytes:
@@ -107,4 +114,4 @@ async def logo_from_message(message: disnake.Message) -> bytes:
     if not message.attachments:
         raise LogoError("needs_file")
     data = await download_attachment(message.attachments[0])
-    return process_logo(data)
+    return await asyncio.to_thread(process_logo, data)

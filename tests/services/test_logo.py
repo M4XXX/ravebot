@@ -1,3 +1,4 @@
+import asyncio
 import io
 from types import SimpleNamespace
 from typing import Any
@@ -248,3 +249,65 @@ async def test_one_valid_attachment(monkeypatch):
     img = Image.open(io.BytesIO(out))
     assert img.format == "PNG"
     assert img.size == (20, 20)
+
+
+def test_icc_profile_and_exif_stripped():
+    exif = Image.Exif()
+    exif[0x010E] = "desc"
+    buf = io.BytesIO()
+    Image.new("RGB", (16, 16), (1, 2, 3)).save(
+        buf, format="JPEG", icc_profile=b"fake-icc-profile" * 4, exif=exif.tobytes()
+    )
+    out = Image.open(io.BytesIO(process_logo(buf.getvalue())))
+    assert "icc_profile" not in out.info
+    assert not out.info.get("exif")
+    assert not out.getexif()
+
+
+async def test_port_not_443_rejected():
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(200)
+
+    async with client_with(handler) as c:
+        with pytest.raises(LogoError) as e:
+            await download_attachment(att("https://cdn.discordapp.com:8443/x.png"), client=c)
+    assert reason_of(e) == "bad_source"
+    assert calls == []
+
+
+async def test_explicit_443_allowed():
+    async with client_with(lambda r: httpx.Response(200, content=b"abc")) as c:
+        out = await download_attachment(att("https://cdn.discordapp.com:443/x.png"), client=c)
+    assert out == b"abc"
+
+
+async def test_overall_deadline(monkeypatch):
+    monkeypatch.setattr(logo, "_DOWNLOAD_TIMEOUT_SECONDS", 0.05)
+
+    class Drip(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            for _ in range(100):
+                await asyncio.sleep(0.02)
+                yield b"x"
+
+    def handler(request):
+        return httpx.Response(200, stream=Drip())
+
+    async with client_with(handler) as c:
+        with pytest.raises(LogoError) as e:
+            await download_attachment(att(), client=c)
+    assert reason_of(e) == "download_failed"
+
+
+@pytest.mark.parametrize("exc", [httpx.InvalidURL("bad"), httpx.StreamError("broken")])
+async def test_invalid_url_and_stream_error(exc):
+    def handler(request):
+        raise exc
+
+    async with client_with(handler) as c:
+        with pytest.raises(LogoError) as e:
+            await download_attachment(att(), client=c)
+    assert reason_of(e) == "download_failed"
