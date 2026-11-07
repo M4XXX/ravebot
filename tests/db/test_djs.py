@@ -217,3 +217,103 @@ async def test_clear_all_notion_dj_page_ids_clears_every_row() -> None:
     pool.execute = AsyncMock()
     await clear_all_notion_dj_page_ids(pool)
     pool.execute.assert_awaited_once_with("UPDATE djs SET notion_dj_page_id = NULL")
+
+
+@pytest.mark.asyncio
+async def test_insert_dj_logo_image_sets_unsynced() -> None:
+    from bot.db.djs import insert_dj
+
+    pool = MagicMock()
+    pool.execute = AsyncMock()
+    kwargs = dict(
+        discord_user_id=1, dj_name="A", vrchat_name=None, logo_url=None,
+        stream_url_primary="https://twitch.tv/a", stream_url_backup=None,
+    )
+    await insert_dj(pool, logo_image=b"img", **kwargs)
+    sql, *params = pool.execute.await_args.args
+    assert "logo_image" in sql and "logo_synced" in sql
+    assert b"img" in params and False in params
+    await insert_dj(pool, **kwargs)
+    _, *params = pool.execute.await_args.args
+    assert None in params and True in params
+
+
+@pytest.mark.asyncio
+async def test_update_dj_fields_rejects_unknown_key() -> None:
+    from bot.db.djs import update_dj_fields
+
+    pool = MagicMock()
+    pool.execute = AsyncMock()
+    with pytest.raises(ValueError):
+        await update_dj_fields(pool, 1, dj_name="A", evil="x; DROP")
+    pool.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_update_dj_fields_updates_and_reports() -> None:
+    from bot.db.djs import update_dj_fields
+
+    pool = MagicMock()
+    pool.execute = AsyncMock(return_value="UPDATE 1")
+    assert await update_dj_fields(pool, 5, dj_name="New") is True
+    sql, *params = pool.execute.await_args.args
+    assert "UPDATE djs SET dj_name = $1" in sql and "discord_user_id = $2" in sql
+    assert params == ["New", 5]
+    pool.execute = AsyncMock(return_value="UPDATE 0")
+    assert await update_dj_fields(pool, 5, dj_name="New") is False
+
+
+@pytest.mark.asyncio
+async def test_update_dj_fields_logo_image_resets_url_and_sync() -> None:
+    from bot.db.djs import update_dj_fields
+
+    pool = MagicMock()
+    pool.execute = AsyncMock(return_value="UPDATE 1")
+    await update_dj_fields(pool, 5, logo_image=b"img")
+    sql, *params = pool.execute.await_args.args
+    assert "logo_image = $1" in sql
+    assert "logo_url = NULL" in sql
+    assert "logo_synced = false" in sql
+    assert params == [b"img", 5]
+
+
+@pytest.mark.asyncio
+async def test_update_dj_fields_logo_image_respects_explicit_synced() -> None:
+    from bot.db.djs import update_dj_fields
+
+    pool = MagicMock()
+    pool.execute = AsyncMock(return_value="UPDATE 1")
+    await update_dj_fields(pool, 5, logo_image=b"img", logo_synced=True)
+    sql, *params = pool.execute.await_args.args
+    assert "logo_synced = $2" in sql and "logo_synced = false" not in sql
+    assert params == [b"img", True, 5]
+
+
+@pytest.mark.asyncio
+async def test_dj_name_exists_passes_cleaned_name_and_exclusion() -> None:
+    from bot.db.djs import dj_name_exists
+
+    pool = MagicMock()
+    pool.fetchval = AsyncMock(return_value=True)
+    assert await dj_name_exists(pool, "  DJ   Foo ", exclude_user_id=9) is True
+    sql, *params = pool.fetchval.await_args.args
+    assert "lower(regexp_replace(btrim(dj_name)" in sql
+    assert params == ["dj foo", 9]
+    pool.fetchval = AsyncMock(return_value=None)
+    assert await dj_name_exists(pool, "x") is False
+
+
+@pytest.mark.asyncio
+async def test_logo_helpers() -> None:
+    from bot.db.djs import get_logo_image, list_unsynced_logo_user_ids, set_logo_synced
+
+    pool = MagicMock()
+    pool.fetchval = AsyncMock(return_value=b"img")
+    assert await get_logo_image(pool, 1) == b"img"
+    pool.execute = AsyncMock()
+    await set_logo_synced(pool, 1, True)
+    sql, *params = pool.execute.await_args.args
+    assert "logo_synced = $1" in sql and params == [True, 1]
+    pool.fetch = AsyncMock(return_value=[{"discord_user_id": 3}, {"discord_user_id": 4}])
+    assert await list_unsynced_logo_user_ids(pool) == [3, 4]
+    assert "logo_synced = false" in pool.fetch.await_args.args[0]

@@ -8,6 +8,8 @@ All queries are ownership-scoped via WHERE discord_user_id = $1.
 """
 import asyncpg
 
+from bot.services.dj_validation import clean_text
+
 
 async def get_dj_by_discord_id(
     pool: asyncpg.Pool,
@@ -36,6 +38,7 @@ async def insert_dj(
     logo_url: str | None,
     stream_url_primary: str | None,
     stream_url_backup: str | None,
+    logo_image: bytes | None = None,
 ) -> None:
     """Insert a new DJ profile row with onboarding completed.
 
@@ -54,9 +57,10 @@ async def insert_dj(
         INSERT INTO djs (
             discord_user_id, dj_name, vrchat_name, logo_url,
             stream_url_primary, stream_url_backup,
+            logo_image, logo_synced,
             active_booking, onboarding_complete, onboarding_step
         )
-        VALUES ($1, $2, $3, $4, $5, $6, true, true, 0)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, true, 0)
         """,
         discord_user_id,
         dj_name,
@@ -64,6 +68,8 @@ async def insert_dj(
         logo_url,
         stream_url_primary,
         stream_url_backup,
+        logo_image,
+        logo_image is None,
     )
 
 
@@ -192,3 +198,81 @@ async def update_active_booking(
         discord_user_id,
     )
     return result == "UPDATE 1"
+
+
+_UPDATABLE_FIELDS = frozenset(
+    {
+        "dj_name",
+        "vrchat_name",
+        "stream_url_primary",
+        "stream_url_backup",
+        "logo_image",
+        "logo_url",
+        "logo_synced",
+    }
+)
+
+
+async def update_dj_fields(pool: asyncpg.Pool, user_id: int, **fields: object) -> bool:
+    """Update allowlisted djs columns. Returns True if the row was updated.
+
+    Changing logo_image also clears logo_url and marks the logo unsynced unless
+    the caller passes logo_synced explicitly. Unknown keys raise ValueError.
+    """
+    unknown = set(fields) - _UPDATABLE_FIELDS
+    if unknown:
+        raise ValueError(f"Unknown dj fields: {sorted(unknown)}")
+    if not fields:
+        return False
+    assignments: list[str] = []
+    params: list[object] = []
+    for name, value in fields.items():
+        params.append(value)
+        assignments.append(f"{name} = ${len(params)}")
+    if "logo_image" in fields:
+        if "logo_url" not in fields:
+            assignments.append("logo_url = NULL")
+        if "logo_synced" not in fields:
+            assignments.append("logo_synced = false")
+    params.append(user_id)
+    result = await pool.execute(
+        f"UPDATE djs SET {', '.join(assignments)} WHERE discord_user_id = ${len(params)}",
+        *params,
+    )
+    return result == "UPDATE 1"
+
+
+async def dj_name_exists(
+    pool: asyncpg.Pool, name: str, exclude_user_id: int | None = None
+) -> bool:
+    """True if another DJ uses this name (trimmed, whitespace collapsed, case-insensitive)."""
+    found = await pool.fetchval(
+        r"""
+        SELECT 1 FROM djs
+        WHERE lower(regexp_replace(btrim(dj_name), '\s+', ' ', 'g')) = $1
+          AND ($2::bigint IS NULL OR discord_user_id <> $2)
+        LIMIT 1
+        """,
+        clean_text(name).casefold(),
+        exclude_user_id,
+    )
+    return found is not None
+
+
+async def get_logo_image(pool: asyncpg.Pool, user_id: int) -> bytes | None:
+    return await pool.fetchval(
+        "SELECT logo_image FROM djs WHERE discord_user_id = $1", user_id
+    )
+
+
+async def set_logo_synced(pool: asyncpg.Pool, user_id: int, synced: bool) -> None:
+    await pool.execute(
+        "UPDATE djs SET logo_synced = $1 WHERE discord_user_id = $2", synced, user_id
+    )
+
+
+async def list_unsynced_logo_user_ids(pool: asyncpg.Pool) -> list[int]:
+    rows = await pool.fetch(
+        "SELECT discord_user_id FROM djs WHERE logo_synced = false AND logo_image IS NOT NULL"
+    )
+    return [row["discord_user_id"] for row in rows]
