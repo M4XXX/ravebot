@@ -178,8 +178,8 @@ Every release is published as a ready-made image on GitHub Container Registry: `
 | Tag | Meaning |
 |---|---|
 | `latest` | The newest release (not pre-releases) |
-| `2.0.0` | Exactly that release |
-| `2.0` | The newest patch release of that minor version |
+| `1.1.0` | Exactly that release |
+| `1.1` | The newest patch release of that minor version |
 
 > The package must be **public** so Unraid can pull it without a login. The repository owner sets this once: *GitHub → profile → Packages → ravebot → Package settings → Change visibility → Public*.
 
@@ -200,7 +200,7 @@ Then **Docker** → **Add Container** → **Template** → **RaveBot** (under *U
 
 1. In Unraid, go to **Docker** → **Add Container**
 2. Set **Name**: `ravebot`
-3. Set **Repository**: `ghcr.io/m4xxx/ravebot:latest` (or a fixed version such as `ghcr.io/m4xxx/ravebot:2.0.0`)
+3. Set **Repository**: `ghcr.io/m4xxx/ravebot:latest` (or a fixed version such as `ghcr.io/m4xxx/ravebot:1.1.0`)
 4. Set **Network Type**: `bridge`
 5. Port mappings: leave them empty if you do not use the admin page. To use it, add a **Port** with container port `8080` (the value of `ADMIN_PAGE_PORT`; change it only together with that variable) and a free host port (for example `8080` or `8095`), and set the variable `ADMIN_PAGE_PASSWORD` in step 4 (see [section 7.7](#77-the-admin-page))
 
@@ -235,7 +235,7 @@ If you see these three lines, the bot is running correctly.
 ### Updating the container
 
 - **Repository `...:latest`:** on the **Docker** tab click **Check for Updates**, then apply the update of `ravebot`. Unraid pulls the newest release and restarts the container. The database updates itself at the start.
-- **Repository with a version (`...:2.0.0`):** change the version in the container settings and click **Apply**.
+- **Repository with a version (`...:1.1.0`):** change the version in the container settings and click **Apply**.
 - Read the [release notes](https://github.com/M4XXX/ravebot/releases) first. Your variables and the data in PostgreSQL and Notion stay as they are.
 
 ---

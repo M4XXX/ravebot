@@ -332,20 +332,20 @@ Two GitHub Actions workflows live in `.github/workflows/`:
 | `ci.yml` | push to `main`, pull requests | `uv sync --frozen` and `uv run pytest -q` |
 | `release.yml` | push of a tag `vMAJOR.MINOR.PATCH` (or with a `-suffix`, a pre-release) | tests, builds the Docker image, pushes it to `ghcr.io/<owner>/ravebot`, creates the GitHub release |
 
-All third-party actions are pinned to full commit SHAs (the version is in a comment), because the release job can write packages. `.github/dependabot.yml` opens a weekly pull request when a pinned action has a new release; review it like any dependency update. The release workflow refuses a tag that is not on `main`. The image gets the tags `X.Y.Z`, `X.Y` and `latest` (and `X` from major version 1 on); a pre-release tag (`v2.1.0-rc1`) only gets its own tag and no `latest`. The image is built for `linux/amd64`. The GitHub release text is the matching `## [X.Y.Z]` section of `CHANGELOG.md` plus the image name; without such a section it falls back to a pointer to the changelog.
+All third-party actions are pinned to full commit SHAs (the version is in a comment), because the release job can write packages. `.github/dependabot.yml` opens a weekly pull request when a pinned action has a new release; review it like any dependency update. The release workflow refuses a tag that is not on `main`. The image gets the tags `X.Y.Z`, `X.Y` and `latest` (and `X` from major version 1 on); a pre-release tag (`v1.2.0-rc1`) only gets its own tag and no `latest`. The image is built for `linux/amd64`. The GitHub release text is the matching `## [X.Y.Z]` section of `CHANGELOG.md` plus the image name; without such a section it falls back to a pointer to the changelog.
 
 ### Making a release
 
 1. Write the changes under `## [Unreleased]` in `CHANGELOG.md` while you work.
-2. From a clean `main`: `scripts/release.sh 2.1.0`. It runs the tests, renames `Unreleased` to `[2.1.0] - <date>` (and adds a new empty `Unreleased`), sets the version in `pyproject.toml`, commits `Release v2.1.0` and creates the tag `v2.1.0`. Nothing is pushed. `--no-tests` skips the test run.
-3. Push the commit and the tag: `git push origin main v2.1.0`. The workflow takes over.
+2. From a clean `main`: `scripts/release.sh 1.2.0`. It runs the tests, renames `Unreleased` to `[1.2.0] - <date>` (and adds a new empty `Unreleased`), sets the version in `pyproject.toml`, commits `Release v1.2.0` and creates the tag `v1.2.0`. Nothing is pushed. `--no-tests` skips the test run.
+3. Push the commit and the tag: `git push origin main v1.2.0`. The workflow takes over.
 4. Check the *Actions* tab. After it is green the release and the image exist. Unraid users update from the Docker tab.
 
 ### First time
 
 - The first push creates the package `ravebot` as **private**. Make it public once: *GitHub → profile → Packages → ravebot → Package settings → Change visibility*. Without that, Unraid cannot pull the image without a login.
 - The workflow needs no secrets: it uses the automatic `GITHUB_TOKEN` (permissions `packages: write` and `contents: write` are set in the workflow file).
-- Pick the first version number above anything used before. The old repository `ravebot-legacy` has `v1.0.0`, so the rebuilt bot starts at `v2.0.0`.
+- The first release of the rebuilt bot is `v1.1.0`: it continues the version line of the old repository `ravebot-legacy` (last release `v1.0.0`). Later versions: patch for fixes, minor for new features, major for changes that need action from the admin.
 
 ### README images
 

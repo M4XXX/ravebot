@@ -197,11 +197,11 @@ Every release publishes a new image to GitHub Container Registry and a GitHub re
 | You want | Set the repository to | Update by |
 |---|---|---|
 | Always the newest release | `ghcr.io/m4xxx/ravebot:latest` | Unraid **Docker** tab → **Check for Updates** → **apply update** |
-| A fixed version | `ghcr.io/m4xxx/ravebot:2.0.0` | Change the version number in the container and **Apply** |
+| A fixed version | `ghcr.io/m4xxx/ravebot:1.1.0` | Change the version number in the container and **Apply** |
 
 The database updates itself: migrations run at every start. Read the [release notes](https://github.com/M4XXX/ravebot/releases) before you update.
 
-**Making a release (maintainers):** `scripts/release.sh 2.1.0` bumps the version, closes the changelog section, commits and tags. Then `git push origin main v2.1.0` starts the build. Details are in the [developer guide](docs/developer-guide.md#7-automated-releases).
+**Making a release (maintainers):** `scripts/release.sh 1.2.0` bumps the version, closes the changelog section, commits and tags. Then `git push origin main v1.2.0` starts the build. Details are in the [developer guide](docs/developer-guide.md#7-automated-releases).
 
 ---
 

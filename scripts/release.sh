@@ -2,7 +2,7 @@
 # Prepare a release locally: bump the version, close the changelog section, commit, tag.
 # Nothing is pushed. The last line tells you the command that starts the release build.
 #
-# Usage:  scripts/release.sh 2.0.0 [--no-tests]
+# Usage:  scripts/release.sh 1.1.0 [--no-tests]
 set -euo pipefail
 
 version="${1:-}"
