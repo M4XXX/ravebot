@@ -251,3 +251,80 @@ LOG_REPLY_SENT = "Sent."
 LOG_REPLY_FAILED = (
     "I could not send the message. The user may have DMs from server members turned off."
 )
+
+
+# --- Setup wizard ---
+SETUP_ONLY_ORGANIZERS = "Only organizers can change the setup."
+SETUP_ALREADY_ACTIVE = (
+    "The bot is already active. You can go through the steps again to change settings: "
+    "nothing changes until you press Save."
+)
+SETUP_ALREADY_OPEN = "The setup is already open here: {url}"
+SETUP_ALREADY_DONE = "This setup was already finished."
+SETUP_CHANGE_BUTTON = "Change settings"
+SETUP_ERROR = "Something went wrong during the setup. Press the button again."
+SETUP_NO_PERMISSION = "You don't have permission to use this command."
+SETUP_SAVED = "Settings saved. To change a setting later, run /setup again."
+SETUP_MISSING_VALUES = "Some steps are not finished yet. Go back and choose a channel."
+SETUP_CHECK_OK = "✓ "
+SETUP_CHECK_FAIL = "✗ "
+
+
+def setup_welcome(total: int, checks: list[tuple[bool, str]]) -> str:
+    lines = [
+        f"**Step 1 of {total}: Welcome and checks**",
+        "**RaveBot setup**",
+        f"I will guide you through {total} short steps. Until you press **Activate** "
+        "at the end, I stay idle: no posts, no invites, no events.",
+        "",
+    ]
+    lines += [f"{SETUP_CHECK_OK if ok else SETUP_CHECK_FAIL}{text}" for ok, text in checks]
+    return "\n".join(lines)
+
+
+def setup_channel_step(
+    number: int, total: int, title: str, question: str, chosen: str | None, check: str | None
+) -> str:
+    lines = [f"**Step {number} of {total}: {title}**", question, ""]
+    if chosen is None:
+        lines.append("No channel selected yet.")
+    else:
+        lines.append(f"Selected: {chosen}")
+    if check:
+        lines.append(check)
+    return "\n".join(lines)
+
+
+SETUP_DJ_CHANNEL_QUESTION = 'Where should I post the Lineup Update and the "Book a slot" button?'
+SETUP_LOG_CHANNEL_QUESTION = (
+    "Where should I post bookings, new DJs, problems and messages from DJs? "
+    "Only organizers should see this channel."
+)
+
+
+def setup_channel_ok(channel_name: str) -> str:
+    return f"{SETUP_CHECK_OK}I can send messages and embeds in #{channel_name}"
+
+
+def setup_channel_missing(channel_name: str, missing: list[str]) -> str:
+    return (
+        f"{SETUP_CHECK_FAIL}I am missing the permission {', '.join(missing)} "
+        f"in #{channel_name}. Fix it in the channel settings and select the channel again."
+    )
+
+
+SETUP_CHANNEL_GONE = f"{SETUP_CHECK_FAIL}I can't see that channel. Select another one."
+
+
+def setup_summary(lines: list[str], rerun: bool) -> str:
+    head = "**Ready to save**" if rerun else "**Ready to activate**"
+    return "\n".join([head, *lines])
+
+
+def setup_active_message(created: int, channel: str | None) -> str:
+    where = f" in {channel}" if channel else ""
+    return (
+        "**RaveBot is active**\n"
+        f"I created {created} new events in Notion and posted the Lineup Update{where}. "
+        "To change a setting later, run /setup again."
+    )

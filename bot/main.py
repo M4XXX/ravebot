@@ -111,6 +111,7 @@ async def main() -> None:
     from bot.cogs.events import EventsCog
     from bot.cogs.onboarding import OnboardingCog
     from bot.cogs.outreach_cog import OutreachCog
+    from bot.cogs.setup import SetupCog
     from bot.log import AdminLogService
 
     ctx.log_service = AdminLogService(bot=bot, db=ctx.db)
@@ -138,6 +139,9 @@ async def main() -> None:
     from bot.ui.log_reply import LogReplyView
 
     bot.add_view(LogReplyView(ctx))  # persistent: Reply works on old log entries
+    from bot.ui.setup_wizard import SetupWizardView
+
+    bot.add_view(SetupWizardView(ctx))  # persistent: the wizard works after restarts
     ctx.lineup_service = LineupService(
         bot=bot,
         view=post_view,
@@ -193,6 +197,7 @@ async def main() -> None:
     _add_cog(bot, OutreachCog(ctx))
     _add_cog(bot, AdminCog(ctx))
     _add_cog(bot, EventsCog(ctx))
+    _add_cog(bot, SetupCog(ctx))
 
     startup_dm_sent = False
 

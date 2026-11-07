@@ -131,6 +131,19 @@ async def test_startup_registers_log_reply_view() -> None:
 
 
 @pytest.mark.asyncio
+async def test_startup_registers_setup_wizard_view_and_cog() -> None:
+    from bot.cogs.setup import SetupCog
+    from bot.ui.setup_wizard import SetupWizardView
+
+    s = _Startup()
+    await s.run()
+    added = [c.args[0] for c in s.bot.add_view.call_args_list]
+    assert any(isinstance(v, SetupWizardView) for v in added)
+    cogs = [c.args[0] for c in s.bot.add_cog.call_args_list]
+    assert any(isinstance(c, SetupCog) and c.bot is s.bot for c in cogs)
+
+
+@pytest.mark.asyncio
 async def test_on_ready_only_logs_and_touches_no_notion() -> None:
     """The schema is ensured before Discord connects; on_ready starts no Notion task."""
     s = _Startup()
