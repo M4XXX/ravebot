@@ -13,6 +13,7 @@ from bot.ui.setup_wizard import (
     SetupWizardView,
     entry_view,
     guild_lock,
+    prefilled_data,
     render_step,
 )
 
@@ -76,7 +77,8 @@ class SetupCog(commands.Cog):
                     texts.SETUP_ALREADY_ACTIVE, view=entry_view(self.ctx)
                 )
                 return
-            await self._post(inter, 0, {})
+            data = await prefilled_data(db, guild_id, inter.guild, rerun=False)
+            await self._post(inter, 0, data)
 
     async def _post(
         self, inter: disnake.ApplicationCommandInteraction, step: int, data: dict

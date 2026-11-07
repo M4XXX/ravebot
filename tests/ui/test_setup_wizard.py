@@ -425,6 +425,7 @@ async def test_change_settings_prefills_all_stored_values(store):
         "slot_duration_minutes": 90, "event_interval_days": 14, "event_lookahead_count": 3,
         "timezone": "Europe/London", "outreach_enabled": False,
         "outreach_days_before": 10, "outreach_cooldown_hours": 24,
+        "orig_timezone": "Europe/London", "orig_invites_role_id": 400,
     }
     assert draft.message_id == 55 and draft.step == 0
     assert store.writes == []
@@ -682,9 +683,8 @@ async def test_modal_refuses_non_admin(store):
 @pytest.mark.asyncio
 async def test_summary_shows_values_and_warns_on_changed_zone_and_role(store):
     ctx = make_ctx()
-    store.config[(GUILD, "timezone")] = "Europe/Berlin"
-    store.config[(GUILD, "invites_role_id")] = "999"
-    seed(store, 6, {"rerun": True, **FULL, "timezone": "Europe/London"})
+    seed(store, 6, {"rerun": True, **FULL, "timezone": "Europe/London",
+                    "orig_timezone": "Europe/Berlin", "orig_invites_role_id": 999})
     view = await sw.render_step(ctx, make_guild(), store.drafts[GUILD])
     assert "the real times of existing events change" in view.content
     assert "members are not moved to the new role" in view.content
@@ -698,9 +698,8 @@ async def test_summary_shows_values_and_warns_on_changed_zone_and_role(store):
 @pytest.mark.asyncio
 async def test_summary_has_no_warnings_when_unchanged(store):
     ctx = make_ctx()
-    store.config[(GUILD, "timezone")] = "Europe/Berlin"
-    store.config[(GUILD, "invites_role_id")] = "400"
-    seed(store, 6, {"rerun": True, **FULL})
+    seed(store, 6, {"rerun": True, **FULL, "orig_timezone": "Europe/Berlin",
+                    "orig_invites_role_id": 400})
     view = await sw.render_step(ctx, make_guild(), store.drafts[GUILD])
     assert "Warning" not in view.content
 
@@ -802,3 +801,135 @@ async def test_replaced_draft_says_outdated(store):
     await inter.response.defer()
     await sw.activate_from_draft(ctx, inter)
     inter.followup.send.assert_awaited_once_with(texts.SETUP_OUTDATED, ephemeral=True)
+
+
+# ---------- fix round 1 (5b review) ----------
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("handler", "fields"),
+    [
+        ("on_events_change", GOOD_EVENTS),
+        ("on_zone", {"zone": "Europe/London"}),
+        ("on_invites_change", {"days": "3", "hours": "8"}),
+    ],
+)
+async def test_popup_submit_defers_without_message_and_edits_wizard(store, handler, fields):
+    ctx = make_ctx()
+    modal = await _open_modal(store, ctx, 4, handler)
+    inter = _modal_inter(fields)
+    await modal.callback(inter)
+    inter.response.defer.assert_awaited_once_with(with_message=False)
+    inter.edit_original_message.assert_awaited_once()
+    inter.response.send_message.assert_not_awaited()
+    inter.followup.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_legacy_server_zone_change_warns_without_stored_zone(store):
+    store.config[(GUILD, "bot_active")] = "true"
+    store.config[(GUILD, "dj_channel")] = "100"
+    store.config[(GUILD, "log_channel")] = "200"
+    ctx = make_ctx()
+    guild = make_guild()
+    data = await sw.prefilled_data(ctx.db, GUILD, guild)
+    assert data["orig_timezone"] == "Europe/Berlin"
+    seed(store, 6, {**data, **FULL, "timezone": "Europe/London"})
+    view = await sw.render_step(ctx, guild, store.drafts[GUILD])
+    assert "the real times of existing events change" in view.content
+
+
+@pytest.mark.asyncio
+async def test_legacy_server_role_change_and_no_change(store):
+    ctx = make_ctx()
+    guild = make_guild()
+    legacy = SimpleNamespace(id=400, name="Active Booking", position=1)
+    guild.roles = [legacy]
+    with patch("bot.services.roles.get_value", AsyncMock(return_value=None)):
+        data = await sw.prefilled_data(ctx.db, GUILD, guild)
+    assert data["orig_invites_role_id"] == 400 and data["invites_role_id"] == 400
+    seed(store, 6, {**data, "dj_channel": 100, "log_channel": 200, "dj_role_id": 300})
+    same = await sw.render_step(ctx, guild, store.drafts[GUILD])
+    assert "Warning" not in same.content
+    store.drafts[GUILD].data["invites_role_id"] = 555
+    changed = await sw.render_step(ctx, guild, store.drafts[GUILD])
+    assert "members are not moved to the new role" in changed.content
+
+
+@pytest.mark.asyncio
+async def test_save_failure_keeps_draft_and_reports(store):
+    ctx = make_ctx()
+    seed(store, 6, {"rerun": True, **FULL})
+    inter = make_inter(make_guild())
+    await inter.response.defer()
+    with patch("bot.ui.setup_wizard._write_all", AsyncMock(side_effect=RuntimeError("db"))):
+        await sw.save_from_draft(ctx, inter)
+    assert GUILD in store.drafts
+    inter.followup.send.assert_awaited_once_with(texts.SETUP_ERROR, ephemeral=True)
+    inter.edit_original_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_create_role_reuses_existing_role_without_creating(store):
+    ctx = make_ctx()
+    seed(store, 3, {"dj_role_id": 300})
+    guild = make_guild()
+    guild.roles = [SimpleNamespace(id=400, name="Active Booking", position=1)]
+    inter = make_inter(guild)
+    await sw.SetupWizardView(ctx).on_create_role(inter)
+    guild.create_role.assert_not_awaited()
+    assert store.drafts[GUILD].data["invites_role_id"] == 400
+
+
+@pytest.mark.asyncio
+async def test_roles_check_rejects_everyone_managed_and_same(store):
+    ctx = make_ctx()
+    guild = make_guild(role_ids=(300, 400, 555, GUILD))
+    base = {"dj_role_id": 300, "invites_role_id": 400}
+    for data, needle in (
+        ({"dj_role_id": 300, "invites_role_id": 300}, "two different roles"),
+        ({"dj_role_id": GUILD, "invites_role_id": 400}, "@everyone"),
+    ):
+        seed(store, 3, data)
+        view = await sw.render_step(ctx, guild, store.drafts[GUILD])
+        assert view.next_disabled and needle in view.content
+    managed = make_guild()
+    original = managed.get_role
+    managed.get_role = lambda rid: (
+        SimpleNamespace(**{**vars(original(rid)), "managed": rid == 400}) if original(rid) else None
+    )
+    seed(store, 3, base)
+    view = await sw.render_step(ctx, managed, store.drafts[GUILD])
+    assert view.next_disabled and "integration" in view.content
+
+
+@pytest.mark.asyncio
+async def test_first_run_prefills_stored_values_but_is_not_a_rerun(store):
+    from bot.cogs.setup import SetupCog
+
+    store.config[(GUILD, "slots_per_event")] = "4"
+    store.config[(GUILD, "outreach_days_before")] = "9"
+    ctx = make_ctx()
+    cog = SetupCog(ctx)
+    inter = make_inter(make_guild())
+    inter.edit_original_message = AsyncMock(return_value=SimpleNamespace(id=777))
+    await cog.setup.callback(cog, inter)
+    d = store.drafts[GUILD].data
+    assert d["rerun"] is False
+    assert d["slots_per_event"] == 4 and d["outreach_days_before"] == 9
+
+
+@pytest.mark.asyncio
+async def test_prefill_caps_slots_and_uses_parse_hhmm(store):
+    ctx = make_ctx()
+    store.config[(GUILD, "slots_per_event")] = "500"
+    store.config[(GUILD, "default_start_time")] = "7:05"
+    data = await sw.prefilled_data(ctx.db, GUILD)
+    assert data["slots_per_event"] == 6 and data["default_start_time"] == "07:05"
+    store.config[(GUILD, "default_start_time")] = "99:99"
+    assert (await sw.prefilled_data(ctx.db, GUILD))["default_start_time"] == "20:00"
+
+
+def test_parse_hhmm():
+    assert sw.parse_hhmm("9:30") == "09:30" and sw.parse_hhmm("23:59") == "23:59"
+    assert sw.parse_hhmm("24:00") is None and sw.parse_hhmm("x") is None

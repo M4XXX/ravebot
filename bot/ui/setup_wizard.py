@@ -130,6 +130,14 @@ def values(data: dict[str, Any]) -> dict[str, Any]:
 
 # --- validation of the popup fields ---
 
+def parse_hhmm(text: str) -> str | None:
+    """`H:MM` or `HH:MM` from 00:00 to 23:59 as zero-padded `HH:MM`, else None."""
+    match = _HHMM_RE.match((text or "").strip())
+    if match and int(match.group(1)) <= 23 and int(match.group(2)) <= 59:
+        return f"{int(match.group(1)):02d}:{match.group(2)}"
+    return None
+
+
 def parse_events_fields(raw: dict[str, str]) -> tuple[dict[str, Any], list[str]]:
     """Validate the five event fields; errors name the field."""
     out: dict[str, Any] = {}
@@ -154,9 +162,9 @@ def parse_events_fields(raw: dict[str, str]) -> tuple[dict[str, Any], list[str]]
     number("length", "Slot length", "slot_duration_minutes")
     number("interval", "One event every (days)", "event_interval_days")
     number("ahead", "Future events kept ready", "event_lookahead_count")
-    match = _HHMM_RE.match((raw.get("start") or "").strip())
-    if match and int(match.group(1)) <= 23 and int(match.group(2)) <= 59:
-        out["default_start_time"] = f"{int(match.group(1)):02d}:{match.group(2)}"
+    start = parse_hhmm(raw.get("start") or "")
+    if start is not None:
+        out["default_start_time"] = start
     else:
         errors.append(
             texts.setup_invalid("Start time (CET, HH:MM)", "enter a time from 00:00 to 23:59.")
@@ -224,10 +232,12 @@ def _channel_check(guild: Any, channel_id: Any) -> tuple[bool, Any, str | None]:
 
 
 def _role_check(guild: Any, data: dict[str, Any]) -> tuple[bool, str | None]:
-    """(ok, check text): both roles chosen and manageable by the bot."""
+    """(ok, check text): two different, manageable roles chosen."""
     chosen = [data[key] for key in ROLE_KEYS if data.get(key) is not None]
     if len(chosen) < len(ROLE_KEYS):
         return False, None
+    if chosen[0] == chosen[1]:
+        return False, texts.SETUP_ROLES_SAME
     me = guild.me
     if not me.guild_permissions.manage_roles:
         return False, texts.SETUP_ROLE_MISSING_PERMISSION
@@ -235,6 +245,10 @@ def _role_check(guild: Any, data: dict[str, Any]) -> tuple[bool, str | None]:
         role = guild.get_role(int(role_id))
         if role is None:
             return False, texts.SETUP_ROLE_GONE
+        if int(role_id) == guild.id:
+            return False, texts.SETUP_ROLE_EVERYONE
+        if getattr(role, "managed", False):
+            return False, texts.setup_role_managed(role.name)
         if role.position >= me.top_role.position:
             return False, texts.setup_role_too_high(role.name)
     return True, texts.SETUP_ROLES_OK
@@ -293,19 +307,13 @@ async def summary_lines(ctx: "BotContext", guild: Any, data: dict[str, Any]) -> 
         f"Time zone: {v['timezone']}",
         f"Automatic invites: {invites}",
     ]
-    db = _db(ctx)
-    gid = getattr(guild, "id", None)
-    if gid is not None:
-        stored_zone = await db_config.get_value(db, gid, "timezone")
-        if stored_zone and stored_zone != v["timezone"]:
-            lines.append(texts.SETUP_ZONE_CHANGED_WARNING)
-        stored_role = await db_config.get_value(db, gid, "invites_role_id")
-        if (
-            stored_role is not None
-            and data.get("invites_role_id") is not None
-            and str(data["invites_role_id"]) != stored_role
-        ):
-            lines.append(texts.SETUP_INVITES_ROLE_WARNING)
+    previous_zone = data.get("orig_timezone", DEFAULT_TIMEZONE)
+    if previous_zone != v["timezone"]:
+        lines.append(texts.SETUP_ZONE_CHANGED_WARNING)
+    previous_role = data.get("orig_invites_role_id")
+    chosen_role = data.get("invites_role_id")
+    if previous_role is not None and chosen_role is not None and previous_role != chosen_role:
+        lines.append(texts.SETUP_INVITES_ROLE_WARNING)
     return lines
 
 
@@ -524,17 +532,19 @@ class SetupWizardView(disnake.ui.View):
         if draft is None:
             return
         guild = inter.guild
-        if not guild.me.guild_permissions.manage_roles:
-            await _private(inter, texts.SETUP_CREATE_NEEDS_PERMISSION)
-            return
-        try:
-            role = await guild.create_role(
-                name=texts.INVITES_ROLE_NAME, reason="RaveBot setup"
-            )
-        except disnake.HTTPException:
-            logger.warning("Setup wizard: creating the invites role failed", exc_info=True)
-            await _private(inter, texts.SETUP_CREATE_FAILED)
-            return
+        role = next((r for r in guild.roles if r.name == texts.INVITES_ROLE_NAME), None)
+        if role is None:
+            if not guild.me.guild_permissions.manage_roles:
+                await _private(inter, texts.SETUP_CREATE_NEEDS_PERMISSION)
+                return
+            try:
+                role = await guild.create_role(
+                    name=texts.INVITES_ROLE_NAME, reason="RaveBot setup"
+                )
+            except disnake.HTTPException:
+                logger.warning("Setup wizard: creating the invites role failed", exc_info=True)
+                await _private(inter, texts.SETUP_CREATE_FAILED)
+                return
         draft.data["invites_role_id"] = role.id
         await self._show(inter, draft)
 
@@ -664,7 +674,8 @@ class ValuesModal(disnake.ui.Modal):
         if errors:
             await _private(inter, "\n".join(errors))
             return
-        await inter.response.defer()
+        # Update the wizard message (the modal came from it) instead of posting a new one
+        await inter.response.defer(with_message=False)
         guild_id: Any = inter.guild_id
         draft = await get_draft(_db(ctx), guild_id)
         refusal = _refusal(draft, self._message_id)
@@ -720,17 +731,21 @@ async def _private(inter: Any, text: str) -> None:
         logger.warning("Setup wizard: could not send a private reply", exc_info=True)
 
 
-def _stored_int(raw: str | None, default: int) -> int:
+def _stored_int(raw: str | None, default: int, maximum: int | None = None) -> int:
     try:
         value = int(raw) if raw is not None else default
     except ValueError:
         return default
-    return value if value >= 1 else default
+    if value < 1 or (maximum is not None and value > maximum):
+        return default
+    return value
 
 
-async def prefilled_data(db: Any, guild_id: int, guild: Any = None) -> dict[str, Any]:
-    """Draft data of a re-run: every stored value (default where missing or invalid)."""
-    data: dict[str, Any] = {"rerun": True}
+async def prefilled_data(
+    db: Any, guild_id: int, guild: Any = None, rerun: bool = True
+) -> dict[str, Any]:
+    """Draft data from every stored value (default where missing or invalid)."""
+    data: dict[str, Any] = {"rerun": rerun}
     for key in (*CHANNEL_KEYS, *ROLE_KEYS):
         raw = await db_config.get_value(db, guild_id, key)
         if raw is not None:
@@ -751,13 +766,17 @@ async def prefilled_data(db: Any, guild_id: int, guild: Any = None) -> dict[str,
             if role is not None:
                 data["invites_role_id"] = role.id
     for key in _INT_VALUE_KEYS:
-        data[key] = _stored_int(await db_config.get_value(db, guild_id, key), DEFAULT_VALUES[key])
+        maximum = MAX_SLOTS if key == "slots_per_event" else None
+        data[key] = _stored_int(
+            await db_config.get_value(db, guild_id, key), DEFAULT_VALUES[key], maximum
+        )
     start = await db_config.get_value(db, guild_id, "default_start_time")
-    parsed, errors = parse_events_fields({"start": start or "", "slots": "1", "length": "1",
-                                          "interval": "1", "ahead": "1"})
-    data["default_start_time"] = parsed["default_start_time"] if not errors else "20:00"
+    start = parse_hhmm(await db_config.get_value(db, guild_id, "default_start_time") or "")
+    data["default_start_time"] = start or DEFAULT_VALUES["default_start_time"]
     zone = await db_config.get_value(db, guild_id, "timezone")
     data["timezone"] = zone if zone and is_valid_timezone(zone) else DEFAULT_TIMEZONE
+    data["orig_timezone"] = data["timezone"]
+    data["orig_invites_role_id"] = data.get("invites_role_id")
     data["outreach_enabled"] = parse_outreach_enabled(
         await db_config.get_value(db, guild_id, "outreach_enabled")
     )
@@ -841,6 +860,11 @@ async def save_from_draft(ctx: "BotContext", inter: Any) -> None:
         if not _complete(draft.data):
             await _private(inter, texts.SETUP_MISSING_VALUES)
             return
-        await _write_all(_db(ctx), guild_id, draft.data)
-        await delete_draft(_db(ctx), guild_id)
+        try:
+            await _write_all(_db(ctx), guild_id, draft.data)
+            await delete_draft(_db(ctx), guild_id)
+        except Exception:
+            logger.exception("Setup wizard: saving failed")
+            await _private(inter, texts.SETUP_ERROR)
+            return
         await inter.edit_original_message(content=texts.SETUP_SAVED, view=None)

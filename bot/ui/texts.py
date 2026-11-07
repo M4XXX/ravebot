@@ -351,6 +351,16 @@ SETUP_CREATE_NEEDS_PERMISSION = (
 )
 SETUP_CREATE_FAILED = "I could not create the role. Check my permissions and try again."
 INVITES_ROLE_NAME = "Active Booking"
+SETUP_ROLES_SAME = f"{SETUP_CHECK_FAIL}Choose two different roles for DJs and invites."
+SETUP_ROLE_EVERYONE = f"{SETUP_CHECK_FAIL}@everyone can't be used here. Choose another role."
+
+
+def setup_role_managed(role_name: str) -> str:
+    return (
+        f"{SETUP_CHECK_FAIL}@{role_name} belongs to an integration and can't be "
+        "given to members. Choose another role."
+    )
+
 
 
 def setup_role_too_high(role_name: str) -> str:
