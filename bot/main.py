@@ -32,6 +32,7 @@ from bot.notion.api import NotionApi, NotionWriteError
 from bot.notion.client import NotionClient
 from bot.notion.schema import NotionSchemaError, ensure_schema
 from bot.notion.views import ensure_views
+from bot.timezone import load_stored_timezone
 
 load_dotenv()
 
@@ -169,6 +170,12 @@ async def main() -> None:
     @bot.event
     async def on_ready() -> None:  # noqa: RUF029
         logger.info("Bot ready")
+        # The time zone is a guild-level setting, so it can only load once guilds are known.
+        if bot.guilds:
+            try:
+                await load_stored_timezone(ctx.db, bot.guilds[0].id)
+            except Exception:
+                logger.warning("Could not load the stored time zone", exc_info=True)
 
     try:
         await bot.start(config.discord_bot_token)

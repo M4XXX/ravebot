@@ -14,6 +14,7 @@ import disnake
 
 from bot.db.config import get_value, set_value
 from bot.notion.models import EventInfo
+from bot.timezone import local_today
 from bot.ui import texts
 from bot.ui.embeds import LineupUpdateEmbed
 
@@ -32,7 +33,7 @@ _FAILED = "failed"
 
 
 def _today() -> datetime.date:
-    return datetime.datetime.now(datetime.UTC).date()
+    return local_today()
 
 
 def future_events(events: list[EventInfo], today: datetime.date) -> list[EventInfo]:

@@ -524,18 +524,14 @@ async def test_status_returns_event_embed(monkeypatch: pytest.MonkeyPatch) -> No
     assert embed is not None
     assert "2026-06-14 Rave Night #12" in embed.title
     fields = {f.name: f.value for f in embed.fields}
-    start = datetime.datetime(2026, 6, 14, 20, 0, tzinfo=datetime.UTC)
-    assert fields["Event Date"] == f"<t:{int(start.timestamp())}:f>"
+    assert fields["Event Date"] == "Sunday 14.06.2026, 20:00"
     # Slot rows decide: 4 slots, 3 booked (DJ Scope holds two), 1 open
     assert fields["Total Slots"] == "4"
     assert fields["Booked"] == "3"
     assert fields["Open"] == "1"
-    slot2 = int((start + datetime.timedelta(minutes=30)).timestamp())
-    assert fields[f"Slot 2 · <t:{slot2}:f>"] == "Open"
-    slot3 = int((start + datetime.timedelta(minutes=60)).timestamp())
-    assert fields[f"Slot 3 · <t:{slot3}:f>"] == "DJ Scope"
-    slot4 = int((start + datetime.timedelta(minutes=90)).timestamp())
-    assert fields[f"Slot 4 · <t:{slot4}:f>"] == "DJ Wave"
+    assert fields["Slot 2 · Sunday 14.06.2026, 20:30"] == "Open"
+    assert fields["Slot 3 · Sunday 14.06.2026, 21:00"] == "DJ Scope"
+    assert fields["Slot 4 · Sunday 14.06.2026, 21:30"] == "DJ Wave"
 
 
 @pytest.mark.asyncio
@@ -711,7 +707,10 @@ async def test_add_event_creates_event_and_replies(monkeypatch: pytest.MonkeyPat
     init.assert_awaited_once_with(ctx.db, "new-evt-page", 5)
     created = ctx.notion_client.create_event.return_value
     reply, _ = assert_deferred_reply(inter)
-    assert reply == f"Event created in Notion for <t:{int(created.slot_start(0).timestamp())}:f>."
+    from bot.ui import texts
+
+    assert "<t:" not in reply
+    assert reply == f"Event created in Notion for {texts.fmt_slot_when(created, 0)}."
 
 
 @pytest.mark.asyncio
@@ -1260,7 +1259,7 @@ async def test_config_set_start_time_valid_stores_value(
 
     assert set_value_calls == [(111, "default_start_time", "20:00")]
     call_args = inter.response.send_message.call_args
-    assert "utc" in call_args[0][0].lower()
+    assert "local" in call_args[0][0].lower()
     assert call_args[1].get("ephemeral") is True
 
 

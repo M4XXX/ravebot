@@ -263,9 +263,9 @@ async def test_send_reminders_skips_user_not_in_cache():
 async def test_send_reminders_slot_unix_from_typed_event():
     """DM carries slot_start(slot_index) of the typed event; booked DJs looked up by page_id."""
     event = _make_event(page_id="page-xyz", event_date="2026-05-22", start=datetime.time(0, 0))
-    # event starts 00:00 on 5/22; slot 2 at 60 min slots = 02:00
+    # event starts 00:00 local (Berlin, UTC+2) on 5/22; slot 2 = 02:00 local = 00:00 UTC
     expected = int(event.slot_start(2).timestamp())
-    assert expected == int(datetime.datetime(2026, 5, 22, 2, 0, tzinfo=UTC).timestamp())
+    assert expected == int(datetime.datetime(2026, 5, 22, 0, 0, tzinfo=UTC).timestamp())
     svc = _make_service(list_events_result=[event])
     user_mock = MagicMock()
     user_mock.send = AsyncMock()

@@ -10,8 +10,14 @@ def fmt_date(event: EventInfo) -> str:
 
 
 def fmt_time(event: EventInfo, slot_index: int) -> str:
-    """HH:MM (UTC) of the zero-based slot_index."""
+    """Local HH:MM of the zero-based slot_index."""
     return event.slot_start(slot_index).strftime("%H:%M")
+
+
+def fmt_slot_when(event: EventInfo, slot_index: int) -> str:
+    """`Saturday 14.11.2026, 19:00` (local time of the slot)."""
+    start = event.slot_start(slot_index)
+    return f"{start.strftime('%A %d.%m.%Y')}, {start.strftime('%H:%M')}"
 
 
 def slot_phrase(event: EventInfo, slot_index: int) -> str:

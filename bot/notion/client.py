@@ -31,6 +31,7 @@ from bot.notion.models import (
     parse_slot,
 )
 from bot.notion.schema import NotionIds
+from bot.timezone import local_today
 
 __all__ = [
     "DuplicateEventError",
@@ -142,7 +143,7 @@ class NotionClient:
                 "Skipped %d slot row(s) without a valid slot number", invalid_numbers
             )
 
-        today = datetime.datetime.now(datetime.UTC).date()
+        today = local_today()
         result = []
         for page_id, event in events.items():
             if not include_past and event.date < today:

@@ -65,9 +65,19 @@ class EventInfo:
         return rows
 
     def slot_start(self, slot_index: int) -> datetime.datetime:
-        """UTC start of the zero-based slot_index."""
-        base = datetime.datetime.combine(self.date, self.start, tzinfo=datetime.UTC)
-        return base + datetime.timedelta(minutes=slot_index * self.slot_minutes)
+        """Aware local start of the zero-based slot_index.
+
+        First slot = date + start as wall clock in the configured zone; later
+        slots add real minutes to that instant and convert back to local time.
+        """
+        from bot.timezone import get_timezone
+
+        zone = get_timezone()
+        first = datetime.datetime.combine(self.date, self.start, tzinfo=zone)
+        instant = first.astimezone(datetime.UTC) + datetime.timedelta(
+            minutes=slot_index * self.slot_minutes
+        )
+        return instant.astimezone(zone)
 
 
 @dataclass(frozen=True)

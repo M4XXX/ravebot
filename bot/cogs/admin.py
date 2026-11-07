@@ -19,7 +19,7 @@ Story 7.2: /config show -- display all config values
 Story 7.3: /config set slots-per-event -- slots per auto-created event (FR37)
 Story 7.3: /config set event-interval-days -- days between auto-created events (FR37)
 Story 7.3: /config set slot-duration -- slot duration in minutes (FR37)
-Story 7.3: /config set start-time -- default event start time HH:MM UTC (FR37)
+Story 7.3: /config set start-time -- default event start time HH:MM local (FR37)
 Story 7.3: /config set event-schedule -- event recurrence cron expression (FR37)
 /config set outreach -- global switch for automatic outreach invites
 FR41: All commands restricted to ADMIN_USER_IDS via cog_slash_command_check
@@ -64,7 +64,7 @@ disnake 2.12.0 slash command hierarchy:
 [Source: epics.md#Story 7.2 Acceptance Criteria]
 """
 import logging
-from datetime import UTC, date, datetime
+from datetime import date
 
 import disnake
 from disnake.ext import commands
@@ -77,6 +77,7 @@ from bot.notion.client import DuplicateEventError, NotionWriteError
 from bot.services.event_defaults import default_event_shape
 from bot.services.lineup import future_events, upcoming_event
 from bot.services.outreach import parse_outreach_enabled
+from bot.timezone import local_today
 from bot.ui import texts
 from bot.ui.embeds import EmbedColors
 
@@ -84,7 +85,7 @@ logger = logging.getLogger(__name__)
 
 
 def _today() -> date:
-    return datetime.now(UTC).date()
+    return local_today()
 
 
 class AdminCog(commands.Cog):
@@ -462,16 +463,16 @@ class AdminCog(commands.Cog):
 
     @config_set_base.sub_command(
         name="start-time",
-        description="Set the default event start time (UTC)",
+        description="Set the default event start time (local time)",
     )
     async def config_set_start_time(
         self,
         inter: disnake.ApplicationCommandInteraction,
         time_str: str = commands.Param(
-            description="Start time in HH:MM format (UTC, e.g. 20:00)"
+            description="Start time in HH:MM format (local time, e.g. 20:00)"
         ),
     ) -> None:
-        """Store default_start_time in config table (HH:MM UTC).
+        """Store default_start_time in config table (HH:MM local).
 
         Consumed by RemindersService._compute_slot_time() (reminders.py:111, default: '20:00').
         Validates HH:MM format and range before storing.
@@ -501,7 +502,7 @@ class AdminCog(commands.Cog):
             return
         await db_config.set_value(self.ctx.db, guild_id, "default_start_time", time_str.strip())
         await inter.response.send_message(
-            f"Default event start time set to {time_str.strip()} UTC.", ephemeral=True
+            f"Default event start time set to {time_str.strip()} (local time).", ephemeral=True
         )
 
     # ---------------------------------------------------------------------------
@@ -601,7 +602,7 @@ class AdminCog(commands.Cog):
             ("slots_per_event", "Slots Per Event", "6"),
             ("event_interval_days", "Event Interval (days)", "7"),
             ("slot_duration_minutes", "Slot Duration (minutes)", "60"),
-            ("default_start_time", "Default Start Time (UTC)", "20:00"),
+            ("default_start_time", "Default Start Time (local time)", "20:00"),
             ("event_recurrence_cron", "Event Recurrence Cron", "(not set)"),
         ]
 
@@ -914,8 +915,6 @@ class AdminCog(commands.Cog):
 
         event = events[0]
         event_name = event.event_id
-        event_unix = int(event.slot_start(0).timestamp())
-
         # Slot rows are the truth: booked = rows with a DJ (a DJ with two slots counts two)
         slots = sorted(event.slots, key=lambda s: s.number)
         total_slots = len(slots)
@@ -926,15 +925,14 @@ class AdminCog(commands.Cog):
             title=f"🌌 {event_name}",
             color=EmbedColors.MISSION_GOLD,
         )
-        date_display = f"<t:{event_unix}:f>"
+        date_display = texts.fmt_slot_when(event, 0)
         embed.add_field(name="Event Date", value=date_display, inline=False)
         embed.add_field(name="Total Slots", value=str(total_slots), inline=True)
         embed.add_field(name="Booked", value=str(booked_count), inline=True)
         embed.add_field(name="Open", value=str(total_slots - booked_count), inline=True)
 
         for slot in slots:
-            slot_unix = int(event.slot_start(slot.number - 1).timestamp())
-            slot_time = f"<t:{slot_unix}:f>"
+            slot_time = texts.fmt_slot_when(event, slot.number - 1)
             if slot.dj_page_id is None:
                 dj_name = "Open"
             else:
@@ -1029,7 +1027,7 @@ class AdminCog(commands.Cog):
             )
             return
 
-        if event_date <= date.today():
+        if event_date <= _today():
             await inter.response.send_message(
                 "Invalid date. Provide a future date in YYYY-MM-DD format.",
                 ephemeral=True,
@@ -1070,9 +1068,8 @@ class AdminCog(commands.Cog):
                 exc,
             )
 
-        event_unix = int(event.slot_start(0).timestamp())
         await inter.followup.send(
-            f"Event created in Notion for <t:{event_unix}:f>.", ephemeral=True
+            f"Event created in Notion for {texts.fmt_slot_when(event, 0)}.", ephemeral=True
         )
 
     # ---------------------------------------------------------------------------

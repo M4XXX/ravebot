@@ -24,6 +24,7 @@ from bot.notion.client import DuplicateEventError, NotionWriteError
 from bot.notion.models import EventInfo
 from bot.services.event_defaults import default_event_shape
 from bot.services.fully_booked import check_fully_booked
+from bot.timezone import local_today
 from bot.ui import texts
 from bot.ui.embeds import ErrorCode
 
@@ -116,7 +117,7 @@ class EventsCog(commands.Cog):
         interval_days = int(raw_interval) if raw_interval else 7
 
         # Find latest event date; events are sorted ascending by list_events()
-        latest_date: datetime.date = events[-1].date if events else datetime.date.today()
+        latest_date: datetime.date = events[-1].date if events else local_today()
 
         client = self.ctx.notion_client
         db = self.ctx.db

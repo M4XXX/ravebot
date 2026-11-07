@@ -39,15 +39,17 @@ def test_valid_event_parses():
 
 def test_slot_start_second_slot():
     ev = parse_event(load("event"))
-    assert ev.slot_start(1) == datetime.datetime(2026, 11, 14, 19, 0, tzinfo=datetime.UTC)
+    assert ev.slot_start(1) == datetime.datetime(2026, 11, 14, 18, 0, tzinfo=datetime.UTC)
+    assert ev.slot_start(1).strftime("%H:%M") == "19:00"
 
 
 def test_slot_start_wraps_past_midnight():
     page = load("event")
     page["properties"]["Slot length"]["number"] = 90
     ev = parse_event(page)
-    assert ev.slot_start(3) == datetime.datetime(2026, 11, 14, 22, 30, tzinfo=datetime.UTC)
-    assert ev.slot_start(5) == datetime.datetime(2026, 11, 15, 1, 30, tzinfo=datetime.UTC)
+    assert ev.slot_start(3).strftime("%d %H:%M") == "14 22:30"
+    assert ev.slot_start(5).strftime("%d %H:%M") == "15 01:30"
+    assert ev.slot_start(5) == datetime.datetime(2026, 11, 15, 0, 30, tzinfo=datetime.UTC)
 
 
 @pytest.mark.parametrize("value", ["8pm", "", "25:00", "18:60", "1800"])
