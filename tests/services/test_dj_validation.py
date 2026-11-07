@@ -31,6 +31,11 @@ def test_normalize_link() -> None:
     assert normalize_link("  HTTPS://Twitch.tv/x ") == "HTTPS://Twitch.tv/x"
 
 
+def test_normalize_link_keeps_any_scheme() -> None:
+    assert normalize_link("rtspt://stream.vrcdn.live/x") == "rtspt://stream.vrcdn.live/x"
+    assert normalize_link("  rtmp://stream.vrcdn.live/x ") == "rtmp://stream.vrcdn.live/x"
+
+
 def test_clean_text() -> None:
     assert clean_text("  Neon   Fox ") == "Neon Fox"
 

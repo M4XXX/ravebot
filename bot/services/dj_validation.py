@@ -17,9 +17,9 @@ def stream_link_ok(link: str) -> bool:
 
 
 def normalize_link(link: str) -> str:
-    """Trim; prepend https:// unless an http(s) scheme is already typed."""
+    """Trim; prepend https:// only when no scheme ("://") is typed."""
     stripped = link.strip()
-    if stripped.lower().startswith(("http://", "https://")):
+    if "://" in stripped:
         return stripped
     return f"https://{stripped}"
 
