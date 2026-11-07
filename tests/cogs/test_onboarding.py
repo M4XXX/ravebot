@@ -146,87 +146,56 @@ async def test_on_member_update_posts_error_on_dm_failure() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Story 2.2: OnboardingIntroView.go_active button handler
+# Welcome DM: one shared intro view (no per-DM view growth)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_go_active_sends_modal() -> None:
-    """go_active acquires lock and sends OnboardingModal when no flow is active."""
-    from bot.ui.views import OnboardingIntroView
-
-    ctx = make_real_ctx(db=MagicMock())
-    view = OnboardingIntroView(ctx, 12345, guild_id=99999)
-
-    inter = MagicMock(spec=disnake.MessageInteraction)
-    inter.author.id = 12345
-    inter.response.send_modal = AsyncMock()
-    inter.response.send_message = AsyncMock()
-
-    # disnake View.__init__ sets view.go_active to a Button with callback=partial(fn, view, btn)
-    # So call it as: await view.go_active.callback(inter)
-    await view.go_active.callback(inter)
-
-    inter.response.send_modal.assert_awaited_once()
-    inter.response.send_message.assert_not_called()
-    # Lock should be held after go_active (released by modal callback)
-    assert ctx.get_user_lock(12345).locked()
-
-
-@pytest.mark.asyncio
-async def test_go_active_concurrent_guard() -> None:
-    """go_active sends ephemeral message and skips modal when lock is already held."""
-    from bot.ui.views import OnboardingIntroView
-
-    ctx = make_real_ctx(db=MagicMock())
-    view = OnboardingIntroView(ctx, 12345, guild_id=99999)
-
-    # Pre-acquire the lock to simulate an active flow
-    await ctx.get_user_lock(12345).acquire()
-
-    inter = MagicMock(spec=disnake.MessageInteraction)
-    inter.author.id = 12345
-    inter.response.send_modal = AsyncMock()
-    inter.response.send_message = AsyncMock()
-
-    await view.go_active.callback(inter)
-
-    inter.response.send_modal.assert_not_called()
-    inter.response.send_message.assert_awaited_once()
-    sent_content = inter.response.send_message.call_args[0][0]
-    assert sent_content == "You already have a booking open. Finish or dismiss it first."
-
-
-# ---------------------------------------------------------------------------
-# Story 2.3: guild_id threading
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_on_member_update_passes_guild_id_to_intro_view() -> None:
-    """on_member_update passes after.guild.id to OnboardingIntroView."""
+async def test_on_member_update_reuses_one_intro_view() -> None:
+    """Every welcome DM carries the same persistent OnboardingIntroView instance."""
     from bot.cogs.onboarding import OnboardingCog
-    from bot.ui.views import OnboardingIntroView
+    from bot.ui.dj_profile import OnboardingIntroView
 
     ctx = make_real_ctx(db=MagicMock())
     cog = OnboardingCog(ctx)
+    views = []
+    for user_id in (55555, 66666):
+        before = make_member()
+        before.roles = []
+        after = make_member(user_id=user_id)
+        after.roles = [make_role("DJ")]
+        with patch(
+            "bot.cogs.onboarding.get_dj_by_discord_id",
+            new=AsyncMock(return_value=None),
+        ):
+            await cog.on_member_update(before, after)
+        after.send.assert_awaited_once()
+        assert after.send.call_args.args[0] == texts.WELCOME
+        views.append(after.send.call_args.kwargs["view"])
 
-    dj_role = make_role("DJ")
-    before = make_member()
-    before.roles = []
-    after = make_member(user_id=55555)
-    after.roles = [dj_role]
-    after.guild.id = 88888
+    assert isinstance(views[0], OnboardingIntroView)
+    assert views[0] is views[1]
+    assert views[0].ctx is ctx
 
-    with patch(
-        "bot.cogs.onboarding.get_dj_by_discord_id",
-        new=AsyncMock(return_value=None),
-    ):
-        await cog.on_member_update(before, after)
 
-    after.send.assert_awaited_once()
-    send_kwargs = after.send.call_args.kwargs
-    view = send_kwargs.get("view")
-    assert isinstance(view, OnboardingIntroView)
-    assert view.guild_id == 88888
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("row", "onboarded"), [(None, False), ({"active_booking": True}, True)])
+async def test_on_message_menu_offers_my_profile_only_to_onboarded(
+    monkeypatch: pytest.MonkeyPatch, row: object, onboarded: bool
+) -> None:
+    from bot.cogs.onboarding import OnboardingCog
+
+    monkeypatch.setattr("bot.cogs.onboarding.get_dj_by_discord_id", AsyncMock(return_value=row))
+    cog = OnboardingCog(make_real_ctx(db=MagicMock()))
+    message = MagicMock(spec=disnake.Message)
+    message.guild = None
+    message.author.id = 1
+    message.author.bot = False
+    message.channel.send = AsyncMock()
+
+    await cog.on_message(message)
+
+    view = message.channel.send.call_args.kwargs["view"]
+    assert ("fallback:my_profile" in [c.custom_id for c in view.children]) is onboarded
 
 
 # ---------------------------------------------------------------------------

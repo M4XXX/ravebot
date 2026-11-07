@@ -28,6 +28,8 @@ class BotContext:
         notion_sync_service: NotionSyncService that reconciles hand edits in Notion
                       with the Postgres slot locks; run by the EventsCog poll loop
                       before each lineup update (None until set in main.py).
+        dj_conversations: DjConversationService for the DJ onboarding and profile
+                      DM conversation (None until set in main.py).
         log_service:  AdminLogService (set in Story 1.3 main.py, None until then).
         user_locks:   Per-user asyncio.Lock dict — keyed by discord_user_id.
                       Prevents a DJ from running two concurrent DM flows simultaneously.
@@ -44,6 +46,7 @@ class BotContext:
     reminders_service: "Any | None" = None
     admin_booking_service: "Any | None" = None
     notion_sync_service: "Any | None" = None
+    dj_conversations: "Any | None" = None
     user_locks: dict[int, asyncio.Lock] = field(default_factory=dict)
 
     def get_user_lock(self, user_id: int) -> asyncio.Lock:

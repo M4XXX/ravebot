@@ -1,4 +1,4 @@
-"""Tests for bot/ui/views.py — OnboardingModal and RetryOnboardingModalView."""
+"""Tests for bot/ui/views.py (menu, booking, cancellation, outreach views)."""
 import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -10,278 +10,6 @@ from bot.ui import texts
 from tests.conftest import make_real_ctx
 from tests.notion.factories import make_event, make_slot
 
-
-def make_modal_inter(
-    dj_name: str = "TestDJ",
-    vrchat_name: str = "",
-    logo_url: str = "",
-    stream_url_primary: str = "https://twitch.tv/testdj",
-    stream_url_backup: str = "",
-    author_id: int = 12345,
-) -> MagicMock:
-    """Helper: mock ModalInteraction with text_values."""
-    inter = MagicMock(spec=disnake.ModalInteraction)
-    inter.author.id = author_id
-    inter.text_values = {
-        "dj_name": dj_name,
-        "vrchat_name": vrchat_name,
-        "logo_url": logo_url,
-        "stream_url_primary": stream_url_primary,
-        "stream_url_backup": stream_url_backup,
-    }
-    inter.response.send_message = AsyncMock()
-    return inter
-
-
-@pytest.mark.asyncio
-async def test_modal_callback_inserts_dj_and_confirms() -> None:
-    """Valid submission inserts DJ, sends confirmation, and releases the lock."""
-    from bot.ui.views import OnboardingModal
-
-    ctx = make_real_ctx(db=MagicMock())
-    lock = ctx.get_user_lock(12345)
-    await lock.acquire()
-
-    modal = OnboardingModal(ctx, 12345, lock, guild_id=99999)
-    inter = make_modal_inter()
-    # guild_id=99999 but no role assignment expected — bypass by returning None from get_guild
-    inter.client.get_guild.return_value = None
-
-    with patch("bot.ui.views.insert_dj", new=AsyncMock()) as mock_insert:
-        await modal.callback(inter)
-
-    mock_insert.assert_awaited_once()
-    insert_kwargs = mock_insert.call_args.kwargs
-    assert insert_kwargs["discord_user_id"] == 12345
-    assert insert_kwargs["dj_name"] == "TestDJ"
-    assert insert_kwargs["stream_url_primary"] == "https://twitch.tv/testdj"
-    assert insert_kwargs["vrchat_name"] is None
-    assert insert_kwargs["logo_url"] is None
-    assert insert_kwargs["stream_url_backup"] is None
-
-    inter.response.send_message.assert_awaited_once()
-    msg = inter.response.send_message.call_args[0][0]
-    assert msg == texts.ONBOARD_DONE
-
-    assert not lock.locked()  # Lock must be released
-
-
-@pytest.mark.asyncio
-async def test_modal_callback_rejects_invalid_stream_url() -> None:
-    """Invalid Primary Stream URL releases lock and sends retry view."""
-    from bot.ui.views import OnboardingModal
-
-    ctx = make_real_ctx(db=MagicMock())
-    lock = ctx.get_user_lock(12345)
-    await lock.acquire()
-
-    modal = OnboardingModal(ctx, 12345, lock, guild_id=99999)
-    inter = make_modal_inter(stream_url_primary="not-a-url")
-
-    with patch("bot.ui.views.insert_dj", new=AsyncMock()) as mock_insert:
-        await modal.callback(inter)
-
-    mock_insert.assert_not_called()
-    inter.response.send_message.assert_awaited_once()
-    call_kwargs = inter.response.send_message.call_args.kwargs
-    assert "view" in call_kwargs  # RetryOnboardingModalView passed
-    assert not lock.locked()  # Lock released on validation failure
-
-
-@pytest.mark.asyncio
-async def test_modal_callback_rejects_invalid_logo_url() -> None:
-    """Invalid Logo URL (non-empty but bad format) releases lock and sends retry."""
-    from bot.ui.views import OnboardingModal
-
-    ctx = make_real_ctx(db=MagicMock())
-    lock = ctx.get_user_lock(12345)
-    await lock.acquire()
-
-    modal = OnboardingModal(ctx, 12345, lock, guild_id=99999)
-    inter = make_modal_inter(logo_url="not-a-url")
-
-    with patch("bot.ui.views.insert_dj", new=AsyncMock()) as mock_insert:
-        await modal.callback(inter)
-
-    mock_insert.assert_not_called()
-    inter.response.send_message.assert_awaited_once()
-    assert not lock.locked()
-
-
-# ---------------------------------------------------------------------------
-# Story 2.3: Active Booking Role Assignment & Notion Sync
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_callback_assigns_role_and_writes_notion() -> None:
-    """Happy path: role assigned + Notion written + confirmation sent."""
-    from bot.ui.views import OnboardingModal
-
-    ctx = make_real_ctx(db=MagicMock())
-    notion_client = MagicMock()
-    notion_client.upsert_dj = AsyncMock(return_value="page-1")
-    ctx.notion_client = notion_client
-    lock = ctx.get_user_lock(12345)
-    await lock.acquire()
-
-    modal = OnboardingModal(ctx, 12345, lock, guild_id=99999)
-    inter = make_modal_inter(
-        vrchat_name="vrc",
-        logo_url="https://i.imgur.com/l.png",
-        stream_url_backup="https://twitch.tv/backup",
-    )
-    inter.author.display_name = "tester"
-
-    role = MagicMock(spec=disnake.Role)
-    role.name = "Active Booking"
-    member = MagicMock(spec=disnake.Member)
-    member.add_roles = AsyncMock()
-    guild = MagicMock(spec=disnake.Guild)
-    guild.get_member.return_value = member
-    guild.roles = [role]
-    inter.client.get_guild.return_value = guild
-
-    with patch("bot.ui.views.insert_dj", new=AsyncMock()):
-        with patch("bot.ui.views.set_notion_dj_page_id", new=AsyncMock()) as mock_store:
-            with patch("disnake.utils.get", return_value=role):
-                await modal.callback(inter)
-    mock_store.assert_awaited_once_with(ctx.db, 12345, "page-1")
-
-    member.add_roles.assert_awaited_once_with(role, reason="Onboarding completed")
-    notion_client.upsert_dj.assert_awaited_once_with(
-        12345,
-        "TestDJ",
-        "tester",
-        vrchat_name="vrc",
-        logo_url="https://i.imgur.com/l.png",
-        link="https://twitch.tv/testdj",
-        alt_link="https://twitch.tv/backup",
-    )
-    inter.response.send_message.assert_awaited_once()
-    msg = inter.response.send_message.call_args[0][0]
-    assert msg == texts.ONBOARD_DONE
-    assert not lock.locked()
-
-
-@pytest.mark.asyncio
-async def test_callback_confirms_even_if_notion_fails() -> None:
-    """NotionWriteError: confirmation still sent AND ERR_NOTION_WRITE posted to admin log (AC3)."""
-    from bot.notion.client import NotionWriteError
-    from bot.ui.embeds import ErrorCode
-    from bot.ui.views import OnboardingModal
-
-    ctx = make_real_ctx(db=MagicMock())
-
-    # Simulate NotionApi.request behaviour: post ERR_NOTION_WRITE to admin log then raise
-    log_mock = MagicMock()
-    log_mock.post_error = AsyncMock()
-
-    async def write_dj_fails(*args: object, **kwargs: object) -> None:
-        await log_mock.post_error(
-            error_code=ErrorCode.ERR_NOTION_WRITE,
-            trigger="Notion write failed after 3 attempts",
-            action_taken="Bot aborted the write operation.",
-            manual_action="Check Notion API key and database permissions.",
-        )
-        raise NotionWriteError("Notion down after 3 retries")
-
-    notion_client = MagicMock()
-    notion_client.upsert_dj = AsyncMock(side_effect=write_dj_fails)
-    ctx.notion_client = notion_client
-    lock = ctx.get_user_lock(22222)
-    await lock.acquire()
-
-    modal = OnboardingModal(ctx, 22222, lock, guild_id=99999)
-    inter = make_modal_inter(author_id=22222)
-    inter.client.get_guild.return_value = None  # skip role assignment
-
-    with patch("bot.ui.views.insert_dj", new=AsyncMock()):
-        await modal.callback(inter)
-
-    # ERR_NOTION_WRITE must be posted to admin log despite best-effort handling
-    log_mock.post_error.assert_awaited_once()
-    assert log_mock.post_error.call_args.kwargs["error_code"] == ErrorCode.ERR_NOTION_WRITE
-    # Confirmation must still be sent despite Notion failure
-    inter.response.send_message.assert_awaited_once()
-    msg = inter.response.send_message.call_args[0][0]
-    assert msg == texts.ONBOARD_DONE
-    assert not lock.locked()
-
-
-@pytest.mark.asyncio
-async def test_callback_skips_notion_if_client_none() -> None:
-    """If notion_client is None on BotContext, skip sync silently."""
-    from bot.ui.views import OnboardingModal
-
-    ctx = make_real_ctx(db=MagicMock())
-    ctx.notion_client = None
-    lock = ctx.get_user_lock(33333)
-    await lock.acquire()
-
-    modal = OnboardingModal(ctx, 33333, lock, guild_id=99999)
-    inter = make_modal_inter(author_id=33333)
-    inter.client.get_guild.return_value = None
-
-    with patch("bot.ui.views.insert_dj", new=AsyncMock()):
-        await modal.callback(inter)
-
-    inter.response.send_message.assert_awaited_once()
-    assert not lock.locked()
-
-
-@pytest.mark.asyncio
-async def test_callback_continues_if_add_roles_raises_http_error() -> None:
-    """disnake.HTTPException on add_roles (e.g. rate limit) does not prevent confirmation."""
-    from bot.ui.views import OnboardingModal
-
-    ctx = make_real_ctx(db=MagicMock())
-    ctx.notion_client = None
-    lock = ctx.get_user_lock(55555)
-    await lock.acquire()
-
-    modal = OnboardingModal(ctx, 55555, lock, guild_id=99999)
-    inter = make_modal_inter(author_id=55555)
-
-    role = MagicMock(spec=disnake.Role)
-    role.name = "Active Booking"
-    member = MagicMock(spec=disnake.Member)
-    member.add_roles = AsyncMock(side_effect=disnake.HTTPException(MagicMock(), "rate limited"))
-    guild = MagicMock(spec=disnake.Guild)
-    guild.get_member.return_value = member
-    inter.client.get_guild.return_value = guild
-
-    with patch("bot.ui.views.insert_dj", new=AsyncMock()):
-        with patch("disnake.utils.get", return_value=role):
-            await modal.callback(inter)
-
-    # Confirmation must still be sent despite HTTP error on role assignment
-    inter.response.send_message.assert_awaited_once()
-    msg = inter.response.send_message.call_args[0][0]
-    assert msg == texts.ONBOARD_DONE
-    assert not lock.locked()
-
-
-@pytest.mark.asyncio
-async def test_callback_skips_role_if_guild_not_found() -> None:
-    """If get_guild returns None, skip role assignment without crash."""
-    from bot.ui.views import OnboardingModal
-
-    ctx = make_real_ctx(db=MagicMock())
-    ctx.notion_client = None
-    lock = ctx.get_user_lock(44444)
-    await lock.acquire()
-
-    modal = OnboardingModal(ctx, 44444, lock, guild_id=99999)
-    inter = make_modal_inter(author_id=44444)
-    inter.client.get_guild.return_value = None
-
-    with patch("bot.ui.views.insert_dj", new=AsyncMock()):
-        await modal.callback(inter)
-
-    inter.response.send_message.assert_awaited_once()
-    assert not lock.locked()
-
-
 # ---------------------------------------------------------------------------
 # Story 2.4: pass_for_now + FallbackMenuView
 # ---------------------------------------------------------------------------
@@ -289,10 +17,10 @@ async def test_callback_skips_role_if_guild_not_found() -> None:
 @pytest.mark.asyncio
 async def test_pass_for_now_sends_warm_response() -> None:
     """pass_for_now sends warm decline; no DB write, no lock acquired."""
-    from bot.ui.views import OnboardingIntroView
+    from bot.ui.dj_profile import OnboardingIntroView
 
     ctx = make_real_ctx(db=MagicMock())
-    view = OnboardingIntroView(ctx, 12345, guild_id=99999)
+    view = OnboardingIntroView(ctx)
 
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.author.id = 12345
@@ -355,6 +83,129 @@ async def test_fallback_go_active_dj_not_in_db() -> None:
     inter.response.send_message.assert_awaited_once()
     msg = inter.response.send_message.call_args[0][0]
     assert msg == texts.NO_PROFILE
+
+
+def _menu_inter(user_id: int, guild: MagicMock) -> MagicMock:
+    from types import SimpleNamespace
+
+    inter = MagicMock()
+    inter.author.id = user_id
+    inter.client.guilds = [guild]
+    inter.response.is_done = MagicMock(return_value=False)
+    inter.response.send_message = AsyncMock()
+    inter.original_response = AsyncMock(return_value=SimpleNamespace(id=321))
+    return inter
+
+
+def _service_ctx() -> object:
+    from bot.services.dj_conversation import Reply
+
+    ctx = make_real_ctx(db=MagicMock())
+    service = MagicMock()
+    service.start_onboarding = AsyncMock(
+        return_value=Reply(texts.Q_NAME, "question", step="name")
+    )
+    service.show_overview = AsyncMock(
+        return_value=Reply(texts.OVERVIEW_TITLE, "overview", in_group=True)
+    )
+    service.record_message_id = AsyncMock()
+    ctx.dj_conversations = service
+    return ctx
+
+
+def _guild_with_member(roles: list) -> tuple[MagicMock, MagicMock]:
+    member = MagicMock(spec=disnake.Member)
+    member.roles = roles
+    guild = MagicMock(spec=disnake.Guild)
+    guild.id = 99999
+    guild.get_member.return_value = member
+    return guild, member
+
+
+@pytest.mark.asyncio
+async def test_fallback_go_active_without_row_and_without_dj_role_gets_no_profile() -> None:
+    from bot.ui.views import FallbackMenuView
+
+    ctx = _service_ctx()
+    dj_role = MagicMock(spec=disnake.Role)
+    guild, _ = _guild_with_member([])
+    inter = _menu_inter(88888, guild)
+
+    with patch("bot.ui.views.update_active_booking", new=AsyncMock(return_value=False)), \
+         patch("bot.ui.views.get_dj_role", new=AsyncMock(return_value=dj_role)):
+        await FallbackMenuView(ctx).go_active.callback(inter)
+
+    assert inter.response.send_message.call_args[0][0] == texts.NO_PROFILE
+    ctx.dj_conversations.start_onboarding.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_fallback_go_active_without_row_with_dj_role_starts_onboarding() -> None:
+    from bot.ui.dj_profile import QuestionView
+    from bot.ui.views import FallbackMenuView
+
+    ctx = _service_ctx()
+    dj_role = MagicMock(spec=disnake.Role)
+    guild, _ = _guild_with_member([dj_role])
+    inter = _menu_inter(88888, guild)
+
+    with patch("bot.ui.views.update_active_booking", new=AsyncMock(return_value=False)), \
+         patch("bot.ui.views.get_dj_role", new=AsyncMock(return_value=dj_role)):
+        await FallbackMenuView(ctx).go_active.callback(inter)
+
+    ctx.dj_conversations.start_onboarding.assert_awaited_once_with(88888, 99999)
+    sent = inter.response.send_message.call_args
+    assert sent.args[0] == texts.Q_NAME
+    assert isinstance(sent.kwargs["view"], QuestionView)
+    ctx.dj_conversations.record_message_id.assert_awaited_once_with(88888, 321)
+
+
+@pytest.mark.asyncio
+async def test_menu_my_profile_only_for_onboarded_djs() -> None:
+    from bot.ui.views import FallbackMenuView
+
+    ctx = make_real_ctx(db=MagicMock())
+    for active in (None, False, True):
+        with_profile = [c.custom_id for c in FallbackMenuView(ctx, active, onboarded=True).children]
+        without = [c.custom_id for c in FallbackMenuView(ctx, active, onboarded=False).children]
+        assert "fallback:my_profile" in with_profile
+        assert "fallback:my_profile" not in without
+    button = next(
+        c for c in FallbackMenuView(ctx, True, onboarded=True).children
+        if c.custom_id == "fallback:my_profile"
+    )
+    assert (button.label, button.row) == (texts.BTN_MY_PROFILE, 2)
+
+
+@pytest.mark.asyncio
+async def test_menu_my_profile_sends_the_overview() -> None:
+    from bot.ui.dj_profile import OverviewView
+    from bot.ui.views import FallbackMenuView
+
+    ctx = _service_ctx()
+    guild, _ = _guild_with_member([])
+    inter = _menu_inter(4242, guild)
+
+    await FallbackMenuView(ctx, True, onboarded=True).my_profile.callback(inter)
+
+    ctx.dj_conversations.show_overview.assert_awaited_once_with(4242)
+    sent = inter.response.send_message.call_args
+    assert sent.args[0] == texts.OVERVIEW_TITLE
+    assert isinstance(sent.kwargs["view"], OverviewView)
+    assert "dj:leave" in [c.custom_id for c in sent.kwargs["view"].children]
+    ctx.dj_conversations.record_message_id.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_persistent_menu_has_every_button() -> None:
+    from bot.ui.views import FallbackMenuView
+
+    view = FallbackMenuView(make_real_ctx(db=MagicMock()), all_buttons=True)
+    assert sorted(c.custom_id for c in view.children) == sorted([
+        "fallback:book_slot", "fallback:cancel_slot", "fallback:go_active",
+        "fallback:go_inactive", "fallback:show_lineup", "fallback:my_profile",
+    ])
+    assert view.is_persistent()
 
 
 @pytest.mark.asyncio
@@ -2508,28 +2359,6 @@ async def test_booking_confirm_success_without_log_service() -> None:
 
 
 # --- New DJ log entry and fully booked hooks (group 4, task 3) ----------------
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("vrchat_input", "vrchat_logged"), [("", None), ("Vee", "Vee")]
-)
-async def test_onboarding_completion_logs_one_new_dj_entry(vrchat_input, vrchat_logged) -> None:
-    from bot.ui.views import OnboardingModal
-
-    ctx = make_real_ctx(db=MagicMock())
-    ctx.log_service = MagicMock()
-    ctx.log_service.log_new_dj = AsyncMock()
-    lock = ctx.get_user_lock(12345)
-    await lock.acquire()
-    modal = OnboardingModal(ctx, 12345, lock, guild_id=99999)
-    inter = make_modal_inter(vrchat_name=vrchat_input)
-    inter.client.get_guild.return_value = None
-
-    with patch("bot.ui.views.insert_dj", new=AsyncMock()):
-        await modal.callback(inter)
-
-    ctx.log_service.log_new_dj.assert_awaited_once_with("TestDJ", vrchat_logged)
 
 
 @pytest.mark.asyncio

@@ -1,9 +1,8 @@
 """Onboarding cog — DJ role detection and DM initiation.
 
 Story 2.1: on_member_update — detects DJ role assignment, sends intro DM.
-Story 2.2: Go Active button handler — opens onboarding modal, stores profile.
-Story 2.3: Role assignment + Notion sync after modal submit.
-Story 2.4: Pass for now handler + FallbackMenuView.
+DJ onboarding rework: the intro buttons start the DM conversation (bot/ui/dj_profile.py).
+Story 2.4: FallbackMenuView.
 
 [Source: architecture.md#Cog Responsibility Boundary]
 [Source: epics.md#FR1-FR8]
@@ -20,10 +19,11 @@ from bot.db.log_replies import save_log_reply
 from bot.services import activation
 from bot.services.roles import get_dj_role
 from bot.ui import texts
+from bot.ui.dj_profile import OnboardingIntroView
 from bot.ui.embeds import ErrorCode
 from bot.ui.gates import IDLE_REPLY
 from bot.ui.log_reply import LogReplyView
-from bot.ui.views import FallbackMenuView, OnboardingIntroView
+from bot.ui.views import FallbackMenuView
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +34,7 @@ class OnboardingCog(commands.Cog):
     def __init__(self, ctx: BotContext) -> None:
         self.ctx = ctx
         self._reply_view: LogReplyView | None = None
+        self._intro_view: OnboardingIntroView | None = None
         self._tasks: set[asyncio.Task] = set()
 
     def _get_reply_view(self) -> LogReplyView:
@@ -41,6 +42,12 @@ class OnboardingCog(commands.Cog):
         if self._reply_view is None:
             self._reply_view = LogReplyView(self.ctx)
         return self._reply_view
+
+    def _get_intro_view(self) -> OnboardingIntroView:
+        """One shared intro view for every welcome DM (persistent, no per-DM growth)."""
+        if self._intro_view is None:
+            self._intro_view = OnboardingIntroView(self.ctx)
+        return self._intro_view
 
     @commands.Cog.listener()
     async def on_member_update(
@@ -92,7 +99,7 @@ class OnboardingCog(commands.Cog):
             onboarding_text = texts.WELCOME
             await after.send(
                 onboarding_text,
-                view=OnboardingIntroView(self.ctx, after.id, after.guild.id),
+                view=self._get_intro_view(),
             )
             logger.info("Onboarding DM sent to %s (user_id=%s)", after.name, after.id)
         except disnake.Forbidden:
@@ -175,6 +182,7 @@ class OnboardingCog(commands.Cog):
         if lock.locked():
             return
         active: bool | None = None
+        onboarded = False
         if self.ctx.db is not None:
             try:
                 dj = await get_dj_by_discord_id(self.ctx.db, message.author.id)
@@ -183,5 +191,8 @@ class OnboardingCog(commands.Cog):
                 dj = None
             if dj is not None:
                 active = bool(dj["active_booking"])
+                onboarded = True
         fallback_text = texts.MENU
-        await message.channel.send(fallback_text, view=FallbackMenuView(self.ctx, active))
+        await message.channel.send(
+            fallback_text, view=FallbackMenuView(self.ctx, active, onboarded)
+        )

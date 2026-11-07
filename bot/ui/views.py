@@ -1,7 +1,6 @@
 """discord.ui.View subclasses — implemented across Story 2.x–5.x.
 
-Views: OnboardingIntroView (Story 2.1), OnboardingModal + RetryOnboardingModalView (Story 2.2),
-       BookingConfirmView (Story 4.2), SlotSelectionView (Story 4.1),
+Views: BookingConfirmView (Story 4.2), SlotSelectionView (Story 4.1),
        EventSelectionView (Story 4.1), CancellationView, CancelConfirmView, FallbackMenuView,
        OutreachView (Story 5.2).
 
@@ -17,9 +16,10 @@ from typing import TYPE_CHECKING
 
 import disnake
 
-from bot.db.djs import get_dj_by_discord_id, insert_dj, set_notion_dj_page_id, update_active_booking
-from bot.services.roles import get_invites_role
+from bot.db.djs import get_dj_by_discord_id, update_active_booking
+from bot.services.roles import get_dj_role, get_invites_role
 from bot.ui import texts
+from bot.ui.dj_profile import respond
 from bot.ui.embeds import ErrorCode
 from bot.ui.gates import GatedView
 
@@ -28,323 +28,6 @@ if TYPE_CHECKING:
     from bot.notion.models import EventInfo
 
 logger = logging.getLogger(__name__)
-
-
-def _is_valid_url(value: str) -> bool:
-    """Return True if value looks like an HTTP/HTTPS URL."""
-    return bool(value) and value.startswith(("http://", "https://")) and len(value) > 10
-
-
-class OnboardingIntroView(GatedView):
-    """Intro DM view — two buttons sent when DJ role is first detected.
-
-    Buttons:
-      [✅ Go Active]   — success style — opens onboarding modal (Story 2.2)
-      [Pass for now]   — secondary style — warm decline (Story 2.4)
-
-    timeout=None: DJ-facing flows never expire mid-flow (UX-DR16).
-    Lock acquisition deferred to button handlers (Story 2.2/2.4).
-
-    [Source: epics.md#Story 2.1 AC2]
-    [Source: ux-design-specification.md#UX-DR13, UX-DR16]
-    """
-
-    def __init__(self, ctx: "BotContext", user_id: int, guild_id: int = 0) -> None:
-        super().__init__(timeout=None)
-        self.ctx = ctx
-        self.user_id = user_id
-        self.guild_id = guild_id
-
-    async def on_timeout(self) -> None:
-        """No-op: timeout=None means this never fires.
-
-        Required by View lifecycle contract.
-        [Source: architecture.md#View Lifecycle Contract]
-        """
-
-    @disnake.ui.button(
-        label=texts.BTN_JOIN_POOL,
-        style=disnake.ButtonStyle.success,
-        custom_id="onboarding:go_active",
-    )
-    async def go_active(
-        self,
-        button: disnake.ui.Button,
-        inter: disnake.MessageInteraction,
-    ) -> None:
-        """Acquire per-user lock and open the onboarding modal.
-
-        [Source: epics.md#Story 2.2 AC1, AC5]
-        [Source: architecture.md#Per-User Flow Lock: asyncio.Lock per user_id]
-        """
-        lock = self.ctx.get_user_lock(inter.author.id)
-        if lock.locked():
-            await inter.response.send_message(
-                texts.FLOW_OPEN,
-                ephemeral=True,
-            )
-            return
-        await lock.acquire()
-        await inter.response.send_modal(
-            OnboardingModal(self.ctx, inter.author.id, lock, self.guild_id)
-        )
-
-    @disnake.ui.button(
-        label=texts.BTN_NOT_NOW,
-        style=disnake.ButtonStyle.secondary,
-        custom_id="onboarding:pass_for_now",
-    )
-    async def pass_for_now(
-        self,
-        button: disnake.ui.Button,
-        inter: disnake.MessageInteraction,
-    ) -> None:
-        """Warm decline — no DB write, no role assignment (Story 2.4 AC1)."""
-        response_text = texts.ONBOARD_DECLINED
-        await inter.response.send_message(response_text)
-
-
-class OnboardingModal(disnake.ui.Modal):
-    """Profile setup modal — opens when DJ taps [Go Active] in the onboarding DM.
-
-    5 fields: DJ Name (required), VRChat Name (optional), Logo URL (optional),
-    Primary Stream URL (required), Backup Stream URL (optional).
-
-    Lock management:
-    - Lock is ALREADY HELD when this modal is presented (acquired in go_active).
-    - callback() releases the lock on ALL exit paths (success, validation failure, db guard).
-
-    [Source: epics.md#Story 2.2 AC1, AC2, AC4]
-    [Source: ux-design-specification.md#UX-DR15]
-    [Source: architecture.md#Per-User Flow Lock: asyncio.Lock per user_id]
-    """
-
-    def __init__(
-        self, ctx: "BotContext", user_id: int, lock: asyncio.Lock, guild_id: int = 0
-    ) -> None:
-        self._ctx = ctx
-        self._user_id = user_id
-        self._lock = lock
-        self._guild_id = guild_id
-        super().__init__(
-            title="Set Up Your Profile",
-            custom_id="onboarding_modal",
-            components=[
-                disnake.ui.TextInput(
-                    label="DJ Name",
-                    placeholder="Your DJ name as shown on posters",
-                    custom_id="dj_name",
-                    style=disnake.TextInputStyle.short,
-                    min_length=1,
-                    max_length=100,
-                    required=True,
-                ),
-                disnake.ui.TextInput(
-                    label="VRChat Username",
-                    placeholder="Your VRChat username (optional, skip if not applicable)",
-                    custom_id="vrchat_name",
-                    style=disnake.TextInputStyle.short,
-                    max_length=100,
-                    required=False,
-                ),
-                disnake.ui.TextInput(
-                    label="Logo URL",
-                    placeholder="https://i.imgur.com/yourlogo.png (optional)",
-                    custom_id="logo_url",
-                    style=disnake.TextInputStyle.short,
-                    max_length=512,
-                    required=False,
-                ),
-                disnake.ui.TextInput(
-                    label="Primary Stream URL",
-                    placeholder="https://twitch.tv/yourname",
-                    custom_id="stream_url_primary",
-                    style=disnake.TextInputStyle.short,
-                    max_length=512,
-                    required=True,
-                ),
-                disnake.ui.TextInput(
-                    label="Backup Stream URL",
-                    placeholder="https://twitch.tv/yourname (optional, skip if not applicable)",
-                    custom_id="stream_url_backup",
-                    style=disnake.TextInputStyle.short,
-                    max_length=512,
-                    required=False,
-                ),
-            ],
-        )
-
-    async def callback(self, inter: disnake.ModalInteraction) -> None:
-        """Process modal submission: validate URLs → insert DJ → confirm → release lock.
-
-        Lock is released on ALL exit paths.
-        Story 2.3 will extend this to add Discord role assignment and Notion sync
-        BEFORE the confirmation message is sent.
-
-        [Source: epics.md#Story 2.2 AC2, AC4]
-        """
-        values = inter.text_values
-        dj_name = values["dj_name"].strip()
-        vrchat_name = values["vrchat_name"].strip() or None
-        logo_url = values["logo_url"].strip() or None
-        stream_url_primary = values["stream_url_primary"].strip()
-        stream_url_backup = values["stream_url_backup"].strip() or None
-
-        # Validate optional URL fields (required fields validated by Discord natively)
-        invalid_fields: list[str] = []
-        if logo_url and not _is_valid_url(logo_url):
-            invalid_fields.append("Logo URL")
-        if not _is_valid_url(stream_url_primary):
-            invalid_fields.append("Primary Stream URL")
-        if stream_url_backup and not _is_valid_url(stream_url_backup):
-            invalid_fields.append("Backup Stream URL")
-
-        if invalid_fields:
-            self._lock.release()
-            await inter.response.send_message(
-                texts.link_invalid(", ".join(invalid_fields)),
-                view=RetryOnboardingModalView(self._ctx, inter.author.id, self._guild_id),
-            )
-            return
-
-        # Guard: DB pool should always be available at this point,
-        # but guard defensively in case of startup race condition.
-        if self._ctx.db is None:
-            self._lock.release()
-            if self._ctx.log_service is not None:
-                await self._ctx.log_service.post_error(
-                    error_code=ErrorCode.ERR_DB_UNAVAILABLE,
-                    trigger=(
-                        f"{inter.author.display_name} could not finish setting up "
-                        "their DJ profile because the database is unavailable."
-                    ),
-                    action_taken="They were asked to try again.",
-                )
-            await inter.response.send_message(
-                texts.GENERIC_ERROR,
-            )
-            return
-
-        await insert_dj(
-            self._ctx.db,
-            discord_user_id=inter.author.id,
-            dj_name=dj_name,
-            vrchat_name=vrchat_name,
-            logo_url=logo_url,
-            stream_url_primary=stream_url_primary,
-            stream_url_backup=stream_url_backup,
-        )
-        if self._ctx.log_service is not None:
-            await self._ctx.log_service.log_new_dj(dj_name, vrchat_name or None)
-        self._lock.release()
-
-        # Story 2.3: assign Active Booking role
-        guild = inter.client.get_guild(self._guild_id)
-        if guild is not None:
-            member = guild.get_member(inter.author.id)
-            if member is not None:
-                role = await get_invites_role(self._ctx.db, guild)
-                if role is not None:
-                    try:
-                        await member.add_roles(role, reason="Onboarding completed")
-                    except disnake.Forbidden:
-                        logger.warning(
-                            "Missing Manage Roles permission to assign Active Booking role "
-                            "to user %s in guild %s",
-                            inter.author.id,
-                            self._guild_id,
-                        )
-                    except disnake.HTTPException as exc:
-                        logger.warning(
-                            "HTTP error assigning Active Booking role to user %s in guild %s: %s",
-                            inter.author.id,
-                            self._guild_id,
-                            exc,
-                        )
-                else:
-                    logger.warning("Active Booking role not found in guild %s", self._guild_id)
-            else:
-                logger.warning(
-                    "Member %s not in guild cache %s — cannot assign role",
-                    inter.author.id,
-                    self._guild_id,
-                )
-        else:
-            logger.warning("Guild %s not in bot cache — cannot assign role", self._guild_id)
-
-        # Story 2.3 / 4.2: Notion DJ record sync + store returned page ID (best-effort)
-        if self._ctx.notion_client is not None:
-            try:
-                notion_page_id = await self._ctx.notion_client.upsert_dj(
-                    inter.author.id,
-                    dj_name,
-                    inter.author.display_name or inter.author.name,
-                    vrchat_name=vrchat_name,
-                    logo_url=logo_url,
-                    link=stream_url_primary,
-                    alt_link=stream_url_backup,
-                )
-                # Story 4.2: persist the Notion page ID so BookingConfirmView can later
-                # append this DJ to the event's DJs relation
-                if self._ctx.db is not None:
-                    await set_notion_dj_page_id(
-                        self._ctx.db,
-                        inter.author.id,
-                        notion_page_id,
-                    )
-            except Exception:
-                logger.exception(
-                    "Unexpected error during Notion DJ record sync for user %s",
-                    inter.author.id,
-                )
-
-        await inter.response.send_message(texts.ONBOARD_DONE)
-
-
-class RetryOnboardingModalView(GatedView):
-    """Single-button view shown after URL validation failure.
-
-    Allows DJ to re-open the onboarding modal without restarting from scratch.
-    Re-acquires the user lock before opening the modal (was released on failure).
-
-    timeout=None: no time pressure on retry (UX-DR16).
-    [Source: epics.md#Story 2.2 AC4]
-    [Source: ux-design-specification.md#UX-DR16]
-    """
-
-    def __init__(self, ctx: "BotContext", user_id: int, guild_id: int = 0) -> None:
-        super().__init__(timeout=None)
-        self._ctx = ctx
-        self._user_id = user_id
-        self._guild_id = guild_id
-
-    async def on_timeout(self) -> None:
-        """No-op: timeout=None means this never fires.
-        [Source: architecture.md#View Lifecycle Contract]
-        """
-
-    @disnake.ui.button(
-        label=texts.BTN_TRY_AGAIN,
-        style=disnake.ButtonStyle.primary,
-        custom_id="onboarding:retry_modal",
-    )
-    async def retry(
-        self,
-        button: disnake.ui.Button,
-        inter: disnake.MessageInteraction,
-    ) -> None:
-        """Re-open the onboarding modal. Re-acquires the per-user lock."""
-        lock = self._ctx.get_user_lock(inter.author.id)
-        if lock.locked():
-            await inter.response.send_message(
-                texts.FLOW_OPEN,
-                ephemeral=True,
-            )
-            return
-        await lock.acquire()
-        await inter.response.send_modal(
-            OnboardingModal(self._ctx, inter.author.id, lock, self._guild_id)
-        )
 
 
 class FallbackMenuView(GatedView):
@@ -356,6 +39,8 @@ class FallbackMenuView(GatedView):
     Buttons: Book a slot, Cancel a slot, Show lineup and exactly one pool button:
     "Contact me for Booking" (active False/None) or "Don't automatically ask for
     booking" (active True). The other pool button is removed in __init__.
+    "My DJ profile" is shown to onboarded DJs only. `all_buttons` keeps every
+    button (one persistent instance registered in main.py).
 
     timeout=None: DJ-facing views never expire (UX-DR16).
     No per-user lock: Go Active/Go Inactive are single-step interactions.
@@ -364,13 +49,24 @@ class FallbackMenuView(GatedView):
     [Source: ux-design-specification.md#UX-DR1, UX-DR13, UX-DR16]
     """
 
-    def __init__(self, ctx: "BotContext", active: bool | None = None) -> None:
+    def __init__(
+        self,
+        ctx: "BotContext",
+        active: bool | None = None,
+        onboarded: bool = False,
+        *,
+        all_buttons: bool = False,
+    ) -> None:
         super().__init__(timeout=None)
         self.ctx = ctx
+        if all_buttons:
+            return
         if active:
             self.remove_item(self.go_active)
         else:
             self.remove_item(self.go_inactive)
+        if not onboarded:
+            self.remove_item(self.my_profile)
 
     async def on_timeout(self) -> None:
         """No-op: timeout=None means this never fires.
@@ -536,7 +232,15 @@ class FallbackMenuView(GatedView):
         )
 
         if not updated:
-            await inter.response.send_message(texts.NO_PROFILE, ephemeral=True)
+            # No DJ row: a member with the DJ role starts the onboarding conversation.
+            guild = await _guild_with_dj_role(self.ctx.db, inter)
+            if guild is None:
+                await inter.response.send_message(texts.NO_PROFILE, ephemeral=True)
+                return
+            user_id, guild_id = inter.author.id, guild.id
+            await respond(
+                self.ctx, inter, lambda s: s.start_onboarding(user_id, guild_id), defer=False
+            )
             return
 
         # Assign Active Booking role (best-effort — failure does not block confirmation)
@@ -656,6 +360,38 @@ class FallbackMenuView(GatedView):
         if pick_view is not None:
             kwargs["view"] = pick_view
         await inter.response.send_message(**kwargs)
+
+    @disnake.ui.button(
+        label=texts.BTN_MY_PROFILE,
+        style=disnake.ButtonStyle.secondary,
+        custom_id="fallback:my_profile",
+        row=2,
+    )
+    async def my_profile(
+        self,
+        button: disnake.ui.Button,
+        inter: disnake.MessageInteraction,
+    ) -> None:
+        """Show the DJ's profile overview with its change buttons."""
+        user_id = inter.author.id
+        await respond(self.ctx, inter, lambda s: s.show_overview(user_id), defer=False)
+
+
+async def _guild_with_dj_role(
+    db: object, inter: disnake.MessageInteraction
+) -> disnake.Guild | None:
+    """First guild where the user is a member and has the configured DJ role."""
+    for guild in inter.client.guilds:
+        try:
+            member = guild.get_member(inter.author.id)
+            if member is None:
+                continue
+            role = await get_dj_role(db, guild)
+            if role is not None and role in member.roles:
+                return guild
+        except Exception:
+            logger.warning("DJ role check failed for %s", inter.author.id, exc_info=True)
+    return None
 
 
 class LineupEventPickView(GatedView):

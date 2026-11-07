@@ -33,6 +33,7 @@ from bot.notion.client import NotionClient
 from bot.notion.schema import NotionSchemaError, ensure_schema
 from bot.notion.views import ensure_views
 from bot.services import activation
+from bot.services.dj_sync import retry_unsynced_logos
 from bot.timezone import load_stored_timezone
 from bot.ui.gates import STARTUP_ADMIN_DM
 
@@ -91,6 +92,16 @@ async def notify_admins_if_idle(bot: commands.Bot, db: object, admin_ids: object
             logger.warning("Could not send the setup DM to admin %s", admin_id, exc_info=True)
 
 
+async def _retry_logos_if_active(bot: commands.Bot, ctx: BotContext) -> None:
+    """Retry the Notion upload of logos that are not synced yet (once per process)."""
+    try:
+        if not await activation.bot_is_active(bot, ctx.db):
+            return
+        await retry_unsynced_logos(ctx, bot.guilds[0] if bot.guilds else None)
+    except Exception:
+        logger.warning("Retrying unsynced DJ logos failed", exc_info=True)
+
+
 async def main() -> None:
     """Async entry point — configure, run migrations, open pool, start bot."""
     config = Config.from_env()
@@ -143,6 +154,15 @@ async def main() -> None:
 
     for wizard_view in registered_views(ctx):  # persistent: the wizard works after restarts
         bot.add_view(wizard_view)
+    # DJ onboarding conversation and profile: the service needs the bot for roles and names
+    from bot.services.dj_conversation import DjConversationService
+    from bot.ui import dj_profile
+    from bot.ui.views import FallbackMenuView
+
+    ctx.dj_conversations = DjConversationService(ctx, client=bot)
+    for dj_view in dj_profile.registered_views(ctx):  # persistent: old DM buttons keep working
+        bot.add_view(dj_view)
+    bot.add_view(FallbackMenuView(ctx, all_buttons=True))  # persistent: menus after restarts
     ctx.lineup_service = LineupService(
         bot=bot,
         view=post_view,
@@ -210,6 +230,7 @@ async def main() -> None:
         if not startup_dm_sent:
             startup_dm_sent = True
             await notify_admins_if_idle(bot, ctx.db, config.admin_user_ids)
+            await _retry_logos_if_active(bot, ctx)
 
     try:
         await bot.start(config.discord_bot_token)

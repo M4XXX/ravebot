@@ -214,22 +214,6 @@ async def no_dj_channel(log: Recorder) -> None:
         await svc._send(1, EVENT)
 
 
-async def onboarding_db_none(log: Recorder) -> None:
-    from bot.ui.views import OnboardingModal
-
-    ctx = MagicMock(db=None, log_service=log)
-    modal = OnboardingModal(ctx, 123456789, MagicMock(), 1)
-    inter = MagicMock()
-    inter.author.id = 123456789
-    inter.author.display_name = "DJ Anna"
-    inter.text_values = {
-        "dj_name": "DJ Anna", "vrchat_name": "", "logo_url": "",
-        "stream_url_primary": "https://twitch.tv/a", "stream_url_backup": "",
-    }
-    inter.response.send_message = AsyncMock()
-    await modal.callback(inter)
-
-
 BLOCKED = ("Could not DM a DJ", DM_TODO.format(name="DJ Anna"))
 CASES = [
     pytest.param(welcome_blocked, *BLOCKED, ["DJ Anna"], id="welcome-dm"),
@@ -241,7 +225,6 @@ CASES = [
     pytest.param(db_unavailable_events_down, "Database unavailable", None, [], id="db-events-down"),
     pytest.param(db_unavailable_outreach_none, "Database unavailable", None, [], id="db-out-none"),
     pytest.param(db_unavailable_outreach_down, "Database unavailable", None, [], id="db-out-down"),
-    pytest.param(onboarding_db_none, "Database unavailable", None, ["DJ Anna"], id="onboarding-db"),
     pytest.param(outreach_exhausted, "No more DJs to ask",
                  "Ask DJs yourself or add new DJs to the pool. A new DJ joining the pool "
                  "starts another round of invites.", ["Rave Night", "4 slots"], id="exhausted"),

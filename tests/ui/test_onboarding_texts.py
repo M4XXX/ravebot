@@ -48,7 +48,6 @@ def test_misc_constants() -> None:
     assert texts.INVITES_ON_DONE.startswith("You're in the Active DJ Booking Group.")
     assert "Active DJ Booking Group" in texts.INVITES_OFF_DONE
     assert texts.INVITES_ROLE_NAME == "Active Booking"
-    assert texts.link_invalid and texts.BTN_TRY_AGAIN == "Try again"
 
 
 def test_edit_helpers() -> None:

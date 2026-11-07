@@ -35,7 +35,6 @@ def _catalog_values() -> list[str]:
         else:
             values.append(value)
     values += [
-        texts.link_invalid("a, b"),
         texts.invite_opener("EV"),
         texts.slot_button(event, 0),
         texts.event_line(1, event, 1),

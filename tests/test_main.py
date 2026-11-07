@@ -185,3 +185,73 @@ async def test_startup_fails_fast_when_notion_setup_fails(error: Exception) -> N
     assert "start" not in s.calls
     s.pool.close.assert_awaited_once()
     s.api.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_startup_creates_dj_conversation_service_with_the_bot() -> None:
+    from bot.services.dj_conversation import DjConversationService
+
+    s = _Startup()
+    await s.run()
+    service = s.ctx.dj_conversations
+    assert isinstance(service, DjConversationService)
+    assert service._client is s.bot
+    assert service._ctx is s.ctx
+
+
+@pytest.mark.asyncio
+async def test_startup_registers_dj_profile_and_menu_views() -> None:
+    from bot.ui.gates import GatedView
+
+    s = _Startup()
+    await s.run()
+    added = [c.args[0] for c in s.bot.add_view.call_args_list]
+    found = [
+        c.custom_id for v in added if isinstance(v, GatedView) for c in v.children
+    ]
+    expected = [
+        "onboarding:go_active", "onboarding:pass_for_now",
+        "dj:skip", "dj:use_as_is", "dj:remove", "dj:cancel", "dj:confirm", "dj:start_over",
+        "dj:edit:name", "dj:edit:vrchat", "dj:edit:logo", "dj:edit:link", "dj:edit:alt_link",
+        "dj:leave", "dj:join",
+        "fallback:book_slot", "fallback:cancel_slot", "fallback:go_active",
+        "fallback:go_inactive", "fallback:show_lineup", "fallback:my_profile",
+    ]
+    for custom_id in expected:
+        assert found.count(custom_id) == 1, custom_id
+    for view in added:
+        if isinstance(view, GatedView):
+            assert view.ctx is s.ctx
+
+
+async def _ready(s: "_Startup", active: bool, times: int) -> AsyncMock:
+    from bot import main as main_mod
+
+    guild = MagicMock()
+    s.bot.guilds = [guild]
+    retry = AsyncMock(return_value=0)
+    with patch.object(main_mod, "retry_unsynced_logos", new=retry), \
+         patch.object(main_mod, "load_stored_timezone", new=AsyncMock()), \
+         patch.object(main_mod, "notify_admins_if_idle", new=AsyncMock()), \
+         patch.object(main_mod.activation, "bot_is_active", new=AsyncMock(return_value=active)):
+        on_ready = s.bot.event.call_args.args[0]
+        for _ in range(times):
+            await on_ready()
+    retry.guild = guild
+    return retry
+
+
+@pytest.mark.asyncio
+async def test_on_ready_retries_unsynced_logos_once_per_process() -> None:
+    s = _Startup()
+    await s.run()
+    retry = await _ready(s, active=True, times=2)
+    retry.assert_awaited_once_with(s.ctx, retry.guild)
+
+
+@pytest.mark.asyncio
+async def test_on_ready_skips_logo_retry_while_idle() -> None:
+    s = _Startup()
+    await s.run()
+    retry = await _ready(s, active=False, times=1)
+    retry.assert_not_awaited()

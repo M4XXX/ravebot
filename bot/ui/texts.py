@@ -49,6 +49,11 @@ BTN_LOOKS_GOOD = "Looks good"
 BTN_START_OVER = "Start over"
 BTN_REMOVE = "Remove"
 BTN_MY_PROFILE = "My DJ profile"
+BTN_CHANGE_NAME = "Change DJ name"
+BTN_CHANGE_VRCHAT = "Change VRChat name"
+BTN_CHANGE_LOGO = "Change logo"
+BTN_CHANGE_LINK = "Change stream link"
+BTN_CHANGE_ALT_LINK = "Change backup link"
 ONBOARD_DECLINED = "No problem. Write me any message to open the menu and join later."
 ONBOARD_DONE = (
     "**You're in the Active DJ Booking Group**\n"
@@ -154,16 +159,6 @@ def profile_text(
     if show_group is not None:
         lines.append(f"Active DJ Booking Group: {'yes' if show_group else 'no'}")
     return "\n".join(lines)
-
-
-def link_invalid(fields: str) -> str:
-    return (
-        f"That link doesn't look right: {fields}. "
-        'Links must start with https://. Tap "Try again" to fix it.'
-    )
-
-
-BTN_TRY_AGAIN = "Try again"
 
 
 def invite_opener(event_id: str) -> str:

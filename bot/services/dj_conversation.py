@@ -82,6 +82,7 @@ class Reply:
     allow_skip: bool = False
     allow_as_is: bool = False
     allow_remove: bool = False
+    in_group: bool = False  # overview only: the DJ is in the Active DJ Booking Group
 
 
 def _stale() -> Reply:
@@ -460,7 +461,12 @@ class DjConversationService:
             alt_link=row["stream_url_backup"],
             show_group=bool(row["active_booking"]),
         )
-        return Reply(f"{texts.OVERVIEW_TITLE}\n{body}", "overview", image=image)
+        return Reply(
+            f"{texts.OVERVIEW_TITLE}\n{body}",
+            "overview",
+            image=image,
+            in_group=bool(row["active_booking"]),
+        )
 
     async def show_overview(self, user_id: int) -> Reply:
         async def body(db: asyncpg.Pool) -> Reply:

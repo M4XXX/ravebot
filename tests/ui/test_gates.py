@@ -6,13 +6,15 @@ import disnake
 import pytest
 
 from bot.services import activation
-from bot.ui import views
+from bot.ui import dj_profile, views
 from bot.ui.gates import ADMIN_IDLE_REPLY, IDLE_REPLY, GatedView
 from bot.ui.log_reply import LogReplyView
 
 DJ_VIEWS = [
-    views.OnboardingIntroView,
-    views.RetryOnboardingModalView,
+    dj_profile.OnboardingIntroView,
+    dj_profile.QuestionView,
+    dj_profile.SummaryView,
+    dj_profile.OverviewView,
     views.FallbackMenuView,
     views.LineupEventPickView,
     views.LineupPostView,
@@ -46,9 +48,10 @@ def test_every_dj_view_is_gated_and_log_reply_is_not() -> None:
         assert issubclass(cls, GatedView), cls.__name__
     assert not issubclass(LogReplyView, GatedView)
     # no other View subclass in views.py bypasses the gate
-    for _, cls in inspect.getmembers(views, inspect.isclass):
-        if issubclass(cls, disnake.ui.View) and cls.__module__ == views.__name__:
-            assert issubclass(cls, GatedView), cls.__name__
+    for module in (views, dj_profile):
+        for _, cls in inspect.getmembers(module, inspect.isclass):
+            if issubclass(cls, disnake.ui.View) and cls.__module__ == module.__name__:
+                assert issubclass(cls, GatedView), cls.__name__
 
 
 @pytest.mark.asyncio
