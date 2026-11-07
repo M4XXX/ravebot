@@ -19,7 +19,7 @@ _FAIL_TTL = 30.0
 _MAX_NAME = 80
 _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f​-‏ -‮⁦-⁩]")
 SAVE_FAILED = "Could not save the change. Try again."
-FORMAT_MESSAGE = "Please enter a Discord user ID (17 to 20 digits)."
+FORMAT_MESSAGE = "Please enter a Discord user ID (17 to 19 digits)."
 
 
 @dataclass(frozen=True)

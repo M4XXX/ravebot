@@ -180,7 +180,7 @@ async def test_add_admin_accepts_valid_ids(raw) -> None:
     assert int(raw.strip()) in ctx.admins.added
 
 
-FORMAT_MSG = "Please enter a Discord user ID (17 to 20 digits)."
+FORMAT_MSG = "Please enter a Discord user ID (17 to 19 digits)."
 
 
 @pytest.mark.parametrize(
