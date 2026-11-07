@@ -736,6 +736,7 @@ name = "ravebot"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "aiohttp" },
     { name = "alembic" },
     { name = "asyncpg" },
     { name = "disnake" },
@@ -756,6 +757,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aiohttp", specifier = ">=3.13.5" },
     { name = "alembic", specifier = ">=1.18.4" },
     { name = "asyncpg", specifier = ">=0.31.0" },
     { name = "disnake", specifier = "==2.12.0" },
