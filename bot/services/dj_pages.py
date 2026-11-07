@@ -6,9 +6,10 @@ import asyncpg
 from bot.db.djs import (
     get_dj_by_discord_id,
     get_notion_dj_page_id,
+    set_logo_synced,
     set_notion_dj_page_id,
 )
-from bot.notion.client import NotionClient
+from bot.notion.client import DjLogoUploadError, NotionClient
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,8 @@ async def ensure_dj_page(
     A stored id is checked first (``dj_page_alive``): a live page gets its
     ``Discord name`` refreshed (best effort) and is returned; a deleted or
     trashed page is replaced by a fresh upsert whose id is stored.
+    If only the logo upload fails, the row still exists: its id is stored and
+    returned and the logo is marked unsynced (sent again later).
     Returns None (never raises) if the DJ has no djs row or anything fails.
     """
     try:
@@ -59,15 +62,26 @@ async def _ensure(
     if row is None:
         logger.warning("No djs row for user %s; cannot create Notion DJ page", discord_id)
         return None
-    page_id = await notion.upsert_dj(
-        discord_id,
-        row["dj_name"],
-        discord_name,
-        vrchat_name=row["vrchat_name"],
-        logo_url=row["logo_url"],
-        link=row["stream_url_primary"],
-        alt_link=row["stream_url_backup"],
-        logo_image=row["logo_image"],
-    )
+    logo_failed = False
+    try:
+        page_id = await notion.upsert_dj(
+            discord_id,
+            row["dj_name"],
+            discord_name,
+            vrchat_name=row["vrchat_name"],
+            logo_url=row["logo_url"],
+            link=row["stream_url_primary"],
+            alt_link=row["stream_url_backup"],
+            logo_image=row["logo_image"],
+        )
+    except DjLogoUploadError as exc:
+        logger.warning("DJ page of user %s was created without its logo", discord_id)
+        page_id = exc.page_id
+        logo_failed = True
     await set_notion_dj_page_id(db, discord_id, page_id)
+    if logo_failed:
+        try:
+            await set_logo_synced(db, discord_id, False)
+        except Exception:
+            logger.warning("Could not mark the logo of %s unsynced", discord_id, exc_info=True)
     return page_id

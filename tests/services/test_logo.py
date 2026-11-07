@@ -1,5 +1,8 @@
 import asyncio
 import io
+import random
+import threading
+import time
 from types import SimpleNamespace
 from typing import Any
 
@@ -10,6 +13,7 @@ from PIL import Image
 from bot.services import logo
 from bot.services.logo import (
     MAX_LOGO_BYTES,
+    MAX_LOGO_OUTPUT_BYTES,
     LogoError,
     download_attachment,
     logo_from_message,
@@ -109,9 +113,60 @@ def test_total_pixel_limit():
     assert reason_of(e) == "not_image"
 
 
-def test_large_but_allowed():
+def test_large_but_allowed_is_downsized():
     out = process_logo(make_image("PNG", (4000, 4000)))
-    assert Image.open(io.BytesIO(out)).size == (4000, 4000)
+    assert Image.open(io.BytesIO(out)).size == (1024, 1024)
+
+
+def noisy_photo_jpeg(size=(4000, 3000)) -> bytes:
+    """A photo-like JPEG: noise scaled up, so it compresses like a real photo."""
+    small = (size[0] // 4, size[1] // 4)
+    noise = random.Random(1).randbytes(small[0] * small[1] * 3)
+    img = Image.frombytes("RGB", small, noise).resize(size, Image.Resampling.BICUBIC)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=70)
+    return buf.getvalue()
+
+
+def test_big_photo_output_is_small_and_at_most_1024_px():
+    data = noisy_photo_jpeg()
+    assert len(data) <= MAX_LOGO_BYTES
+    out = process_logo(data)
+    assert len(out) <= MAX_LOGO_OUTPUT_BYTES
+    img = Image.open(io.BytesIO(out))
+    assert img.format == "PNG"
+    assert max(img.size) <= 1024
+    assert img.size == (1024, 768)
+
+
+def test_downsize_keeps_aspect_ratio_portrait():
+    out = process_logo(make_image("JPEG", (600, 3000)))
+    assert Image.open(io.BytesIO(out)).size == (205, 1024)
+
+
+def test_small_image_is_not_upscaled():
+    out = process_logo(make_image("PNG", (100, 50)))
+    assert Image.open(io.BytesIO(out)).size == (100, 50)
+
+
+def test_output_above_cap_is_refused(monkeypatch):
+    monkeypatch.setattr(logo, "MAX_LOGO_OUTPUT_BYTES", 10)
+    with pytest.raises(LogoError) as e:
+        process_logo(make_image("PNG", (64, 64)))
+    assert reason_of(e) == "not_image"
+
+
+def test_mpo_is_accepted_as_jpeg_first_frame():
+    first = Image.new("RGB", (40, 30), (250, 0, 0))
+    second = Image.new("RGB", (40, 30), (0, 0, 250))
+    buf = io.BytesIO()
+    first.save(buf, format="MPO", save_all=True, append_images=[second])
+    assert Image.open(io.BytesIO(buf.getvalue())).format == "MPO"
+    out = Image.open(io.BytesIO(process_logo(buf.getvalue())))
+    assert out.format == "PNG"
+    assert out.size == (40, 30)
+    r, g, b = out.convert("RGB").getpixel((20, 15))
+    assert r > 200 and b < 50
 
 
 def test_too_big_bytes():
@@ -311,3 +366,27 @@ async def test_invalid_url_and_stream_error(exc):
         with pytest.raises(LogoError) as e:
             await download_attachment(att(), client=c)
     assert reason_of(e) == "download_failed"
+
+
+async def test_logo_processing_runs_one_at_a_time(monkeypatch):
+    assert isinstance(logo._PROCESS_LIMIT, asyncio.Semaphore)
+    lock = threading.Lock()
+    state = {"now": 0, "max": 0}
+
+    def slow_process(data):
+        with lock:
+            state["now"] += 1
+            state["max"] = max(state["max"], state["now"])
+        time.sleep(0.05)
+        with lock:
+            state["now"] -= 1
+        return b"png"
+
+    async def fake_download(attachment, *, client=None):
+        return b"data"
+
+    monkeypatch.setattr(logo, "download_attachment", fake_download)
+    monkeypatch.setattr(logo, "process_logo", slow_process)
+    outs = await asyncio.gather(*(logo_from_message(message([att()])) for _ in range(3)))
+    assert outs == [b"png"] * 3
+    assert state["max"] == 1

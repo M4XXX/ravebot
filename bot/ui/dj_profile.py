@@ -69,6 +69,16 @@ def _records_message(reply: Reply) -> bool:
     return reply.kind in _RECORDED_KINDS or (reply.kind == "error" and reply.step in STEPS)
 
 
+async def _send(channel_or_inter: Any, text: str, record: bool, kwargs: dict[str, Any]) -> Any:
+    """Send one message; return it when it is needed for recording (else may be None)."""
+    if isinstance(channel_or_inter, disnake.abc.Messageable):
+        return await channel_or_inter.send(text, **kwargs)
+    if channel_or_inter.response.is_done():
+        return await channel_or_inter.followup.send(text, wait=True, **kwargs)
+    await channel_or_inter.response.send_message(text, **kwargs)
+    return await channel_or_inter.original_response() if record else None
+
+
 async def send_reply(
     ctx: "BotContext", channel_or_inter: Any, user_id: int, reply: Reply
 ) -> None:
@@ -77,22 +87,26 @@ async def send_reply(
     `channel_or_inter` is a messageable channel (channel.send) or an interaction
     (response.send_message, or followup.send once the response is done). Messages
     that carry conversation buttons are recorded as the conversation's message.
+    If a message with the logo fails, it is sent once more without the logo, so the
+    DJ always gets the text and the buttons.
     """
     kwargs: dict[str, Any] = {}
     view = _view_for(ctx, reply)
     if view is not None:
         kwargs["view"] = view
-    if reply.image is not None:
-        kwargs["file"] = disnake.File(io.BytesIO(reply.image), filename=LOGO_FILENAME)
     record = _records_message(reply)
     try:
-        if isinstance(channel_or_inter, disnake.abc.Messageable):
-            sent = await channel_or_inter.send(reply.text, **kwargs)
-        elif channel_or_inter.response.is_done():
-            sent = await channel_or_inter.followup.send(reply.text, wait=True, **kwargs)
+        if reply.image is None:
+            sent = await _send(channel_or_inter, reply.text, record, kwargs)
         else:
-            await channel_or_inter.response.send_message(reply.text, **kwargs)
-            sent = await channel_or_inter.original_response() if record else None
+            try:
+                file = disnake.File(io.BytesIO(reply.image), filename=LOGO_FILENAME)
+                sent = await _send(channel_or_inter, reply.text, record, {**kwargs, "file": file})
+            except disnake.HTTPException:
+                logger.warning(
+                    "Could not send the logo to %s; sending without it", user_id, exc_info=True
+                )
+                sent = await _send(channel_or_inter, reply.text, record, kwargs)
     except disnake.HTTPException:
         logger.warning("Could not send the DJ conversation message to %s", user_id, exc_info=True)
         return

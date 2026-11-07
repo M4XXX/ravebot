@@ -2,10 +2,12 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from bot.notion.api import NotionWriteError
+from bot.notion.client import DjLogoUploadError
 from bot.services.dj_sync import retry_unsynced_logos, sync_dj
 
 ROW = {"dj_name": "DJ A", "vrchat_name": "v", "logo_url": None, "logo_image": b"img",
-       "stream_url_primary": "https://t.tv/a", "stream_url_backup": None}
+       "stream_url_primary": "https://t.tv/a", "stream_url_backup": None,
+       "logo_synced": False}
 
 
 def _ctx(upsert=None):
@@ -93,3 +95,29 @@ async def test_retry_never_raises_on_list_failure():
     with patch("bot.services.dj_sync.list_unsynced_logo_user_ids",
                new=AsyncMock(side_effect=RuntimeError("db"))):
         assert await retry_unsynced_logos(ctx, None) == 0
+
+
+async def test_unsynced_logo_is_uploaded():
+    ctx = _ctx()
+    g, s, lg = _p()
+    with g, s, lg:
+        assert await sync_dj(ctx, 1, "alice") is True
+    assert ctx.notion_client.upsert_dj.await_args.kwargs["upload_logo"] is True
+
+
+async def test_synced_logo_is_not_uploaded_again():
+    ctx = _ctx()
+    g, s, lg = _p({**ROW, "logo_synced": True})
+    with g, s, lg as setl:
+        assert await sync_dj(ctx, 1, "alice") is True
+    assert ctx.notion_client.upsert_dj.await_args.kwargs["upload_logo"] is False
+    setl.assert_awaited_once_with(ctx.db, 1, True)
+
+
+async def test_logo_upload_failure_keeps_page_and_leaves_logo_unsynced():
+    ctx = _ctx(AsyncMock(side_effect=DjLogoUploadError("page-7")))
+    g, s, lg = _p()
+    with g, s as setp, lg as setl:
+        assert await sync_dj(ctx, 1, "alice") is False
+    setp.assert_awaited_once_with(ctx.db, 1, "page-7")
+    setl.assert_awaited_once_with(ctx.db, 1, False)

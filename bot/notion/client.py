@@ -58,6 +58,18 @@ class DuplicateEventError(Exception):
         self.event_id = event_id
 
 
+class DjLogoUploadError(Exception):
+    """upsert_dj wrote the DJ row but not its logo image.
+
+    ``page_id`` is the written row; the caller keeps it (bookings work) and marks
+    the logo unsynced so it is sent again later.
+    """
+
+    def __init__(self, page_id: str) -> None:
+        super().__init__(f"DJ row {page_id} was written without its logo")
+        self.page_id = page_id
+
+
 class SlotRowMissingError(Exception):
     """The event has no Slots row with the requested slot number."""
 
@@ -280,6 +292,7 @@ class NotionClient:
         link: str | None,
         alt_link: str | None,
         logo_image: bytes | None = None,
+        upload_logo: bool = True,
     ) -> str:
         """Create or update the DJs row matched by ``Discord ID``; return its page id.
 
@@ -287,21 +300,12 @@ class NotionClient:
         written for http(s) URLs, otherwise left empty. A ``logo_image`` is uploaded
         to Notion (file upload) and takes precedence over ``logo_url``. Rollups are
         never written.
+
+        With ``upload_logo`` False an existing row keeps its ``Logo`` untouched (it
+        is left out of the update); a new row always gets the logo. If the image
+        cannot be uploaded or the row write rejects it, the row is written without
+        ``Logo`` and DjLogoUploadError(page_id) is raised afterwards.
         """
-        logo_files: list[dict[str, Any]]
-        if logo_image is not None:
-            upload_id = await self._api.upload_file(
-                "logo.png", "image/png", logo_image, f"logo of DJ {discord_id}"
-            )
-            logo_files = [
-                {"name": "logo.png", "type": "file_upload", "file_upload": {"id": upload_id}}
-            ]
-        elif logo_url and _is_http_url(logo_url):
-            logo_files = [
-                {"name": "logo", "type": "external", "external": {"url": logo_url.strip()}}
-            ]
-        else:
-            logo_files = []
         digits = str(discord_id)
         pages = await self._api.query_all(
             self._ids.djs_ds,
@@ -321,10 +325,47 @@ class NotionClient:
             PROP_DJ_DISCORD_NAME: {"rich_text": _text(discord_name) if discord_name else []},
             PROP_DJ_DISCORD_ID: {"rich_text": _text(digits)},
             PROP_DJ_VRCHAT_NAME: {"rich_text": _text(vrchat_name) if vrchat_name else []},
-            PROP_DJ_LOGO: {"files": logo_files},
             PROP_DJ_LINK: _url_prop(link),
             PROP_DJ_ALT_LINK: _url_prop(alt_link),
         }
+        logo_failed = False
+        if upload_logo or existing is None:
+            if logo_image is not None:
+                try:
+                    upload_id = await self._api.upload_file(
+                        "logo.png", "image/png", logo_image, f"logo of DJ {discord_id}"
+                    )
+                except NotionWriteError:
+                    logger.warning("Logo upload of DJ %s failed", discord_id, exc_info=True)
+                    logo_failed = True
+                else:
+                    props[PROP_DJ_LOGO] = {"files": [
+                        {"name": "logo.png", "type": "file_upload",
+                         "file_upload": {"id": upload_id}}
+                    ]}
+            elif logo_url and _is_http_url(logo_url):
+                props[PROP_DJ_LOGO] = {"files": [
+                    {"name": "logo", "type": "external", "external": {"url": logo_url.strip()}}
+                ]}
+            else:
+                props[PROP_DJ_LOGO] = {"files": []}
+        try:
+            page_id = await self._write_dj(existing, props, discord_id)
+        except NotionWriteError:
+            if logo_image is None or PROP_DJ_LOGO not in props:
+                raise
+            # The row write may have rejected the uploaded file: write it without.
+            logger.warning("Writing DJ %s with logo failed; retrying without", discord_id)
+            del props[PROP_DJ_LOGO]
+            page_id = await self._write_dj(existing, props, discord_id)
+            logo_failed = True
+        if logo_failed:
+            raise DjLogoUploadError(page_id)
+        return page_id
+
+    async def _write_dj(
+        self, existing: dict[str, Any] | None, props: dict[str, Any], discord_id: int
+    ) -> str:
         if existing is not None:
             await self._api.request(
                 "PATCH",

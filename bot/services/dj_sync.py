@@ -10,6 +10,7 @@ from bot.db.djs import (
     set_logo_synced,
     set_notion_dj_page_id,
 )
+from bot.notion.client import DjLogoUploadError
 
 if TYPE_CHECKING:
     from bot.context import BotContext
@@ -20,9 +21,12 @@ logger = logging.getLogger(__name__)
 async def sync_dj(ctx: "BotContext", discord_user_id: int, discord_name: str) -> bool:
     """Upsert the DJ's Notion row from the djs table; never raises.
 
-    After any successful Notion call ``logo_synced`` becomes true (also for a DJ
-    without a logo image). On failure it is set to false when a logo image
-    exists and left untouched otherwise. Returns False on any failure.
+    The logo image is only uploaded while ``logo_synced`` is false; other edits
+    leave the Notion ``Logo`` untouched. After any successful Notion call
+    ``logo_synced`` becomes true (also for a DJ without a logo image). On failure
+    it is set to false when a logo image exists and left untouched otherwise. If
+    only the logo upload failed, the row was still written: its page id is stored
+    and ``logo_synced`` set to false. Returns False on any failure.
     """
     has_logo = False
     db, notion = ctx.db, ctx.notion_client
@@ -44,10 +48,20 @@ async def sync_dj(ctx: "BotContext", discord_user_id: int, discord_name: str) ->
             link=row["stream_url_primary"],
             alt_link=row["stream_url_backup"],
             logo_image=row["logo_image"],
+            upload_logo=not row["logo_synced"],
         )
         await set_notion_dj_page_id(db, discord_user_id, page_id)
         await set_logo_synced(db, discord_user_id, True)
         return True
+    except DjLogoUploadError as exc:
+        logger.warning("Logo of DJ %s not synced; the row was written", discord_user_id)
+        try:
+            await set_notion_dj_page_id(db, discord_user_id, exc.page_id)
+            await set_logo_synced(db, discord_user_id, False)
+        except Exception:
+            logger.warning("Could not store the partial sync of DJ %s", discord_user_id,
+                           exc_info=True)
+        return False
     except Exception:
         logger.warning("Notion sync failed for DJ %s", discord_user_id, exc_info=True)
         if has_logo:

@@ -2,6 +2,7 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from bot.notion.api import NotionWriteError
+from bot.notion.client import DjLogoUploadError
 from bot.services.dj_pages import ensure_dj_page
 
 ROW = {"logo_image": None, "dj_name": "DJ A", "vrchat_name": "vrc", "logo_url": "https://l.test/a.png",
@@ -137,3 +138,26 @@ async def test_empty_name_on_create_never_uses_digits_for_discord_name():
     args = notion.upsert_dj.await_args.args
     assert args[1] == "DJ A"
     assert args[2] == ""
+
+
+async def test_logo_upload_failure_still_returns_and_stores_page_id():
+    notion = _notion(alive=False)
+    notion.upsert_dj.side_effect = DjLogoUploadError("half-page")
+    db = MagicMock()
+    p1, p2, p3 = _patch("stale", {**ROW, "logo_image": b"img"})
+    with p1, p2, p3 as setter, patch(
+        "bot.services.dj_pages.set_logo_synced", new=AsyncMock()
+    ) as setl:
+        assert await ensure_dj_page(db, notion, 1, "alice") == "half-page"
+    setter.assert_awaited_once_with(db, 1, "half-page")
+    setl.assert_awaited_once_with(db, 1, False)
+
+
+async def test_logo_upload_failure_with_flag_reset_failing_still_returns_page_id():
+    notion = _notion(alive=False)
+    notion.upsert_dj.side_effect = DjLogoUploadError("half-page")
+    p1, p2, p3 = _patch(None, {**ROW, "logo_image": b"img"})
+    with p1, p2, p3, patch(
+        "bot.services.dj_pages.set_logo_synced", new=AsyncMock(side_effect=RuntimeError("db"))
+    ):
+        assert await ensure_dj_page(MagicMock(), notion, 1, "alice") == "half-page"

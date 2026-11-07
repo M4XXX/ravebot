@@ -440,6 +440,47 @@ async def test_send_reply_swallows_http_errors(ctx, client) -> None:
     await dj_profile.send_reply(ctx, channel, A, Reply("q", "question", step="name"))
 
 
+async def test_send_reply_retries_summary_without_file_and_records_id(ctx, fake, client) -> None:
+    await _to_step(ctx, client, "summary")
+    channel = MagicMock(spec=disnake.DMChannel)
+    channel.send = AsyncMock(side_effect=[
+        disnake.HTTPException(MagicMock(status=413), "Request entity too large"),
+        SimpleNamespace(id=777),
+    ])
+    reply = Reply("sum", "summary", step="summary", image=b"img")
+    await dj_profile.send_reply(ctx, channel, A, reply)
+    assert channel.send.await_count == 2
+    first, second = channel.send.await_args_list
+    assert "file" in first.kwargs
+    assert "file" not in second.kwargs
+    assert second.args[0] == "sum"
+    assert isinstance(second.kwargs["view"], dj_profile.SummaryView)
+    assert fake.convs[A].message_id == 777
+
+
+async def test_send_reply_retries_interaction_without_file(ctx, fake, client) -> None:
+    await _to_step(ctx, client, "summary")
+    inter = make_inter(client, 1)
+    inter.response.is_done.return_value = True
+    inter.followup.send = AsyncMock(side_effect=[
+        disnake.HTTPException(MagicMock(status=413), "too large"),
+        SimpleNamespace(id=778),
+    ])
+    reply = Reply("sum", "summary", step="summary", image=b"img")
+    await dj_profile.send_reply(ctx, inter, A, reply)
+    second = inter.followup.send.await_args_list[1]
+    assert "file" not in second.kwargs
+    assert isinstance(second.kwargs["view"], dj_profile.SummaryView)
+    assert fake.convs[A].message_id == 778
+
+
+async def test_send_reply_without_file_does_not_retry(ctx, client) -> None:
+    channel = MagicMock(spec=disnake.DMChannel)
+    channel.send = AsyncMock(side_effect=disnake.HTTPException(MagicMock(status=500), "x"))
+    await dj_profile.send_reply(ctx, channel, A, Reply("q", "question", step="name"))
+    assert channel.send.await_count == 1
+
+
 async def test_buttons_without_service_answer_generic_error(client) -> None:
     c = make_real_ctx(db=MagicMock())
     inter = make_inter(client, 1)
