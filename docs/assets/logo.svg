@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    <radialGradient id="sky" cx="30%" cy="0%" r="120%"><stop offset="0" stop-color="#2a2f7a"/><stop offset=".6" stop-color="#0d1030"/><stop offset="1" stop-color="#05060f"/></radialGradient>
+    <radialGradient id="planet" cx="32%" cy="28%" r="75%"><stop offset="0" stop-color="#ffd89b"/><stop offset=".45" stop-color="#c2693a"/><stop offset="1" stop-color="#4a1d5c"/></radialGradient>
+    <linearGradient id="bar" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="#7c5cff"/><stop offset="1" stop-color="#2ad4ff"/></linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="96" fill="url(#sky)"/>
+  <g fill="#fff"><circle cx="90" cy="90" r="3" opacity=".9"/><circle cx="420" cy="70" r="2.4" opacity=".8"/><circle cx="450" cy="300" r="2" opacity=".7"/><circle cx="60" cy="330" r="2.4" opacity=".7"/><circle cx="300" cy="40" r="2" opacity=".6"/></g>
+  <g transform="translate(256 190)">
+    <ellipse rx="190" ry="44" fill="none" stroke="#b9a8ff" stroke-opacity=".4" stroke-width="12" transform="rotate(-18)"/>
+    <circle r="110" fill="url(#planet)"/>
+  </g>
+  <g transform="translate(133 440)" fill="url(#bar)">
+    <rect x="0" y="-40" width="26" height="40" rx="6"/><rect x="44" y="-86" width="26" height="86" rx="6"/><rect x="88" y="-60" width="26" height="60" rx="6"/>
+    <rect x="132" y="-110" width="26" height="110" rx="6"/><rect x="176" y="-70" width="26" height="70" rx="6"/><rect x="220" y="-96" width="26" height="96" rx="6"/>
+  </g>
+</svg>

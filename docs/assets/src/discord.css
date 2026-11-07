@@ -1,0 +1,28 @@
+/* Shared look for the README screenshots: a Discord dark theme lookalike. */
+* { box-sizing: border-box; }
+body { margin: 0; background: #313338; color: #dbdee1; font: 15px/1.4 "gg sans", "Noto Sans", "DejaVu Sans", Arial, sans-serif; width: 760px; }
+.wrap { padding: 18px 22px 22px; }
+.chan { color: #f2f3f5; font-weight: 700; font-size: 13px; letter-spacing: .3px; padding: 0 0 10px; border-bottom: 1px solid #3f4147; margin-bottom: 8px; }
+.chan span { color: #80848e; font-weight: 500; margin-right: 6px; }
+.msg { display: flex; gap: 14px; padding: 8px 0; }
+.av { width: 40px; height: 40px; border-radius: 50%; flex: none; background: linear-gradient(135deg, #7c5cff, #2ad4ff); display: grid; place-items: center; font-weight: 700; color: #fff; font-size: 17px; }
+.av.u { background: linear-gradient(135deg, #ff7ca8, #ffb86b); }
+.av.u2 { background: linear-gradient(135deg, #4cd9a0, #2a8cff); }
+.body { min-width: 0; flex: 1; }
+.name { font-weight: 600; color: #f2f3f5; }
+.tag { background: #5865f2; color: #fff; font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 4px; margin-left: 6px; vertical-align: 2px; }
+.time { color: #949ba4; font-size: 12px; margin-left: 8px; font-weight: 400; }
+.text { margin-top: 2px; white-space: pre-wrap; }
+.embed { margin-top: 6px; background: #2b2d31; border-left: 4px solid #5865f2; border-radius: 4px; padding: 10px 14px 12px; max-width: 520px; }
+.embed.gold { border-left-color: #ffd700; } .embed.green { border-left-color: #2e7d32; } .embed.red { border-left-color: #c62828; }
+.embed .t { font-weight: 700; color: #f2f3f5; margin-bottom: 4px; }
+.embed .d { color: #dbdee1; white-space: pre-wrap; }
+.embed .f { color: #949ba4; font-size: 12px; margin-top: 8px; }
+.mono { font-family: "DejaVu Sans Mono", Consolas, monospace; font-size: 14px; }
+.btns { margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap; }
+.btn { background: #5865f2; color: #fff; font-weight: 600; font-size: 13.5px; padding: 6px 14px; border-radius: 4px; }
+.btn.g { background: #4e5058; } .btn.ok { background: #248046; } .btn.red { background: #da373c; }
+.sel { margin-top: 8px; background: #1e1f22; border: 1px solid #1e1f22; border-radius: 4px; padding: 8px 12px; color: #949ba4; max-width: 340px; }
+.logo { width: 120px; height: 120px; border-radius: 10px; margin-top: 6px; background: radial-gradient(circle at 30% 25%, #ffd89b, #c2693a 38%, #3a1850 72%), #1b1f4b; display: grid; place-items: center; color: #fff; font-weight: 800; font-size: 20px; letter-spacing: 1px; text-shadow: 0 2px 8px #0008; border: 1px solid #ffffff22; }
+.sep { text-align: center; color: #949ba4; font-size: 12px; margin: 10px 0; border-top: 1px solid #3f4147; line-height: 0; }
+.sep span { background: #313338; padding: 0 10px; }

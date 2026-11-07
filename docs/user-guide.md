@@ -171,42 +171,36 @@ The key `GUILD_ID` is not read by the bot. If it is still in your `.env` or cont
 
 ## 4. Deployment: Unraid (Primary)
 
-### Step 1: Build the Docker Image
+### Step 1: The Docker image
 
-On a machine with Docker installed:
+Every release is published as a ready-made image on GitHub Container Registry: `ghcr.io/m4xxx/ravebot`. You do not build anything yourself.
 
-```bash
-git clone <your-ravebot-repo>
-cd output/ravebot
-docker build -t ravebot:latest .
+| Tag | Meaning |
+|---|---|
+| `latest` | The newest release (not pre-releases) |
+| `2.0.0` | Exactly that release |
+| `2.0` | The newest patch release of that minor version |
 
-# Tag with a version for releases:
-docker tag ravebot:latest ravebot:v1.0.0
-```
+> The package must be **public** so Unraid can pull it without a login. The repository owner sets this once: *GitHub → profile → Packages → ravebot → Package settings → Change visibility → Public*.
 
-### Step 2: Transfer the Image to Unraid
+To build the image yourself instead (for example from a fork), see [Docker build in the developer guide](developer-guide.md#5-manual-docker-build--release).
 
-**Option A - save/load (no registry required):**
+### Step 2: Install the template (optional shortcut)
 
-```bash
-docker save ravebot:latest | gzip > ravebot.tar.gz
-# Copy ravebot.tar.gz to your Unraid server, then on Unraid:
-docker load < ravebot.tar.gz
-```
-
-**Option B - push to a registry:**
+The repository contains an Unraid template with all variables. On the Unraid terminal:
 
 ```bash
-docker tag ravebot:latest ghcr.io/YOUR_USER/ravebot:latest
-docker push ghcr.io/YOUR_USER/ravebot:latest
-# On Unraid, set the repository to ghcr.io/YOUR_USER/ravebot:latest
+wget -O /boot/config/plugins/dockerMan/templates-user/ravebot.xml \
+  https://raw.githubusercontent.com/M4XXX/ravebot/main/unraid/ravebot.xml
 ```
+
+Then **Docker** → **Add Container** → **Template** → **RaveBot** (under *User templates*) and continue with step 4. Skip this step if you prefer to add the container by hand.
 
 ### Step 3: Add the Container in Unraid Docker UI
 
 1. In Unraid, go to **Docker** → **Add Container**
 2. Set **Name**: `ravebot`
-3. Set **Repository**: `ravebot:latest` (or your registry path)
+3. Set **Repository**: `ghcr.io/m4xxx/ravebot:latest` (or a fixed version such as `ghcr.io/m4xxx/ravebot:2.0.0`)
 4. Set **Network Type**: `bridge`
 5. Port mappings: leave them empty if you do not use the admin page. To use it, add a **Port** with container port `8080` (the value of `ADMIN_PAGE_PORT`; change it only together with that variable) and a free host port (for example `8080` or `8095`), and set the variable `ADMIN_PAGE_PASSWORD` in step 4 (see [section 7.7](#77-the-admin-page))
 
@@ -228,7 +222,7 @@ Use your Unraid server's internal IP (e.g. `192.168.1.x`) for `POSTGRES_URL`, no
 
 ### Step 5: Start the Container
 
-Click **Apply**. Check container logs in Unraid (**Docker** → click the container icon → **Logs**) for the startup sequence:
+Click **Apply**. Unraid pulls the image and starts the container. Check container logs in Unraid (**Docker** → click the container icon → **Logs**) for the startup sequence:
 
 ```
 Migrations complete.
@@ -237,6 +231,12 @@ Bot ready
 ```
 
 If you see these three lines, the bot is running correctly.
+
+### Updating the container
+
+- **Repository `...:latest`:** on the **Docker** tab click **Check for Updates**, then apply the update of `ravebot`. Unraid pulls the newest release and restarts the container. The database updates itself at the start.
+- **Repository with a version (`...:2.0.0`):** change the version in the container settings and click **Apply**.
+- Read the [release notes](https://github.com/M4XXX/ravebot/releases) first. Your variables and the data in PostgreSQL and Notion stay as they are.
 
 ---
 
@@ -263,7 +263,7 @@ services:
       retries: 5
 
   bot:
-    image: ravebot:latest
+    image: ghcr.io/m4xxx/ravebot:latest
     restart: unless-stopped
     depends_on:
       postgres:

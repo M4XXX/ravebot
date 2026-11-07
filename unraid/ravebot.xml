@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>RaveBot</Name>
+  <Repository>ghcr.io/m4xxx/ravebot:latest</Repository>
+  <Registry>https://github.com/M4XXX/ravebot/pkgs/container/ravebot</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/M4XXX/ravebot/issues</Support>
+  <Project>https://github.com/M4XXX/ravebot</Project>
+  <Overview>Discord bot that automates DJ booking for recurring online raves: DJ onboarding by DM, self-service slot booking, automatic invites for open slots, a lineup post in your DJ channel and an admin log. Events, slots and DJs live in Notion databases the bot creates itself. Needs a PostgreSQL 16 database, a Discord bot token and a Notion integration. After the first start, run /setup in your Discord server.</Overview>
+  <Category>Tools:</Category>
+  <WebUI>http://[IP]:[PORT:8080]/</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/M4XXX/ravebot/main/unraid/ravebot.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/M4XXX/ravebot/main/docs/assets/logo.png</Icon>
+  <ExtraParams/>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires>A PostgreSQL 16 database (for example the PostgreSQL 16 container from Community Applications).</Requires>
+  <Config Name="Discord bot token" Target="DISCORD_BOT_TOKEN" Default="" Mode="" Description="Bot token from the Discord Developer Portal (Bot, Reset Token)." Type="Variable" Display="always" Required="true" Mask="true"/>
+  <Config Name="PostgreSQL URL" Target="POSTGRES_URL" Default="postgresql://ravebot:CHANGE_ME@192.168.1.100:5432/ravebot" Mode="" Description="Connection string of the database. Use the IP address of your Unraid server, not localhost." Type="Variable" Display="always" Required="true" Mask="true">postgresql://ravebot:CHANGE_ME@192.168.1.100:5432/ravebot</Config>
+  <Config Name="Notion API key" Target="NOTION_API_KEY" Default="" Mode="" Description="Internal Integration Secret of your Notion integration." Type="Variable" Display="always" Required="true" Mask="true"/>
+  <Config Name="Notion parent page ID" Target="NOTION_PARENT_PAGE_ID" Default="" Mode="" Description="32 character ID of an empty Notion page that is shared with the integration. The bot creates its databases under it." Type="Variable" Display="always" Required="true" Mask="false"/>
+  <Config Name="Admin user IDs" Target="ADMIN_USER_IDS" Default="" Mode="" Description="Comma separated Discord user IDs of the owners. They can always use the admin commands." Type="Variable" Display="always" Required="true" Mask="false"/>
+  <Config Name="Admin page password" Target="ADMIN_PAGE_PASSWORD" Default="" Mode="" Description="Optional. Password of the admin page (add and remove admins in the browser). Leave empty to turn the page off. Use a long random value." Type="Variable" Display="always" Required="false" Mask="true"/>
+  <Config Name="Admin page port" Target="8080" Default="8080" Mode="tcp" Description="Optional. Port of the admin page. Only used when a password is set. Local network only, never expose it to the internet." Type="Port" Display="always" Required="false" Mask="false">8080</Config>
+  <Config Name="Log level" Target="LOG_LEVEL" Default="INFO" Mode="" Description="DEBUG, INFO, WARNING or ERROR." Type="Variable" Display="advanced" Required="false" Mask="false">INFO</Config>
+</Container>

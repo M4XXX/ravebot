@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Release automation: the GitHub Actions workflow `release.yml` tests the code, builds the Docker image, publishes it to `ghcr.io/m4xxx/ravebot` (tags `X.Y.Z`, `X.Y`, `latest`) and creates a GitHub release from the changelog when a version tag is pushed; `ci.yml` runs the tests on every push to `main` and every pull request. `scripts/release.sh` prepares a release (version, changelog, commit, tag).
+- Unraid template `unraid/ravebot.xml` with all variables, and an Unraid deployment guide that pulls the published image and updates from the Docker tab.
+- New README with banner, badges, flow diagram, screenshots and a step-by-step deployment guide. The images are rendered from `docs/assets/src` with `docs/assets/render.sh`.
 - Admin page: a web page (port `ADMIN_PAGE_PORT`, default `8080`, password `ADMIN_PAGE_PASSWORD`) to add and remove admins. Off while the password is empty. No HTTPS: local network only. New package `bot/web/`.
 - Shared admin list: owners from `ADMIN_USER_IDS` plus admins added on the page, stored in the new table of migration `0014`. Added admins can use every admin command, including `/setup`. While the bot is active, adding an admin writes an admin log entry. A user ID has 17 to 19 digits. Page sessions end when the bot restarts.
 - `aiohttp` is now declared as a dependency.

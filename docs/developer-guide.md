@@ -12,7 +12,7 @@ Local development setup, testing, linting, Docker builds, and release workflow.
 4. [Project Structure](#4-project-structure)
 5. [Manual Docker Build & Release](#5-manual-docker-build--release)
 6. [Database Migrations](#6-database-migrations)
-7. [Future: Automated Releases](#7-future-automated-releases)
+7. [Automated Releases](#7-automated-releases)
 
 ---
 
@@ -216,6 +216,8 @@ An event's `Start` is a local wall-clock `HH:MM`; `EventInfo` in `bot/notion/mod
 
 ## 5. Manual Docker Build & Release
 
+Releases are built by GitHub Actions (see [section 7](#7-automated-releases)). Build by hand only for a fork or a quick test.
+
 The Dockerfile uses a two-stage build:
 - **`builder` stage** - installs `uv` and resolves all runtime dependencies into `.venv`
 - **`runtime` stage** - `python:3.13-slim` with `.venv` copied in, running as non-root user `ravebot`
@@ -321,17 +323,34 @@ Migration files live in `migrations/versions/`.
 
 ---
 
-## 7. Future: Automated Releases
+## 7. Automated Releases
 
-> This section is a placeholder for future CI/CD automation. No workflow files exist yet.
+Two GitHub Actions workflows live in `.github/workflows/`:
 
-When automated, the build and release workflow would typically:
+| Workflow | Trigger | What it does |
+|---|---|---|
+| `ci.yml` | push to `main`, pull requests | `uv sync --frozen` and `uv run pytest -q` |
+| `release.yml` | push of a tag `vMAJOR.MINOR.PATCH` (or with a `-suffix`, a pre-release) | tests, builds the Docker image, pushes it to `ghcr.io/<owner>/ravebot`, creates the GitHub release |
 
-1. **Trigger** on a git tag push (e.g. `v*`)
-2. **Run gates:** `uv run pytest` and `uv run ruff check .` must pass
-3. **Build** the Docker image: `docker build -t ravebot:$TAG .`
-4. **Tag** with both the git tag and `latest`
-5. **Push** to the configured container registry (Docker Hub, GHCR, or private)
-6. **Optionally notify** the deployment host to pull the new image (webhook, SSH, Watchtower)
+The release workflow refuses a tag that is not on `main`. The image gets the tags `X.Y.Z`, `X.Y` and `latest` (and `X` from major version 1 on); a pre-release tag (`v2.1.0-rc1`) only gets its own tag and no `latest`. The image is built for `linux/amd64`. The GitHub release text is the matching `## [X.Y.Z]` section of `CHANGELOG.md` plus the image name; without such a section it falls back to a pointer to the changelog.
 
-Candidate tools: **GitHub Actions**, **Gitea Actions**, or a simple `Makefile` + shell script.
+### Making a release
+
+1. Write the changes under `## [Unreleased]` in `CHANGELOG.md` while you work.
+2. From a clean `main`: `scripts/release.sh 2.1.0`. It runs the tests, renames `Unreleased` to `[2.1.0] - <date>` (and adds a new empty `Unreleased`), sets the version in `pyproject.toml`, commits `Release v2.1.0` and creates the tag `v2.1.0`. Nothing is pushed. `--no-tests` skips the test run.
+3. Push the commit and the tag: `git push origin main v2.1.0`. The workflow takes over.
+4. Check the *Actions* tab. After it is green the release and the image exist. Unraid users update from the Docker tab.
+
+### First time
+
+- The first push creates the package `ravebot` as **private**. Make it public once: *GitHub → profile → Packages → ravebot → Package settings → Change visibility*. Without that, Unraid cannot pull the image without a login.
+- The workflow needs no secrets: it uses the automatic `GITHUB_TOKEN` (permissions `packages: write` and `contents: write` are set in the workflow file).
+- Pick the first version number above anything used before. The old repository `ravebot-legacy` has `v1.0.0`, so the rebuilt bot starts at `v2.0.0`.
+
+### README images
+
+The images in `docs/assets` are rendered from `docs/assets/src` (and the admin page from the real page code) with `docs/assets/render.sh`. Set `CHROME` to a headless Chromium binary and run it from the repository root. Run it again after you change wording or the look of a screen.
+
+### Unraid template
+
+`unraid/ravebot.xml` is the Unraid template: repository `ghcr.io/m4xxx/ravebot:latest`, all variables, the admin page port and the icon. Keep it in line with the variables in `bot/config.py`.
