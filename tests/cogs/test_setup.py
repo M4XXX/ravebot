@@ -35,6 +35,20 @@ def test_setup_command_qualified_name_and_admin_check():
     assert cog.cog_slash_command_check(_inter(999)) is False
 
 
+def test_setup_check_accepts_an_added_admin():
+    from unittest.mock import patch  # noqa: F401
+
+    from bot.services.admin_registry import AdminRegistry
+
+    ctx = make_ctx()
+    registry = AdminRegistry(frozenset({ADMIN}), ctx.db)
+    registry._added = [777]  # as loaded from the table
+    ctx.is_admin = registry.is_admin
+    cog = SetupCog(ctx)
+    assert cog.cog_slash_command_check(_inter(777)) is True
+    assert cog.cog_slash_command_check(_inter(999)) is False
+
+
 @pytest.mark.asyncio
 async def test_non_admin_is_refused_with_permission_text():
     cog = SetupCog(make_ctx())

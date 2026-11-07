@@ -1,0 +1,108 @@
+"""Tests for bot/services/admin_registry.py."""
+from unittest.mock import AsyncMock, patch
+
+import pytest
+
+from bot.services.admin_registry import AdminRegistry
+
+DB = object()
+
+
+def _registry(owners=frozenset({30, 10})) -> AdminRegistry:
+    return AdminRegistry(owners, DB)
+
+
+def test_owners_listed_first_and_sorted() -> None:
+    r = _registry()
+    assert r.all_ids() == [10, 30]
+    assert r.owners == frozenset({10, 30})
+    assert r.added == frozenset()
+    assert r.is_owner(10) and r.is_admin(30) and not r.is_admin(99)
+
+
+@pytest.mark.asyncio
+async def test_load_reads_the_table() -> None:
+    r = _registry()
+    with patch("bot.services.admin_registry.list_web_admins", AsyncMock(return_value=[7, 5])):
+        await r.load()
+    assert r.all_ids() == [10, 30, 7, 5]
+    assert r.added == frozenset({7, 5})
+
+
+@pytest.mark.asyncio
+async def test_load_failure_keeps_owners_only_and_does_not_raise() -> None:
+    r = _registry()
+    with patch(
+        "bot.services.admin_registry.list_web_admins", AsyncMock(side_effect=RuntimeError("db"))
+    ):
+        await r.load()
+    assert r.all_ids() == [10, 30]
+
+
+@pytest.mark.asyncio
+async def test_add_owner_or_duplicate_returns_false_without_db_call() -> None:
+    r = _registry()
+    with patch("bot.services.admin_registry.add_web_admin", AsyncMock(return_value=True)) as add:
+        assert await r.add(10) is False
+        assert await r.add(7) is True
+        add.reset_mock()
+        assert await r.add(7) is False
+        add.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_add_caches_after_success_and_is_admin_immediately() -> None:
+    r = _registry()
+    with patch("bot.services.admin_registry.add_web_admin", AsyncMock(return_value=True)) as add:
+        assert await r.add(7) is True
+    add.assert_awaited_once_with(DB, 7)
+    assert r.is_admin(7) and not r.is_owner(7)
+    assert r.all_ids() == [10, 30, 7]
+
+
+@pytest.mark.asyncio
+async def test_add_db_error_leaves_cache_unchanged_and_propagates() -> None:
+    r = _registry()
+    with patch(
+        "bot.services.admin_registry.add_web_admin", AsyncMock(side_effect=RuntimeError("db"))
+    ):
+        with pytest.raises(RuntimeError):
+            await r.add(7)
+    assert not r.is_admin(7) and r.added == frozenset()
+
+
+@pytest.mark.asyncio
+async def test_remove_owner_or_unknown_returns_false_without_db_call() -> None:
+    r = _registry()
+    with patch(
+        "bot.services.admin_registry.remove_web_admin", AsyncMock(return_value=True)
+    ) as rm:
+        assert await r.remove(10) is False
+        assert await r.remove(99) is False
+        rm.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_remove_added_admin_deletes_and_updates_cache() -> None:
+    r = _registry()
+    with patch("bot.services.admin_registry.add_web_admin", AsyncMock(return_value=True)):
+        await r.add(7)
+    with patch(
+        "bot.services.admin_registry.remove_web_admin", AsyncMock(return_value=True)
+    ) as rm:
+        assert await r.remove(7) is True
+    rm.assert_awaited_once_with(DB, 7)
+    assert not r.is_admin(7)
+
+
+@pytest.mark.asyncio
+async def test_remove_db_error_propagates_and_keeps_cache() -> None:
+    r = _registry()
+    with patch("bot.services.admin_registry.add_web_admin", AsyncMock(return_value=True)):
+        await r.add(7)
+    with patch(
+        "bot.services.admin_registry.remove_web_admin", AsyncMock(side_effect=RuntimeError("db"))
+    ):
+        with pytest.raises(RuntimeError):
+            await r.remove(7)
+    assert r.is_admin(7)

@@ -478,7 +478,7 @@ class SetupWizardView(disnake.ui.View):
     # --- access and state ---
 
     async def interaction_check(self, inter: disnake.MessageInteraction) -> bool:
-        if inter.author.id in self.ctx.config.admin_user_ids:
+        if self.ctx.is_admin(inter.author.id):
             return True
         await _private(inter, texts.SETUP_ONLY_ORGANIZERS)
         return False
@@ -703,7 +703,7 @@ class ValuesModal(disnake.ui.Modal):
 
     async def callback(self, inter: disnake.ModalInteraction) -> None:
         ctx = self._wizard.ctx
-        if inter.author.id not in ctx.config.admin_user_ids:
+        if not ctx.is_admin(inter.author.id):
             await _private(inter, texts.SETUP_ONLY_ORGANIZERS)
             return
         parsed, errors = self._parser(dict(inter.text_values))

@@ -255,3 +255,33 @@ async def test_on_ready_skips_logo_retry_while_idle() -> None:
     await s.run()
     retry = await _ready(s, active=False, times=1)
     retry.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_startup_creates_and_loads_the_admin_registry() -> None:
+    from bot.services.admin_registry import AdminRegistry
+
+    s = _Startup()
+    s.config.admin_user_ids = frozenset({30, 10})
+    with patch("bot.services.admin_registry.list_web_admins", AsyncMock(return_value=[7])) as lst:
+        await s.run()
+    lst.assert_awaited_once_with(s.pool)
+    assert isinstance(s.ctx.admins, AdminRegistry)
+    assert s.ctx.is_admin(7) and s.ctx.is_admin(10) and not s.ctx.is_admin(99)
+
+
+@pytest.mark.asyncio
+async def test_startup_dm_goes_to_owners_plus_added_admins() -> None:
+    from bot import main as main_mod
+
+    s = _Startup()
+    s.config.admin_user_ids = frozenset({30, 10})
+    with patch("bot.services.admin_registry.list_web_admins", AsyncMock(return_value=[7])):
+        await s.run()
+    s.bot.guilds = []
+    notify = AsyncMock()
+    with patch.object(main_mod, "notify_admins_if_idle", new=notify), \
+         patch.object(main_mod, "retry_unsynced_logos", new=AsyncMock(return_value=0)), \
+         patch.object(main_mod.activation, "bot_is_active", new=AsyncMock(return_value=False)):
+        await s.bot.event.call_args.args[0]()
+    notify.assert_awaited_once_with(s.bot, s.ctx.db, [10, 30, 7])

@@ -113,6 +113,10 @@ async def main() -> None:
     await run_migrations(config.postgres_url)
     db = await create_pool(config)
     ctx.db = db
+    from bot.services.admin_registry import AdminRegistry
+
+    ctx.admins = AdminRegistry(config.admin_user_ids, db)
+    await ctx.admins.load()
 
     bot = create_bot()
 
@@ -229,7 +233,7 @@ async def main() -> None:
         # on_ready fires again on every reconnect: the admin DM goes out once per process
         if not startup_dm_sent:
             startup_dm_sent = True
-            await notify_admins_if_idle(bot, ctx.db, config.admin_user_ids)
+            await notify_admins_if_idle(bot, ctx.db, ctx.admin_ids())
             await _retry_logos_if_active(bot, ctx)
 
     try:

@@ -30,6 +30,7 @@ class BotContext:
                       before each lineup update (None until set in main.py).
         dj_conversations: DjConversationService for the DJ onboarding and profile
                       DM conversation (None until set in main.py).
+        admins:       AdminRegistry (owners plus added admins; None falls back to config).
         log_service:  AdminLogService (set in Story 1.3 main.py, None until then).
         user_locks:   Per-user asyncio.Lock dict — keyed by discord_user_id.
                       Prevents a DJ from running two concurrent DM flows simultaneously.
@@ -47,7 +48,19 @@ class BotContext:
     admin_booking_service: "Any | None" = None
     notion_sync_service: "Any | None" = None
     dj_conversations: "Any | None" = None
+    admins: "Any | None" = None
     user_locks: dict[int, asyncio.Lock] = field(default_factory=dict)
+
+    def is_admin(self, user_id: int) -> bool:
+        """Registry (owners plus added admins) if set, else the env admin ids."""
+        if self.admins is not None:
+            return self.admins.is_admin(user_id)
+        return user_id in self.config.admin_user_ids
+
+    def admin_ids(self) -> list[int]:
+        if self.admins is not None:
+            return self.admins.all_ids()
+        return sorted(self.config.admin_user_ids)
 
     def get_user_lock(self, user_id: int) -> asyncio.Lock:
         """Get or create the asyncio.Lock for this user.

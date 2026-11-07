@@ -210,3 +210,24 @@ async def test_long_reply_is_cut_then_escaped_with_note() -> None:
     assert value.endswith("(cut)")
     assert "\\*" in value
     assert not value.removesuffix(" (cut)").endswith("\\")
+
+
+@pytest.mark.asyncio
+async def test_added_admin_is_accepted_and_stranger_still_refused() -> None:
+    from bot.services.admin_registry import AdminRegistry
+
+    ctx = _ctx()
+    ctx.admins = AdminRegistry(frozenset({ADMIN}), ctx.db)
+    with patch("bot.services.admin_registry.add_web_admin", AsyncMock(return_value=True)):
+        await ctx.admins.add(777)
+    view = LogReplyView(ctx)
+    inter = _click_inter(author_id=777)
+    with patch("bot.ui.log_reply.get_log_reply_user", AsyncMock(return_value=None)):
+        await view.reply.callback(inter)
+    inter.response.send_message.assert_awaited_once()
+    assert inter.response.send_message.await_args.args[0] != "Only organizers can reply."
+    stranger = _click_inter(author_id=999)
+    await view.reply.callback(stranger)
+    stranger.response.send_message.assert_awaited_once_with(
+        "Only organizers can reply.", ephemeral=True
+    )

@@ -58,3 +58,23 @@ class TestBotContext:
         config = make_config(monkeypatch)
         ctx = BotContext(config=config)
         assert ctx.config is config
+
+
+class TestAdminAccess:
+    def test_is_admin_falls_back_to_config_without_registry(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ctx = BotContext(config=make_config(monkeypatch))
+        assert ctx.admins is None
+        assert ctx.is_admin(1) and ctx.is_admin(2) and not ctx.is_admin(3)
+        assert ctx.admin_ids() == [1, 2]
+
+    def test_registry_wins_when_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from bot.services.admin_registry import AdminRegistry
+
+        ctx = BotContext(config=make_config(monkeypatch))
+        registry = AdminRegistry(frozenset({2}), None)
+        registry._added = [9]
+        ctx.admins = registry
+        assert ctx.is_admin(9) and ctx.is_admin(2) and not ctx.is_admin(1)
+        assert ctx.admin_ids() == [2, 9]

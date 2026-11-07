@@ -54,13 +54,13 @@ class AdminCog(commands.Cog):
     ) -> bool:
         """Enforce admin whitelist for all slash commands in this cog.
 
-        Reads admin_user_ids from Config (loaded from ADMIN_USER_IDS env var at startup).
+        Uses ctx.is_admin (owners from ADMIN_USER_IDS plus admins added at runtime).
         Returning False raises CheckFailure — handled in cog_slash_command_error.
         Note: disnake 2.12.0 defines cog_slash_command_check as a synchronous method.
         [Source: architecture.md#Admin Whitelist: disnake Check Decorator]
         [Source: epics.md#FR41, NFR6]
         """
-        if inter.author.id not in self.ctx.config.admin_user_ids:
+        if not self.ctx.is_admin(inter.author.id):
             return False
         command = inter.application_command
         name = getattr(command, "qualified_name", None)
@@ -352,7 +352,7 @@ class AdminCog(commands.Cog):
 
         disnake runs no cog check for autocomplete: admins only, and nothing while idle.
         """
-        if inter.author.id not in self.ctx.config.admin_user_ids:
+        if not self.ctx.is_admin(inter.author.id):
             return []
         guild_id = inter.guild_id
         if (

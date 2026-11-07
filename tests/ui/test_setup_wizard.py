@@ -87,6 +87,7 @@ def store():
 def make_ctx(events=None):
     ctx = MagicMock()
     ctx.config.admin_user_ids = frozenset({ADMIN})
+    ctx.is_admin = lambda user_id: user_id == ADMIN
     ctx.db = MagicMock()
     ctx.db.fetchval = AsyncMock(return_value=1)
     ctx.notion_client.list_events = AsyncMock(return_value=events or [])
@@ -679,6 +680,36 @@ async def test_modal_refuses_non_admin(store):
         texts.SETUP_ONLY_ORGANIZERS, ephemeral=True
     )
     assert store.drafts[GUILD].data == {}
+
+
+async def _added_admin_ctx(added: int):
+    from bot.services.admin_registry import AdminRegistry
+
+    ctx = make_ctx()
+    ctx.is_admin = lambda user_id: ctx.admins.is_admin(user_id)
+    ctx.admins = AdminRegistry(frozenset({ADMIN}), ctx.db)
+    with patch("bot.services.admin_registry.add_web_admin", AsyncMock(return_value=True)):
+        await ctx.admins.add(added)
+    return ctx
+
+
+@pytest.mark.asyncio
+async def test_interaction_check_accepts_an_added_admin(store):
+    ctx = await _added_admin_ctx(777)
+    view = sw.SetupWizardView(ctx)
+    assert await view.interaction_check(make_inter(make_guild(), user=777)) is True
+    stranger = make_inter(make_guild(), user=999)
+    assert await view.interaction_check(stranger) is False
+
+
+@pytest.mark.asyncio
+async def test_modal_accepts_an_added_admin(store):
+    ctx = await _added_admin_ctx(777)
+    modal = await _open_modal(store, ctx, 4, "on_zone")
+    inter = _modal_inter({"zone": "Europe/London"})
+    inter.author.id = 777
+    await modal.callback(inter)
+    assert store.drafts[GUILD].data != {}
 
 
 # ---------- summary ----------

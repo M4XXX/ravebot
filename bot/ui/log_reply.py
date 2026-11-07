@@ -103,7 +103,7 @@ class LogReplyView(disnake.ui.View):
 
     @disnake.ui.button(label="Reply", style=disnake.ButtonStyle.primary, custom_id="log:reply")
     async def reply(self, button: disnake.ui.Button, inter: disnake.MessageInteraction) -> None:
-        if inter.author.id not in self.ctx.config.admin_user_ids:
+        if not self.ctx.is_admin(inter.author.id):
             await inter.response.send_message(texts.LOG_REPLY_ORGANIZERS_ONLY, ephemeral=True)
             return
         user_id = None

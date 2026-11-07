@@ -28,7 +28,7 @@ class SetupCog(commands.Cog):
 
     def cog_slash_command_check(self, inter: disnake.ApplicationCommandInteraction) -> bool:
         """Same admin whitelist as AdminCog."""
-        return inter.author.id in self.ctx.config.admin_user_ids
+        return self.ctx.is_admin(inter.author.id)
 
     async def cog_slash_command_error(
         self, inter: disnake.ApplicationCommandInteraction, error: Exception

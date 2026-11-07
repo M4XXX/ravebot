@@ -2,7 +2,7 @@
 
 [Source: _bmad-output/implementation-artifacts/1-4-admin-channel-configuration-commands.md#Task 4]
 """
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -11,6 +11,7 @@ def make_mock_ctx(admin_ids: frozenset[int]) -> MagicMock:
     """Build a minimal mock BotContext with config.admin_user_ids set."""
     ctx = MagicMock()
     ctx.config.admin_user_ids = admin_ids
+    ctx.is_admin = lambda user_id: user_id in admin_ids
     ctx.db = MagicMock()
     return ctx
 
@@ -64,6 +65,37 @@ async def test_cog_check_rejects_non_admin() -> None:
     cog = AdminCog(make_mock_ctx(frozenset({123})))
     inter = make_mock_inter(user_id=999)
     assert await cog.cog_slash_command_check(inter) is False
+
+
+async def _registry_ctx(added: int):
+    from bot.context import BotContext
+    from bot.services.admin_registry import AdminRegistry
+
+    ctx = BotContext(config=MagicMock(admin_user_ids=frozenset({123})))
+    ctx.db = MagicMock()
+    ctx.admins = AdminRegistry(frozenset({123}), ctx.db)
+    with patch("bot.services.admin_registry.add_web_admin", AsyncMock(return_value=True)):
+        await ctx.admins.add(added)
+    return ctx
+
+
+@pytest.mark.asyncio
+async def test_cog_check_accepts_an_added_admin_and_rejects_a_stranger() -> None:
+    from bot.cogs.admin import AdminCog
+
+    cog = AdminCog(await _registry_ctx(777))
+    assert await cog.cog_slash_command_check(make_mock_inter(user_id=777)) is True
+    assert await cog.cog_slash_command_check(make_mock_inter(user_id=999)) is False
+
+
+@pytest.mark.asyncio
+async def test_event_autocomplete_accepts_an_added_admin(monkeypatch) -> None:
+    cog, _ = _lineup_cog(monkeypatch, [_lineup_event("E1", 3)])
+    registry_ctx = await _registry_ctx(777)
+    cog.ctx.is_admin = registry_ctx.is_admin
+    monkeypatch.setattr("bot.services.activation.is_active", AsyncMock(return_value=True))
+    assert await cog.post_event_autocomplete(make_mock_inter(user_id=777), "") == ["E1"]
+    assert await cog.post_event_autocomplete(make_mock_inter(user_id=999), "") == []
 
 
 @pytest.mark.asyncio
