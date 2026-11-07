@@ -598,3 +598,120 @@ async def test_on_member_update_ignores_old_name_when_stored_role_differs() -> N
         await cog.on_member_update(before, after)
 
     after.send.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# DJ conversation routing
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def _conv(monkeypatch: pytest.MonkeyPatch) -> dict:
+    """Routing mocks: conversation lookup, DJ lookup, send_reply and the service."""
+    from bot.services.dj_conversation import Reply
+
+    mocks = {
+        "get": AsyncMock(return_value=object()),
+        "dj": AsyncMock(return_value=None),
+        "save": AsyncMock(),
+        "send_reply": AsyncMock(),
+        "reply": Reply("next question", "question"),
+    }
+    monkeypatch.setattr("bot.cogs.onboarding.get_conversation", mocks["get"])
+    monkeypatch.setattr("bot.cogs.onboarding.get_dj_by_discord_id", mocks["dj"])
+    monkeypatch.setattr("bot.cogs.onboarding.save_log_reply", mocks["save"])
+    monkeypatch.setattr("bot.cogs.onboarding.send_reply", mocks["send_reply"])
+    return mocks
+
+
+def _conv_cog(log_service: MagicMock, service: MagicMock):
+    cog = _cog(log_service)
+    cog.ctx.dj_conversations = service
+    return cog
+
+
+@pytest.mark.asyncio
+async def test_dm_with_open_conversation_goes_to_service_without_menu_or_log(_conv: dict) -> None:
+    log_service = _log_service()
+    service = MagicMock()
+    service.handle_message = AsyncMock(return_value=_conv["reply"])
+    cog = _conv_cog(log_service, service)
+    message = _dm("Felix")
+
+    await _send(cog, message)
+
+    service.handle_message.assert_awaited_once_with(message)
+    _conv["send_reply"].assert_awaited_once_with(
+        cog.ctx, message.channel, 5, _conv["reply"]
+    )
+    message.channel.send.assert_not_called()
+    log_service.log_user_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_dm_without_conversation_still_gets_menu_and_log(_conv: dict) -> None:
+    _conv["get"].return_value = None
+    log_service = _log_service()
+    service = MagicMock()
+    service.handle_message = AsyncMock()
+    cog = _conv_cog(log_service, service)
+    message = _dm("hello")
+
+    await _send(cog, message)
+
+    service.handle_message.assert_not_called()
+    message.channel.send.assert_awaited_once()
+    log_service.log_user_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_service_exception_gives_generic_error_and_no_menu(_conv: dict) -> None:
+    log_service = _log_service()
+    service = MagicMock()
+    service.handle_message = AsyncMock(side_effect=RuntimeError("boom"))
+    cog = _conv_cog(log_service, service)
+    message = _dm("Felix")
+
+    await _send(cog, message)
+
+    message.channel.send.assert_awaited_once_with(texts.GENERIC_ERROR)
+    _conv["send_reply"].assert_not_called()
+    log_service.log_user_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_two_djs_are_routed_to_their_own_conversations(_conv: dict) -> None:
+    service = MagicMock()
+    service.handle_message = AsyncMock(return_value=_conv["reply"])
+    cog = _conv_cog(_log_service(), service)
+    first, second = _dm("a", user_id=1), _dm("b", user_id=2)
+
+    await _send(cog, first)
+    await _send(cog, second)
+
+    assert [c.args[0] for c in service.handle_message.await_args_list] == [first, second]
+    assert [c.args[0] for c in _conv["get"].await_args_list] == [cog.ctx.db, cog.ctx.db]
+    assert [c.args[1] for c in _conv["get"].await_args_list] == [1, 2]
+    assert [c.args[2] for c in _conv["send_reply"].await_args_list] == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_idle_bot_only_idle_reply_and_service_not_called(
+    _conv: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from bot.ui.gates import IDLE_REPLY
+
+    monkeypatch.setattr(
+        "bot.cogs.onboarding.activation.bot_is_active", AsyncMock(return_value=False)
+    )
+    log_service = _log_service()
+    service = MagicMock()
+    service.handle_message = AsyncMock()
+    cog = _conv_cog(log_service, service)
+    message = _dm("Felix")
+
+    await _send(cog, message)
+
+    message.channel.send.assert_awaited_once_with(IDLE_REPLY)
+    service.handle_message.assert_not_called()
+    _conv["get"].assert_not_called()
+    log_service.log_user_message.assert_not_called()

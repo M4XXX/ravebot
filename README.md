@@ -14,7 +14,7 @@ Running a recurring online rave means coordinating DJ lineups every single week:
 
 ### Step 1: A DJ joins
 
-When someone receives the "DJ" role in your Discord server, RaveBot DMs them automatically: *"Hey! I'm RaveBot, I handle all DJ bookings here. Want me to add you to the booking pool?"* They fill in a quick onboarding modal (DJ name, VRChat name, logo, stream links) and are ready to book. No admin involvement needed.
+When someone receives the "DJ" role in your Discord server, RaveBot DMs them automatically: *"Hey! I'm RaveBot, I handle all DJ bookings here. Want me to add you to the booking pool?"* They answer five questions as normal DM messages (DJ name, VRChat name, logo as an image, stream links) and join the Active DJ Booking Group, ready to book. No admin involvement needed.
 
 ### Step 2: They book a slot
 

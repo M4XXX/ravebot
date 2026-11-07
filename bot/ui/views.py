@@ -233,9 +233,17 @@ class FallbackMenuView(GatedView):
 
         if not updated:
             # No DJ row: a member with the DJ role starts the onboarding conversation.
+            # Several awaits follow, so acknowledge first and answer through the followup.
+            try:
+                await inter.response.defer()
+            except disnake.HTTPException:
+                logger.warning(
+                    "Could not acknowledge the button of %s", inter.author.id, exc_info=True
+                )
+                return
             guild = await _guild_with_dj_role(self.ctx.db, inter)
             if guild is None:
-                await inter.response.send_message(texts.NO_PROFILE, ephemeral=True)
+                await inter.followup.send(texts.NO_PROFILE, ephemeral=True)
                 return
             user_id, guild_id = inter.author.id, guild.id
             await respond(

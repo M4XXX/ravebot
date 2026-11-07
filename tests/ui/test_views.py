@@ -74,15 +74,16 @@ async def test_fallback_go_active_dj_not_in_db() -> None:
 
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.author.id = 88888
-    inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    inter.followup.send = AsyncMock()
     inter.client.guilds = []
 
     with patch("bot.ui.views.update_active_booking", new=AsyncMock(return_value=False)):
         await view.go_active.callback(inter)
 
-    inter.response.send_message.assert_awaited_once()
-    msg = inter.response.send_message.call_args[0][0]
-    assert msg == texts.NO_PROFILE
+    inter.response.defer.assert_awaited_once()
+    inter.followup.send.assert_awaited_once()
+    assert inter.followup.send.call_args[0][0] == texts.NO_PROFILE
 
 
 def _menu_inter(user_id: int, guild: MagicMock) -> MagicMock:
@@ -91,8 +92,15 @@ def _menu_inter(user_id: int, guild: MagicMock) -> MagicMock:
     inter = MagicMock()
     inter.author.id = user_id
     inter.client.guilds = [guild]
-    inter.response.is_done = MagicMock(return_value=False)
+    done = {"v": False}
+    inter.response.is_done = MagicMock(side_effect=lambda: done["v"])
+
+    async def _defer(*args: object, **kwargs: object) -> None:
+        done["v"] = True
+
+    inter.response.defer = AsyncMock(side_effect=_defer)
     inter.response.send_message = AsyncMock()
+    inter.followup.send = AsyncMock(return_value=SimpleNamespace(id=321))
     inter.original_response = AsyncMock(return_value=SimpleNamespace(id=321))
     return inter
 
@@ -135,7 +143,10 @@ async def test_fallback_go_active_without_row_and_without_dj_role_gets_no_profil
          patch("bot.ui.views.get_dj_role", new=AsyncMock(return_value=dj_role)):
         await FallbackMenuView(ctx).go_active.callback(inter)
 
-    assert inter.response.send_message.call_args[0][0] == texts.NO_PROFILE
+    inter.response.defer.assert_awaited_once()
+    inter.response.send_message.assert_not_called()
+    assert inter.followup.send.call_args[0][0] == texts.NO_PROFILE
+    assert inter.followup.send.call_args.kwargs["ephemeral"] is True
     ctx.dj_conversations.start_onboarding.assert_not_awaited()
 
 
@@ -154,7 +165,9 @@ async def test_fallback_go_active_without_row_with_dj_role_starts_onboarding() -
         await FallbackMenuView(ctx).go_active.callback(inter)
 
     ctx.dj_conversations.start_onboarding.assert_awaited_once_with(88888, 99999)
-    sent = inter.response.send_message.call_args
+    inter.response.defer.assert_awaited_once()
+    inter.response.send_message.assert_not_called()
+    sent = inter.followup.send.call_args
     assert sent.args[0] == texts.Q_NAME
     assert isinstance(sent.kwargs["view"], QuestionView)
     ctx.dj_conversations.record_message_id.assert_awaited_once_with(88888, 321)

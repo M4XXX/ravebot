@@ -14,12 +14,13 @@ import disnake
 from disnake.ext import commands
 
 from bot.context import BotContext
+from bot.db.dj_conversations import get_conversation
 from bot.db.djs import get_dj_by_discord_id
 from bot.db.log_replies import save_log_reply
 from bot.services import activation
 from bot.services.roles import get_dj_role
 from bot.ui import texts
-from bot.ui.dj_profile import OnboardingIntroView
+from bot.ui.dj_profile import OnboardingIntroView, send_reply
 from bot.ui.embeds import ErrorCode
 from bot.ui.gates import IDLE_REPLY
 from bot.ui.log_reply import LogReplyView
@@ -149,6 +150,31 @@ class OnboardingCog(commands.Cog):
         except Exception:
             logger.exception("on_message: could not log DM from %s", message.author.id)
 
+    async def _route_to_conversation(self, message: disnake.Message) -> bool:
+        """Hand the DM to the DJ's open conversation. True when it was handled."""
+        service = self.ctx.dj_conversations
+        if service is None or self.ctx.db is None:
+            return False
+        user_id = message.author.id
+        try:
+            conversation = await get_conversation(self.ctx.db, user_id)
+        except Exception:
+            logger.exception("on_message: conversation lookup failed for %s", user_id)
+            return False
+        if conversation is None:
+            return False
+        try:
+            reply = await service.handle_message(message)
+        except Exception:
+            logger.exception("on_message: DJ conversation failed for %s", user_id)
+            await message.channel.send(texts.GENERIC_ERROR)
+            return True
+        if reply is None:
+            # Conversation ended between lookup and handling: fall back to the menu
+            return False
+        await send_reply(self.ctx, message.channel, user_id, reply)
+        return True
+
     @commands.Cog.listener()
     async def on_message(self, message: disnake.Message) -> None:
         """Respond to free-text DMs with FallbackMenuView.
@@ -170,6 +196,10 @@ class OnboardingCog(commands.Cog):
         # Idle: only the idle reply, nothing is logged and no menu is sent
         if not await activation.bot_is_active(self.bot, self.ctx.db):
             await message.channel.send(IDLE_REPLY)
+            return
+
+        # An open DJ conversation takes the message: no log entry, no menu
+        if await self._route_to_conversation(message):
             return
 
         # Entry first, but in the background so the menu is not delayed by the log post

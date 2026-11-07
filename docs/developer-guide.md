@@ -88,7 +88,7 @@ output/ravebot/
 │   │   ├── admin.py        # /config show, /create event, /post lineup update, /book dj slot, /cancel dj slot, /list all djs, /automatic dj booking
 │   │   ├── booking.py      # DJ self-service booking (thin shell - logic in views.py)
 │   │   ├── events.py       # Lineup post auto-update, event auto-creation
-│   │   ├── onboarding.py   # DJ onboarding DM flow
+│   │   ├── onboarding.py   # DJ role detection, welcome DM, DM routing
 │   │   ├── outreach_cog.py # Proactive outreach background loop
 │   │   └── setup.py        # /setup (wizard entry point)
 │   ├── db/                 # asyncpg repository layer
@@ -233,6 +233,16 @@ docker push ghcr.io/YOUR_USER/ravebot:latest
 
 # On Unraid: Docker → Add Container → Repository: ghcr.io/YOUR_USER/ravebot:v1.0.0
 ```
+
+### DJ onboarding conversation
+
+`DjConversationService` (`bot/services/dj_conversation.py`) runs the onboarding and the profile edits as DM conversations. State lives in `dj_conversations` (one row per user: `kind`, `step`, `data`, `logo_image`, `message_id`; migration `0013`). Handlers return a `Reply` (text, kind, optional logo bytes); `bot/ui/dj_profile.py` turns it into a message with `send_reply` and the shared persistent views registered in `main.py`.
+
+- Routing: `OnboardingCog.on_message` checks `get_conversation` first. With an open conversation it calls `handle_message`, sends the `Reply` and returns: no log entry, no menu. Without one, behaviour is unchanged (log entry, menu). A service exception is logged and answered with `GENERIC_ERROR`. `handle_message` returning `None` falls back to the menu.
+- Stale-button rule: every conversation button is checked against `message_id`, the id of the last question message. A button of an older message gets `STALE_BUTTON` and changes nothing. `record_message_id` stores the id after the message is sent.
+- Logo: `bot/services/logo.py` accepts one attachment from `cdn.discordapp.com` or `media.discordapp.net`, PNG or JPEG, up to 5 MB, 4096 px per side, and re-encodes it with Pillow (a new dependency) to a metadata-free PNG. The bytes are stored in `djs.logo_image` (and `dj_conversations.logo_image` while the conversation is open). Discord attachment URLs expire, so the stored bytes are the source.
+- Notion: `NotionClient.upsert_dj` uploads `logo_image` through `NotionApi.upload_file` (`POST /file_uploads`, then `/file_uploads/{id}/send`) and sets the DJ's `Logo` files property. Stream links are written as URL properties. Existing DJs keep their stored link.
+- Per-user work runs under the user lock, so two messages from one DJ are handled one after the other.
 
 ### Admin log channel
 

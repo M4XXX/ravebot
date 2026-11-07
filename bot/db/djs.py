@@ -43,7 +43,7 @@ async def insert_dj(
     """Insert a new DJ profile row with onboarding completed.
 
     Sets active_booking=true, onboarding_complete=true, onboarding_step=0.
-    Called on successful OnboardingModal submission (Story 2.2).
+    Called when the DJ confirms the onboarding conversation.
     Role assignment and Notion sync deferred to Story 2.3.
 
     Ownership-scoped: discord_user_id is the PK — insert is safe.
@@ -104,7 +104,7 @@ async def set_notion_dj_page_id(
 ) -> None:
     """Store the Notion page ID for this DJ after onboarding Notion sync.
 
-    Called from OnboardingModal.callback() after NotionClient.upsert_dj() succeeds,
+    Called by the DJ conversation service after NotionClient.upsert_dj() succeeds,
     and by ensure_dj_page(). The ID points to a row in the Notion DJs database.
 
     Ownership-scoped: WHERE discord_user_id = $2.

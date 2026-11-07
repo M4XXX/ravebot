@@ -379,6 +379,22 @@ The old commands `/config set`, `/add-event`, `/lineup post`, `/admin book`, `/a
 
 The bot keeps the configured number of future, open events. An event counts as open when its local date is today or later and its status is not Done or Canceled. When you set an event to Done or Canceled in Notion, the next poll (within five minutes) creates a new event so the count is met again. New events start one interval after the latest event date or today, whichever is later, and use the default start, slot length and slot count. Past events and events with Done or Canceled status never count.
 
+### 7.6 Joining the Active DJ Booking Group
+
+A member who gets the DJ role receives a welcome DM with two buttons: `Yes, I want to be booked` and `Not now`. The same start is offered from the menu (`Contact me for Booking`) to a member with the DJ role who has no profile yet. There is no popup; the bot asks five questions as normal DM messages and the DJ answers by writing back.
+
+1. DJ name. Required.
+2. VRChat name. Can be skipped.
+3. Logo. Send one image as a file attachment (PNG or JPEG, up to 5 MB). Links and several images are refused with a short explanation. Can be skipped.
+4. Stream link (Twitch, YouTube or stream.vrcdn).
+5. Backup stream link. Can be skipped.
+
+Every question has a `Cancel` button. A step that already has a value offers `Use it as it is`. At the end the bot shows the profile with `Looks good` and `Start over`. After `Looks good` the DJ is in the Active DJ Booking Group, has a row in the Notion DJs database (the logo is uploaded there as a file) and gets the Active Booking role.
+
+The DJ's answers during the conversation are not copied to the admin log channel. Buttons of older questions answer `This message is out of date. Write me any message to open the menu.`
+
+DJs that joined before this change keep their stored profile and stream links. The menu shows `My DJ profile` to every DJ with a profile. It lists the profile (with the logo) and has buttons to change the DJ name, VRChat name, logo, stream link and backup link, and `Leave the booking group` (and a join button after leaving). Leaving stops invites and removes the Active Booking role; the profile stays.
+
 ---
 
 ## 8. Troubleshooting
@@ -439,7 +455,7 @@ Set it in `/setup` (step 3, Log channel); `/config show` shows the current chann
 | `Changed in Notion` | A DJ was removed from a slot by hand in Notion. |
 | `Event fully booked` | Every slot of an event has a DJ. Posted once per fill, and again if a slot opens and the event fills up once more. |
 | `New DJ` | A DJ joined the pool. |
-| `Message from <name>` | A user sent the bot a DM that is not part of a booking flow. |
+| `Message from <name>` | A user sent the bot a DM that is not part of a booking flow or a DJ profile conversation. |
 | Critical problems | The bot could not DM a DJ, a Notion write failed, a hand edit was reverted, no more DJs are left to ask, the database is unavailable, or something else failed. These are red and have a `What to do` line. |
 
 Button taps, the bot's own replies and routine sync work are not logged.

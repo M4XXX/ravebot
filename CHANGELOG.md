@@ -15,6 +15,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Done and canceled events are replaced automatically: the bot keeps the configured number of future events that are not Done or Canceled (`replenish_events`).
 - New commands: `/setup`, `/create event`, `/post lineup update`, `/book dj slot`, `/cancel dj slot`, `/list all djs`, `/automatic dj booking`.
 - Migration `0011` adds the `setup_drafts` table.
+- DJ onboarding is a conversation in the DMs instead of a popup. The bot asks five questions (DJ name, VRChat name, logo, stream link, backup link) one at a time, with Skip, Use it as it is and Cancel buttons, and ends with a profile summary to confirm. New wording: DJs now join the "Active DJ Booking Group". Under `My DJ profile` a DJ can change each answer or leave the group. Answers during the conversation are not copied to the log channel.
+- The logo is now an image file (PNG or JPEG, up to 5 MB) that the DJ sends in the DM, not a link. The bot stores the sanitised image and uploads it to the DJ's Notion row as a file. New dependency: Pillow. DJs that joined earlier keep their stored link.
+- Migration `0013` adds the DJ profile columns and the `dj_conversations` table.
 - Lineup Update posts: the bot posts a new `Lineup Update` message in the DJ channel for every lineup change of the upcoming event (earliest event that is not Done or Canceled). Earlier posts are never edited or deleted, and there is no daily cap. Format: `Event Saturday 14.11.2026`, then one line per slot, `Slot 1  20:00  DJ name` or `OPEN SLOT`.
 - `/post lineup update [event]` (admin) posts the lineup of the upcoming event, or of a chosen future event, on demand.
 - A `Book a slot` button under every Lineup Update post. It opens the booking flow in the DJ's DMs and replies privately.
