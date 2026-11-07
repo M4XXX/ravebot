@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-07
+
 ### Added
 
 - Release automation: the GitHub Actions workflow `release.yml` tests the code, builds the Docker image, publishes it to `ghcr.io/m4xxx/ravebot` (tags `X.Y.Z`, `X.Y`, `latest`) and creates a GitHub release from the changelog when a version tag is pushed; `ci.yml` runs the tests on every push to `main` and every pull request. `scripts/release.sh` prepares a release (version, changelog, commit, tag).
