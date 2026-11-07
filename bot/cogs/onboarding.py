@@ -167,10 +167,19 @@ class OnboardingCog(commands.Cog):
             reply = await service.handle_message(message)
         except Exception:
             logger.exception("on_message: DJ conversation failed for %s", user_id)
-            await message.channel.send(texts.GENERIC_ERROR)
+            try:
+                await message.channel.send(texts.GENERIC_ERROR)
+            except disnake.HTTPException:
+                logger.warning(
+                    "on_message: Could not send the error to %s", user_id, exc_info=True
+                )
             return True
         if reply is None:
             # Conversation ended between lookup and handling: fall back to the menu
+            logger.info(
+                "on_message: conversation of %s ended before handling; showing the menu",
+                user_id,
+            )
             return False
         await send_reply(self.ctx, message.channel, user_id, reply)
         return True

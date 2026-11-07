@@ -30,7 +30,7 @@ def upgrade() -> None:
     )
     op.create_table(
         "dj_conversations",
-        sa.Column("discord_user_id", sa.BigInteger(), nullable=False),
+        sa.Column("discord_user_id", sa.BigInteger(), nullable=False, autoincrement=False),
         sa.Column("guild_id", sa.BigInteger(), nullable=False),
         sa.Column("kind", sa.Text(), nullable=False),
         sa.Column("step", sa.Text(), nullable=False),

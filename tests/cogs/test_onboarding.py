@@ -715,3 +715,66 @@ async def test_idle_bot_only_idle_reply_and_service_not_called(
     service.handle_message.assert_not_called()
     _conv["get"].assert_not_called()
     log_service.log_user_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_conversation_lookup_failure_falls_back_to_menu_and_log(
+    _conv: dict, caplog: pytest.LogCaptureFixture
+) -> None:
+    _conv["get"].side_effect = RuntimeError("db down")
+    log_service = _log_service()
+    service = MagicMock()
+    service.handle_message = AsyncMock()
+    cog = _conv_cog(log_service, service)
+    message = _dm("hello")
+
+    with caplog.at_level("ERROR", logger="bot.cogs.onboarding"):
+        await _send(cog, message)
+
+    service.handle_message.assert_not_called()
+    message.channel.send.assert_awaited_once()
+    assert message.channel.send.await_args.args[0] == texts.MENU
+    log_service.log_user_message.assert_awaited_once()
+    assert "conversation lookup failed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_conversation_gone_before_handling_falls_back_to_menu_and_log(
+    _conv: dict, caplog: pytest.LogCaptureFixture
+) -> None:
+    log_service = _log_service()
+    service = MagicMock()
+    service.handle_message = AsyncMock(return_value=None)
+    cog = _conv_cog(log_service, service)
+    message = _dm("hello")
+
+    with caplog.at_level("INFO", logger="bot.cogs.onboarding"):
+        await _send(cog, message)
+
+    service.handle_message.assert_awaited_once_with(message)
+    _conv["send_reply"].assert_not_called()
+    message.channel.send.assert_awaited_once()
+    assert message.channel.send.await_args.args[0] == texts.MENU
+    log_service.log_user_message.assert_awaited_once()
+    assert "ended before" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_generic_error_send_failure_is_only_logged(
+    _conv: dict, caplog: pytest.LogCaptureFixture
+) -> None:
+    log_service = _log_service()
+    service = MagicMock()
+    service.handle_message = AsyncMock(side_effect=RuntimeError("boom"))
+    cog = _conv_cog(log_service, service)
+    message = _dm("Felix")
+    message.channel.send = AsyncMock(
+        side_effect=disnake.HTTPException(MagicMock(status=500), "down")
+    )
+
+    with caplog.at_level("WARNING", logger="bot.cogs.onboarding"):
+        await _send(cog, message)
+
+    message.channel.send.assert_awaited_once_with(texts.GENERIC_ERROR)
+    log_service.log_user_message.assert_not_called()
+    assert "Could not send the error" in caplog.text

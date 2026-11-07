@@ -253,7 +253,8 @@ async def dj_name_exists(
           AND ($2::bigint IS NULL OR discord_user_id <> $2)
         LIMIT 1
         """,
-        clean_text(name).casefold(),
+        # str.lower() matches SQL lower(); casefold() would turn "ß" into "ss".
+        clean_text(name).lower(),
         exclude_user_id,
     )
     return found is not None

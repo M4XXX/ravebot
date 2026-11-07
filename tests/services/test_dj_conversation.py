@@ -879,3 +879,33 @@ async def test_record_message_id_failure_is_logged(service, fake, monkeypatch, c
     assert len(records) == 1
     assert records[0].levelname == "WARNING"
     assert records[0].exc_info is not None
+
+
+# --- not now ---
+
+
+async def test_decline_deletes_open_onboarding_conversation(service, fake):
+    await onboard_to(service, A, "vrchat")
+    r = await service.decline(A)
+    assert r == Reply(texts.ONBOARD_DECLINED, "info")
+    assert A not in fake.convs
+
+
+async def test_decline_keeps_an_open_edit_conversation(service, fake):
+    fake.djs[A] = {"dj_name": "Neon Fox", "active_booking": True}
+    await service.start_edit(A, GUILD, "vrchat")
+    r = await service.decline(A)
+    assert r == Reply(texts.ONBOARD_DECLINED, "info")
+    assert fake.convs[A].kind == "edit"
+
+
+async def test_decline_without_conversation_only_answers(service, fake):
+    assert await service.decline(A) == Reply(texts.ONBOARD_DECLINED, "info")
+    assert fake.convs == {}
+
+
+def test_stale_text_points_to_the_latest_message():
+    assert texts.STALE_BUTTON == (
+        "This message is out of date. Use the latest message from me, "
+        "or press Cancel there."
+    )

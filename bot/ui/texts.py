@@ -61,7 +61,9 @@ ONBOARD_DONE = (
     "and change your profile under **My DJ profile**."
 )
 ONBOARD_CANCELLED = "Setup cancelled. Write me any message to open the menu."
-STALE_BUTTON = "This message is out of date. Write me any message to open the menu."
+STALE_BUTTON = (
+    "This message is out of date. Use the latest message from me, or press Cancel there."
+)
 
 Q_NAME = (
     "**Step 1 of 5: DJ name**\n"
@@ -224,6 +226,9 @@ BTN_CANCEL = "Cancel a slot"
 BTN_LINEUP = "Show lineup"
 BTN_INVITES_ON = "Contact me for Booking"
 BTN_INVITES_OFF = "Don't automatically ask for booking"
+# Group button of the "My DJ profile" overview.
+BTN_LEAVE_GROUP = "Leave the booking group"
+BTN_JOIN_GROUP = "Join the Active DJ Booking Group"
 INVITES_ON_DONE = "You're in the Active DJ Booking Group. I'll contact you when a slot opens."
 INVITES_OFF_DONE = (
     "You left the Active DJ Booking Group. I won't ask you for bookings "

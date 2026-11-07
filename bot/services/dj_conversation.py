@@ -216,6 +216,17 @@ class DjConversationService:
 
         return await self._run(user_id, body)
 
+    async def decline(self, user_id: int) -> Reply:
+        """"Not now" on the welcome DM: end an open onboarding (edits stay open)."""
+
+        async def body(db: asyncpg.Pool) -> Reply:
+            conv = await get_conversation(db, user_id)
+            if conv is not None and conv.kind == ONBOARDING:
+                await delete_conversation(db, user_id)
+            return Reply(texts.ONBOARD_DECLINED, "info")
+
+        return await self._run(user_id, body)
+
     async def record_message_id(self, user_id: int, message_id: int) -> None:
         async def body(db: asyncpg.Pool) -> None:
             try:

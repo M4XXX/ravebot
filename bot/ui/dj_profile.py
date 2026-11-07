@@ -168,7 +168,12 @@ class OnboardingIntroView(GatedView):
     async def pass_for_now(
         self, button: disnake.ui.Button, inter: disnake.MessageInteraction
     ) -> None:
-        await inter.response.send_message(texts.ONBOARD_DECLINED)
+        user_id = inter.author.id
+        if _service(self.ctx) is None:
+            await send_reply(self.ctx, inter, user_id, Reply(texts.ONBOARD_DECLINED, "info"))
+            return
+        # Ends an open onboarding, so the next DM opens the menu as the text says.
+        await respond(self.ctx, inter, lambda s: s.decline(user_id), defer=False)
 
 
 class QuestionView(GatedView):
@@ -314,7 +319,7 @@ class OverviewView(GatedView):
         await self._edit(inter, "alt_link")
 
     @disnake.ui.button(
-        label=texts.BTN_INVITES_OFF, style=disnake.ButtonStyle.secondary,
+        label=texts.BTN_LEAVE_GROUP, style=disnake.ButtonStyle.secondary,
         custom_id="dj:leave", row=1,
     )
     async def leave_button(
@@ -324,7 +329,7 @@ class OverviewView(GatedView):
         await respond(self.ctx, inter, lambda s: s.leave_group(user_id))
 
     @disnake.ui.button(
-        label=texts.BTN_INVITES_ON, style=disnake.ButtonStyle.success,
+        label=texts.BTN_JOIN_GROUP, style=disnake.ButtonStyle.success,
         custom_id="dj:join", row=1,
     )
     async def join_button(

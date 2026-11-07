@@ -36,3 +36,14 @@ def test_downgrade_drops_both() -> None:
     op.drop_table.assert_called_once_with("dj_conversations")
     dropped = [c.args for c in op.drop_column.call_args_list]
     assert ("djs", "logo_synced") in dropped and ("djs", "logo_image") in dropped
+
+
+def test_conversation_user_id_is_not_a_serial() -> None:
+    """A BigInteger primary key would become BIGSERIAL; Discord ids are given."""
+    m = _load()
+    with patch.object(m, "op") as op:
+        m.upgrade()
+    columns = {
+        c.name: c for c in op.create_table.call_args.args[1:] if hasattr(c, "autoincrement")
+    }
+    assert columns["discord_user_id"].autoincrement is False

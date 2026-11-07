@@ -24,6 +24,7 @@ async def test_pass_for_now_sends_warm_response() -> None:
 
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.author.id = 12345
+    inter.response.is_done = MagicMock(return_value=False)
     inter.response.send_message = AsyncMock()
 
     await view.pass_for_now.callback(inter)

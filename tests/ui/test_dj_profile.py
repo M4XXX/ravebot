@@ -162,6 +162,15 @@ async def test_not_now_sends_declined(ctx, fake, client) -> None:
     assert A not in fake.convs
 
 
+async def test_not_now_ends_an_open_onboarding_conversation(ctx, fake, client) -> None:
+    await _to_step(ctx, client, "vrchat")
+    assert A in fake.convs
+    inter = make_inter(client, 1)
+    await press(dj_profile.OnboardingIntroView(ctx), "onboarding:pass_for_now", inter)
+    assert sent(inter)[0] == texts.ONBOARD_DECLINED
+    assert A not in fake.convs
+
+
 # --- stale buttons ---
 
 
@@ -327,7 +336,9 @@ async def test_overview_has_six_buttons_over_two_rows(ctx, in_group, group_id) -
     assert rows == [0, 0, 0, 1, 1, 1]
     assert len({"dj:leave", "dj:join"} & set(ids(view))) == 1
     labels = {c.custom_id: c.label for c in view.children}
-    assert labels[group_id] == (texts.BTN_INVITES_OFF if in_group else texts.BTN_INVITES_ON)
+    assert labels[group_id] == (texts.BTN_LEAVE_GROUP if in_group else texts.BTN_JOIN_GROUP)
+    assert texts.BTN_LEAVE_GROUP == "Leave the booking group"
+    assert texts.BTN_JOIN_GROUP == "Join the Active DJ Booking Group"
     assert labels["dj:edit:name"] == texts.BTN_CHANGE_NAME
 
 

@@ -304,6 +304,22 @@ async def test_dj_name_exists_passes_cleaned_name_and_exclusion() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [("DJ Stra\u00dfe", "dj stra\u00dfe"), ("\ufb01re DJ", "\ufb01re dj")],
+)
+async def test_dj_name_exists_lowercases_like_sql_lower(name, expected) -> None:
+    """Python side uses str.lower() like SQL lower(): sharp s and the fi ligature
+    stay as they are (casefold would turn them into "ss" and "fi" and never match)."""
+    from bot.db.djs import dj_name_exists
+
+    pool = MagicMock()
+    pool.fetchval = AsyncMock(return_value=None)
+    await dj_name_exists(pool, name)
+    assert pool.fetchval.await_args.args[1] == expected
+
+
+@pytest.mark.asyncio
 async def test_logo_helpers() -> None:
     from bot.db.djs import get_logo_image, list_unsynced_logo_user_ids, set_logo_synced
 
