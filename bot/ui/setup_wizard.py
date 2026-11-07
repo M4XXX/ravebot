@@ -53,6 +53,15 @@ ID_CHANGE = "setup:change"
 _guild_locks: dict[int, asyncio.Lock] = {}
 
 
+def _refusal(draft: SetupDraft | None, message_id: int) -> str | None:
+    """Private note when the pressed message is not the open wizard, else None."""
+    if draft is None:
+        return texts.SETUP_ALREADY_DONE
+    if draft.message_id != message_id:
+        return texts.SETUP_OUTDATED
+    return None
+
+
 def _db(ctx: "BotContext") -> Any:
     return ctx.db
 
@@ -138,7 +147,7 @@ async def render_step(ctx: "BotContext", guild: Any, draft: SetupDraft) -> StepV
     if key == "welcome":
         checks = await _welcome_checks(ctx)
         return StepView(
-            texts.setup_welcome(total, checks),
+            texts.setup_welcome(total, checks, bool(draft.data.get("rerun"))),
             {ID_NEXT},
             next_disabled=not all(ok for ok, _ in checks),
             next_label="Start",
@@ -193,8 +202,11 @@ class SetupWizardView(disnake.ui.View):
         return False
 
     async def _draft(self, inter: disnake.MessageInteraction) -> SetupDraft | None:
+        """The open draft of this message; otherwise the refusal is sent and None returned."""
         draft = await get_draft(_db(self.ctx), inter.guild_id)  # type: ignore[arg-type]
-        if draft is None or draft.message_id != inter.message.id:
+        refusal = _refusal(draft, inter.message.id)
+        if refusal is not None:
+            await _private(inter, refusal)
             return None
         return draft
 
@@ -217,7 +229,6 @@ class SetupWizardView(disnake.ui.View):
         await inter.response.defer()
         draft = await self._draft(inter)
         if draft is None:
-            await _private(inter, texts.SETUP_ALREADY_DONE)
             return
         if delta > 0:
             view = await render_step(self.ctx, inter.guild, draft)
@@ -241,12 +252,13 @@ class SetupWizardView(disnake.ui.View):
         self, inter: disnake.MessageInteraction, key: str
     ) -> None:
         await inter.response.defer()
+        values = inter.values
+        if not values:
+            return
         draft = await self._draft(inter)
         if draft is None:
-            await _private(inter, texts.SETUP_ALREADY_DONE)
             return
-        chosen = (inter.values or [None])[0]
-        draft.data[key] = int(getattr(chosen, "id", chosen))
+        draft.data[key] = int(values[0])
         await self._show(inter, draft)
 
     @disnake.ui.channel_select(
@@ -349,8 +361,11 @@ async def activate_from_draft(ctx: "BotContext", inter: Any) -> None:
     db = _db(ctx)
     async with guild_lock(guild_id):
         draft = await get_draft(db, guild_id)
-        if draft is None or draft.message_id != inter.message.id or draft.data.get("rerun"):
-            await _private(inter, texts.SETUP_ALREADY_DONE)
+        refusal = _refusal(draft, inter.message.id)
+        if refusal is None and draft is not None and draft.data.get("rerun"):
+            refusal = texts.SETUP_ALREADY_DONE
+        if refusal is not None or draft is None:
+            await _private(inter, refusal or texts.SETUP_ALREADY_DONE)
             return
         if any(draft.data.get(key) is None for key in CHANNEL_KEYS):
             await _private(inter, texts.SETUP_MISSING_VALUES)
@@ -361,28 +376,34 @@ async def activate_from_draft(ctx: "BotContext", inter: Any) -> None:
                 if await db_config.get_value(db, guild_id, key) is None:
                     await db_config.set_value(db, guild_id, key, default)
             await activation.set_active(db, guild_id)
-            created = await _run_effects(ctx, guild_id)
+            created, posted = await _run_effects(ctx, guild_id)
             await delete_draft(db, guild_id)
         except Exception:
             logger.exception("Setup wizard: activation failed")
             await _private(inter, texts.SETUP_ERROR)
             return
         await inter.edit_original_message(
-            content=texts.setup_active_message(created, f"<#{draft.data['dj_channel']}>"),
+            content=texts.setup_active_message(
+                created, posted, f"<#{draft.data['dj_channel']}>"
+            ),
             view=None,
         )
 
 
-async def _run_effects(ctx: "BotContext", guild_id: int) -> int:
-    """Create the missing future events and post the first Lineup Update."""
+async def _run_effects(ctx: "BotContext", guild_id: int) -> tuple[int, bool]:
+    """Create the missing future events and post the first Lineup Update.
+
+    Returns (events created, whether the Lineup Update was posted).
+    """
     created = 0
+    posted = False
     if ctx.notion_client is not None:
         events = await ctx.notion_client.list_events()
         created = await replenish_events(_db(ctx), ctx.notion_client, guild_id, events)
         if ctx.lineup_service is not None:
             fresh = await ctx.notion_client.list_events() if created else events
-            await ctx.lineup_service.refresh(fresh)
-    return created
+            posted = bool(await ctx.lineup_service.refresh(fresh))
+    return created, posted
 
 
 async def save_from_draft(ctx: "BotContext", inter: Any) -> None:
@@ -390,8 +411,11 @@ async def save_from_draft(ctx: "BotContext", inter: Any) -> None:
     guild_id = inter.guild_id
     async with guild_lock(guild_id):
         draft = await get_draft(_db(ctx), guild_id)
-        if draft is None or draft.message_id != inter.message.id:
-            await _private(inter, texts.SETUP_ALREADY_DONE)
+        refusal = _refusal(draft, inter.message.id)
+        if refusal is None and draft is not None and not draft.data.get("rerun"):
+            refusal = texts.SETUP_NOT_A_RERUN
+        if refusal is not None or draft is None:
+            await _private(inter, refusal or texts.SETUP_ALREADY_DONE)
             return
         if not await _write_channels(_db(ctx), guild_id, draft.data):
             await _private(inter, texts.SETUP_MISSING_VALUES)

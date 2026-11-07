@@ -366,3 +366,33 @@ async def test_event_today_counts_as_active() -> None:
 async def test_none_client_or_db_creates_nothing() -> None:
     assert await replenish_events(None, MagicMock(), 1, []) == 0
     assert await replenish_events(MagicMock(), None, 1, []) == 0
+
+
+@pytest.mark.asyncio
+async def test_concurrent_replenish_never_creates_the_same_event_twice() -> None:
+    import asyncio
+
+    created_ids: list[str] = []
+    seen: set[str] = set()
+
+    async def exists(event_id: str) -> bool:
+        return event_id in seen
+
+    async def create(event_id, *args, **kwargs):
+        await asyncio.sleep(0)
+        seen.add(event_id)
+        created_ids.append(event_id)
+        return _new_event()
+
+    client = MagicMock()
+    client.event_id_exists = exists
+    client.create_event = create
+    db = MagicMock()
+    with patch("bot.services.event_replenish.get_value", AsyncMock(return_value=None)), patch(
+        "bot.services.event_replenish.default_event_shape",
+        AsyncMock(return_value=SimpleNamespace(start=None, slot_count=6, slot_minutes=60)),
+    ), patch("bot.services.event_replenish.init_event_slots", AsyncMock()):
+        await asyncio.gather(
+            replenish_events(db, client, 1, []), replenish_events(db, client, 1, [])
+        )
+    assert len(created_ids) == len(set(created_ids)) == 6

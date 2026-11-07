@@ -2,6 +2,7 @@
 
 Used by the poll loop (EventsCog) and by the setup wizard at activation time.
 """
+import asyncio
 import datetime
 import logging
 from datetime import timedelta
@@ -15,6 +16,9 @@ from bot.timezone import local_today
 
 logger = logging.getLogger(__name__)
 
+# Shared by the poll loop and the setup wizard: create-if-missing must not run twice at once.
+_replenish_lock = asyncio.Lock()
+
 _FINISHED_STATUSES = {"Done", "Canceled"}
 
 
@@ -26,6 +30,12 @@ def _to_int(raw: str | None, default: int) -> int:
 
 
 async def replenish_events(db, notion_client, guild_id: int, events: list[EventInfo]) -> int:  # noqa: ANN001
+    """Serialized wrapper: the poll loop and the wizard never replenish at the same time."""
+    async with _replenish_lock:
+        return await _replenish(db, notion_client, guild_id, events)
+
+
+async def _replenish(db, notion_client, guild_id: int, events: list[EventInfo]) -> int:  # noqa: ANN001
     """Create events until the look-ahead count of future, open events is met.
 
     Active events have a local date of today or later and a status other than

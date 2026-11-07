@@ -261,6 +261,8 @@ SETUP_ALREADY_ACTIVE = (
 )
 SETUP_ALREADY_OPEN = "The setup is already open here: {url}"
 SETUP_ALREADY_DONE = "This setup was already finished."
+SETUP_OUTDATED = "This setup message is outdated. Run /setup to open the current one."
+SETUP_NOT_A_RERUN = "This is the first setup. Use Activate on the last step."
 SETUP_CHANGE_BUTTON = "Change settings"
 SETUP_ERROR = "Something went wrong during the setup. Press the button again."
 SETUP_NO_PERMISSION = "You don't have permission to use this command."
@@ -270,12 +272,18 @@ SETUP_CHECK_OK = "✓ "
 SETUP_CHECK_FAIL = "✗ "
 
 
-def setup_welcome(total: int, checks: list[tuple[bool, str]]) -> str:
+def setup_welcome(total: int, checks: list[tuple[bool, str]], rerun: bool = False) -> str:
+    intro = (
+        f"I will guide you through {total} short steps. The bot stays active: "
+        "nothing changes until you press **Save** at the end."
+        if rerun
+        else f"I will guide you through {total} short steps. Until you press **Activate** "
+        "at the end, I stay idle: no posts, no invites, no events."
+    )
     lines = [
         f"**Step 1 of {total}: Welcome and checks**",
         "**RaveBot setup**",
-        f"I will guide you through {total} short steps. Until you press **Activate** "
-        "at the end, I stay idle: no posts, no invites, no events.",
+        intro,
         "",
     ]
     lines += [f"{SETUP_CHECK_OK if ok else SETUP_CHECK_FAIL}{text}" for ok, text in checks]
@@ -321,10 +329,17 @@ def setup_summary(lines: list[str], rerun: bool) -> str:
     return "\n".join([head, *lines])
 
 
-def setup_active_message(created: int, channel: str | None) -> str:
-    where = f" in {channel}" if channel else ""
-    return (
-        "**RaveBot is active**\n"
-        f"I created {created} new events in Notion and posted the Lineup Update{where}. "
-        "To change a setting later, run /setup again."
-    )
+def setup_active_message(created: int, posted: bool, channel: str | None) -> str:
+    parts = []
+    if created > 0:
+        parts.append(f"I created your first {created} events in Notion")
+    if posted:
+        where = f" in {channel}" if channel else ""
+        parts.append(f"posted the Lineup Update{where}")
+    body = " and ".join(parts)
+    lines = ["**RaveBot is active**"]
+    if body:
+        lines.append(f"{body}. To change a setting later, run /setup again.")
+    else:
+        lines.append("To change a setting later, run /setup again.")
+    return "\n".join(lines)

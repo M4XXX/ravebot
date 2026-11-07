@@ -193,7 +193,7 @@ async def test_welcome_failed_check_disables_start(store):
 async def test_choose_channel_stores_only_in_draft(store):
     ctx = make_ctx()
     seed(store, 1)
-    inter = make_inter(make_guild(), values=[SimpleNamespace(id=100)])
+    inter = make_inter(make_guild(), values=["100"])
     await sw.SetupWizardView(ctx)._choose_channel(inter, "dj_channel")
     assert store.drafts[GUILD].data["dj_channel"] == 100
     assert store.writes == []
@@ -213,7 +213,7 @@ async def test_permission_check_blocks_next_and_names_permission(store, perms, n
     ctx = make_ctx()
     seed(store, 2, {"dj_channel": 100, "log_channel": 200})
     guild = make_guild(perms)
-    inter = make_inter(guild, values=[SimpleNamespace(id=200)])
+    inter = make_inter(guild, values=["200"])
     view = sw.SetupWizardView(ctx)
     await view._choose_channel(inter, "log_channel")
     assert named in last_content(inter)
@@ -265,7 +265,12 @@ async def test_activate_writes_keys_flag_and_runs_effects_once_on_double_press(s
     seed(store, 3, {"dj_channel": 100, "log_channel": 200})
     store.config[(GUILD, "slots_per_event")] = "4"  # stored value must survive
     i1, i2 = make_inter(make_guild()), make_inter(make_guild())
-    with patch("bot.ui.setup_wizard.replenish_events", AsyncMock(return_value=6)) as rep:
+    async def slow(*a, **k):
+        await asyncio.sleep(0)
+        return 6
+
+    ctx.lineup_service.refresh = AsyncMock(side_effect=slow)
+    with patch("bot.ui.setup_wizard.replenish_events", AsyncMock(side_effect=slow)) as rep:
         await i1.response.defer()
         await i2.response.defer()
         await asyncio.gather(sw.activate_from_draft(ctx, i1), sw.activate_from_draft(ctx, i2))
@@ -337,7 +342,7 @@ async def test_restart_rebuilds_view_from_stored_draft(store):
     seed(store, 1, {})
     # first process: choose the DJ channel
     ctx1 = make_ctx()
-    inter = make_inter(guild, values=[SimpleNamespace(id=100)])
+    inter = make_inter(guild, values=["100"])
     await sw.SetupWizardView(ctx1)._choose_channel(inter, "dj_channel")
     # restart: a new view and ctx know nothing but the stored draft
     ctx2 = make_ctx()
@@ -345,7 +350,7 @@ async def test_restart_rebuilds_view_from_stored_draft(store):
     inter = make_inter(guild)
     await view2._navigate(inter, 1)
     assert store.drafts[GUILD].step == 2
-    inter = make_inter(guild, values=[SimpleNamespace(id=200)])
+    inter = make_inter(guild, values=["200"])
     await view2._choose_channel(inter, "log_channel")
     await view2._navigate(make_inter(guild), 1)
     assert store.drafts[GUILD].step == 3
@@ -400,8 +405,77 @@ def test_wizard_texts_have_no_utc_or_em_dash():
         texts.setup_channel_ok("x"),
         texts.setup_channel_missing("x", ["Send Messages"]),
         texts.setup_summary(["a"], False),
-        texts.setup_active_message(3, "<#1>"),
+        texts.setup_active_message(3, True, "<#1>"),
     ]
     for s in strings:
         assert "—" not in s
         assert not re.search(r"\bUTC\b", s)
+
+
+# ---------- fix round 1 ----------
+
+@pytest.mark.asyncio
+async def test_empty_select_values_is_a_no_op(store):
+    ctx = make_ctx()
+    seed(store, 1)
+    inter = make_inter(make_guild(), values=[])
+    await sw.SetupWizardView(ctx)._choose_channel(inter, "dj_channel")
+    assert store.drafts[GUILD].data == {}
+    inter.edit_original_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_save_refuses_first_run_draft(store):
+    ctx = make_ctx()
+    seed(store, 3, {"dj_channel": 100, "log_channel": 200})
+    inter = make_inter(make_guild())
+    await inter.response.defer()
+    await sw.save_from_draft(ctx, inter)
+    assert store.writes == [] and GUILD in store.drafts
+    inter.followup.send.assert_awaited_once_with(texts.SETUP_NOT_A_RERUN, ephemeral=True)
+
+
+def test_active_text_only_claims_what_happened():
+    both = texts.setup_active_message(6, True, "<#1>")
+    assert "I created your first 6 events in Notion" in both
+    assert "posted the Lineup Update in <#1>" in both
+    none = texts.setup_active_message(0, False, "<#1>")
+    assert "created" not in none and "Lineup Update" not in none
+    only_events = texts.setup_active_message(3, False, "<#1>")
+    assert "Lineup Update" not in only_events and "first 3 events" in only_events
+
+
+@pytest.mark.asyncio
+async def test_activate_text_reflects_refresh_result(store):
+    ctx = make_ctx()
+    ctx.lineup_service.refresh = AsyncMock(return_value=False)
+    seed(store, 3, {"dj_channel": 100, "log_channel": 200})
+    inter = make_inter(make_guild())
+    await inter.response.defer()
+    with patch("bot.ui.setup_wizard.replenish_events", AsyncMock(return_value=2)):
+        await sw.activate_from_draft(ctx, inter)
+    assert "Lineup Update" not in last_content(inter)
+    assert "first 2 events" in last_content(inter)
+
+
+@pytest.mark.asyncio
+async def test_rerun_welcome_does_not_claim_idle(store):
+    ctx = make_ctx()
+    view = await sw.render_step(ctx, make_guild(), SetupDraft(GUILD, 55, 7, 0, {"rerun": True}))
+    assert "stay idle" not in view.content and "Save" in view.content
+    first = await sw.render_step(ctx, make_guild(), SetupDraft(GUILD, 55, 7, 0, {}))
+    assert "stay idle" in first.content
+
+
+@pytest.mark.asyncio
+async def test_replaced_draft_says_outdated(store):
+    ctx = make_ctx()
+    seed(store, 1, {}, message_id=99)  # newer wizard message
+    view = sw.SetupWizardView(ctx)
+    inter = make_inter(make_guild(), message_id=55)
+    await view._navigate(inter, 1)
+    inter.followup.send.assert_awaited_once_with(texts.SETUP_OUTDATED, ephemeral=True)
+    inter = make_inter(make_guild(), message_id=55)
+    await inter.response.defer()
+    await sw.activate_from_draft(ctx, inter)
+    inter.followup.send.assert_awaited_once_with(texts.SETUP_OUTDATED, ephemeral=True)
