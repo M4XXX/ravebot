@@ -18,6 +18,7 @@ _OK_TTL = 300.0
 _FAIL_TTL = 30.0
 _MAX_NAME = 80
 _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f​-‏ -‮⁦-⁩]")
+SAVE_FAILED = "Could not save the change. Try again."
 FORMAT_MESSAGE = "Please enter a Discord user ID (17 to 20 digits)."
 
 
@@ -59,7 +60,8 @@ def _parse_id(raw: str) -> int | None:
     text = raw.strip()
     if not (text.isascii() and text.isdigit() and 17 <= len(text) <= 20):
         return None
-    return int(text)
+    value = int(text)
+    return value if value < 2**63 else None
 
 
 def _avatar_url(obj: Any) -> str | None:
@@ -140,9 +142,15 @@ class AdminPageService:
             user = await self._bot.fetch_user(user_id)
         except disnake.NotFound:
             return ActionResult(False, "No Discord user with this ID.")
-        except disnake.HTTPException:
+        except Exception:
+            logger.warning("Discord lookup failed while adding an admin", exc_info=True)
             return ActionResult(False, "Could not reach Discord. Try again.")
-        if not await registry.add(user_id):
+        try:
+            added = await registry.add(user_id)
+        except Exception:
+            logger.warning("Could not save the new admin", exc_info=True)
+            return ActionResult(False, SAVE_FAILED)
+        if not added:
             return ActionResult(False, "This person is already an admin.")
         name = _clean_name(getattr(user, "global_name", None)) or _clean_name(user.name)
         name = name or str(user_id)
@@ -168,5 +176,9 @@ class AdminPageService:
         if user_id not in registry.added:
             return ActionResult(False, "This person is not an added admin.")
         info = await self.describe(user_id)
-        await registry.remove(user_id)
+        try:
+            await registry.remove(user_id)
+        except Exception:
+            logger.warning("Could not save the admin removal", exc_info=True)
+            return ActionResult(False, SAVE_FAILED)
         return ActionResult(True, f"Removed {info.name or user_id}.")

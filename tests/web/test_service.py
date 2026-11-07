@@ -170,7 +170,7 @@ async def test_describe_sanitises_name() -> None:
     assert "\x00" not in name and "\n" not in name
 
 
-@pytest.mark.parametrize("raw", ["1" * 17, "1" * 20, f"  {'2' * 18}  "])
+@pytest.mark.parametrize("raw", ["1" * 17, str(2**63 - 1), f"  {'2' * 18}  "])
 async def test_add_admin_accepts_valid_ids(raw) -> None:
     bot = _bot(_guild(), user=_user(uid=int(raw.strip())))
     ctx = _ctx()
@@ -185,7 +185,10 @@ FORMAT_MSG = "Please enter a Discord user ID (17 to 20 digits)."
 
 @pytest.mark.parametrize(
     "raw",
-    ["1" * 16, "1" * 21, "-" + "1" * 18, "123 456 789 012 345 678", "abc" * 6, "", "  ", "１" * 18],
+    [
+        "1" * 16, "1" * 20, "1" * 21, "-" + "1" * 18, "123 456 789 012 345 678",
+        "abc" * 6, "", "  ", "１" * 18,
+    ],
 )
 async def test_add_admin_rejects_bad_format(raw) -> None:
     bot = _bot(_guild(), user=_user())
@@ -259,9 +262,53 @@ async def test_add_admin_idle_bot_no_log() -> None:
 
 async def test_add_admin_registry_refuses() -> None:
     bot = _bot(_guild(), user=_user())
+    ctx = _ctx()
     with _patch_add(False), _patch_active():
-        res = await _svc(bot=bot).add_admin(str(UID))
-    assert res.ok is False
+        res = await _svc(bot=bot, ctx=ctx).add_admin(str(UID))
+    assert (res.ok, res.message) == (False, "This person is already an admin.")
+    ctx.log_service.log_admin_added.assert_not_awaited()
+
+
+async def test_add_admin_db_error() -> None:
+    bot = _bot(_guild(), user=_user())
+    ctx = _ctx()
+    boom = AsyncMock(side_effect=RuntimeError("db"))
+    with patch("bot.services.admin_registry.add_web_admin", boom), _patch_active():
+        res = await _svc(bot=bot, ctx=ctx).add_admin(str(UID))
+    assert (res.ok, res.message) == (False, "Could not save the change. Try again.")
+    assert UID not in ctx.admins.added
+    ctx.log_service.log_admin_added.assert_not_awaited()
+
+
+async def test_remove_admin_db_error() -> None:
+    ctx = _ctx(added=[UID])
+    bot = _bot(_guild(), user=_user())
+    boom = AsyncMock(side_effect=RuntimeError("db"))
+    with patch("bot.services.admin_registry.remove_web_admin", boom):
+        res = await _svc(bot=bot, ctx=ctx).remove_admin(str(UID))
+    assert (res.ok, res.message) == (False, "Could not save the change. Try again.")
+
+
+@pytest.mark.parametrize("exc", [TimeoutError(), RuntimeError("x")])
+async def test_add_admin_other_lookup_errors(exc) -> None:
+    bot = _bot(_guild(), user_exc=exc)
+    ctx = _ctx()
+    with _patch_add() as add, _patch_active():
+        res = await _svc(bot=bot, ctx=ctx).add_admin(str(UID))
+    assert (res.ok, res.message) == (False, "Could not reach Discord. Try again.")
+    add.assert_not_awaited()
+    ctx.log_service.log_admin_added.assert_not_awaited()
+
+
+async def test_id_int64_boundary() -> None:
+    assert len(str(2**63)) == 19
+    res = await _svc().add_admin(str(2**63))
+    assert (res.ok, res.message) == (False, FORMAT_MSG)
+    res = await _svc().remove_admin(str(2**63))
+    assert (res.ok, res.message) == (False, FORMAT_MSG)
+    bot = _bot(_guild(), user=_user(uid=2**63 - 1))
+    with _patch_add(), _patch_active():
+        assert (await _svc(bot=bot).add_admin(str(2**63 - 1))).ok
 
 
 async def test_add_admin_ensures_loaded() -> None:
