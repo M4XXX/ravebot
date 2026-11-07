@@ -130,7 +130,9 @@ def test_confirm_page() -> None:
     assert 'name="id" value="222222222222222222"' in page
     assert 'name="csrf" value="tok"' in page
     assert 'href="/"' in page and "Cancel" in page
-    assert "Remove 7?" in render_confirm_remove(_row(7, None), "tok")
+    unknown = render_confirm_remove(_row(7, None, on_server=False), "tok")
+    assert "Remove Unknown user (7)?" in unknown
+    assert "<b>Unknown user</b>" in unknown and "not on the server" in unknown
 
 
 def test_message_styles() -> None:

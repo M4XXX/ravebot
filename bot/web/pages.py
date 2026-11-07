@@ -176,7 +176,7 @@ def render_dashboard(
 
 
 def render_confirm_remove(row: AdminRow, csrf: str) -> str:
-    label = row.info.name or str(row.info.user_id)
+    label = row.info.name or f"Unknown user ({row.info.user_id})"
     return _page(
         f'<div class="top"><div class="brand">{_BRAND}</div></div>'
         '<section class="card"><h3>Remove an admin</h3>'

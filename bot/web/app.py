@@ -148,13 +148,16 @@ def create_app(
 
     async def post_login(request: web.Request) -> web.Response:
         key = request.remote or "unknown"
+        # Read the body first. From blocked_for to record_failure/record_success there
+        # is no await, so parallel requests cannot all pass the block check at once.
+        given = _field(await _read_form(request), "password")
         blocked = throttle.blocked_for(key)
         if blocked > 0:
             minutes = max(1, math.ceil(blocked / 60))
             unit = "minute" if minutes == 1 else "minutes"
             error = f"Too many attempts. Try again in {minutes} {unit}."
+            await asyncio.sleep(fail_delay)
             return _html(render_login(error), 429)
-        given = _field(await _read_form(request), "password")
         if given is None:
             return _html(render_login("Enter the password."), 400)
         if not check_password(given, password):

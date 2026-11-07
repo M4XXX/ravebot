@@ -1,4 +1,5 @@
 """Tests for bot/web/app.py (routes, sessions, CSRF, throttle, headers)."""
+import asyncio
 import html
 import logging
 from contextlib import asynccontextmanager
@@ -7,6 +8,7 @@ import aiohttp
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
+import bot.web.app as web_app
 from bot.web.app import create_app
 from bot.web.auth import COOKIE_NAME, SESSION_LIFETIME_SECONDS, LoginThrottle, SessionManager
 from bot.web.service import ActionResult, AdminRow, ServerInfo, UserInfo
@@ -57,7 +59,7 @@ class FakeService:
     async def list_admins(self):
         self.calls.append(("list_admins",))
         if self.fail_list:
-            raise RuntimeError("boom " + PASSWORD[:0])
+            raise RuntimeError("boom")
         return [self._row(uid) for uid in [*self.owners, *self.added]]
 
     async def admin_row(self, raw_id: str):
@@ -505,3 +507,71 @@ async def test_password_never_in_bodies_or_logs(caplog) -> None:
     for record in caplog.records:
         assert PASSWORD[:-1] not in record.getMessage()
         assert PASSWORD[:-1] not in str(record.args)
+
+
+async def _raw_login_headers(host: str, port: int, body: bytes):
+    reader, writer = await asyncio.open_connection(host, port)
+    writer.write(
+        b"POST /login HTTP/1.1\r\nHost: x\r\n"
+        b"Content-Type: application/x-www-form-urlencoded\r\n"
+        + f"Content-Length: {len(body)}\r\n".encode()
+        + b"Connection: close\r\n\r\n"
+    )
+    await writer.drain()
+    return reader, writer
+
+
+async def _send_body(conn, body: bytes) -> bytes:
+    reader, writer = conn
+    writer.write(body)
+    await writer.drain()
+    data = await reader.read()
+    writer.close()
+    return data
+
+
+async def test_parallel_logins_cannot_bypass_throttle(monkeypatch) -> None:
+    evaluated: list[bool] = []
+    real_check = web_app.check_password
+
+    def counting_check(given: str, expected: str) -> bool:
+        result = real_check(given, expected)
+        evaluated.append(result)
+        return result
+
+    monkeypatch.setattr(web_app, "check_password", counting_check)
+    wrong = b"password=wrong"
+    right = f"password={PASSWORD}".encode()
+    async with make_client(throttle=LoginThrottle(clock=Clock())) as client:
+        host, port = str(client.host), int(client.port or 0)
+        wrong_conns = [await _raw_login_headers(host, port, wrong) for _ in range(30)]
+        right_conn = await _raw_login_headers(host, port, right)
+        await asyncio.sleep(0.2)  # every handler is now waiting for its body
+        answers = await asyncio.gather(*(_send_body(c, wrong) for c in wrong_conns))
+        final = await _send_body(right_conn, right)
+    statuses = [a.split(b" ", 2)[1] for a in answers]
+    assert statuses.count(b"401") == 5
+    assert statuses.count(b"429") == 25
+    assert final.split(b" ", 2)[1] == b"429"
+    assert b"Set-Cookie" not in final and COOKIE_NAME.encode() not in final
+    assert evaluated.count(False) <= 5
+    assert True not in evaluated
+
+
+async def test_blocked_login_also_waits(monkeypatch) -> None:
+    delays: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    monkeypatch.setattr(web_app.asyncio, "sleep", fake_sleep)
+    app = create_app(
+        FakeService(), PASSWORD, throttle=LoginThrottle(clock=Clock()), fail_delay=0.25
+    )
+    async with TestClient(TestServer(app), cookie_jar=aiohttp.DummyCookieJar()) as client:
+        for _ in range(5):
+            assert (await client.post("/login", data={"password": "bad"})).status == 401
+        assert delays == [0.25] * 5
+        resp = await client.post("/login", data={"password": PASSWORD})
+        assert resp.status == 429
+        assert delays == [0.25] * 6
