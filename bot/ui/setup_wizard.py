@@ -8,8 +8,10 @@ To add a step, insert its key into STEPS (before "summary"), add a renderer bran
 `render_step` and its controls to the view; navigation works on the list.
 """
 import asyncio
+import datetime
 import logging
 import re
+import zoneinfo
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -62,6 +64,11 @@ _INT_VALUE_KEYS = (
     "outreach_days_before",
     "outreach_cooldown_hours",
 )
+MAX_SLOT_MINUTES = 1440
+MAX_INTERVAL_DAYS = 365
+MAX_EVENTS_AHEAD = 52
+MAX_INVITE_DAYS = 365
+MAX_INVITE_HOURS = 720
 CHANNEL_KEYS = ("dj_channel", "log_channel")
 ROLE_KEYS = ("dj_role_id", "invites_role_id")
 
@@ -121,6 +128,14 @@ def step_number(key: str) -> int:
     return STEPS.index(key) + 1
 
 
+def zone_abbr(name: str) -> str:
+    """Current abbreviation of the zone (CET or CEST for Europe/Berlin), else its name."""
+    try:
+        return datetime.datetime.now(zoneinfo.ZoneInfo(name)).tzname() or name
+    except (zoneinfo.ZoneInfoNotFoundError, ValueError, OSError):
+        return name
+
+
 def values(data: dict[str, Any]) -> dict[str, Any]:
     """The draft's values with the defaults filled in."""
     merged = dict(DEFAULT_VALUES)
@@ -143,31 +158,28 @@ def parse_events_fields(raw: dict[str, str]) -> tuple[dict[str, Any], list[str]]
     out: dict[str, Any] = {}
     errors: list[str] = []
 
-    def number(field: str, label: str, key: str, maximum: int | None = None) -> None:
-        text = (raw.get(field) or "").strip()
-        rule = "enter a whole number of at least 1."
-        if maximum is not None:
-            rule = f"enter a whole number from 1 to {maximum}."
+    def number(field: str, label: str, key: str, maximum: int) -> None:
+        rule = f"enter a whole number from 1 to {maximum}."
         try:
-            value = int(text)
+            value = int((raw.get(field) or "").strip())
         except ValueError:
             errors.append(texts.setup_invalid(label, rule))
             return
-        if value < 1 or (maximum is not None and value > maximum):
+        if value < 1 or value > maximum:
             errors.append(texts.setup_invalid(label, rule))
             return
         out[key] = value
 
     number("slots", "Slots per event", "slots_per_event", MAX_SLOTS)
-    number("length", "Slot length", "slot_duration_minutes")
-    number("interval", "One event every (days)", "event_interval_days")
-    number("ahead", "Future events kept ready", "event_lookahead_count")
+    number("length", "Slot length", "slot_duration_minutes", MAX_SLOT_MINUTES)
+    number("interval", "One event every (days)", "event_interval_days", MAX_INTERVAL_DAYS)
+    number("ahead", "Future events kept ready", "event_lookahead_count", MAX_EVENTS_AHEAD)
     start = parse_hhmm(raw.get("start") or "")
     if start is not None:
         out["default_start_time"] = start
     else:
         errors.append(
-            texts.setup_invalid("Start time (CET, HH:MM)", "enter a time from 00:00 to 23:59.")
+            texts.setup_invalid("Start time (HH:MM)", "enter a time from 00:00 to 23:59.")
         )
     return out, errors
 
@@ -175,16 +187,18 @@ def parse_events_fields(raw: dict[str, str]) -> tuple[dict[str, Any], list[str]]
 def parse_invites_fields(raw: dict[str, str]) -> tuple[dict[str, Any], list[str]]:
     out: dict[str, Any] = {}
     errors: list[str] = []
-    for fid, label, key in (
-        ("days", "Days before an event", "outreach_days_before"),
-        ("hours", "Hours between invites", "outreach_cooldown_hours"),
+    for fid, label, key, maximum in (
+        ("days", "Days before an event", "outreach_days_before", MAX_INVITE_DAYS),
+        ("hours", "Hours between invites", "outreach_cooldown_hours", MAX_INVITE_HOURS),
     ):
         try:
             value = int((raw.get(fid) or "").strip())
         except ValueError:
             value = 0
-        if value < 1:
-            errors.append(texts.setup_invalid(label, "enter a whole number of at least 1."))
+        if value < 1 or value > maximum:
+            errors.append(
+                texts.setup_invalid(label, f"enter a whole number from 1 to {maximum}.")
+            )
         else:
             out[key] = value
     return out, errors
@@ -301,7 +315,8 @@ async def summary_lines(ctx: "BotContext", guild: Any, data: dict[str, Any]) -> 
         f"DJ channel: {chan('dj_channel')}",
         f"Log channel: {chan('log_channel')}",
         f"DJ role: {dj} \u00b7 Invites role: {inv}",
-        f"Events: {v['slots_per_event']} slots, {v['default_start_time']} CET, "
+        f"Events: {v['slots_per_event']} slots, "
+        f"{v['default_start_time']} {zone_abbr(v['timezone'])}, "
         f"{v['slot_duration_minutes']} min, every {v['event_interval_days']} days, "
         f"{v['event_lookahead_count']} ahead",
         f"Time zone: {v['timezone']}",
@@ -369,7 +384,11 @@ async def render_step(ctx: "BotContext", guild: Any, draft: SetupDraft) -> StepV
         )
     if key == "events":
         return StepView(
-            texts.setup_events_step(step_number(key), total, values(data)),
+            texts.setup_events_step(
+                step_number(key),
+                total,
+                {**values(data), "zone_abbr": zone_abbr(values(data)["timezone"])},
+            ),
             [ID_EVENTS_CHANGE, ID_ZONE, ID_BACK, ID_NEXT],
         )
     if key == "invites":
@@ -490,6 +509,10 @@ class SetupWizardView(disnake.ui.View):
 
     async def _navigate(self, inter: Any, delta: int) -> None:
         await inter.response.defer()
+        async with guild_lock(inter.guild_id):
+            await self._navigate_locked(inter, delta)
+
+    async def _navigate_locked(self, inter: Any, delta: int) -> None:
         draft = await self._draft(inter)
         if draft is None:
             return
@@ -506,6 +529,10 @@ class SetupWizardView(disnake.ui.View):
         chosen = inter.values
         if not chosen:
             return
+        async with guild_lock(inter.guild_id):
+            await self._choose_locked(inter, key, chosen)
+
+    async def _choose_locked(self, inter: Any, key: str, chosen: list[str]) -> None:
         draft = await self._draft(inter)
         if draft is None:
             return
@@ -528,6 +555,10 @@ class SetupWizardView(disnake.ui.View):
 
     async def on_create_role(self, inter: Any) -> None:
         await inter.response.defer()
+        async with guild_lock(inter.guild_id):
+            await self._create_role_locked(inter)
+
+    async def _create_role_locked(self, inter: Any) -> None:
         draft = await self._draft(inter)
         if draft is None:
             return
@@ -561,7 +592,11 @@ class SetupWizardView(disnake.ui.View):
                 f"setup_events:{inter.message.id}",
                 [
                     ("slots", "Slots per event", str(v["slots_per_event"])),
-                    ("start", "Start time (CET, HH:MM)", v["default_start_time"]),
+                    (
+                        "start",
+                        f"Start time ({zone_abbr(v['timezone'])}, HH:MM)",
+                        v["default_start_time"],
+                    ),
                     ("length", "Slot length (minutes)", str(v["slot_duration_minutes"])),
                     ("interval", "One event every (days)", str(v["event_interval_days"])),
                     ("ahead", "Future events kept ready", str(v["event_lookahead_count"])),
@@ -606,11 +641,12 @@ class SetupWizardView(disnake.ui.View):
 
     async def on_toggle(self, inter: Any) -> None:
         await inter.response.defer()
-        draft = await self._draft(inter)
-        if draft is None:
-            return
-        draft.data["outreach_enabled"] = not values(draft.data)["outreach_enabled"]
-        await self._show(inter, draft)
+        async with guild_lock(inter.guild_id):
+            draft = await self._draft(inter)
+            if draft is None:
+                return
+            draft.data["outreach_enabled"] = not values(draft.data)["outreach_enabled"]
+            await self._show(inter, draft)
 
     async def on_activate(self, inter: Any) -> None:
         await inter.response.defer()
@@ -677,13 +713,14 @@ class ValuesModal(disnake.ui.Modal):
         # Update the wizard message (the modal came from it) instead of posting a new one
         await inter.response.defer(with_message=False)
         guild_id: Any = inter.guild_id
-        draft = await get_draft(_db(ctx), guild_id)
-        refusal = _refusal(draft, self._message_id)
-        if refusal is not None or draft is None:
-            await _private(inter, refusal or texts.SETUP_ALREADY_DONE)
-            return
-        draft.data.update(parsed)
-        await self._wizard._show(inter, draft)
+        async with guild_lock(guild_id):
+            draft = await get_draft(_db(ctx), guild_id)
+            refusal = _refusal(draft, self._message_id)
+            if refusal is not None or draft is None:
+                await _private(inter, refusal or texts.SETUP_ALREADY_DONE)
+                return
+            draft.data.update(parsed)
+            await self._wizard._show(inter, draft)
 
 
 def registered_views(ctx: "BotContext") -> list[SetupWizardView]:
@@ -770,7 +807,6 @@ async def prefilled_data(
         data[key] = _stored_int(
             await db_config.get_value(db, guild_id, key), DEFAULT_VALUES[key], maximum
         )
-    start = await db_config.get_value(db, guild_id, "default_start_time")
     start = parse_hhmm(await db_config.get_value(db, guild_id, "default_start_time") or "")
     data["default_start_time"] = start or DEFAULT_VALUES["default_start_time"]
     zone = await db_config.get_value(db, guild_id, "timezone")
@@ -814,6 +850,9 @@ async def activate_from_draft(ctx: "BotContext", inter: Any) -> None:
             await _private(inter, texts.SETUP_MISSING_VALUES)
             return
         try:
+            # An explicit "false" first: a failure below must not leave a half-written
+            # setup that the legacy rule (both channels stored) would count as active.
+            await db_config.set_value(db, guild_id, activation.ACTIVE_KEY, "false")
             await _write_all(db, guild_id, draft.data)
             await activation.set_active(db, guild_id)
             created, posted = await _run_effects(ctx, guild_id)
@@ -833,16 +872,17 @@ async def activate_from_draft(ctx: "BotContext", inter: Any) -> None:
 async def _run_effects(ctx: "BotContext", guild_id: int) -> tuple[int, bool]:
     """Create the missing future events and post the first Lineup Update.
 
+    The event list is loaded by replenish_events inside its lock, so a poll running at
+    the same time cannot leave this call with a stale list.
     Returns (events created, whether the Lineup Update was posted).
     """
     created = 0
     posted = False
     if ctx.notion_client is not None:
-        events = await ctx.notion_client.list_events()
-        created = await replenish_events(_db(ctx), ctx.notion_client, guild_id, events)
+        created = await replenish_events(_db(ctx), ctx.notion_client, guild_id)
         if ctx.lineup_service is not None:
-            fresh = await ctx.notion_client.list_events() if created else events
-            posted = bool(await ctx.lineup_service.refresh(fresh))
+            events = await ctx.notion_client.list_events()
+            posted = bool(await ctx.lineup_service.refresh(events))
     return created, posted
 
 

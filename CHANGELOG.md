@@ -16,9 +16,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - New commands: `/setup`, `/create event`, `/post lineup update`, `/book dj slot`, `/cancel dj slot`, `/list all djs`, `/automatic dj booking`.
 - Migration `0011` adds the `setup_drafts` table.
 - Lineup Update posts: the bot posts a new `Lineup Update` message in the DJ channel for every lineup change of the upcoming event (earliest event that is not Done or Canceled). Earlier posts are never edited or deleted, and there is no daily cap. Format: `Event Saturday 14.11.2026`, then one line per slot, `Slot 1  20:00  DJ name` or `OPEN SLOT`.
-- `/lineup post [event]` (admin) posts the lineup of the upcoming event, or of a chosen future event, on demand.
+- `/post lineup update [event]` (admin) posts the lineup of the upcoming event, or of a chosen future event, on demand.
 - A `Book a slot` button under every Lineup Update post. It opens the booking flow in the DJ's DMs and replies privately.
-- `/config set outreach` turns the automatic invite DMs on or off (global, default on). `/config show` has a new `Automatic outreach` row. Booking, reminders and DMs keep working while it is off.
+- Automatic invite DMs can be turned on or off in the wizard's Automatic invites step (global, default on). `/config show` has an `Automatic invites` row. Booking, reminders and DMs keep working while it is off.
 - The bot creates three Notion databases itself under one shared page: Events, Slots (one row per slot) and DJs, plus the views Overview, Lineup and All DJs. Existing databases and views are never recreated.
 - Hand edits in Notion are synced: picking a DJ on an open slot becomes a booking, clearing the DJ cell frees the slot. The DJ gets a DM in both cases; conflicting hand entries are reverted and logged.
 - Changes to an event's `Start` or `Slot length` in Notion are applied only while no slot of the event has a DJ; otherwise the bot restores the previous values and writes it to the log file only (not to the log channel).

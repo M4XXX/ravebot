@@ -14,6 +14,7 @@ from disnake.ext import commands, tasks
 from bot.context import BotContext
 from bot.services import activation
 from bot.services.outreach import outreach_enabled
+from bot.timezone import load_stored_timezone_for_bot
 from bot.ui.embeds import ErrorCode
 
 logger = logging.getLogger(__name__)
@@ -142,3 +143,4 @@ class OutreachCog(commands.Cog):
     @_outreach_check.before_loop
     async def _before_outreach_check(self) -> None:
         await self.bot.wait_until_ready()
+        await load_stored_timezone_for_bot(self.bot, self.ctx.db)

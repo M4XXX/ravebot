@@ -396,3 +396,36 @@ async def test_concurrent_replenish_never_creates_the_same_event_twice() -> None
             replenish_events(db, client, 1, []), replenish_events(db, client, 1, [])
         )
     assert len(created_ids) == len(set(created_ids)) == 6
+
+
+@pytest.mark.asyncio
+async def test_replenish_without_events_loads_them_inside_the_lock() -> None:
+    """A poll that created the events first leaves the second caller nothing to do."""
+    import asyncio
+
+    created: list[datetime.date] = []
+
+    async def exists(event_id: str) -> bool:
+        return any(event_id.startswith(d.isoformat()) for d in created)
+
+    async def create(event_id, new_date, *a, **k):
+        await asyncio.sleep(0)
+        created.append(new_date)
+        return _new_event()
+
+    async def list_events(**kwargs):
+        return [make_event(event_id=str(d), page_id=str(d), date=d) for d in created]
+
+    client = MagicMock()
+    client.event_id_exists = exists
+    client.create_event = create
+    client.list_events = list_events
+    shape = SimpleNamespace(start=None, slot_count=6, slot_minutes=60)
+    with patch("bot.services.event_replenish.get_value", AsyncMock(return_value=None)), patch(
+        "bot.services.event_replenish.default_event_shape", AsyncMock(return_value=shape)
+    ), patch("bot.services.event_replenish.init_event_slots", AsyncMock()):
+        poll = replenish_events(MagicMock(), client, 1, [])  # stale list from a poll
+        wizard = replenish_events(MagicMock(), client, 1)  # loads inside the lock
+        results = await asyncio.gather(poll, wizard)
+    assert results == [6, 0]
+    assert len(created) == 6

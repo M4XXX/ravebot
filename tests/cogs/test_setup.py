@@ -94,3 +94,14 @@ async def test_setup_while_active_offers_change_settings(store):  # noqa: F811
     assert {c.custom_id for c in kwargs["view"].children} == {sw.ID_CHANGE}
     assert kwargs.get("ephemeral") is not True
     assert GUILD not in store.drafts
+
+
+@pytest.mark.asyncio
+async def test_setup_in_a_dm_replies_privately(store):  # noqa: F811
+    cog = SetupCog(make_ctx())
+    inter = _inter()
+    inter.guild_id = None
+    await cog.setup.callback(cog, inter)
+    inter.response.send_message.assert_awaited_once_with(
+        "Please use this command in a server channel.", ephemeral=True
+    )

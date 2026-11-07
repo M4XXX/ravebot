@@ -1,6 +1,6 @@
 # RaveBot
 
-Discord bot that automates DJ booking for recurring online rave events, onboarding, self-service slot booking, proactive outreach, and admin oversight, all via Discord slash commands and button-driven DM flows. Events, slots and DJs live in three Notion databases that the bot creates itself under one shared page (`NOTION_API_KEY` + `NOTION_PARENT_PAGE_ID`).
+Discord bot that automates DJ booking for recurring online rave events: onboarding, self-service slot booking, proactive outreach, and admin oversight, all via Discord slash commands and button-driven DM flows. Events, slots and DJs live in three Notion databases that the bot creates itself under one shared page (`NOTION_API_KEY` + `NOTION_PARENT_PAGE_ID`).
 
 ---
 
@@ -12,19 +12,19 @@ Running a recurring online rave means coordinating DJ lineups every single week:
 
 ## How It Works
 
-### Step 1, A DJ joins
+### Step 1: A DJ joins
 
 When someone receives the "DJ" role in your Discord server, RaveBot DMs them automatically: *"Hey! I'm RaveBot, I handle all DJ bookings here. Want me to add you to the booking pool?"* They fill in a quick onboarding modal (DJ name, VRChat name, logo, stream links) and are ready to book. No admin involvement needed.
 
-### Step 2, They book a slot
+### Step 2: They book a slot
 
-Any time a DJ wants to play, they DM RaveBot. A button-driven menu guides them through picking an event and a slot in seconds. Booking is race-condition safe, two DJs can't grab the same slot simultaneously. Cancellations work the same way.
+Any time a DJ wants to play, they DM RaveBot. A button-driven menu guides them through picking an event and a slot in seconds. Booking is race-condition safe: two DJs can't grab the same slot simultaneously. Cancellations work the same way.
 
-### Step 3, Gaps get filled automatically
+### Step 3: Gaps get filled automatically
 
 Before each event, RaveBot scans for open slots and DMs eligible DJs who haven't been contacted recently. It respects configurable cooldowns so DJs don't get spammed. Day-before reminders go out to everyone who is booked.
 
-### Step 4, Admin sees everything
+### Step 4: Admin sees everything
 
 A live lineup post in your DJ channel updates automatically whenever Notion changes. The admin log channel shows bookings, cancellations, new DJs, problems and the DMs users send to the bot, with a `Reply` button. For edge cases, admins can force-book or free any slot with `/book dj slot` and `/cancel dj slot`. A guided `/setup` wizard configures the bot; until it is activated the bot stays idle.
 
@@ -32,11 +32,11 @@ A live lineup post in your DJ channel updates automatically whenever Notion chan
 
 ## Screenshots
 
-**DJ booking flow, button-driven DM interface**
+**DJ booking flow: button-driven DM interface**
 
 ![DJ booking flow](docs/assets/mockup-booking-flow.png)
 
-**Lineup post, auto-updated when Notion changes**
+**Lineup post: auto-updated when Notion changes**
 
 ![Lineup post](docs/assets/mockup-lineup-post.png)
 

@@ -22,6 +22,7 @@ from bot.notion.models import EventInfo
 from bot.services import activation
 from bot.services.event_replenish import replenish_events
 from bot.services.fully_booked import check_fully_booked
+from bot.timezone import load_stored_timezone_for_bot
 from bot.ui import texts
 from bot.ui.embeds import ErrorCode
 
@@ -193,6 +194,7 @@ class EventsCog(commands.Cog):
     @_poll_notion.before_loop
     async def _before_poll_notion(self) -> None:
         await self.bot.wait_until_ready()
+        await load_stored_timezone_for_bot(self.bot, self.ctx.db)
 
     @tasks.loop(hours=1)
     async def _check_reminders(self) -> None:
@@ -219,3 +221,4 @@ class EventsCog(commands.Cog):
     @_check_reminders.before_loop
     async def _before_check_reminders(self) -> None:
         await self.bot.wait_until_ready()
+        await load_stored_timezone_for_bot(self.bot, self.ctx.db)

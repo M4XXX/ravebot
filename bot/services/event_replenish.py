@@ -5,6 +5,7 @@ Used by the poll loop (EventsCog) and by the setup wizard at activation time.
 import asyncio
 import datetime
 import logging
+import weakref
 from datetime import timedelta
 
 from bot.db.bookings import init_event_slots
@@ -17,7 +18,18 @@ from bot.timezone import local_today
 logger = logging.getLogger(__name__)
 
 # Shared by the poll loop and the setup wizard: create-if-missing must not run twice at once.
-_replenish_lock = asyncio.Lock()
+_replenish_locks: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock]" = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _replenish_lock() -> asyncio.Lock:
+    """The lock of the running event loop (one loop in production; tests use many)."""
+    loop = asyncio.get_running_loop()
+    lock = _replenish_locks.get(loop)
+    if lock is None:
+        lock = _replenish_locks[loop] = asyncio.Lock()
+    return lock
 
 _FINISHED_STATUSES = {"Done", "Canceled"}
 
@@ -29,10 +41,24 @@ def _to_int(raw: str | None, default: int) -> int:
         return default
 
 
-async def replenish_events(db, notion_client, guild_id: int, events: list[EventInfo]) -> int:  # noqa: ANN001
-    """Serialized wrapper: the poll loop and the wizard never replenish at the same time."""
-    async with _replenish_lock:
-        return await _replenish(db, notion_client, guild_id, events)
+async def replenish_events(
+    db,  # noqa: ANN001
+    notion_client,  # noqa: ANN001
+    guild_id: int,
+    events: list[EventInfo] | None = None,
+) -> int:
+    """Serialized wrapper: the poll loop and the wizard never replenish at the same time.
+
+    Without `events` the list is loaded inside the lock, so it is never stale.
+    """
+    async with _replenish_lock():
+        if events is None:
+            if notion_client is None:
+                return 0
+            loaded: list[EventInfo] = await notion_client.list_events()
+        else:
+            loaded = events
+        return await _replenish(db, notion_client, guild_id, loaded)
 
 
 async def _replenish(db, notion_client, guild_id: int, events: list[EventInfo]) -> int:  # noqa: ANN001

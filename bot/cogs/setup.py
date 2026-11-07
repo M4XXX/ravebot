@@ -59,7 +59,9 @@ class SetupCog(commands.Cog):
     async def setup(self, inter: disnake.ApplicationCommandInteraction) -> None:
         db: Any = self.ctx.db
         guild_id = inter.guild_id
-        assert guild_id is not None  # slash commands always have a guild
+        if guild_id is None:
+            await inter.response.send_message(texts.SETUP_NOT_IN_GUILD, ephemeral=True)
+            return
         async with guild_lock(guild_id):
             draft = await get_draft(db, guild_id)
             if draft is not None:

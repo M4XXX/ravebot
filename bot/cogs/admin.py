@@ -131,7 +131,9 @@ class AdminCog(commands.Cog):
     async def config_show(self, inter: disnake.ApplicationCommandInteraction) -> None:
         """List every setting with the stored value or the default, then the /setup hint."""
         guild_id = inter.guild_id
-        assert guild_id is not None
+        if guild_id is None:
+            await inter.response.send_message(texts.SETUP_NOT_IN_GUILD, ephemeral=True)
+            return
         db = self.ctx.db
         if db is None:
             logger.error("AdminCog: DB pool is None in config_show")

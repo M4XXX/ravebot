@@ -57,3 +57,13 @@ async def load_stored_timezone(db, guild_id: int) -> bool:  # noqa: ANN001
         )
         return False
     return True
+
+
+async def load_stored_timezone_for_bot(bot, db) -> None:  # noqa: ANN001
+    """Apply the stored zone of the first guild; never raises (used by loop before_loop)."""
+    if db is None or bot is None or not bot.guilds:
+        return
+    try:
+        await load_stored_timezone(db, bot.guilds[0].id)
+    except Exception:
+        logger.warning("Could not load the stored time zone", exc_info=True)

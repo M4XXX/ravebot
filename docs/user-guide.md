@@ -337,7 +337,7 @@ Run `/setup` in the channel where you want to set up (admins only). The bot post
 1. **Welcome and checks.** Shows whether the Discord connection, the database and the three Notion databases work. The bot stays idle until you press **Activate** at the end.
 2. **DJ channel.** Pick the channel for the Lineup Update and the `Book a slot` button. The bot checks it can send messages and embeds there.
 3. **Log channel.** Pick the channel for bookings, new DJs, problems and DJ messages. Only organizers should see it. The same permission check runs.
-4. **Roles.** Pick the DJ role (the welcome DM goes to members who get it) and the invites role (the bot gives it to DJs who want automatic invites). The two roles must differ, `@everyone` and integration roles are refused, and the bot's own role must be above both. A button can create the invites role (default name `Active Booking`); this needs the Manage Roles permission.
+4. **Roles.** Pick the DJ role (the welcome DM goes to members who get it) and the invites role (the bot gives it to DJs who want automatic invites). The two roles must differ, `@everyone` and integration roles are refused, and the bot's own role must be above both. A button can create the invites role (default name `Active Booking`). Any role selection needs the Manage Roles permission: the bot refuses roles it cannot manage.
 5. **Events.** Slots per event, start time (local, `HH:MM`), slot length in minutes, one event every N days, number of future events kept ready. A second button sets the time zone (default `Europe/Berlin`).
 6. **Automatic invites.** Turn invites on or off, how many days before an event the bot starts asking, and the hours it waits between two invites to the same DJ.
 7. **Summary.** Lists everything. **Activate** writes the settings, switches the bot on, creates the missing future events and posts the first Lineup Update (it reports how many events it created and whether it posted). The channels and roles must be chosen first.
@@ -419,7 +419,7 @@ The bot reverts a hand entry on a slot it has booked for another DJ. Clear the `
 
 ### The bot does not answer
 
-The bot is probably idle. Run `/config show`: the last line shows `Bot status`. If it says `idle`, run `/setup` and press Activate on the last step. While idle, DJs get "I can't answer right now. Please try again later." and admins get "The bot is not active yet. Run /setup to finish the setup." for every command except `/setup` and `/config show`. If the bot does not respond to any command, check that it is online, the container log shows `Bot ready`, and your user ID is in `ADMIN_USER_IDS`.
+The bot is probably idle. Run `/config show`: it shows the `Bot status` row (followed by a blank line and `To change a setting, run /setup again.`). If it says `idle`, run `/setup` and press Activate on the last step. While idle, DJs get "I can't answer right now. Please try again later." and admins get "The bot is not active yet. Run /setup to finish the setup." for every command except `/setup` and `/config show`. If the bot does not respond to any command, check that it is online, the container log shows `Bot ready`, and your user ID is in `ADMIN_USER_IDS`.
 
 ### Admin log channel shows no messages
 

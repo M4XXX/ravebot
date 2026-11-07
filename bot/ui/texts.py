@@ -377,13 +377,13 @@ def setup_events_step(number: int, total: int, v: dict) -> str:
             f"**Step {number} of {total}: Events**",
             "New events are created automatically with these settings:",
             f"Slots per event: {v['slots_per_event']}",
-            f"Start time (CET): {v['default_start_time']}",
+            f"Start time ({v['zone_abbr']}): {v['default_start_time']}",
             f"Slot length: {v['slot_duration_minutes']} minutes",
             f"One event every: {v['event_interval_days']} days",
             f"Future events kept ready: {v['event_lookahead_count']}",
             f"Time zone: {v['timezone']}",
             "",
-            "Start times are local time in Germany (CET in winter, CEST in summer): "
+            f"Start times are local time in {v['timezone']} (currently {v['zone_abbr']}): "
             f"{v['default_start_time']} stays {v['default_start_time']} all year. "
             "When an event is done or canceled, I create the next one so the number "
             f"stays at {v['event_lookahead_count']}.",
@@ -435,3 +435,5 @@ def setup_active_message(created: int, posted: bool, channel: str | None) -> str
     else:
         lines.append("To change a setting later, run /setup again.")
     return "\n".join(lines)
+
+SETUP_NOT_IN_GUILD = "Please use this command in a server channel."

@@ -85,7 +85,7 @@ async def test_cog_error_responds_on_check_failure() -> None:
 @pytest.mark.asyncio
 @pytest.mark.asyncio
 # ---------------------------------------------------------------------------
-# Story 6.2: /intervene command tests
+# Test helpers
 # ---------------------------------------------------------------------------
 
 
@@ -104,7 +104,7 @@ def make_mock_member(user_id: int = 42, display_name: str = "DJ Test") -> MagicM
 @pytest.mark.asyncio
 @pytest.mark.asyncio
 # ---------------------------------------------------------------------------
-# Story 6.3: /admin book and /admin cancel command tests
+# /book dj slot and /cancel dj slot tests
 # ---------------------------------------------------------------------------
 
 
@@ -228,7 +228,7 @@ async def test_admin_cancel_no_booking_replies_with_message() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Story 6.4: /admin dj set-active command tests
+# /automatic dj booking tests
 # ---------------------------------------------------------------------------
 
 
@@ -319,7 +319,7 @@ async def test_admin_dj_set_active_not_ready_when_service_none() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Story 6.5: /status and /list-djs command tests
+# /list all djs tests
 # ---------------------------------------------------------------------------
 
 
@@ -389,7 +389,7 @@ async def test_list_djs_not_ready_when_db_none() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Story 7.1: /add-event command tests
+# /create event tests
 # ---------------------------------------------------------------------------
 
 
@@ -596,36 +596,16 @@ async def test_add_event_notion_write_error_replies_error(
     assert "could not create the event" in reply.lower()
 
 
-# ---------------------------------------------------------------------------
-# Story 7.2: /config set outreach-days-before
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 @pytest.mark.asyncio
 @pytest.mark.asyncio
 @pytest.mark.asyncio
 @pytest.mark.asyncio
-# ---------------------------------------------------------------------------
-# Story 7.2: /config set outreach-cooldown-hours
-# ---------------------------------------------------------------------------
-
-
+@pytest.mark.asyncio
+@pytest.mark.asyncio
 @pytest.mark.asyncio
 # ---------------------------------------------------------------------------
-# Story 7.2: /config set lookahead-count
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-# ---------------------------------------------------------------------------
-# Story 7.2: /config set outreach-max
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-# ---------------------------------------------------------------------------
-# Story 7.2: /config show
+# /config show tests
 # ---------------------------------------------------------------------------
 
 
@@ -647,44 +627,19 @@ async def test_config_show_db_none_replies_not_ready() -> None:
     assert call_args[1].get("ephemeral") is True
 
 
-# ---------------------------------------------------------------------------
-# Story 7.3: /config set slots-per-event
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 @pytest.mark.asyncio
-# ---------------------------------------------------------------------------
-# Story 7.3: /config set event-interval-days
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 @pytest.mark.asyncio
-# ---------------------------------------------------------------------------
-# Story 7.3: /config set slot-duration
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 @pytest.mark.asyncio
-# ---------------------------------------------------------------------------
-# Story 7.3: /config set start-time
-# ---------------------------------------------------------------------------
-
-
+@pytest.mark.asyncio
+@pytest.mark.asyncio
 @pytest.mark.asyncio
 @pytest.mark.asyncio
 @pytest.mark.asyncio
 # ---------------------------------------------------------------------------
-# Story 7.3: /config set event-schedule
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-@pytest.mark.asyncio
-# ---------------------------------------------------------------------------
-# Story 7.3: config_show field count update
+# /config show field count
 # ---------------------------------------------------------------------------
 
 
@@ -735,7 +690,7 @@ async def test_cog_error_followup_http_exception_does_not_propagate() -> None:
 
 
 # ---------------------------------------------------------------------------
-# /lineup post
+# /post lineup update
 # ---------------------------------------------------------------------------
 
 import datetime as _dt  # noqa: E402
@@ -1218,3 +1173,16 @@ async def test_event_autocomplete_empty_for_non_admin_and_idle(monkeypatch) -> N
     monkeypatch.setattr("bot.services.activation.is_active", AsyncMock(return_value=False))
     for name in ("post_event_autocomplete", "book_event_autocomplete", "cancel_event_autocomplete"):
         assert await getattr(cog, name)(make_mock_inter(user_id=1), "") == []
+
+
+@pytest.mark.asyncio
+async def test_config_show_in_a_dm_replies_privately() -> None:
+    from bot.cogs.admin import AdminCog
+
+    cog = AdminCog(make_mock_ctx(frozenset({123})))
+    inter = make_mock_inter(user_id=123)
+    inter.guild_id = None
+    await cog.config_show.callback(cog, inter)
+    inter.response.send_message.assert_awaited_once_with(
+        "Please use this command in a server channel.", ephemeral=True
+    )

@@ -98,3 +98,31 @@ async def test_outreach_check_switch_read_failure_skips_cycle(
     )
     await cog._outreach_check.coro(cog)
     svc.run_gap_detection.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_every_loop_loads_the_stored_zone_before_first_iteration(monkeypatch) -> None:
+    from unittest.mock import patch
+
+    from bot.cogs.events import EventsCog
+    from bot.cogs.outreach_cog import OutreachCog
+
+    for cls, loops in (
+        (EventsCog, [EventsCog._poll_notion, EventsCog._check_reminders]),
+        (OutreachCog, [OutreachCog._outreach_check]),
+    ):
+        for loop in loops:
+            cog = cls(MagicMock())
+            cog.bot = MagicMock()
+            cog.bot.wait_until_ready = AsyncMock()
+            cog.bot.guilds = [MagicMock(id=5)]
+            order = []
+            cog.bot.wait_until_ready.side_effect = lambda: order.append("ready")
+
+            async def fake_load(db, guild_id, order=order):
+                order.append(("zone", guild_id))
+                return True
+
+            with patch("bot.timezone.load_stored_timezone", fake_load):
+                await loop._before_loop(cog)
+            assert order == ["ready", ("zone", 5)]
