@@ -19,6 +19,7 @@ from bot.db.djs import get_dj_by_discord_id
 from bot.db.interventions import is_under_intervention
 from bot.db.log_replies import save_log_reply
 from bot.services import activation
+from bot.services.roles import get_dj_role
 from bot.ui import texts
 from bot.ui.embeds import ErrorCode
 from bot.ui.gates import IDLE_REPLY
@@ -58,8 +59,7 @@ class OnboardingCog(commands.Cog):
         """
         # Detect newly added roles only
         new_roles = set(after.roles) - set(before.roles)
-        dj_role = next((r for r in new_roles if r.name.lower() == "dj"), None)
-        if dj_role is None:
+        if not new_roles:
             return
 
         # Guard: pool may be None if bot is still starting up
@@ -68,6 +68,10 @@ class OnboardingCog(commands.Cog):
                 "on_member_update: DB pool not available — skipping onboarding for user %s",
                 after.id,
             )
+            return
+
+        configured_dj_role = await get_dj_role(self.ctx.db, after.guild)
+        if configured_dj_role is None or configured_dj_role not in new_roles:
             return
 
         # Idle: the role assignment sends nothing

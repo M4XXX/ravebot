@@ -707,3 +707,44 @@ async def test_delivered_dm_posts_no_error_entry(monkeypatch):
     _patch_db(monkeypatch)
     await svc.book_slot_override("Admin", 42, "DJ Lock", EVENT_NAME, 2)
     svc.log_service.post_error.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("active", [True, False])
+async def test_set_dj_active_status_uses_stored_invites_role(monkeypatch, active):
+    svc = _make_service()
+    monkeypatch.setattr(
+        "bot.services.admin_booking.update_active_booking", AsyncMock(return_value=True)
+    )
+    mock_guild, mock_member, _ = _make_role_chain(svc)
+    mock_guild.id = 111
+    old, stored = MagicMock(), MagicMock()
+    old.name = "Active Booking"
+    old.id = 1
+    stored.name = "Invites"
+    stored.id = 5
+    mock_guild.roles = [old, stored]
+    mock_guild.get_role = lambda rid: stored if rid == 5 else None
+    monkeypatch.setattr("bot.services.roles.get_value", AsyncMock(return_value="5"))
+
+    success, _ = await svc.set_dj_active_status(111, 42, "DJ Scope", active)
+
+    assert success is True
+    op = mock_member.add_roles if active else mock_member.remove_roles
+    assert op.await_args[0][0] is stored
+
+
+@pytest.mark.asyncio
+async def test_set_dj_active_status_deleted_stored_role_is_warning_only(monkeypatch):
+    svc = _make_service()
+    monkeypatch.setattr(
+        "bot.services.admin_booking.update_active_booking", AsyncMock(return_value=True)
+    )
+    mock_guild, mock_member, _ = _make_role_chain(svc)
+    mock_guild.id = 111
+    mock_guild.roles = []
+    mock_guild.get_role = lambda rid: None
+    monkeypatch.setattr("bot.services.roles.get_value", AsyncMock(return_value="5"))
+
+    assert await svc.set_dj_active_status(111, 42, "DJ Scope", True) == (True, "")
+    mock_member.add_roles.assert_not_awaited()

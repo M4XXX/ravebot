@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 import disnake
 
 from bot.db.djs import get_dj_by_discord_id, insert_dj, set_notion_dj_page_id, update_active_booking
+from bot.services.roles import get_invites_role
 from bot.ui import texts
 from bot.ui.embeds import ErrorCode
 from bot.ui.gates import GatedView
@@ -242,7 +243,7 @@ class OnboardingModal(disnake.ui.Modal):
         if guild is not None:
             member = guild.get_member(inter.author.id)
             if member is not None:
-                role = disnake.utils.get(guild.roles, name="Active Booking")
+                role = await get_invites_role(self._ctx.db, guild)
                 if role is not None:
                     try:
                         await member.add_roles(role, reason="Onboarding completed")
@@ -542,7 +543,7 @@ class FallbackMenuView(GatedView):
         for guild in inter.client.guilds:
             member = guild.get_member(inter.author.id)
             if member is not None:
-                role = disnake.utils.get(guild.roles, name="Active Booking")
+                role = await get_invites_role(self.ctx.db, guild)
                 if role is not None:
                     try:
                         await member.add_roles(
@@ -594,7 +595,7 @@ class FallbackMenuView(GatedView):
         for guild in inter.client.guilds:
             member = guild.get_member(inter.author.id)
             if member is not None:
-                role = disnake.utils.get(guild.roles, name="Active Booking")
+                role = await get_invites_role(self.ctx.db, guild)
                 if role is not None:
                     try:
                         await member.remove_roles(

@@ -6,8 +6,19 @@ test files is automatic via pytest conftest discovery.
 from unittest.mock import MagicMock
 
 import pytest
+from unittest.mock import AsyncMock, patch
 
 from bot.config import Config
+
+
+@pytest.fixture(autouse=True)
+def no_stored_roles():
+    """Role settings are unset by default (old role names are the fallback).
+
+    Tests that need stored role ids patch the same target themselves.
+    """
+    with patch("bot.services.roles.get_value", AsyncMock(return_value=None)):
+        yield
 
 
 def make_real_ctx(db: object = None) -> object:

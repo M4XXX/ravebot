@@ -23,6 +23,7 @@ from bot.notion.client import NotionWriteError, SlotRowMissingError
 from bot.services.dj_pages import ensure_dj_page
 from bot.services.dm import dm_user
 from bot.services.fully_booked import recheck_fully_booked
+from bot.services.roles import get_invites_role
 from bot.ui import texts
 from bot.ui.embeds import ErrorCode
 
@@ -353,7 +354,7 @@ class AdminBookingService:
                 "set_dj_active_status: member %s not in guild cache", dj_id
             )
             return True, ""
-        role = disnake.utils.get(guild.roles, name="Active Booking")
+        role = await get_invites_role(self.db, guild)
         if role is None:
             logger.warning(
                 "set_dj_active_status: 'Active Booking' role not found in guild %s",

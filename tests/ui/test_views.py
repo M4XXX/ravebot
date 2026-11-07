@@ -2645,3 +2645,68 @@ async def test_cancel_confirm_rechecks_fully_booked_after_lock_release() -> None
         )
     assert seen == [False]
     assert not lock.locked()
+
+
+def _stored_invites_role(role_id: str):
+    return patch("bot.services.roles.get_value", new=AsyncMock(return_value=role_id))
+
+
+def _fallback_inter_with_stored_role():
+    inter = MagicMock(spec=disnake.MessageInteraction)
+    inter.author.id = 77777
+    inter.response.send_message = AsyncMock()
+    old = MagicMock(spec=disnake.Role)
+    old.name = "Active Booking"
+    old.id = 1
+    stored = MagicMock(spec=disnake.Role)
+    stored.name = "Invites"
+    stored.id = 5
+    member = MagicMock(spec=disnake.Member)
+    member.add_roles = AsyncMock()
+    member.remove_roles = AsyncMock()
+    guild = MagicMock(spec=disnake.Guild)
+    guild.id = 42
+    guild.roles = [old, stored]
+    guild.get_role = lambda rid: stored if rid == 5 else None
+    guild.get_member.return_value = member
+    inter.client.guilds = [guild]
+    return inter, member, stored
+
+
+@pytest.mark.asyncio
+async def test_fallback_go_active_uses_stored_invites_role() -> None:
+    from bot.ui.views import FallbackMenuView
+
+    view = FallbackMenuView(make_real_ctx(db=MagicMock()))
+    inter, member, stored = _fallback_inter_with_stored_role()
+    with patch("bot.ui.views.update_active_booking", new=AsyncMock(return_value=True)):
+        with _stored_invites_role("5"):
+            await view.go_active.callback(inter)
+    member.add_roles.assert_awaited_once()
+    assert member.add_roles.call_args[0][0] is stored
+
+
+@pytest.mark.asyncio
+async def test_fallback_go_inactive_uses_stored_invites_role() -> None:
+    from bot.ui.views import FallbackMenuView
+
+    view = FallbackMenuView(make_real_ctx(db=MagicMock()))
+    inter, member, stored = _fallback_inter_with_stored_role()
+    with patch("bot.ui.views.update_active_booking", new=AsyncMock(return_value=True)):
+        with _stored_invites_role("5"):
+            await view.go_inactive.callback(inter)
+    member.remove_roles.assert_awaited_once()
+    assert member.remove_roles.call_args[0][0] is stored
+
+
+@pytest.mark.asyncio
+async def test_fallback_go_active_deleted_stored_role_is_handled() -> None:
+    from bot.ui.views import FallbackMenuView
+
+    view = FallbackMenuView(make_real_ctx(db=MagicMock()))
+    inter, member, _ = _fallback_inter_with_stored_role()
+    with patch("bot.ui.views.update_active_booking", new=AsyncMock(return_value=True)):
+        with _stored_invites_role("999"):
+            await view.go_active.callback(inter)
+    member.add_roles.assert_not_awaited()
+    inter.response.send_message.assert_awaited_once()

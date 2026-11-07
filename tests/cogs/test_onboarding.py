@@ -23,6 +23,9 @@ def make_member(user_id: int = 12345, name: str = "TestDJ") -> MagicMock:
     member.id = user_id
     member.name = name
     member.send = AsyncMock()
+    member.guild = MagicMock()
+    member.guild.id = 99999
+    member.guild.roles = [make_role("DJ")]
     return member
 
 
@@ -652,3 +655,47 @@ async def test_two_dms_share_one_reply_view(_plain: dict) -> None:
     views = [c.args[4] for c in log_service.log_user_message.await_args_list]
     assert len(views) == 2
     assert views[0] is views[1]
+
+
+def _stored_dj_role(role_id: str):
+    return patch("bot.services.roles.get_value", AsyncMock(return_value=role_id))
+
+
+@pytest.mark.asyncio
+async def test_on_member_update_uses_stored_dj_role() -> None:
+    """Onboarding starts for the stored DJ role, not for a role named DJ."""
+    from bot.cogs.onboarding import OnboardingCog
+
+    cog = OnboardingCog(make_ctx(db=MagicMock()))
+    performers = make_role("Performers")
+    performers.id = 7
+    before, after = make_member(), make_member()
+    after.guild.roles = [make_role("DJ"), performers]
+    after.guild.get_role = lambda rid: performers if rid == 7 else None
+    before.roles = []
+    after.roles = [performers]
+
+    with _stored_dj_role("7"), patch(
+        "bot.cogs.onboarding.get_dj_by_discord_id", new=AsyncMock(return_value=None)
+    ):
+        await cog.on_member_update(before, after)
+
+    after.send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_on_member_update_ignores_old_name_when_stored_role_differs() -> None:
+    from bot.cogs.onboarding import OnboardingCog
+
+    cog = OnboardingCog(make_ctx(db=MagicMock()))
+    performers = make_role("Performers")
+    performers.id = 7
+    before, after = make_member(), make_member()
+    after.guild.get_role = lambda rid: performers if rid == 7 else None
+    before.roles = []
+    after.roles = [make_role("DJ")]
+
+    with _stored_dj_role("7"):
+        await cog.on_member_update(before, after)
+
+    after.send.assert_not_called()
