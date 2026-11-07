@@ -1,4 +1,5 @@
 from bot.services.dj_validation import (
+    MAX_LINK_LENGTH,
     MAX_NAME_LENGTH,
     MAX_VRCHAT_LENGTH,
     clean_text,
@@ -12,6 +13,7 @@ from bot.services.dj_validation import (
 def test_limits() -> None:
     assert MAX_NAME_LENGTH == 80
     assert MAX_VRCHAT_LENGTH == 80
+    assert MAX_LINK_LENGTH == 500
 
 
 def test_stream_link_ok_true() -> None:

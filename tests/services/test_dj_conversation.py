@@ -64,6 +64,8 @@ class FakeDb:
         return key in self.taken
 
     async def _insert_dj(self, pool, **kw):
+        await asyncio.sleep(0)
+        self.taken.add(" ".join(kw["dj_name"].split()).casefold())
         self.djs[kw["discord_user_id"]] = {
             "dj_name": kw["dj_name"],
             "vrchat_name": kw["vrchat_name"],
@@ -76,8 +78,11 @@ class FakeDb:
 
     async def _update_dj_fields(self, pool, user_id, **fields):
         row = self.djs.get(user_id)
+        await asyncio.sleep(0)
         if row is None:
             return False
+        if "dj_name" in fields:
+            self.taken.add(" ".join(fields["dj_name"].split()).casefold())
         row.update(fields)
         return True
 
@@ -738,3 +743,139 @@ async def test_leave_group_no_profile(service, fake, member):
     r = await service.leave_group(A)
     assert r == Reply(texts.NO_PROFILE, "info")
     member.remove_roles.assert_not_called()
+
+
+# --- review fixes ---
+
+
+async def test_two_djs_confirming_same_name_one_insert(service, fake):
+    await _to_summary(service, A)
+    await _to_summary(service, B)
+    ra, rb = await asyncio.gather(service.confirm(A, 7), service.confirm(B, 7))
+    assert fake.insert_dj.await_count == 1
+    assert ra.kind == "done"
+    assert (rb.kind, rb.step, rb.text) == ("error", "name", texts.name_taken("Neon Fox"))
+    assert fake.convs[B].step == "name"
+    assert A in fake.djs and B not in fake.djs
+
+
+async def test_two_djs_editing_to_same_name_one_update(service, fake):
+    _dj(fake, A, dj_name="Alpha")
+    _dj(fake, B, dj_name="Beta")
+    await service.start_edit(A, GUILD, "name")
+    await service.start_edit(B, GUILD, "name")
+    ra, rb = await asyncio.gather(
+        service.handle_message(msg(A, "Gamma")), service.handle_message(msg(B, "gamma"))
+    )
+    assert fake.update_dj_fields.await_count == 1
+    assert ra.kind == "overview"
+    assert (rb.kind, rb.step) == ("error", "name")
+    assert fake.djs[B]["dj_name"] == "Beta"
+
+
+async def test_edit_name_vs_onboarding_confirm_same_name(service, fake):
+    _dj(fake, B, dj_name="Beta")
+    await _to_summary(service, A)
+    await service.start_edit(B, GUILD, "name")
+    ra, rb = await asyncio.gather(
+        service.confirm(A, 7), service.handle_message(msg(B, "Neon Fox"))
+    )
+    written = fake.insert_dj.await_count + fake.update_dj_fields.await_count
+    assert written == 1
+    assert sorted([ra.kind, rb.kind]) in (["done", "error"], ["error", "overview"])
+
+
+async def test_delete_failure_after_insert_still_done(
+    service, fake, ctx, sync, member, monkeypatch
+):
+    await _to_summary(service)
+    monkeypatch.setattr(
+        svc_mod, "delete_conversation", AsyncMock(side_effect=RuntimeError("db gone"))
+    )
+    r = await service.confirm(A, 7)
+    assert r == Reply(texts.ONBOARD_DONE, "done")
+    fake.insert_dj.assert_awaited_once()
+    ctx.log_service.log_new_dj.assert_awaited_once_with("Neon Fox", "foxvr")
+    member.add_roles.assert_awaited_once()
+    sync.assert_awaited_once()
+    # The leftover summary: pressing Confirm again does not log a second time.
+    assert A in fake.convs
+    monkeypatch.setattr(svc_mod, "delete_conversation", fake.delete_conversation)
+    r = await service.confirm(A, 7)
+    assert r == Reply(texts.ALREADY_DJ, "info")
+    ctx.log_service.log_new_dj.assert_awaited_once()
+    fake.insert_dj.assert_awaited_once()
+    assert A not in fake.convs
+
+
+async def test_post_insert_steps_run_before_delete(service, fake, ctx, sync, monkeypatch):
+    order: list[str] = []
+    ctx.log_service.log_new_dj.side_effect = lambda *a: order.append("log")
+    sync.side_effect = lambda *a: order.append("sync")
+
+    async def delete(pool, user_id):
+        order.append("delete")
+        await fake.delete_conversation(pool, user_id)
+
+    await _to_summary(service)
+    monkeypatch.setattr(svc_mod, "delete_conversation", delete)
+    await service.confirm(A, 7)
+    assert order == ["log", "sync", "delete"]
+
+
+async def test_log_failure_after_insert_still_done(service, fake, ctx, sync):
+    ctx.log_service.log_new_dj.side_effect = RuntimeError("discord down")
+    await _to_summary(service)
+    r = await service.confirm(A, 7)
+    assert r.kind == "done"
+    sync.assert_awaited_once()
+    assert A not in fake.convs
+
+
+async def test_link_500_chars_ok(service, fake):
+    await onboard_to(service, A, "link")
+    link = "https://twitch.tv/" + "x" * (500 - len("https://twitch.tv/"))
+    assert len(link) == 500
+    r = await service.handle_message(msg(A, link))
+    assert r.step == "alt_link"
+    assert fake.convs[A].data["link"] == link
+
+
+async def test_link_501_chars_rejected(service, fake):
+    await onboard_to(service, A, "link")
+    link = "https://twitch.tv/" + "x" * (501 - len("https://twitch.tv/"))
+    r = await service.handle_message(msg(A, link))
+    assert (r.kind, r.text, r.step) == ("error", texts.LINK_TOO_LONG, "link")
+    assert "pending_link" not in fake.convs[A].data
+    assert "link" not in fake.convs[A].data
+
+
+async def test_long_failed_link_is_echoed_truncated(service, fake):
+    await onboard_to(service, A, "link")
+    link = "example.com/" + "y" * 400
+    r = await service.handle_message(msg(A, link))
+    assert r.allow_as_is is True
+    assert link not in r.text
+    assert link[:200] + "..." in r.text
+    assert fake.convs[A].data["pending_link"] == link
+
+
+def test_link_check_failed_truncates():
+    assert "a" * 200 in texts.link_check_failed("a" * 200)
+    assert "a" * 200 + "..." not in texts.link_check_failed("a" * 200)
+    long_text = texts.link_check_failed("b" * 300)
+    assert "b" * 200 + "..." in long_text
+    assert "b" * 201 not in long_text
+
+
+async def test_record_message_id_failure_is_logged(service, fake, monkeypatch, caplog):
+    await service.start_onboarding(A, GUILD)
+    monkeypatch.setattr(
+        svc_mod, "set_conversation_message", AsyncMock(side_effect=RuntimeError("down"))
+    )
+    with caplog.at_level("WARNING", logger="bot.services.dj_conversation"):
+        assert await service.record_message_id(A, 9) is None
+    records = [r for r in caplog.records if r.name == "bot.services.dj_conversation"]
+    assert len(records) == 1
+    assert records[0].levelname == "WARNING"
+    assert records[0].exc_info is not None

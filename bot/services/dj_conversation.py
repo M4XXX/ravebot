@@ -31,6 +31,7 @@ from bot.db.djs import (
 )
 from bot.services.dj_sync import sync_dj
 from bot.services.dj_validation import (
+    MAX_LINK_LENGTH,
     MAX_VRCHAT_LENGTH,
     clean_text,
     name_error,
@@ -142,6 +143,9 @@ class DjConversationService:
         self._ctx = ctx
         self._client = client
         self._locks: dict[int, asyncio.Lock] = {}
+        # Service-wide: covers a DJ-name check through the write of that name, so two
+        # DJs cannot save the same name. Always taken after the per-user lock.
+        self._name_lock = asyncio.Lock()
 
     def _lock(self, user_id: int) -> asyncio.Lock:
         lock = self._locks.get(user_id)
@@ -213,7 +217,12 @@ class DjConversationService:
 
     async def record_message_id(self, user_id: int, message_id: int) -> None:
         async def body(db: asyncpg.Pool) -> None:
-            await set_conversation_message(db, user_id, message_id)
+            try:
+                await set_conversation_message(db, user_id, message_id)
+            except Exception:
+                logger.warning(
+                    "Recording the conversation message of %s failed", user_id, exc_info=True
+                )
 
         if self._ctx.db is None:
             return
@@ -255,8 +264,10 @@ class DjConversationService:
                 return _error(conv, texts.NAME_EMPTY)
             if problem == "too_long":
                 return _error(conv, texts.NAME_TOO_LONG)
-            exclude = conv.discord_user_id if conv.kind == EDIT else None
-            if await dj_name_exists(db, text, exclude_user_id=exclude):
+            if conv.kind == EDIT:
+                # The check and the write happen under the name lock in _finish_edit.
+                return await self._finish_edit(db, conv, text)
+            if await dj_name_exists(db, text):
                 return _error(conv, texts.name_taken(text))
             return await self._accept(db, conv, text)
         if step == "vrchat":
@@ -270,6 +281,8 @@ class DjConversationService:
         if not text:
             optional = conv.kind == ONBOARDING and step in OPTIONAL_STEPS
             return _error(conv, texts.LINK_EMPTY_OPTIONAL if optional else texts.LINK_EMPTY)
+        if len(text) > MAX_LINK_LENGTH:
+            return _error(conv, texts.LINK_TOO_LONG)
         if not stream_link_ok(text):
             conv.data["pending_link"] = text
             await save_conversation(db, conv)
@@ -366,27 +379,30 @@ class DjConversationService:
             await self._back_to(db, conv, "name" if not name else "link")
             return _question(conv)
         if await get_dj_by_discord_id(db, user_id) is not None:
-            await delete_conversation(db, user_id)
+            # A row and a leftover summary: the post-insert steps cannot be told apart
+            # from done ones without double logging, so only clear the conversation.
+            await self._drop(db, user_id)
             return Reply(texts.ALREADY_DJ, "info")
-        if await dj_name_exists(db, name):
-            await self._back_to(db, conv, "name")
-            return _error(conv, texts.name_taken(name))
         vrchat = data.get("vrchat") or None
-        try:
-            await insert_dj(
-                db,
-                discord_user_id=user_id,
-                dj_name=name,
-                vrchat_name=vrchat,
-                logo_url=None,
-                stream_url_primary=link,
-                stream_url_backup=data.get("alt_link") or None,
-                logo_image=conv.logo_image,
-            )
-        except asyncpg.UniqueViolationError:
-            await delete_conversation(db, user_id)
-            return Reply(texts.ALREADY_DJ, "info")
-        await delete_conversation(db, user_id)
+        async with self._name_lock:
+            if await dj_name_exists(db, name):
+                await self._back_to(db, conv, "name")
+                return _error(conv, texts.name_taken(name))
+            try:
+                await insert_dj(
+                    db,
+                    discord_user_id=user_id,
+                    dj_name=name,
+                    vrchat_name=vrchat,
+                    logo_url=None,
+                    stream_url_primary=link,
+                    stream_url_backup=data.get("alt_link") or None,
+                    logo_image=conv.logo_image,
+                )
+            except asyncpg.UniqueViolationError:
+                await self._drop(db, user_id)
+                return Reply(texts.ALREADY_DJ, "info")
+        # Saved: every remaining step is best effort and must not undo the success.
         log_service = self._ctx.log_service
         if log_service is not None:
             try:
@@ -395,19 +411,33 @@ class DjConversationService:
                 logger.warning("Logging the new DJ %s failed", user_id, exc_info=True)
         await self._set_invites_role(db, user_id, add=True, guild_id=conv.guild_id)
         await sync_dj(self._ctx, user_id, self._discord_name(user_id, conv.guild_id, name))
+        await self._drop(db, user_id)
         return Reply(texts.ONBOARD_DONE, "done")
+
+    async def _drop(self, db: asyncpg.Pool, user_id: int) -> None:
+        """Delete the conversation after a finished save; a failure is only logged."""
+        try:
+            await delete_conversation(db, user_id)
+        except Exception:
+            logger.warning("Deleting the conversation of %s failed", user_id, exc_info=True)
 
     async def _finish_edit(self, db: asyncpg.Pool, conv: Conversation, value: Any) -> Reply:
         user_id = conv.discord_user_id
         field = conv.step
-        updated = await update_dj_fields(db, user_id, **{_COLUMNS[field]: value})
+        if field == "name":
+            async with self._name_lock:
+                if await dj_name_exists(db, value, exclude_user_id=user_id):
+                    return _error(conv, texts.name_taken(value))
+                updated = await update_dj_fields(db, user_id, dj_name=value)
+        else:
+            updated = await update_dj_fields(db, user_id, **{_COLUMNS[field]: value})
         if not updated:
             await delete_conversation(db, user_id)
             return Reply(texts.NO_PROFILE, "info")
         row = await get_dj_by_discord_id(db, user_id)
         fallback = row["dj_name"] if row is not None else ""
         await sync_dj(self._ctx, user_id, self._discord_name(user_id, conv.guild_id, fallback))
-        await delete_conversation(db, user_id)
+        await self._drop(db, user_id)
         overview = await self._overview(db, user_id)
         if overview.kind != "overview":
             return overview

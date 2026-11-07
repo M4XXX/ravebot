@@ -83,6 +83,8 @@ LOGO_NEEDS_FILE = "Please send the image as a file, not as a link."
 LOGO_BAD = "That file isn't a usable image. Please send a PNG or JPEG under 5 MB."
 VRCHAT_EMPTY_OPTIONAL = "Please send a name, or press Skip."
 LINK_EMPTY = "Please send a link."
+LINK_TOO_LONG = "That link is too long. Please send a shorter link."
+_LINK_ECHO_MAX = 200
 LINK_EMPTY_OPTIONAL = "Please send a link, or press Skip."
 ALREADY_DJ = "You already have a DJ profile. Open it from the menu under My DJ profile."
 EDIT_CANCELLED = "Nothing changed."
@@ -109,6 +111,8 @@ def name_taken(name: str) -> str:
 
 
 def link_check_failed(link: str) -> str:
+    if len(link) > _LINK_ECHO_MAX:
+        link = link[:_LINK_ECHO_MAX] + "..."
     return (
         f"That link doesn't look like a Twitch, YouTube or stream.vrcdn link: {link}\n"
         "Send a corrected link, or keep it if it is right."

@@ -3,6 +3,7 @@ from typing import Literal
 
 MAX_NAME_LENGTH = 80
 MAX_VRCHAT_LENGTH = 80
+MAX_LINK_LENGTH = 500
 _STREAM_HOSTS = ("twitch", "youtube", "stream.vrcdn")
 
 
