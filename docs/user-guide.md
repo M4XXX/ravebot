@@ -385,15 +385,17 @@ A member who gets the DJ role receives a welcome DM with two buttons: `Yes, I wa
 
 1. DJ name. Required.
 2. VRChat name. Can be skipped.
-3. Logo. Send one image as a file attachment (PNG or JPEG, up to 5 MB). Links and several images are refused with a short explanation. Can be skipped.
-4. Stream link (Twitch, YouTube or stream.vrcdn).
+3. Logo. Send one image as a file attachment (PNG or JPEG, including iPhone photos, up to 5 MB). The bot scales it down to at most 1024 px on the longest side. Links and several images are refused with a short explanation. Can be skipped.
+4. Stream link (Twitch, YouTube or stream.vrcdn). Required.
 5. Backup stream link. Can be skipped.
 
-Every question has a `Cancel` button. A step that already has a value offers `Use it as it is`. At the end the bot shows the profile with `Looks good` and `Start over`. After `Looks good` the DJ is in the Active DJ Booking Group, has a row in the Notion DJs database (the logo is uploaded there as a file) and gets the Active Booking role.
+Every question has a `Cancel` button; questions that can be skipped also have `Skip`. A stream link that does not look like Twitch, YouTube or stream.vrcdn is answered with a hint and a `Use it as it is` button to keep it anyway. At the end the bot shows the profile with `Looks good` and `Start over`. After `Looks good` the DJ is in the Active DJ Booking Group, has a row in the Notion DJs database (the logo is uploaded there as a file) and gets the Active Booking role. If Notion does not accept the logo, the profile is still saved and the DJ can book; the bot sends the logo to Notion again at its next start.
 
-The DJ's answers during the conversation are not copied to the admin log channel. Buttons of older questions answer `This message is out of date. Write me any message to open the menu.`
+`Not now` ends an unfinished setup. Any later DM opens the menu, where `Contact me for Booking` starts again.
 
-DJs that joined before this change keep their stored profile and stream links. The menu shows `My DJ profile` to every DJ with a profile. It lists the profile (with the logo) and has buttons to change the DJ name, VRChat name, logo, stream link and backup link, and `Leave the booking group` (and a join button after leaving). Leaving stops invites and removes the Active Booking role; the profile stays.
+The DJ's answers during the conversation are not copied to the admin log channel. Buttons of older questions answer `This message is out of date. Use the latest message from me, or press Cancel there.` While a setup or a change is open, every DM is taken as the answer to the open question.
+
+DJs that joined before this change keep their stored profile and stream links. The menu shows `My DJ profile` to every DJ with a profile. It lists the profile (with the logo) and has buttons to change the DJ name, VRChat name, logo, stream link and backup link, and `Leave the booking group` (`Join the Active DJ Booking Group` after leaving). Leaving stops invites and removes the Active Booking role; the profile stays.
 
 ---
 
