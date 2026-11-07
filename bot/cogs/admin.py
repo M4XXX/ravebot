@@ -28,8 +28,7 @@ from bot.services.event_defaults import default_event_shape
 from bot.services.lineup import future_events, upcoming_event
 from bot.services.outreach import parse_outreach_enabled
 from bot.services.roles import DJ_ROLE_KEY, INVITES_ROLE_KEY
-from bot.timezone import DEFAULT_TIMEZONE
-from bot.timezone import local_today
+from bot.timezone import DEFAULT_TIMEZONE, local_today
 from bot.ui import texts
 from bot.ui.embeds import EmbedColors
 from bot.ui.gates import ADMIN_IDLE_REPLY
@@ -65,7 +64,10 @@ class AdminCog(commands.Cog):
             return False
         command = inter.application_command
         name = getattr(command, "qualified_name", None)
-        if name in IDLE_EXEMPT_COMMANDS:
+        # disnake checks every nesting level, so a parent of an exempt command passes too
+        if isinstance(name, str) and any(
+            e == name or e.startswith(name + " ") for e in IDLE_EXEMPT_COMMANDS
+        ):
             return True
         # Idle: every other command gets the admin idle text (the answer is sent here)
         guild_id = inter.guild_id
@@ -120,7 +122,6 @@ class AdminCog(commands.Cog):
                         "AdminCog: could not send the error followup", exc_info=True
                     )
 
-
     @commands.slash_command(name="config", description="Show the bot settings (admin only)")
     async def config_base(self, inter: disnake.ApplicationCommandInteraction) -> None:
         """Top-level /config command."""
@@ -161,7 +162,7 @@ class AdminCog(commands.Cog):
             f"Invites role: {role(await stored(INVITES_ROLE_KEY), 'Active Booking')}",
             f"Time zone: {shown(await stored('timezone'), DEFAULT_TIMEZONE)}",
             f"Slots per event: {shown(await stored('slots_per_event'), '6')}",
-            f"Start time (CET): {shown(await stored('default_start_time'), '20:00')}",
+            f"Start time (local): {shown(await stored('default_start_time'), '20:00')}",
             f"Slot length (minutes): {shown(await stored('slot_duration_minutes'), '60')}",
             f"One event every (days): {shown(await stored('event_interval_days'), '7')}",
             f"Future events kept ready: {shown(await stored('event_lookahead_count'), '6')}",
@@ -345,8 +346,19 @@ class AdminCog(commands.Cog):
     async def future_event_autocomplete(
         self, inter: disnake.ApplicationCommandInteraction, user_input: str
     ) -> list[str]:
-        """Event IDs of future events matching the typed text (max 25)."""
-        if self.ctx.notion_client is None:
+        """Event IDs of future events matching the typed text (max 25).
+
+        disnake runs no cog check for autocomplete: admins only, and nothing while idle.
+        """
+        if inter.author.id not in self.ctx.config.admin_user_ids:
+            return []
+        guild_id = inter.guild_id
+        if (
+            self.ctx.notion_client is None
+            or self.ctx.db is None
+            or guild_id is None
+            or not await activation.is_active(self.ctx.db, guild_id)
+        ):
             return []
         try:
             events = await self.ctx.notion_client.list_events()

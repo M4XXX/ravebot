@@ -1016,7 +1016,7 @@ async def test_config_show_lists_defaults_and_hint(monkeypatch: pytest.MonkeyPat
         "Invites role: Active Booking (default)",
         "Time zone: Europe/Berlin (default)",
         "Slots per event: 6 (default)",
-        "Start time (CET): 20:00 (default)",
+        "Start time (local): 20:00 (default)",
         "Slot length (minutes): 60 (default)",
         "One event every (days): 7 (default)",
         "Future events kept ready: 6 (default)",
@@ -1054,7 +1054,7 @@ async def test_config_show_shows_stored_values(monkeypatch: pytest.MonkeyPatch) 
     assert "Invites role: <@&8>" in text
     assert "Time zone: Europe/Paris" in text
     assert "Slots per event: 4" in text
-    assert "Start time (CET): 21:30" in text
+    assert "Start time (local): 21:30" in text
     assert "Automatic invites: off" in text
     assert "days before an event): 10" in text
 
@@ -1099,3 +1099,122 @@ def test_no_reference_to_removed_commands_or_settings_in_bot() -> None:
         assert not commands_re.search(text), path
         for needle in needles:
             assert needle not in text, (path, needle)
+
+
+# ---------------------------------------------------------------------------
+# Real disnake can_run on every nesting level
+# ---------------------------------------------------------------------------
+
+
+def _real_commands():
+    """Every real command object (all levels) of AdminCog and SetupCog, with its cog set."""
+    from bot.cogs.admin import AdminCog
+    from bot.cogs.setup import SetupCog
+
+    found = {}
+
+    def walk(cmd, cog):
+        cmd.cog = cog  # normally set when the cog is added to the bot
+        found[cmd.qualified_name] = cmd
+        for child in (getattr(cmd, "children", None) or {}).values():
+            walk(child, cog)
+
+    for cog in (AdminCog(make_mock_ctx(frozenset({1}))), SetupCog(make_mock_ctx(frozenset({1})))):
+        for cmd in cog.get_slash_commands():
+            walk(cmd, cog)
+    return found
+
+
+def _can_run_inter(user_id: int):
+    import disnake
+
+    inter = make_mock_inter(user_id=user_id)
+    inter.data.type = disnake.ApplicationCommandType.chat_input
+    inter.bot.application_command_can_run = AsyncMock(return_value=True)
+    return inter
+
+
+async def _run_chain(chain: list[str], user_id: int, active: bool, monkeypatch) -> tuple:
+    """Run can_run for each level like disnake does; returns (allowed, inter)."""
+    from disnake.ext import commands as dcommands
+
+    monkeypatch.setattr("bot.services.activation.is_active", AsyncMock(return_value=active))
+    cmds = _real_commands()
+    inter = _can_run_inter(user_id)
+    for name in chain:
+        try:
+            ok = await cmds[name].can_run(inter)
+        except dcommands.CheckFailure:
+            return False, inter
+        if not ok:
+            return False, inter
+    return True, inter
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "chain",
+    [["config", "config show"], ["setup"]],
+)
+async def test_idle_admin_can_run_exempt_commands(monkeypatch, chain) -> None:
+    allowed, inter = await _run_chain(chain, 1, False, monkeypatch)
+    assert allowed
+    inter.response.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "chain",
+    [
+        ["book", "book dj", "book dj slot"],
+        ["cancel", "cancel dj", "cancel dj slot"],
+        ["create", "create event"],
+        ["post", "post lineup", "post lineup update"],
+        ["list", "list all", "list all djs"],
+        ["automatic", "automatic dj", "automatic dj booking"],
+    ],
+)
+async def test_idle_admin_refused_once_for_other_commands(monkeypatch, chain) -> None:
+    from bot.ui.gates import ADMIN_IDLE_REPLY
+
+    allowed, inter = await _run_chain(chain, 1, False, monkeypatch)
+    assert not allowed
+    inter.response.send_message.assert_awaited_once_with(ADMIN_IDLE_REPLY, ephemeral=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "chain",
+    [
+        ["config", "config show"],
+        ["book", "book dj", "book dj slot"],
+        ["create", "create event"],
+        ["setup"],
+    ],
+)
+async def test_active_admin_can_run_everything(monkeypatch, chain) -> None:
+    allowed, inter = await _run_chain(chain, 1, True, monkeypatch)
+    assert allowed
+    inter.response.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("active", [False, True])
+@pytest.mark.parametrize(
+    "chain", [["config", "config show"], ["book", "book dj", "book dj slot"], ["setup"]]
+)
+async def test_non_admin_refused_first_without_idle_text(monkeypatch, chain, active) -> None:
+    allowed, inter = await _run_chain(chain, 2, active, monkeypatch)
+    assert not allowed
+    inter.response.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_event_autocomplete_empty_for_non_admin_and_idle(monkeypatch) -> None:
+    cog, _ = _lineup_cog(monkeypatch, [_lineup_event("E1", 3)])
+    monkeypatch.setattr("bot.services.activation.is_active", AsyncMock(return_value=True))
+    assert await cog.post_event_autocomplete(make_mock_inter(user_id=1), "") == ["E1"]
+    assert await cog.post_event_autocomplete(make_mock_inter(user_id=2), "") == []
+    monkeypatch.setattr("bot.services.activation.is_active", AsyncMock(return_value=False))
+    for name in ("post_event_autocomplete", "book_event_autocomplete", "cancel_event_autocomplete"):
+        assert await getattr(cog, name)(make_mock_inter(user_id=1), "") == []
