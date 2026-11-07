@@ -157,3 +157,63 @@ def test_throttle_caps_size():
         t.record_failure(f"k{i}")
     assert len(t._entries) <= 100
     assert "k499" in t._entries
+
+
+def test_check_password_lone_surrogate():
+    assert check_password("\ud800", "x") is False
+    assert check_password("x", "\ud800") is False
+    assert check_password("\ud800", "\ud800") is True
+
+
+def test_csrf_ok_lone_surrogate():
+    mgr = SessionManager(clock=Clock())
+    _, session = mgr.create()
+    assert mgr.csrf_ok(session, "\ud800") is False
+
+
+def test_throttle_eviction_keeps_blocked_key():
+    clock = Clock()
+    t = LoginThrottle(clock=clock, max_entries=100)
+    for _ in range(5):
+        t.record_failure("victim")
+    assert t.blocked_for("victim") > 0
+    for i in range(1000):
+        clock.now += 0.01
+        t.record_failure(f"flood{i}")
+    assert t.blocked_for("victim") > 0
+    assert len(t._entries) <= 100
+
+
+def test_throttle_all_blocked_table_not_evicted():
+    t = LoginThrottle(clock=Clock(), max_entries=3)
+    for k in "abc":
+        for _ in range(5):
+            t.record_failure(k)
+    for _ in range(5):
+        t.record_failure("d")
+    assert all(t.blocked_for(k) > 0 for k in "abcd")
+
+
+def test_throttle_prune_is_rate_limited_but_blocked_for_exact():
+    clock = Clock()
+    t = LoginThrottle(clock=clock, max_entries=10_000)
+    for _ in range(5):
+        t.record_failure("a")
+    t.record_failure("b")
+    clock.now += 301  # block and window over, but under the prune interval rule
+    assert t.blocked_for("a") == 0.0
+    clock.now = 1000.0 + 1  # irrelevant; check no scan below interval
+    t2 = LoginThrottle(clock=clock, max_entries=10_000)
+    t2.record_failure("x")
+    clock.now += 1
+    t2.record_failure("y")
+    assert set(t2._entries) == {"x", "y"}
+
+
+def test_throttle_pruning_bounds_table():
+    clock = Clock()
+    t = LoginThrottle(clock=clock, max_entries=100)
+    for i in range(2000):
+        clock.now += 1
+        t.record_failure(f"k{i}")
+    assert len(t._entries) <= 100

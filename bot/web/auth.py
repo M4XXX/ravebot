@@ -20,7 +20,10 @@ def check_password(given: str, expected: str) -> bool:
     """Constant time password comparison; an empty expected password never matches."""
     if not expected:
         return False
-    return hmac.compare_digest(given.encode("utf-8"), expected.encode("utf-8"))
+    return hmac.compare_digest(
+        given.encode("utf-8", errors="surrogatepass"),
+        expected.encode("utf-8", errors="surrogatepass"),
+    )
 
 
 @dataclass(frozen=True)
@@ -94,7 +97,10 @@ class SessionManager:
     def csrf_ok(self, session: Session, form_token: str | None) -> bool:
         if not form_token:
             return False
-        return hmac.compare_digest(form_token.encode("utf-8"), session.csrf.encode("utf-8"))
+        return hmac.compare_digest(
+            form_token.encode("utf-8", errors="surrogatepass"),
+            session.csrf.encode("utf-8", errors="surrogatepass"),
+        )
 
 
 class LoginThrottle:
@@ -107,16 +113,28 @@ class LoginThrottle:
         block_seconds: float = 300,
         clock: Callable[[], float] = time.monotonic,
         max_entries: int = 10_000,
+        prune_interval: float = 5.0,
     ) -> None:
         self._max_failures = max_failures
         self._window = window_seconds
         self._block = block_seconds
         self._clock = clock
         self._max_entries = max_entries
+        self._prune_interval = prune_interval
+        self._last_prune = clock()
         # key -> (failure timestamps inside the window, blocked_until or 0.0)
         self._entries: dict[str, tuple[list[float], float]] = {}
 
-    def _prune(self, now: float) -> None:
+    def _prune(self, now: float, force: bool = False) -> None:
+        # Full scans are rate limited: only when the table is above 80 percent
+        # of the cap or the interval has passed. blocked_for does not depend on
+        # pruning, so expired blocks still read as 0.0 immediately.
+        if not force and (
+            len(self._entries) <= 0.8 * self._max_entries
+            and now - self._last_prune < self._prune_interval
+        ):
+            return
+        self._last_prune = now
         dead = [
             key
             for key, (failures, blocked_until) in self._entries.items()
@@ -142,8 +160,21 @@ class LoginThrottle:
             blocked_until = now + self._block
             failures = []
         self._entries[key] = (failures, blocked_until)  # re-insert: newest last
+        if len(self._entries) > self._max_entries:
+            self._prune(now, force=True)
+        # Still over the cap: evict the unblocked entry with the oldest last
+        # failure (dict order is last update order). Entries with an active
+        # block are never evicted. If every entry is blocked, nothing is
+        # evicted and the table temporarily exceeds the cap; blocks expire and
+        # are pruned, and each blocked key cost its owner max_failures attempts.
         while len(self._entries) > self._max_entries:
-            del self._entries[next(iter(self._entries))]
+            victim = next(
+                (k for k, (_, until) in self._entries.items() if k != key and until <= now),
+                None,
+            )
+            if victim is None:
+                break
+            del self._entries[victim]
 
     def record_success(self, key: str) -> None:
         self._entries.pop(key, None)
