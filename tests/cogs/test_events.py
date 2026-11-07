@@ -1,7 +1,5 @@
 """Tests for bot/cogs/events.py — DB resilience guard pattern and Story 3.1 poll logic."""
-import contextlib
 import datetime
-import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import asyncpg
@@ -9,7 +7,7 @@ import pytest
 
 from bot.notion.models import EventInfo
 from bot.ui.embeds import ErrorCode
-from tests.notion.factories import make_event, make_slot
+from tests.notion.factories import make_event
 
 
 def make_ctx(db: object = None, log: object = None) -> MagicMock:
@@ -170,9 +168,9 @@ async def test_poll_notion_without_lineup_service_does_not_crash() -> None:
 @pytest.mark.asyncio
 async def test_poll_notion_notion_failure_no_snapshot_update() -> None:
     """_poll_notion: when list_events raises, snapshot is NOT updated and ERR is posted."""
-    from bot.cogs.events import EventsCog
-
     import httpx
+
+    from bot.cogs.events import EventsCog
     cog = _make_cog_with_bot()
     cog.ctx.notion_client.list_events = AsyncMock(side_effect=httpx.RequestError("timeout"))
 
@@ -193,7 +191,7 @@ async def test_poll_notion_db_unavailable_skips() -> None:
     # DB returns error
     cog.ctx.db.fetchval = AsyncMock(side_effect=asyncpg.PostgresConnectionError("gone"))
 
-    with patch("bot.cogs.events.get_value", new=AsyncMock()) as mock_get:
+    with patch("bot.services.event_replenish.get_value", new=AsyncMock()) as mock_get:
         await EventsCog._poll_notion.coro(cog)
 
     cog.ctx.notion_client.list_events.assert_not_called()
@@ -217,180 +215,18 @@ async def test_poll_notion_notion_client_none_posts_error() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Story 7.1: _auto_create_events
+# _auto_create_events delegates to the shared replenish function
 # ---------------------------------------------------------------------------
 
 
-def _make_event_with_date(event_id: str, date_str: str) -> EventInfo:
-    """Build a typed event on the given ISO date."""
-    return make_event(
-        event_id=event_id, page_id=event_id, date=datetime.date.fromisoformat(date_str)
-    )
-
-
-def _new_event(page_id: str = "new-page") -> EventInfo:
-    return make_event(page_id=page_id, event_id="x")
-
-
-def _wire_client(cog, create=None, exists=None) -> None:
-    client = cog.ctx.notion_client
-    client.create_event = create or AsyncMock(return_value=_new_event())
-    client.event_id_exists = exists or AsyncMock(return_value=False)
-
-
-@contextlib.contextmanager
-def _cfg(
-    lookahead: str | None,
-    interval: str | None,
-    slots: str | None,
-    start: str | None = None,
-    minutes: str | None = None,
-):
-    """Config values by key, for the cog and for the event-defaults helper."""
-    values = {
-        "event_lookahead_count": lookahead,
-        "event_interval_days": interval,
-        "slots_per_event": slots,
-        "default_start_time": start,
-        "slot_duration_minutes": minutes,
-    }
-
-    async def fake_get_value(pool, guild_id, key):
-        return values.get(key)
-
-    with patch("bot.cogs.events.get_value", new=AsyncMock(side_effect=fake_get_value)), \
-         patch("bot.services.event_defaults.get_value",
-               new=AsyncMock(side_effect=fake_get_value)):
-        yield
-
-
 @pytest.mark.asyncio
-async def test_auto_create_events_creates_correct_count() -> None:
+async def test_auto_create_events_delegates_to_replenish_events() -> None:
     cog = _make_cog_with_bot()
-    events = [
-        _make_event_with_date("page-a", "2026-06-07"),
-        _make_event_with_date("page-b", "2026-06-14"),
-        _make_event_with_date("page-c", "2026-06-21"),
-    ]
-    _wire_client(cog)
-    with _cfg("6", "7", "6"), patch("bot.cogs.events.init_event_slots", new=AsyncMock()):
-        await cog._auto_create_events(events, 99999)
-    assert cog.ctx.notion_client.create_event.await_count == 3
-
-
-@pytest.mark.asyncio
-async def test_auto_create_events_skips_when_at_lookahead() -> None:
-    cog = _make_cog_with_bot()
-    events = [_make_event_with_date(f"page-{i}", f"2026-06-{i+1:02d}") for i in range(6)]
-    _wire_client(cog)
-    with patch("bot.cogs.events.get_value", new=AsyncMock(return_value="6")):
-        await cog._auto_create_events(events, 99999)
-    cog.ctx.notion_client.create_event.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_auto_create_events_id_format_dates_and_configured_shape() -> None:
-    """New events take Start/Slot length/slot count from config, not from the latest event."""
-    cog = _make_cog_with_bot()
-    events = [
-        make_event(page_id="a", date=datetime.date(2026, 6, 7), start=datetime.time(18, 0),
-                   slot_minutes=30),
-        make_event(page_id="b", date=datetime.date(2026, 6, 14), start=datetime.time(21, 30),
-                   slot_minutes=45),
-    ]
-    _wire_client(cog)
-    with _cfg("4", "7", "5", start="19:15", minutes="50"), \
-         patch("bot.cogs.events.init_event_slots", new=AsyncMock()):
-        await cog._auto_create_events(events, 99999)
-
-    calls = cog.ctx.notion_client.create_event.await_args_list
-    assert [c.args for c in calls] == [
-        ("2026-06-21 Rave Night", datetime.date(2026, 6, 21), datetime.time(19, 15), 5, 50),
-        ("2026-06-28 Rave Night", datetime.date(2026, 6, 28), datetime.time(19, 15), 5, 50),
-    ]
-
-
-@pytest.mark.asyncio
-async def test_auto_create_events_ignores_latest_event_shape_when_config_unset() -> None:
-    cog = _make_cog_with_bot()
-    events = [
-        make_event(page_id="b", date=datetime.date(2026, 6, 14), start=datetime.time(21, 30),
-                   slot_minutes=45),
-    ]
-    _wire_client(cog)
-    with _cfg("2", "7", None), patch("bot.cogs.events.init_event_slots", new=AsyncMock()):
-        await cog._auto_create_events(events, 99999)
-    args = cog.ctx.notion_client.create_event.await_args.args
-    assert args[2:] == (datetime.time(20, 0), 6, 60)
-
-
-@pytest.mark.asyncio
-async def test_auto_create_events_defaults_without_existing_events() -> None:
-    cog = _make_cog_with_bot()
-    _wire_client(cog)
-    with _cfg("1", "7", "6"), patch("bot.cogs.events.init_event_slots", new=AsyncMock()):
-        await cog._auto_create_events([], 99999)
-    args = cog.ctx.notion_client.create_event.await_args.args
-    assert args[2] == datetime.time(20, 0)
-    assert args[3:] == (6, 60)
-    assert args[0].endswith(" Rave Night")
-
-
-@pytest.mark.asyncio
-async def test_auto_create_events_inits_slot_locks_with_page_id() -> None:
-    cog = _make_cog_with_bot()
-    _wire_client(cog, create=AsyncMock(return_value=_new_event("created-page")))
-    with _cfg("2", "7", "4"), \
-         patch("bot.cogs.events.init_event_slots", new=AsyncMock()) as init:
-        await cog._auto_create_events([_make_event_with_date("a", "2026-06-07")], 99999)
-    init.assert_awaited_once_with(cog.ctx.db, "created-page", 4)
-
-
-@pytest.mark.asyncio
-async def test_auto_create_events_skips_existing_id() -> None:
-    cog = _make_cog_with_bot()
-    _wire_client(cog, exists=AsyncMock(side_effect=[True, False]))
-    with _cfg("3", "7", "6"), patch("bot.cogs.events.init_event_slots", new=AsyncMock()) as init:
-        await cog._auto_create_events([_make_event_with_date("a", "2026-06-07")], 99999)
-    assert cog.ctx.notion_client.event_id_exists.await_count == 2
-    assert cog.ctx.notion_client.create_event.await_count == 1
-    assert cog.ctx.notion_client.create_event.await_args.args[0] == "2026-06-21 Rave Night"
-    assert init.await_count == 1
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("error_name", ["NotionWriteError", "DuplicateEventError"])
-async def test_auto_create_events_one_failure_does_not_stop_next(error_name: str) -> None:
-    from bot.notion import client as nc
-
-    error = nc.NotionWriteError("write failed") if error_name == "NotionWriteError" \
-        else nc.DuplicateEventError("dup")
-    cog = _make_cog_with_bot()
-    create = AsyncMock(side_effect=[error, _new_event()])
-    _wire_client(cog, create=create)
-    with _cfg("3", "7", "6"), patch("bot.cogs.events.init_event_slots", new=AsyncMock()):
-        await cog._auto_create_events([_make_event_with_date("a", "2026-06-07")], 99999)
-    assert create.await_count == 2
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("bad", ["abc", "0", "-3"])
-async def test_auto_create_events_invalid_slots_config_uses_default(bad: str) -> None:
-    cog = _make_cog_with_bot()
-    _wire_client(cog)
-    with _cfg("1", "7", bad), patch("bot.cogs.events.init_event_slots", new=AsyncMock()):
-        await cog._auto_create_events([], 99999)
-    assert cog.ctx.notion_client.create_event.await_args.args[3] == 6
-
-
-@pytest.mark.asyncio
-async def test_auto_create_events_value_error_does_not_abort_loop() -> None:
-    cog = _make_cog_with_bot()
-    create = AsyncMock(side_effect=[ValueError("bad"), _new_event()])
-    _wire_client(cog, create=create)
-    with _cfg("3", "7", "6"), patch("bot.cogs.events.init_event_slots", new=AsyncMock()):
-        await cog._auto_create_events([_make_event_with_date("a", "2026-06-07")], 99999)
-    assert create.await_count == 2
+    events = [make_event()]
+    with patch("bot.cogs.events.replenish_events", new=AsyncMock(return_value=3)) as rep:
+        result = await cog._auto_create_events(events, 99999)
+    assert result == 3
+    rep.assert_awaited_once_with(cog.ctx.db, cog.ctx.notion_client, 99999, events)
 
 
 @pytest.mark.asyncio
@@ -426,58 +262,6 @@ async def test_poll_notion_calls_auto_create_events() -> None:
     call_args = mock_auto.call_args
     assert call_args[0][0] == events  # first positional arg is events list
     assert call_args[0][1] == 99999   # second positional arg is guild_id
-
-
-# ---------------------------------------------------------------------------
-# Story 7.3: _auto_create_events uses slots_per_event from config
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_auto_create_events_uses_slots_per_event_from_config() -> None:
-    """_auto_create_events calls init_event_slots with slots_per_event from config."""
-    cog = _make_cog_with_bot()
-    events = [_make_event_with_date("page-a", "2026-06-07")]  # 1 event, need 2 more
-
-    _wire_client(cog, create=AsyncMock(return_value=_new_event("new-page-id")))
-
-    init_calls: list[tuple[object, str, int]] = []
-
-    async def mock_init_event_slots(pool: object, event_id: str, slots_per_event: int) -> None:
-        init_calls.append((pool, event_id, slots_per_event))
-
-    with _cfg("3", "7", "3"), \
-         patch("bot.cogs.events.init_event_slots", new=mock_init_event_slots):
-        await cog._auto_create_events(events, 99999)
-
-    # Two events created → init_event_slots called twice with slots=3
-    assert len(init_calls) == 2
-    assert init_calls[0][1] == "new-page-id"
-    assert init_calls[0][2] == 3
-    assert init_calls[1][1] == "new-page-id"
-    assert init_calls[1][2] == 3
-
-
-@pytest.mark.asyncio
-async def test_auto_create_events_defaults_to_6_slots_when_unset() -> None:
-    """_auto_create_events uses slots_per_event=6 when config key is not set."""
-    cog = _make_cog_with_bot()
-    events = [_make_event_with_date("page-a", "2026-06-07")]  # 1 event, need 2 more
-
-    _wire_client(cog, create=AsyncMock(return_value=_new_event("new-page-id")))
-
-    init_calls: list[tuple[object, str, int]] = []
-
-    async def mock_init_event_slots(pool: object, event_id: str, slots_per_event: int) -> None:
-        init_calls.append((pool, event_id, slots_per_event))
-
-    with _cfg("3", "7", None), \
-         patch("bot.cogs.events.init_event_slots", new=mock_init_event_slots):
-        await cog._auto_create_events(events, 99999)
-
-    assert len(init_calls) == 2
-    assert init_calls[0][2] == 6   # default
-    assert init_calls[1][2] == 6
 
 
 # ---------------------------------------------------------------------------

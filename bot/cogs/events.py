@@ -12,19 +12,15 @@ Full lineup post (FR10) implemented in Story 3.2.
 """
 import datetime
 import logging
-from datetime import timedelta
 
 import asyncpg
 from disnake.ext import commands, tasks
 
 from bot.context import BotContext
-from bot.db.bookings import init_event_slots
-from bot.db.config import get_value
-from bot.notion.client import DuplicateEventError, NotionWriteError
+from bot.notion.client import NotionWriteError
 from bot.notion.models import EventInfo
-from bot.services.event_defaults import default_event_shape
+from bot.services.event_replenish import replenish_events
 from bot.services.fully_booked import check_fully_booked
-from bot.timezone import local_today
 from bot.ui import texts
 from bot.ui.embeds import ErrorCode
 
@@ -91,12 +87,8 @@ class EventsCog(commands.Cog):
     async def _auto_create_events(self, events: list[EventInfo], guild_id: int) -> int:
         """Create Notion events to maintain the configured look-ahead count.
 
-        Reads event_lookahead_count (default 6) and event_interval_days (default 7)
-        from config; start, slot length and slot count come from
-        default_event_shape() (config, not the latest event). Finds the latest
-        existing event date and creates new events spaced by interval_days until the count reaches
-        the look-ahead target. After each successful Notion write, pre-initializes
-        slot_locks rows via init_event_slots() (Story 7.3 AC2).
+        Thin wrapper around bot.services.event_replenish.replenish_events (shared
+        with the setup wizard). Done, canceled and past events do not count.
 
         Called from _poll_notion() after list_events() succeeds, before the
         lineup refresh. Returns how many events were created; the caller's event
@@ -107,58 +99,7 @@ class EventsCog(commands.Cog):
 
         [Source: epics.md#Story 7.1 AC1-AC4]
         """
-        raw_lookahead = await get_value(self.ctx.db, guild_id, "event_lookahead_count")
-        lookahead = int(raw_lookahead) if raw_lookahead else 6
-
-        if len(events) >= lookahead:
-            return 0  # AC4: already at or above target, no action
-
-        raw_interval = await get_value(self.ctx.db, guild_id, "event_interval_days")
-        interval_days = int(raw_interval) if raw_interval else 7
-
-        # Find latest event date; events are sorted ascending by list_events()
-        latest_date: datetime.date = events[-1].date if events else local_today()
-
-        client = self.ctx.notion_client
-        db = self.ctx.db
-        if client is None or db is None:
-            return 0
-
-        # Start, slot length and slot count come from config (Ruling 25)
-        shape = await default_event_shape(db, guild_id)
-
-        events_to_create = lookahead - len(events)
-        created = 0
-        for i in range(1, events_to_create + 1):
-            new_date = latest_date + timedelta(days=interval_days * i)
-            event_id = f"{new_date.isoformat()} Rave Night"
-            try:
-                if await client.event_id_exists(event_id):
-                    logger.info("Auto-create skipped: event ID %r already exists", event_id)
-                    continue
-                event = await client.create_event(
-                    event_id, new_date, shape.start, shape.slot_count, shape.slot_minutes
-                )
-                logger.info("Auto-created Notion event: %r", event_id)
-                created += 1
-                # Pre-initialize slot_locks rows (Story 7.3 AC2)
-                try:
-                    await init_event_slots(db, event.page_id, shape.slot_count)
-                except Exception as exc:
-                    logger.warning(
-                        "init_event_slots failed for event %r: %s"
-                        " — slots will be lazily created on booking",
-                        event_id,
-                        exc,
-                    )
-            except (NotionWriteError, DuplicateEventError):
-                logger.warning(
-                    "Auto event creation failed for %s — ERR_NOTION_WRITE posted to admin log",
-                    new_date.isoformat(),
-                )
-            except ValueError:
-                logger.exception("Auto event creation rejected for %s", new_date.isoformat())
-        return created
+        return await replenish_events(self.ctx.db, self.ctx.notion_client, guild_id, events)
 
     async def _run_sync_cycle(self, guild_id: int) -> None:
         """Run one NotionSyncService cycle; a failure is logged and never raised.
