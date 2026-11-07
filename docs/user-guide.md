@@ -208,7 +208,7 @@ docker push ghcr.io/YOUR_USER/ravebot:latest
 2. Set **Name**: `ravebot`
 3. Set **Repository**: `ravebot:latest` (or your registry path)
 4. Set **Network Type**: `bridge`
-5. Port mappings: leave them empty if you do not use the admin page. To use it, add a **Port** with container port `8080` and a free host port (for example `8080` or `8095`), and set the variable `ADMIN_PAGE_PASSWORD` in step 4 (see [section 7.7](#77-the-admin-page))
+5. Port mappings: leave them empty if you do not use the admin page. To use it, add a **Port** with container port `8080` (the value of `ADMIN_PAGE_PORT`; change it only together with that variable) and a free host port (for example `8080` or `8095`), and set the variable `ADMIN_PAGE_PASSWORD` in step 4 (see [section 7.7](#77-the-admin-page))
 
 ### Step 4: Configure Environment Variables
 
@@ -401,6 +401,7 @@ Every question has a `Cancel` button; questions that can be skipped also have `S
 The DJ's answers during the conversation are not copied to the admin log channel. Buttons of older questions answer `This message is out of date. Use the latest message from me, or press Cancel there.` While a setup or a change is open, every DM is taken as the answer to the open question. A change of a profile value that is not answered within 1 hour is dropped and nothing changes; the next DM then opens the menu as usual.
 
 DJs that joined before this change keep their stored profile and stream links. The menu shows `My DJ profile` to every DJ with a profile. It lists the profile (with the logo) and has buttons to change the DJ name, VRChat name, logo, stream link and backup link, and `Leave the booking group` (`Join the Active DJ Booking Group` after leaving). Leaving stops invites and removes the Active Booking role; the profile stays.
+
 ### 7.7 The admin page
 
 A small web page to manage the admin list. It is off until you set `ADMIN_PAGE_PASSWORD`.
@@ -408,17 +409,17 @@ A small web page to manage the admin list. It is off until you set `ADMIN_PAGE_P
 **Warning:** the page has no HTTPS. Use it only on your local network and never expose it to the internet (no port forwarding, no public reverse proxy).
 
 1. Set `ADMIN_PAGE_PASSWORD` (a long random value). Optionally set `ADMIN_PAGE_PORT` (default `8080`).
-2. In Unraid, map container port `8080` to a free host port. With Docker Compose use `ports: ["8080:8080"]`.
+2. Map the container port to a host port. The container port must equal `ADMIN_PAGE_PORT` (`8080` unless you changed it); the host port is any free port. In Unraid, add a **Port** with that container port. With Docker Compose use `ports: ["8080:8080"]` (host port first, container port second). If you changed `ADMIN_PAGE_PORT`, use that value as the container port, for example `"8095:9000"` for `ADMIN_PAGE_PORT=9000`.
 3. Open `http://SERVER_IP:HOST_PORT/` in a browser and log in with the password. If the port is wrong or already in use, the container log shows an `Admin page not started` error and the bot keeps running without the page.
 
 What the page shows: the server name, the owners from `ADMIN_USER_IDS` (they cannot be removed) and the added admins with their Discord name when it can be found.
 
 What you can do:
-- Add an admin by Discord user ID (17 to 19 digits). The ID does not have to be a server member. An added admin can use every admin command, including `/setup`. Adding an admin writes an entry to the admin log channel; removals do not.
+- Add an admin by Discord user ID (17 to 19 digits). The ID does not have to be a server member. An added admin can use every admin command, including `/setup`. While the bot is active, adding an admin writes an entry to the admin log channel; removals do not.
 - Remove an added admin.
 - Log out. This clears the cookie in your browser only.
 
-Sessions end when the bot restarts; you log in again. Repeated wrong passwords are slowed down.
+Sessions end when the bot restarts; you log in again. Every wrong password is answered after a short delay (0.5 seconds), and after 5 wrong attempts from one address within 5 minutes, that address is blocked for 5 minutes.
 
 ---
 
