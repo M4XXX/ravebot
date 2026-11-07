@@ -33,6 +33,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- An open change under `My DJ profile` expires after 1 hour without an answer: the change is dropped, nothing is saved, and the next DM is handled as a normal DM (log entry and menu). Buttons of the expired question answer that the message is out of date. Onboarding conversations do not expire.
 - Start times are local time, not UTC. Existing `Start` values are kept as they are, so an event entered as `20:00` now means 20:00 local time. Lineup posts and reminders show local times. Discord timestamps are no longer used.
 - `/config` has only `show` now; it lists the new settings and the bot status. All settings are changed in `/setup`.
 - Renamed commands: `/add-event` is `/create event`, `/lineup post` is `/post lineup update`, `/admin book` is `/book dj slot`, `/admin cancel` is `/cancel dj slot`, `/list-djs` is `/list all djs`, `/admin dj set-active` is `/automatic dj booking`.

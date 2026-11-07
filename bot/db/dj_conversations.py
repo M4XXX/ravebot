@@ -1,6 +1,7 @@
 """dj_conversations repository: the open onboarding/edit DM conversation per user."""
 import json
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 import asyncpg
@@ -15,6 +16,8 @@ class Conversation:
     data: dict[str, Any] = field(default_factory=dict)
     logo_image: bytes | None = None
     message_id: int | None = None
+    # Last state change (set by the database on every save); only read, never written.
+    updated_at: datetime | None = None
 
 
 def _load(raw: Any) -> dict[str, Any]:
@@ -28,7 +31,8 @@ def _load(raw: Any) -> dict[str, Any]:
 
 async def get_conversation(pool: asyncpg.Pool, user_id: int) -> Conversation | None:
     row = await pool.fetchrow(
-        "SELECT discord_user_id, guild_id, kind, step, data, logo_image, message_id "
+        "SELECT discord_user_id, guild_id, kind, step, data, logo_image, message_id, "
+        "updated_at "
         "FROM dj_conversations WHERE discord_user_id = $1",
         user_id,
     )
@@ -42,6 +46,7 @@ async def get_conversation(pool: asyncpg.Pool, user_id: int) -> Conversation | N
         data=_load(row["data"]),
         logo_image=row["logo_image"],
         message_id=row["message_id"],
+        updated_at=row["updated_at"],
     )
 
 

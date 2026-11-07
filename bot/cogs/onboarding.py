@@ -14,7 +14,6 @@ import disnake
 from disnake.ext import commands
 
 from bot.context import BotContext
-from bot.db.dj_conversations import get_conversation
 from bot.db.djs import get_dj_by_discord_id
 from bot.db.log_replies import save_log_reply
 from bot.services import activation
@@ -157,11 +156,12 @@ class OnboardingCog(commands.Cog):
             return False
         user_id = message.author.id
         try:
-            conversation = await get_conversation(self.ctx.db, user_id)
+            # An expired edit counts as closed: the DM is then a normal DM (log + menu)
+            is_open = await service.has_open_conversation(user_id)
         except Exception:
             logger.exception("on_message: conversation lookup failed for %s", user_id)
             return False
-        if conversation is None:
+        if not is_open:
             return False
         try:
             reply = await service.handle_message(message)

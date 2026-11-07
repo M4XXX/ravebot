@@ -393,7 +393,7 @@ Every question has a `Cancel` button; questions that can be skipped also have `S
 
 `Not now` ends an unfinished setup. Any later DM opens the menu, where `Contact me for Booking` starts again.
 
-The DJ's answers during the conversation are not copied to the admin log channel. Buttons of older questions answer `This message is out of date. Use the latest message from me, or press Cancel there.` While a setup or a change is open, every DM is taken as the answer to the open question.
+The DJ's answers during the conversation are not copied to the admin log channel. Buttons of older questions answer `This message is out of date. Use the latest message from me, or press Cancel there.` While a setup or a change is open, every DM is taken as the answer to the open question. A change of a profile value that is not answered within 1 hour is dropped and nothing changes; the next DM then opens the menu as usual.
 
 DJs that joined before this change keep their stored profile and stream links. The menu shows `My DJ profile` to every DJ with a profile. It lists the profile (with the logo) and has buttons to change the DJ name, VRChat name, logo, stream link and backup link, and `Leave the booking group` (`Join the Active DJ Booking Group` after leaving). Leaving stops invites and removes the Active Booking role; the profile stays.
 

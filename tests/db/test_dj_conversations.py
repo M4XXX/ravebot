@@ -8,7 +8,7 @@ import pytest
 def _row(data):
     return {
         "discord_user_id": 1, "guild_id": 2, "kind": "onboarding", "step": "name",
-        "data": data, "logo_image": b"x", "message_id": 7,
+        "data": data, "logo_image": b"x", "message_id": 7, "updated_at": None,
     }
 
 
@@ -33,6 +33,20 @@ async def test_get_conversation_parses_json_string_and_dict() -> None:
         )
     sql = pool.fetchrow.await_args.args[0]
     assert "dj_conversations" in sql and "discord_user_id = $1" in sql
+
+
+@pytest.mark.asyncio
+async def test_get_conversation_reads_updated_at() -> None:
+    from datetime import UTC, datetime
+
+    from bot.db.dj_conversations import get_conversation
+
+    stamp = datetime(2026, 11, 7, 12, 0, tzinfo=UTC)
+    pool = MagicMock()
+    pool.fetchrow = AsyncMock(return_value={**_row({}), "updated_at": stamp})
+    conv = await get_conversation(pool, 1)
+    assert conv is not None and conv.updated_at == stamp
+    assert "updated_at" in pool.fetchrow.await_args.args[0]
 
 
 @pytest.mark.asyncio

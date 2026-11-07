@@ -2,6 +2,7 @@
 import asyncio
 import copy
 import io
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -12,7 +13,7 @@ from PIL import Image
 from bot.db.dj_conversations import Conversation
 from bot.services import dj_conversation as svc_mod
 from bot.services import logo as logo_mod
-from bot.services.dj_conversation import DjConversationService, Reply
+from bot.services.dj_conversation import EDIT_EXPIRY, DjConversationService, Reply, is_expired
 from bot.ui import texts
 
 GUILD = 500
@@ -909,3 +910,142 @@ def test_stale_text_points_to_the_latest_message():
         "This message is out of date. Use the latest message from me, "
         "or press Cancel there."
     )
+
+
+# --- edit expiry ---
+
+NOW = datetime(2026, 11, 7, 12, 0, tzinfo=UTC)
+
+
+def _conv(kind: str, updated_at: datetime | None) -> Conversation:
+    return Conversation(A, GUILD, kind, "vrchat", updated_at=updated_at)
+
+
+def test_edit_expiry_is_one_hour():
+    assert EDIT_EXPIRY == timedelta(hours=1)
+
+
+@pytest.mark.parametrize(
+    ("kind", "age", "expected"),
+    [
+        ("edit", None, False),
+        ("edit", timedelta(minutes=59, seconds=59), False),
+        ("edit", timedelta(hours=1), False),
+        ("edit", timedelta(hours=1, seconds=1), True),
+        ("onboarding", timedelta(days=3), False),
+    ],
+)
+def test_is_expired(kind, age, expected):
+    updated = None if age is None else NOW - age
+    assert is_expired(_conv(kind, updated), now=NOW) is expected
+
+
+def test_is_expired_treats_naive_timestamp_as_utc():
+    naive = (NOW - timedelta(hours=2)).replace(tzinfo=None)
+    assert is_expired(_conv("edit", naive), now=NOW) is True
+    naive = (NOW - timedelta(minutes=30)).replace(tzinfo=None)
+    assert is_expired(_conv("edit", naive), now=NOW) is False
+
+
+def test_is_expired_default_now_is_current_time():
+    old = datetime.now(UTC) - timedelta(hours=2)
+    assert is_expired(_conv("edit", old)) is True
+    assert is_expired(_conv("edit", datetime.now(UTC))) is False
+
+
+def _age(fake, user, age):
+    fake.convs[user].updated_at = datetime.now(UTC) - age
+
+
+async def test_expired_edit_message_falls_through_and_deletes_row(service, fake, sync):
+    _dj(fake)
+    await service.start_edit(A, GUILD, "vrchat")
+    _age(fake, A, timedelta(hours=1, minutes=1))
+    assert await service.handle_message(msg(A, "newvr")) is None
+    assert A not in fake.convs
+    assert fake.djs[A]["vrchat_name"] == "foxvr"
+    fake.update_dj_fields.assert_not_called()
+
+
+async def test_edit_just_under_one_hour_still_works(service, fake, sync):
+    _dj(fake)
+    await service.start_edit(A, GUILD, "vrchat")
+    _age(fake, A, timedelta(minutes=59))
+    r = await service.handle_message(msg(A, "newvr"))
+    assert r is not None and r.kind == "overview"
+    assert fake.djs[A]["vrchat_name"] == "newvr"
+
+
+async def test_old_onboarding_conversation_still_works(service, fake):
+    await service.start_onboarding(A, GUILD)
+    _age(fake, A, timedelta(days=2))
+    r = await service.handle_message(msg(A, "Neon Fox"))
+    assert r is not None and (r.kind, r.step) == ("question", "vrchat")
+
+
+async def test_expired_edit_delete_failure_still_falls_through(service, fake, monkeypatch):
+    _dj(fake)
+    await service.start_edit(A, GUILD, "vrchat")
+    _age(fake, A, timedelta(hours=2))
+    monkeypatch.setattr(svc_mod, "delete_conversation", AsyncMock(side_effect=RuntimeError("x")))
+    assert await service.handle_message(msg(A, "newvr")) is None
+    assert fake.djs[A]["vrchat_name"] == "foxvr"
+
+
+@pytest.mark.parametrize(
+    "method", ["skip", "use_as_is", "remove_value", "cancel", "start_over", "confirm"]
+)
+async def test_button_on_expired_edit_is_stale_and_deletes(service, fake, method):
+    _dj(fake)
+    await service.start_edit(A, GUILD, "vrchat")
+    await service.record_message_id(A, 10)
+    _age(fake, A, timedelta(hours=2))
+    r = await getattr(service, method)(A, 10)
+    assert r == Reply(texts.STALE_BUTTON, "info")
+    assert A not in fake.convs
+    assert fake.djs[A]["vrchat_name"] == "foxvr"
+
+
+async def test_start_onboarding_ignores_expired_edit(service, fake):
+    _dj(fake)
+    await service.start_edit(A, GUILD, "vrchat")
+    _age(fake, A, timedelta(hours=2))
+    r = await service.start_onboarding(A, GUILD)
+    assert r == Reply(texts.ALREADY_DJ, "info")
+    assert A not in fake.convs
+
+
+async def test_start_edit_replaces_expired_edit(service, fake):
+    _dj(fake)
+    await service.start_edit(A, GUILD, "vrchat")
+    _age(fake, A, timedelta(hours=2))
+    r = await service.start_edit(A, GUILD, "link")
+    assert r.step == "link" and fake.convs[A].step == "link"
+
+
+async def test_has_open_conversation(service, fake):
+    assert await service.has_open_conversation(A) is False
+    await service.start_onboarding(A, GUILD)
+    _age(fake, A, timedelta(days=2))
+    assert await service.has_open_conversation(A) is True
+    _dj(fake)
+    await service.start_edit(A, GUILD, "vrchat")
+    assert await service.has_open_conversation(A) is True
+    _age(fake, A, timedelta(hours=2))
+    assert await service.has_open_conversation(A) is False
+    assert A not in fake.convs
+
+
+async def test_has_open_conversation_delete_failure_is_only_logged(service, fake, monkeypatch):
+    _dj(fake)
+    await service.start_edit(A, GUILD, "vrchat")
+    _age(fake, A, timedelta(hours=2))
+    monkeypatch.setattr(svc_mod, "get_conversation", AsyncMock(
+        side_effect=[copy.deepcopy(fake.convs[A]), RuntimeError("db down")]
+    ))
+    assert await service.has_open_conversation(A) is False
+
+
+async def test_has_open_conversation_without_db(ctx, client, fake, sync, roles):
+    ctx.db = None
+    assert await DjConversationService(ctx, client=client).has_open_conversation(A) is False

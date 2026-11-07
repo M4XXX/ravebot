@@ -10,6 +10,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal
 
 import asyncpg
@@ -53,6 +54,9 @@ OPTIONAL_STEPS = frozenset({"vrchat", "logo", "alt_link"})
 LINK_STEPS = frozenset({"link", "alt_link"})
 ONBOARDING = "onboarding"
 EDIT = "edit"
+# An edit nobody answered for this long is dropped, so a forgotten "Change ..." prompt
+# never turns a later, unrelated DM into the new value. Onboarding never expires.
+EDIT_EXPIRY = timedelta(hours=1)
 
 _QUESTIONS = {
     "name": texts.Q_NAME,
@@ -83,6 +87,16 @@ class Reply:
     allow_as_is: bool = False
     allow_remove: bool = False
     in_group: bool = False  # overview only: the DJ is in the Active DJ Booking Group
+
+
+def is_expired(conv: Conversation, now: datetime | None = None) -> bool:
+    """True for an edit conversation without a change for longer than EDIT_EXPIRY."""
+    if conv.kind != EDIT or conv.updated_at is None:
+        return False
+    updated = conv.updated_at
+    if updated.tzinfo is None:
+        updated = updated.replace(tzinfo=UTC)
+    return (now or datetime.now(UTC)) - updated > EDIT_EXPIRY
 
 
 def _stale() -> Reply:
@@ -174,6 +188,42 @@ class DjConversationService:
         assert reply is not None
         return reply
 
+    async def _open(self, db: asyncpg.Pool, user_id: int) -> Conversation | None:
+        """The open conversation of the user; an expired edit is deleted and counts as none.
+
+        Callers hold the user lock.
+        """
+        conv = await get_conversation(db, user_id)
+        if conv is not None and is_expired(conv):
+            logger.info("Dropping the expired edit conversation of %s", user_id)
+            await self._drop(db, user_id)
+            return None
+        return conv
+
+    async def has_open_conversation(self, user_id: int) -> bool:
+        """True when the user has an open conversation that has not expired.
+
+        Read without the user lock: a lookup failure propagates to the caller. An
+        expired edit is then deleted under the lock (best effort, re-checked there so
+        a newer edit started in between is kept).
+        """
+        db = self._ctx.db
+        if db is None:
+            return False
+        conv = await get_conversation(db, user_id)
+        if conv is None:
+            return False
+        if not is_expired(conv):
+            return True
+        try:
+            async with self._lock(user_id):
+                await self._open(db, user_id)
+        except Exception:
+            logger.warning(
+                "Clearing the expired conversation of %s failed", user_id, exc_info=True
+            )
+        return False
+
     async def _button(
         self,
         user_id: int,
@@ -181,7 +231,7 @@ class DjConversationService:
         fn: Callable[[asyncpg.Pool, Conversation], Awaitable[Reply]],
     ) -> Reply:
         async def body(db: asyncpg.Pool) -> Reply:
-            conv = await get_conversation(db, user_id)
+            conv = await self._open(db, user_id)
             if conv is None or conv.message_id is None or conv.message_id != message_id:
                 return _stale()
             return await fn(db, conv)
@@ -192,7 +242,7 @@ class DjConversationService:
 
     async def start_onboarding(self, user_id: int, guild_id: int) -> Reply:
         async def body(db: asyncpg.Pool) -> Reply:
-            conv = await get_conversation(db, user_id)
+            conv = await self._open(db, user_id)
             if conv is not None:
                 return _current(conv)
             if await get_dj_by_discord_id(db, user_id) is not None:
@@ -220,7 +270,7 @@ class DjConversationService:
         """"Not now" on the welcome DM: end an open onboarding (edits stay open)."""
 
         async def body(db: asyncpg.Pool) -> Reply:
-            conv = await get_conversation(db, user_id)
+            conv = await self._open(db, user_id)
             if conv is not None and conv.kind == ONBOARDING:
                 await delete_conversation(db, user_id)
             return Reply(texts.ONBOARD_DECLINED, "info")
@@ -246,7 +296,7 @@ class DjConversationService:
         user_id = message.author.id
 
         async def body(db: asyncpg.Pool) -> Reply | None:
-            conv = await get_conversation(db, user_id)
+            conv = await self._open(db, user_id)
             if conv is None:
                 return None
             return await self._answer(db, conv, message)
