@@ -234,6 +234,15 @@ class AdminLogService:
 
         await self._post_built(build)
 
+    async def log_admin_added(self, name: str, user_id: int) -> None:
+        await self._post_built(
+            lambda: LogEntryEmbed(
+                texts.LOG_ADMIN_ADDED_TITLE,
+                texts.log_admin_added_text(_safe_dj_name(name), user_id),
+                EmbedColors.SUCCESS_GREEN,
+            )
+        )
+
     async def log_attention(self, title: str, what: str, todo: str | None = None) -> None:
         await self._post_built(lambda: LogEntryEmbed(title, what, EmbedColors.IMPERIAL_RED, todo))
 

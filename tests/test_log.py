@@ -173,6 +173,8 @@ GREEN, GOLD, RED, BLUE = 0x2E7D32, 0xFFD700, 0xED4245, 0x5865F2
         (lambda s: s.log_new_dj("Nova", "NovaVR"), "New DJ",
          "Nova (VRChat: NovaVR) joined the DJ pool.", GREEN),
         (lambda s: s.log_new_dj("Nova", None), "New DJ", "Nova joined the DJ pool.", GREEN),
+        (lambda s: s.log_admin_added("Nova", 123456789012345678), "Admin added",
+         "Nova (ID 123456789012345678) was added as an admin of the admin page.", GREEN),
     ],
 )
 async def test_typed_entries(call, title, body, color) -> None:

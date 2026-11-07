@@ -12,6 +12,11 @@ class AdminRegistry:
         self._owners = frozenset(owners)
         self._db = db
         self._added: list[int] = []
+        self._loaded = False
+
+    @property
+    def loaded(self) -> bool:
+        return self._loaded
 
     @property
     def owners(self) -> frozenset[int]:
@@ -38,13 +43,19 @@ class AdminRegistry:
             self._added = []
             return
         self._added = [i for i in dict.fromkeys(ids) if i not in self._owners]
+        self._loaded = True
+
+    async def ensure_loaded(self) -> None:
+        """Retry load() while it has never succeeded. Never raises."""
+        if not self._loaded:
+            await self.load()
 
     async def add(self, user_id: int) -> bool:
         if user_id in self._owners or user_id in self._added:
             return False
         inserted = await add_web_admin(self._db, user_id)
-        if inserted:
-            self._added = [*self._added, user_id]
+        # An existing row means the id is an admin in the database: cache it either way.
+        self._added = [*self._added, user_id]
         return inserted
 
     async def remove(self, user_id: int) -> bool:

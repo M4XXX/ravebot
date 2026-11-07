@@ -287,6 +287,7 @@ LOG_ORGANIZER_TITLE = "Changed by an organizer"
 LOG_NOTION_TITLE = "Changed in Notion"
 LOG_FULLY_BOOKED_TITLE = "Event fully booked"
 LOG_NEW_DJ_TITLE = "New DJ"
+LOG_ADMIN_ADDED_TITLE = "Admin added"
 LOG_TODO_FIELD = "What to do"
 LOG_NO_MANUAL_ACTION = "No manual action required."
 LOG_FAILED_TITLE = "Something failed"
@@ -343,6 +344,10 @@ def log_new_dj_text(name: str, vrchat_name: str | None) -> str:
     if vrchat_name:
         return f"{name} (VRChat: {vrchat_name}) joined the DJ pool."
     return f"{name} joined the DJ pool."
+
+
+def log_admin_added_text(name: str, user_id: int) -> str:
+    return f"{name} (ID {user_id}) was added as an admin of the admin page."
 
 
 def log_message_title(display_name: str, dj_name: str | None) -> str:

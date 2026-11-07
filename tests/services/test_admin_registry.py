@@ -106,3 +106,32 @@ async def test_remove_db_error_propagates_and_keeps_cache() -> None:
         with pytest.raises(RuntimeError):
             await r.remove(7)
     assert r.is_admin(7)
+
+
+@pytest.mark.asyncio
+async def test_loaded_flag_and_ensure_loaded() -> None:
+    r = _registry()
+    assert r.loaded is False
+    failing = AsyncMock(side_effect=RuntimeError("db"))
+    with patch("bot.services.admin_registry.list_web_admins", failing):
+        await r.load()
+        assert r.loaded is False
+        await r.ensure_loaded()
+        assert failing.await_count == 2
+        assert r.loaded is False
+    with patch("bot.services.admin_registry.list_web_admins", AsyncMock(return_value=[7])):
+        await r.ensure_loaded()
+    assert r.loaded is True and r.added == frozenset({7})
+    again = AsyncMock(return_value=[8])
+    with patch("bot.services.admin_registry.list_web_admins", again):
+        await r.ensure_loaded()
+    again.assert_not_awaited()
+    assert r.added == frozenset({7})
+
+
+@pytest.mark.asyncio
+async def test_add_existing_row_still_caches_but_returns_false() -> None:
+    r = _registry()
+    with patch("bot.services.admin_registry.add_web_admin", AsyncMock(return_value=False)):
+        assert await r.add(55) is False
+    assert r.is_admin(55)
