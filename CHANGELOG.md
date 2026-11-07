@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Guided `/setup` wizard (admins only): welcome and checks, DJ channel, log channel, roles, events with a time zone button, automatic invites, summary with Activate. Run it again (`Change settings`) to edit settings; it then ends with Save. The wizard keeps its state in the new table `setup_drafts` and survives restarts.
+- The bot stays idle until it is activated. While idle it sends no posts, invites, reminders or onboarding DMs, answers buttons and DMs with "I can't answer right now. Please try again later." and answers admin commands other than `/setup` and `/config show` with a hint to run `/setup`. At start an idle bot DMs every admin in `ADMIN_USER_IDS`. A server that already has a DJ channel and a log channel stored counts as active.
+- Local time: event start times, slot times, reminders and "today" use a time zone (setting `timezone`, default `Europe/Berlin`). `21:00` stays `21:00` in CET and CEST. The zone is set in `/setup`. New module `bot/timezone.py`.
+- Role settings `dj_role_id` and `invites_role_id`, chosen in `/setup`. Without them the bot still uses the role names `DJ` and `Active Booking`.
+- Done and canceled events are replaced automatically: the bot keeps the configured number of future events that are not Done or Canceled (`replenish_events`).
+- New commands: `/setup`, `/create event`, `/post lineup update`, `/book dj slot`, `/cancel dj slot`, `/list all djs`, `/automatic dj booking`.
+- Migration `0011` adds the `setup_drafts` table.
 - Lineup Update posts: the bot posts a new `Lineup Update` message in the DJ channel for every lineup change of the upcoming event (earliest event that is not Done or Canceled). Earlier posts are never edited or deleted, and there is no daily cap. Format: `Event Saturday 14.11.2026`, then one line per slot, `Slot 1  20:00  DJ name` or `OPEN SLOT`.
 - `/lineup post [event]` (admin) posts the lineup of the upcoming event, or of a chosen future event, on demand.
 - A `Book a slot` button under every Lineup Update post. It opens the booking flow in the DJ's DMs and replies privately.
@@ -23,6 +30,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Start times are local time, not UTC. Existing `Start` values are kept as they are, so an event entered as `20:00` now means 20:00 local time. Lineup posts and reminders show local times. Discord timestamps are no longer used.
+- `/config` has only `show` now; it lists the new settings and the bot status. All settings are changed in `/setup`.
+- Renamed commands: `/add-event` is `/create event`, `/lineup post` is `/post lineup update`, `/admin book` is `/book dj slot`, `/admin cancel` is `/cancel dj slot`, `/list-djs` is `/list all djs`, `/admin dj set-active` is `/automatic dj booking`.
+- The `/config set outreach` switch moved into the setup wizard (Automatic invites step).
 - The first poll after deploy announces every currently fully booked future event once, because nothing is stored for them yet.
 - Critical problems (DM to a DJ failed, Notion write failed, hand edit reverted, no more DJs to ask, database unavailable, something failed) are plain entries with a `What to do` line. The error codes no longer appear in the channel.
 - The notice about newly created Notion databases is titled `New Notion databases created`.
@@ -38,10 +49,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Cogs now get their `bot` attribute through `_add_cog` in `bot/main.py`, because disnake 2.12 does not set it. Until now the Notion poll, reminder and outreach loops and the DM handling could fail because cogs had no `bot` attribute. This was found in code review. It has not been tested against a live Discord server, only with the test suite.
 - A second booking by the same DJ in one event now shows up in Notion.
 
 ### Removed
 
+- Commands `/status`, `/intervene` (start, send, end), `/admin ...`, `/config set ...`, `/add-event`, `/lineup post` and `/list-djs` (see Changed for their replacements; `/status`, `/intervene` and `/config set` have none).
+- The intervention flow: `bot/services/intervention.py` and the `interventions` table. Migration `0012` drops the table.
+- The unused settings `outreach_max_contacts` and `event_recurrence_cron`. Stored values stay in the `config` table and are ignored.
 - DM transcripts, button tap logs and bot reply logs in the admin log channel, plus the old error embed.
 - The edit-in-place lineup roster embed with its one-post-per-day limit, plus the Mission Roster, Mission Overview and proactive outreach embeds.
 - The single shared Notion database for events and DJs, and its startup property check.

@@ -1,6 +1,6 @@
 # RaveBot
 
-Discord bot that automates DJ booking for recurring online rave events — onboarding, self-service slot booking, proactive outreach, and admin oversight, all via Discord slash commands and button-driven DM flows. Events, slots and DJs live in three Notion databases that the bot creates itself under one shared page (`NOTION_API_KEY` + `NOTION_PARENT_PAGE_ID`).
+Discord bot that automates DJ booking for recurring online rave events, onboarding, self-service slot booking, proactive outreach, and admin oversight, all via Discord slash commands and button-driven DM flows. Events, slots and DJs live in three Notion databases that the bot creates itself under one shared page (`NOTION_API_KEY` + `NOTION_PARENT_PAGE_ID`).
 
 ---
 
@@ -12,37 +12,33 @@ Running a recurring online rave means coordinating DJ lineups every single week:
 
 ## How It Works
 
-### Step 1 — A DJ joins
+### Step 1, A DJ joins
 
-When someone receives the "DJ" role in your Discord server, RaveBot DMs them automatically: *"Hey! I'm RaveBot — I handle all DJ bookings here. Want me to add you to the booking pool?"* They fill in a quick onboarding modal (DJ name, VRChat name, logo, stream links) and are ready to book. No admin involvement needed.
+When someone receives the "DJ" role in your Discord server, RaveBot DMs them automatically: *"Hey! I'm RaveBot, I handle all DJ bookings here. Want me to add you to the booking pool?"* They fill in a quick onboarding modal (DJ name, VRChat name, logo, stream links) and are ready to book. No admin involvement needed.
 
-### Step 2 — They book a slot
+### Step 2, They book a slot
 
-Any time a DJ wants to play, they DM RaveBot. A button-driven menu guides them through picking an event and a slot in seconds. Booking is race-condition safe — two DJs can't grab the same slot simultaneously. Cancellations work the same way.
+Any time a DJ wants to play, they DM RaveBot. A button-driven menu guides them through picking an event and a slot in seconds. Booking is race-condition safe, two DJs can't grab the same slot simultaneously. Cancellations work the same way.
 
-### Step 3 — Gaps get filled automatically
+### Step 3, Gaps get filled automatically
 
 Before each event, RaveBot scans for open slots and DMs eligible DJs who haven't been contacted recently. It respects configurable cooldowns so DJs don't get spammed. Day-before reminders go out to everyone who is booked.
 
-### Step 4 — Admin sees everything
+### Step 4, Admin sees everything
 
-A live lineup post in your DJ channel updates automatically whenever Notion changes. Use `/status` for a quick embed showing slot assignments for the next event. Every bot↔DJ DM is mirrored to an admin log channel. For edge cases, admins can take over a DM conversation or force-book any slot.
+A live lineup post in your DJ channel updates automatically whenever Notion changes. The admin log channel shows bookings, cancellations, new DJs, problems and the DMs users send to the bot, with a `Reply` button. For edge cases, admins can force-book or free any slot with `/book dj slot` and `/cancel dj slot`. A guided `/setup` wizard configures the bot; until it is activated the bot stays idle.
 
 ---
 
 ## Screenshots
 
-**DJ booking flow — button-driven DM interface**
+**DJ booking flow, button-driven DM interface**
 
 ![DJ booking flow](docs/assets/mockup-booking-flow.png)
 
-**Lineup post — auto-updated when Notion changes**
+**Lineup post, auto-updated when Notion changes**
 
 ![Lineup post](docs/assets/mockup-lineup-post.png)
-
-**Admin /status — next event at a glance**
-
-![Admin /status](docs/assets/mockup-admin-status.png)
 
 ---
 
@@ -55,17 +51,18 @@ A live lineup post in your DJ channel updates automatically whenever Notion chan
 - Go active / go inactive at any time
 
 **For Admins**
-- Full DM transcript log in admin channel (both directions)
-- `/intervene` to take over any DJ DM conversation
-- `/admin book` and `/admin cancel` to force-manage any slot
-- `/admin dj set-active` to add/remove DJs from the booking pool
-- `/status` for next-event overview (date, slots, DJ assignments)
-- `/list-djs` for full DJ roster with active/inactive status
-- `/config` with 11 sub-commands to tune every bot behaviour
-- `/add-event` to manually create a Notion event
+- Guided `/setup` wizard (channels, roles, event defaults, time zone, invites); the bot is idle until you activate it
+- Admin log channel with a `Reply` button for DJ messages
+- `/book dj slot` and `/cancel dj slot` to force-manage any slot
+- `/automatic dj booking` to add or remove DJs from the automatic booking pool
+- `/list all djs` for the DJ roster with booking status
+- `/config show` to review all settings and the bot status
+- `/create event` to manually create a Notion event
+- `/post lineup update` to post the lineup on demand
 
 **Automation**
-- Auto-creates future events in Notion on a configurable schedule (default: every 7 days, 6 events look-ahead)
+- Keeps future events ready in Notion (default: every 7 days, 6 events look-ahead) and replaces events that are done or canceled
+- Start times are local time (default Europe/Berlin)
 - Auto-posts and updates the lineup embed whenever Notion changes
 - Proactive outreach to fill open slots before each event
 - Alembic database migrations run automatically at container start
@@ -76,27 +73,14 @@ A live lineup post in your DJ channel updates automatically whenever Notion chan
 
 | Command | Who | Description |
 |---|---|---|
-| `/config set dj-channel` | Admin | Channel where lineup posts are sent |
-| `/config set log-channel` | Admin | Channel for admin alerts and DM transcripts |
-| `/config set slots-per-event` | Admin | Slots per auto-created event (default: 6) |
-| `/config set event-interval-days` | Admin | Days between auto-created events (default: 7) |
-| `/config set lookahead-count` | Admin | Future events to maintain in Notion (default: 6) |
-| `/config set start-time` | Admin | Default event start time in HH:MM UTC (default: 20:00) |
-| `/config set slot-duration` | Admin | Slot length in minutes (default: 60) |
-| `/config set outreach-days-before` | Admin | Days before event to begin outreach (default: 14) |
-| `/config set outreach-cooldown-hours` | Admin | Hours between contacts per DJ (default: 12) |
-| `/config set outreach-max` | Admin | Max DJs contacted per outreach cycle (default: unlimited) |
-| `/config set event-schedule` | Admin | Cron expression for future automated scheduling |
-| `/config show` | Admin | Display all 11 current config values |
-| `/intervene start` | Admin | Take over a DJ's DM conversation |
-| `/intervene send` | Admin | Send a message as the bot in an active intervention |
-| `/intervene end` | Admin | Return DM control to the bot |
-| `/admin book` | Admin | Force-book a slot for any DJ |
-| `/admin cancel` | Admin | Force-cancel any booking |
-| `/admin dj set-active` | Admin | Toggle a DJ's active/inactive status |
-| `/status` | Admin | Embed showing next event: slots, date, DJ assignments |
-| `/list-djs` | Admin | Embed listing all registered DJs with status |
-| `/add-event` | Admin | Manually create a Notion event for a specific date |
+| `/setup` | Admin | Guided setup wizard; run again to change settings |
+| `/config show` | Admin | Show all settings and the bot status |
+| `/create event` | Admin | Manually create a Notion event for a specific date |
+| `/post lineup update` | Admin | Post the lineup of the upcoming (or a chosen future) event |
+| `/book dj slot` | Admin | Force-book a slot for any DJ |
+| `/cancel dj slot` | Admin | Force-cancel any booking |
+| `/list all djs` | Admin | List all registered DJs with booking status |
+| `/automatic dj booking` | Admin | Add or remove a DJ from the automatic booking pool |
 
 ---
 

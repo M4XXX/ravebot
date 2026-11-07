@@ -85,11 +85,12 @@ All checks should pass before opening a PR or building a release image.
 output/ravebot/
 ├── bot/
 │   ├── cogs/               # Slash command handlers
-│   │   ├── admin.py        # /config (incl. outreach switch), /lineup post, /intervene, /admin, /status, /list-djs, /add-event
+│   │   ├── admin.py        # /config show, /create event, /post lineup update, /book dj slot, /cancel dj slot, /list all djs, /automatic dj booking
 │   │   ├── booking.py      # DJ self-service booking (thin shell - logic in views.py)
 │   │   ├── events.py       # Lineup post auto-update, event auto-creation
 │   │   ├── onboarding.py   # DJ onboarding DM flow
-│   │   └── outreach_cog.py # Proactive outreach background loop
+│   │   ├── outreach_cog.py # Proactive outreach background loop
+│   │   └── setup.py        # /setup (wizard entry point)
 │   ├── db/                 # asyncpg repository layer
 │   ├── notion/             # Notion integration (API version 2026-03-11)
 │   │   ├── api.py          # NotionApi: httpx wrapper, retry/backoff, pagination
@@ -98,23 +99,28 @@ output/ravebot/
 │   │   ├── views.py        # ensure_views(): Overview, Lineup, All DJs
 │   │   └── client.py       # NotionClient: reads and writes events, slots, DJs
 │   ├── services/           # Business logic
+│   │   ├── activation.py   # is_active(), set_active(), bot_is_active()
 │   │   ├── admin_booking.py
 │   │   ├── fully_booked.py # check_fully_booked(): once-per-fill announcements
 │   │   ├── dj_pages.py     # ensure_dj_page(): a DJ's row in the DJs database
 │   │   ├── event_defaults.py # default start, slot length, slots per event (config)
-│   │   ├── intervention.py
+│   │   ├── event_replenish.py # replenish_events(): keeps future open events ready
 │   │   ├── lineup.py       # LineupService: posts, snapshot dedupe, upcoming_event
 │   │   ├── notion_sync.py  # NotionSyncService: applies hand edits from Notion
 │   │   ├── notion_sync_plan.py # plan_sync(): pure Notion-vs-Postgres planner
 │   │   ├── onboarding.py
 │   │   ├── outreach.py
-│   │   └── reminders.py
+│   │   ├── reminders.py
+│   │   └── roles.py        # get_dj_role(), get_invites_role()
+│   ├── timezone.py         # local time: get_timezone(), local_now(), local_today()
 │   ├── ui/
 │   │   ├── embeds.py       # Embed classes, LogEntryEmbed, LineupUpdateEmbed, lineup_text()
+│   │   ├── gates.py        # GatedView and the idle texts
 │   │   ├── log_reply.py    # LogReplyView and ReplyModal (log channel Reply button)
+│   │   ├── setup_wizard.py # /setup wizard: steps, persistent view, activation effects
 │   │   ├── texts.py        # Every user-facing string and date/slot formatters
 │   │   └── views.py        # All Discord UI: buttons, modals, views
-│   └── main.py             # Bot entry point: migrations, Notion setup, services, cogs
+│   └── main.py             # Bot entry point: migrations, Notion setup, services, cogs (_add_cog)
 ├── migrations/
 │   └── versions/           # Alembic migration files
 ├── tests/                  # Tests mirroring bot/ structure
@@ -135,13 +141,59 @@ output/ravebot/
 
 ### Lineup posts, outreach switch and texts
 
-- `LineupService.refresh()` (called by the Notion poll and by booking changes, debounced) computes `event_snapshot()` of the upcoming event (`upcoming_event()`: earliest event with `date >= today (UTC)` and status not Done or Canceled). If it differs from the stored snapshot it posts a new `Lineup Update` embed (`LineupUpdateEmbed`) with a `Book a slot` button (`LineupPostView`). Posts are never edited or deleted. If `dj_channel` is unset the snapshot is stored without posting.
+- `LineupService.refresh()` (called by the Notion poll and by booking changes, debounced) computes `event_snapshot()` of the upcoming event (`upcoming_event()`: earliest event with `date >= local_today()` and status not Done or Canceled). If it differs from the stored snapshot it posts a new `Lineup Update` embed (`LineupUpdateEmbed`) with a `Book a slot` button (`LineupPostView`). Posts are never edited or deleted. If `dj_channel` is unset the snapshot is stored without posting.
 - The last posted snapshot is stored in the config key `lineup_post_snapshot`. The keys `lineup_snapshot`, `lineup_last_post_date` and `lineup_post_message_id` are obsolete and unused.
-- `/lineup post [event]` calls `LineupService.post_event()`; the `event` option autocompletes `future_events()`.
+- `/post lineup update [event]` calls `LineupService.post_event()`; the `event` option autocompletes `future_events()`.
 - Post format (`lineup_text()`): `Event {Weekday} {DD.MM.YYYY}`, then `Slot {n}  {HH:MM}  {DJ name or OPEN SLOT}` with two spaces between parts. DJ names go through `_safe_dj_name`; the description is capped at 4096 characters.
-- `/config set outreach` stores `outreach_enabled` (`true`/`false`, default on). Only the outreach loop reads it (`parse_outreach_enabled`); nothing else changes when it is off.
+- The setup wizard (Automatic invites step) stores `outreach_enabled` (`true`/`false`, default on). Only the outreach loop reads it (`parse_outreach_enabled`); nothing else changes when it is off.
 - Texts: all user-facing strings live in `bot/ui/texts.py`, with the formatters `fmt_date`, `fmt_time` and `slot_phrase`. To add one, define a constant (or a small function for parameterized text) there, import `texts` where it is used, and cover it in `tests/test_texts.py`. Do not inline new user-facing strings in cogs, services or views.
 - No em dash (U+2014) in user-facing strings. `tests/test_no_em_dash.py` parses `bot/**/*.py` and fails on any string constant with one, except docstrings and arguments of `debug`/`info`/`warning`/`error`/`exception`/`critical` calls. Docstrings and comments may keep it.
+
+### Commands
+
+Registered by `AdminCog` (`bot/cogs/admin.py`) and `SetupCog` (`bot/cogs/setup.py`); all are admin only (`ADMIN_USER_IDS`).
+
+```
+/setup
+/config show
+/create event date:<YYYY-MM-DD>
+/post lineup update [event]
+/book dj slot dj event slot
+/cancel dj slot dj event slot
+/list all djs
+/automatic dj booking dj enabled
+```
+
+Removed: `/status`, `/intervene` (start, send, end), `/admin ...`, `/config set ...`, `/add-event`, `/lineup post`, `/list-djs`. There is no command to change a single setting; `/setup` is the only way, and `/config show` is read only. The config keys `outreach_max_contacts` and `event_recurrence_cron` were never read and are gone from the code and from `/config show`; stored values stay in the table and are ignored.
+
+### Cog wiring (`_add_cog`)
+
+disnake 2.12 does not set `cog.bot`. `main.py` adds every cog through `_add_cog(bot, cog)`, which sets `cog.bot = bot` before `bot.add_cog(cog)`, because the cog loops start in `cog_load` and read `self.bot`. Register new cogs the same way, never with a bare `bot.add_cog`. `tests/test_cog_bot.py` covers it.
+
+### Activation gate
+
+- `bot_active` (config key, per guild) is `"true"` once `/setup` was activated. `bot/services/activation.py`: `is_active(db, guild_id)` returns the flag when stored; with no flag it returns true when both `dj_channel` and `log_channel` are stored (servers set up before the wizard keep working). `set_active()` writes the flag. `bot_is_active(bot, db)` checks the first guild and is for code that runs in DMs.
+- Idle behaviour: the poll loop, reminder loop, outreach loop and `LineupService.refresh()` return early. `OnboardingCog` sends no onboarding DM and answers a DM with `IDLE_REPLY`, without logging it. DJ-facing views subclass `GatedView` (`bot/ui/gates.py`), whose `interaction_check` answers with `IDLE_REPLY` privately while idle. `AdminCog.cog_slash_command_check` answers `ADMIN_IDLE_REPLY` for every command except those in `IDLE_EXEMPT_COMMANDS` (`setup`, `config show`); autocompletes return nothing while idle. `SetupCog` has no gate.
+- On the first `on_ready` of a process, `notify_admins_if_idle()` in `main.py` DMs every admin (`STARTUP_ADMIN_DM`) when the bot is idle. Failures are logged as warnings.
+
+### Time zone
+
+`bot/timezone.py` holds one process-wide zone (default `Europe/Berlin`, config key `timezone`). `get_timezone()`, `set_timezone(name)` (raises `ValueError` for unknown names), `local_now()`, `local_today()`, `is_valid_timezone()`, `load_stored_timezone(db, guild_id)` (called in `on_ready`, once guilds are known; an invalid stored value keeps the default). The wizard calls `set_timezone` when it saves.
+
+An event's `Start` is a local wall-clock `HH:MM`; `EventInfo` in `bot/notion/models.py` builds timezone-aware datetimes from it with `get_timezone()`, so 21:00 stays 21:00 across the daylight saving change. Use `local_today()` for "today" (lineup `upcoming_event`, replenishing, `list_events` filters, `/create event` validation) and never `datetime.utcnow()` or a bare `date.today()`. The bot sends no Discord timestamps (`<t:...>`); times are plain text.
+
+### Replenishing events
+
+`replenish_events(db, notion_client, guild_id, events)` in `bot/services/event_replenish.py` creates events until the number of active events equals `event_lookahead_count` (default 6). Active means `date >= local_today()` and status not `Done` or `Canceled`. New dates start at `max(latest date of all events, today) + interval * i` (`event_interval_days`, default 7), named `YYYY-MM-DD Rave Night`, with the shape from `default_event_shape()`. An existing event ID is skipped. A module lock serializes the poll loop (`EventsCog`) and the wizard. Because Done and Canceled events do not count, marking an event Done or Canceled in Notion makes the next poll create a replacement.
+
+### Setup wizard
+
+- `/setup` (`SetupCog`) posts one message with `SetupWizardView`. Steps (`STEPS` in `bot/ui/setup_wizard.py`): `welcome`, `dj_channel`, `log_channel`, `roles`, `events`, `invites`, `summary`. To add a step, insert its key before `summary`, add a branch in `render_step` and its controls to the view.
+- The message carries no state. The view is persistent (registered in `main.py` through `registered_views()`), and every press reads the draft row found by the message id.
+- Table `setup_drafts` (migration `0011`): `guild_id` (primary key, so one wizard per guild), `message_id`, `channel_id`, `step`, `data` (JSONB with the chosen values), `updated_at`. Access in `bot/db/setup_drafts.py` (`get_draft`, `save_draft`, `delete_draft`). Nothing reaches the `config` table until the last step.
+- Activate (`activate_from_draft`): under a per-guild lock it requires both channels and both roles, writes all settings (`dj_channel`, `log_channel`, `dj_role_id`, `invites_role_id`, `slots_per_event`, `default_start_time`, `slot_duration_minutes`, `event_interval_days`, `event_lookahead_count`, `timezone`, `outreach_enabled`, `outreach_days_before`, `outreach_cooldown_hours`), sets `bot_active`, runs `replenish_events` and `LineupService.refresh()` exactly once, then deletes the draft. Save (`save_from_draft`, used on a re-run, `data["rerun"]`) only writes the settings.
+- Re-run: with an active bot `/setup` shows a `Change settings` button; the draft is prefilled from the stored values (`prefilled_data`). If the wizard message was deleted, `/setup` posts it again at the saved step.
+- Roles: `bot/services/roles.py` `get_dj_role()` and `get_invites_role()` read `dj_role_id` and `invites_role_id`. Only when a key is missing they fall back to the role names `DJ` and `Active Booking`; a stored id whose role is gone returns `None`.
 
 ### Notion setup and sync
 
@@ -193,7 +245,6 @@ API:
 - `log_user_message(user, text, attachment_names, dj_name, view)`: returns the posted message so the caller can store its id.
 - `log_attention(title, what, todo=None)`: a red critical entry.
 - `post_error(error_code, trigger, action_taken, manual_action)`: maps the codes in `_ERROR_TITLES` to `log_attention`. `ERR_SLOT_CONFLICT` and `ERR_BUTTON_TIMEOUT` only reach the logger.
-- `post_intervention(sender, recipient, content)`: plain transcript line for `/intervene`.
 
 | Entry | Title | Colour |
 |---|---|---|
@@ -223,6 +274,9 @@ Tables (created by Alembic migrations):
 |---|---|---|---|
 | `fully_booked_events` | `0009` | `event_id` (Notion page id, primary key), `announced_at` | Events already announced as fully booked. Restart safe. |
 | `log_replies` | `0010` | `message_id` (primary key), `user_id`, `created_at` | Maps a `Message from` entry to the user the Reply button answers. |
+| `setup_drafts` | `0011` | `guild_id` (primary key), `message_id`, `channel_id`, `step`, `data` (JSONB), `updated_at` | The open `/setup` wizard of a guild. Deleted on Activate or Save. |
+
+Migration `0012` drops the `interventions` table. The intervention flow (`/intervene`, `bot/services/intervention.py`) no longer exists: an organizer who wants to talk to a DJ uses the `Reply` button on a `Message from` entry or writes to the DJ directly.
 
 ---
 

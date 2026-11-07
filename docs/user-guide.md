@@ -12,7 +12,7 @@ Operator reference for deploying and configuring RaveBot.
 4. [Deployment: Unraid (Primary)](#4-deployment-unraid-primary)
 5. [Deployment: Docker Compose](#5-deployment-docker-compose)
 6. [Deployment: Podman](#6-deployment-podman)
-7. [First-Run Checklist](#7-first-run-checklist)
+7. [First-Run Setup and Commands](#7-first-run-setup-and-commands)
 8. [Troubleshooting](#8-troubleshooting)
 9. [The Admin Log Channel](#9-the-admin-log-channel)
 
@@ -72,7 +72,7 @@ On the first start the bot creates three databases under the parent page:
 | `Genre` | Text | Optional |
 | `Notes` | Text | Optional |
 | `Slots` | Number | Number of DJ slots |
-| `Start` | Text | Start of slot 1, `HH:MM` (24 h) |
+| `Start` | Text | Start of slot 1, `HH:MM` (24 h), local time (see 2.8) |
 | `Slot length` | Number | Minutes per slot |
 
 **Slots** - one row per slot of an event
@@ -111,12 +111,12 @@ The bot never recreates what already exists. On every start it checks the databa
 
 ### 2.5 Adding an Event by Hand
 
-The bot keeps the configured number of future events itself (see `/config set lookahead-count`). To add one by hand, create a row in **Events** and fill in:
+The bot keeps the configured number of future events itself (the number is set in `/setup`, step Events). To add one by hand, create a row in **Events** (or run `/create event`) and fill in:
 
 - `ID` - `YYYY-MM-DD <name>`, e.g. `2026-12-31 New Year Rave`. Must be unique.
 - `Date`
 - `Slots` - e.g. `6`
-- `Start` - `HH:MM`, e.g. `20:00`
+- `Start` - `HH:MM` local time, e.g. `20:00`
 - `Slot length` - minutes, e.g. `60`
 
 On the next poll (every five minutes) the bot creates the Slots rows for the event. Later changes to `Slots`, `Start` or `Slot length` follow the rules in 2.6.
@@ -137,6 +137,10 @@ Notion is the source of truth for who plays which slot. The bot picks up hand ed
 ### 2.7 If Databases Were Deleted
 
 If one of the bot's databases is deleted or moved to the trash, the bot creates a fresh set of all three databases and their views under the parent page on its next start and logs a warning. Data in the old databases stays where it is; the bot does not copy it over. DJ rows are created again in the new DJs database when DJs book.
+
+### 2.8 Time Zone
+
+All start times are local wall-clock times, not UTC. The default zone is `Europe/Berlin`: an event at `21:00` starts at 21:00 CET in winter and 21:00 CEST in summer, so 21:00 stays 21:00 all year. The `Start` column, the slot times in the lineup post, the reminders and the day an event counts as "today" all use this zone. Discord timestamps are not used. The zone is stored in the setting `timezone` and is changed in `/setup` (Events step, button for the time zone; enter a name such as `Europe/Berlin`). Changing it moves the real start of existing events, because their `Start` text is kept as it is.
 
 ---
 
@@ -312,42 +316,68 @@ POSTGRES_URL=postgresql://ravebot:ravebot@host.containers.internal:5432/ravebot
 
 ---
 
-## 7. First-Run Checklist
+## 7. First-Run Setup and Commands
 
-After the bot comes online:
+### 7.1 The idle bot
 
-- [ ] Verify the bot appears in your server's member list as online
+After a fresh deploy the bot is idle until an admin finishes `/setup`. While idle it does the following:
 
-**Required - run these before the bot is useful:**
+- It sends no lineup posts, invites, reminders or onboarding DMs, and the Notion poll does not run.
+- Buttons and menus under old messages answer privately: "I can't answer right now. Please try again later."
+- A DJ who writes the bot a DM gets the same sentence. Nothing is logged.
+- Admin commands other than `/setup` and `/config show` answer privately: "The bot is not active yet. Run /setup to finish the setup."
+- When the bot starts idle, it sends every user ID in `ADMIN_USER_IDS` a DM: "RaveBot is not set up yet. Run /setup in the channel where you want to do it." The DM goes out once per start. If an admin has DMs from server members turned off, the bot only writes a warning to the container log.
 
-- [ ] `/config set dj-channel #your-channel` - where the lineup post is published
-- [ ] `/config set log-channel #your-channel` - where admin alerts and DM transcripts go
-- [ ] Verify the bot has **Send Messages** and **Embed Links** permissions in both channels
-- [ ] Check that the Events, Slots and DJs databases appeared under your Notion parent page
+A server that already has both a DJ channel and a log channel stored (set up before `/setup` existed) counts as active, so an update does not interrupt it.
 
-**Optional tuning (defaults shown):**
+### 7.2 The `/setup` walkthrough
 
-- [ ] `/config set slots-per-event 6` - number of DJ slots per auto-created event
-- [ ] `/config set event-interval-days 7` - days between auto-created events
-- [ ] `/config set lookahead-count 6` - how many future events to maintain in Notion
-- [ ] `/config set start-time 20:00` - default event start time (HH:MM UTC)
-- [ ] `/config set slot-duration 60` - slot length in minutes
-- [ ] `/config set outreach true` - turn automatic invite DMs on or off (default: on)
-- [ ] `/config set outreach-days-before 14` - how far before an event to begin outreach
-- [ ] `/config set outreach-cooldown-hours 12` - minimum hours between contacts per DJ
-- [ ] `/config set outreach-max` - cap on DJs contacted per outreach cycle (default: unlimited)
-- [ ] `/config set event-schedule` - cron expression for future automated event scheduling
-- [ ] `/config show` - review all current settings at any time, including the `Automatic outreach` row
+Run `/setup` in the channel where you want to set up (admins only). The bot posts one wizard message and edits it step by step. The wizard survives a restart; running `/setup` again while it is open links to the open message.
 
-### 7.1 Lineup posts and booking button
+1. **Welcome and checks.** Shows whether the Discord connection, the database and the three Notion databases work. The bot stays idle until you press **Activate** at the end.
+2. **DJ channel.** Pick the channel for the Lineup Update and the `Book a slot` button. The bot checks it can send messages and embeds there.
+3. **Log channel.** Pick the channel for bookings, new DJs, problems and DJ messages. Only organizers should see it. The same permission check runs.
+4. **Roles.** Pick the DJ role (the welcome DM goes to members who get it) and the invites role (the bot gives it to DJs who want automatic invites). The two roles must differ, `@everyone` and integration roles are refused, and the bot's own role must be above both. A button can create the invites role (default name `Active Booking`); this needs the Manage Roles permission.
+5. **Events.** Slots per event, start time (local, `HH:MM`), slot length in minutes, one event every N days, number of future events kept ready. A second button sets the time zone (default `Europe/Berlin`).
+6. **Automatic invites.** Turn invites on or off, how many days before an event the bot starts asking, and the hours it waits between two invites to the same DJ.
+7. **Summary.** Lists everything. **Activate** writes the settings, switches the bot on, creates the missing future events and posts the first Lineup Update (it reports how many events it created and whether it posted). The channels and roles must be chosen first.
 
-- Whenever the lineup of the upcoming event changes, the bot posts a new `Lineup Update` message in the DJ channel. Upcoming event means the earliest event whose date is today or later and whose status is not Done or Canceled. Older posts stay as they are. After you first set the DJ channel, nothing is posted until the lineup changes; run `/lineup post` to post it immediately.
-- Post format: line 1 is `Event Saturday 14.11.2026`, followed by one line per slot, for example `Slot 1  20:00  DJ Felix` or `Slot 2  21:00  OPEN SLOT`. Times are UTC.
+Nothing is stored until Activate. Defaults: 6 slots, 20:00, 60 minutes, every 7 days, 6 events ahead, invites on, 14 days before, 12 hours wait.
+
+**Changing settings later.** Run `/setup` again. An active bot answers with a **Change settings** button. The wizard then starts from the stored values and ends with **Save** instead of Activate. Save only stores the values: it creates no events and posts nothing. Two warnings can appear in the summary: a changed time zone moves the real times of existing events, and a changed invites role does not move members to the new role.
+
+**Roles without the wizard.** If no role was stored (older setup), the bot uses a role named `DJ` for onboarding and `Active Booking` for invites. Once `/setup` stores roles, the stored ones are used.
+
+Finally check that the Events, Slots and DJs databases appeared under your Notion parent page, and use `/config show` to review all settings and the bot status (`active` or `idle`).
+
+### 7.3 Commands
+
+All commands are for the Discord user IDs in `ADMIN_USER_IDS`. Others see "You don't have permission to use this command."
+
+| Command | What it does |
+|---|---|
+| `/setup` | Guided setup; re-run it with **Change settings** to edit settings. Works while idle. |
+| `/config show` | Shows every setting (stored value or default) and the bot status. Works while idle. |
+| `/create event date:<YYYY-MM-DD>` | Creates an event by hand using the default start, slot length and slot count. |
+| `/post lineup update [event:<event id>]` | Posts the lineup of the upcoming event, or of a chosen future event, in the DJ channel. |
+| `/book dj slot dj:<member> event:<event> slot:<number>` | Books a DJ into a slot without asking for confirmation. |
+| `/cancel dj slot dj:<member> event:<event> slot:<number>` | Frees a DJ's slot. |
+| `/list all djs` | Lists all registered DJs and whether they get automatic invites. |
+| `/automatic dj booking dj:<member> enabled:<on/off>` | Adds a DJ to or removes a DJ from the automatic booking pool and syncs the invites role. |
+
+The old commands `/config set`, `/add-event`, `/lineup post`, `/admin book`, `/admin cancel`, `/admin dj set-active`, `/list-djs`, `/status` and `/intervene` no longer exist. Settings are changed in `/setup`.
+
+### 7.4 Lineup posts and booking button
+
+- Whenever the lineup of the upcoming event changes, the bot posts a new `Lineup Update` message in the DJ channel. Upcoming event means the earliest event whose local date is today or later and whose status is not Done or Canceled. Older posts stay as they are. The first post comes when you press Activate; later ones follow lineup changes. Run `/post lineup update` to post it immediately.
+- Post format: line 1 is `Event Saturday 14.11.2026`, followed by one line per slot, for example `Slot 1  20:00  DJ Felix` or `Slot 2  21:00  OPEN SLOT`. Times are local time (CET or CEST).
 - Every post has a `Book a slot` button. A DJ who presses it gets the booking flow in DMs. If DMs are blocked, the bot says so privately.
-- `/lineup post` posts the upcoming event again. `/lineup post event:<event id>` posts any future event.
-- `/config set outreach false` stops only the proactive invite DMs. Booking menus, reminders and all other DMs keep working. Use `true` to resume.
+- `/post lineup update` posts the upcoming event again. `/post lineup update event:<event id>` posts any future event.
+- Automatic invites can be turned off in `/setup` (Automatic invites step). That stops only the proactive invite DMs. Booking menus, reminders and all other DMs keep working.
 
-> **Permissions note:** All `/config`, `/admin`, `/intervene`, `/status`, `/list-djs`, and `/add-event` commands are restricted to the Discord user IDs listed in `ADMIN_USER_IDS`. If a command shows "You don't have permission", verify your user ID is in the env var.
+### 7.5 Done and canceled events are replaced
+
+The bot keeps the configured number of future, open events. An event counts as open when its local date is today or later and its status is not Done or Canceled. When you set an event to Done or Canceled in Notion, the next poll (within five minutes) creates a new event so the count is met again. New events start one interval after the latest event date or today, whichever is later, and use the default start, slot length and slot count. Past events and events with Done or Canceled status never count.
 
 ---
 
@@ -387,21 +417,25 @@ Someone changed the type of a property the bot needs (e.g. `Slots` from Number t
 
 The bot reverts a hand entry on a slot it has booked for another DJ. Clear the `DJ` cell first, wait for the next poll, then enter the new DJ (see [section 2.6](#26-editing-bookings-in-notion)).
 
+### The bot does not answer
+
+The bot is probably idle. Run `/config show`: the last line shows `Bot status`. If it says `idle`, run `/setup` and press Activate on the last step. While idle, DJs get "I can't answer right now. Please try again later." and admins get "The bot is not active yet. Run /setup to finish the setup." for every command except `/setup` and `/config show`. If the bot does not respond to any command, check that it is online, the container log shows `Bot ready`, and your user ID is in `ADMIN_USER_IDS`.
+
 ### Admin log channel shows no messages
 
-The log channel may not be configured yet. Run `/config set log-channel #your-channel` as an admin user. Until a log channel is set, entries are written to container stdout only. See [section 9](#9-the-admin-log-channel) for what the channel shows.
+The log channel may not be configured yet. Run `/setup` as an admin user and pick the log channel (step 3). Until a log channel is set, entries are written to container stdout only. See [section 9](#9-the-admin-log-channel) for what the channel shows.
 
 ---
 
 ## 9. The Admin Log Channel
 
-Set it with `/config set log-channel #your-channel`. The channel shows only what an organizer needs to know. Each entry is a short embed with the footer `RaveBot`.
+Set it in `/setup` (step 3, Log channel); `/config show` shows the current channel. The channel shows only what an organizer needs to know. Each entry is a short embed with the footer `RaveBot`.
 
 | Entry | When it appears |
 |---|---|
 | `Booked` | A DJ booked a slot by DM, or you added one in Notion. |
 | `Cancelled` | A DJ cancelled a slot by DM. |
-| `Changed by an organizer` | An organizer booked or removed a DJ with a command. |
+| `Changed by an organizer` | An organizer booked or removed a DJ with `/book dj slot` or `/cancel dj slot`. |
 | `Changed in Notion` | A DJ was removed from a slot by hand in Notion. |
 | `Event fully booked` | Every slot of an event has a DJ. Posted once per fill, and again if a slot opens and the event fills up once more. |
 | `New DJ` | A DJ joined the pool. |
