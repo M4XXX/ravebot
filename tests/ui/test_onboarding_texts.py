@@ -1,92 +1,93 @@
-"""Exact catalog strings in the onboarding flow (Task 9)."""
-from unittest.mock import AsyncMock, MagicMock, patch
+"""Exact catalog strings for the DJ onboarding rework."""
+import pytest
 
-import disnake
-
-from bot.ui.views import OnboardingIntroView, OnboardingModal, RetryOnboardingModalView
-from tests.conftest import make_real_ctx
+from bot.ui import texts
 
 
-def _inter() -> MagicMock:
-    inter = MagicMock(spec=disnake.MessageInteraction)
-    inter.author.id = 12345
-    inter.response.send_message = AsyncMock()
-    return inter
+def test_welcome_and_join_button() -> None:
+    assert "Active DJ Booking Group" in texts.WELCOME
+    assert texts.BTN_JOIN_POOL == "Yes, I want to be booked"
+    assert texts.BTN_NOT_NOW == "Not now"
 
 
-def _modal_inter(**over) -> MagicMock:
-    values = {
-        "dj_name": "DJ",
-        "vrchat_name": "",
-        "logo_url": "",
-        "stream_url_primary": "https://twitch.tv/dj",
-        "stream_url_backup": "",
-    }
-    values.update(over)
-    inter = MagicMock(spec=disnake.ModalInteraction)
-    inter.author.id = 12345
-    inter.text_values = values
-    inter.response.send_message = AsyncMock()
-    inter.client.get_guild.return_value = None
-    return inter
+def test_button_labels() -> None:
+    assert texts.BTN_SKIP == "Skip"
+    assert texts.BTN_CANCEL_SETUP == "Cancel"
+    assert texts.BTN_USE_AS_IS == "Use it as it is"
+    assert texts.BTN_LOOKS_GOOD == "Looks good"
+    assert texts.BTN_START_OVER == "Start over"
+    assert texts.BTN_REMOVE == "Remove"
+    assert texts.BTN_MY_PROFILE == "My DJ profile"
 
 
-async def test_intro_buttons_exact_labels() -> None:
-    view = OnboardingIntroView(make_real_ctx(db=MagicMock()), 1, 2)
-    assert [c.label for c in view.children] == ["Join the DJ pool", "Not now"]
-
-
-async def test_retry_button_label() -> None:
-    view = RetryOnboardingModalView(make_real_ctx(db=MagicMock()), 1, 2)
-    assert [c.label for c in view.children] == ["Try again"]
-
-
-async def test_declined_reply_exact() -> None:
-    view = OnboardingIntroView(make_real_ctx(db=MagicMock()), 12345, 2)
-    inter = _inter()
-    await view.pass_for_now.callback(inter)
-    assert inter.response.send_message.call_args[0][0] == (
-        "No problem. Write me any message to open the menu and join later."
-    )
-
-
-async def test_done_reply_exact() -> None:
-    ctx = make_real_ctx(db=MagicMock())
-    lock = ctx.get_user_lock(12345)
-    await lock.acquire()
-    modal = OnboardingModal(ctx, 12345, lock, guild_id=9)
-    inter = _modal_inter()
-    with patch("bot.ui.views.insert_dj", new=AsyncMock()):
-        await modal.callback(inter)
-    assert inter.response.send_message.call_args[0][0] == (
-        "You're in the DJ pool. I'll message you when a slot opens. "
-        "You can book any time from the menu."
-    )
-
-
-async def test_invalid_link_text_names_fields() -> None:
-    ctx = make_real_ctx(db=MagicMock())
-    lock = ctx.get_user_lock(12345)
-    await lock.acquire()
-    modal = OnboardingModal(ctx, 12345, lock, guild_id=9)
-    inter = _modal_inter(stream_url_primary="nope", logo_url="bad")
-    await modal.callback(inter)
-    assert inter.response.send_message.call_args[0][0] == (
-        "That link doesn't look right: Logo URL, Primary Stream URL. "
-        'Links must start with https://. Tap "Try again" to fix it.'
-    )
-    assert not lock.locked()
-
-
-async def test_flow_open_reply_exact() -> None:
-    ctx = make_real_ctx(db=MagicMock())
-    await ctx.get_user_lock(12345).acquire()
-    for view, button in (
-        (OnboardingIntroView(ctx, 12345, 2), "go_active"),
-        (RetryOnboardingModalView(ctx, 12345, 2), "retry"),
+def test_questions_have_step_prefix() -> None:
+    for n, q in enumerate(
+        (texts.Q_NAME, texts.Q_VRCHAT, texts.Q_LOGO, texts.Q_LINK, texts.Q_ALT_LINK), 1
     ):
-        inter = _inter()
-        await getattr(view, button).callback(inter)
-        assert inter.response.send_message.call_args[0][0] == (
-            "You already have a booking open. Finish or dismiss it first."
-        )
+        assert q.startswith(f"**Step {n} of 5: ")
+
+
+def test_name_and_link_messages() -> None:
+    assert texts.name_taken("Neon") == (
+        'There is already a DJ called "Neon". Please send a different name.'
+    )
+    assert texts.NAME_EMPTY == "Please send a name."
+    assert "at most 80" in texts.NAME_TOO_LONG
+    msg = texts.link_check_failed("example.com")
+    assert msg.startswith(
+        "That link doesn't look like a Twitch, YouTube or stream.vrcdn link: example.com\n"
+    )
+
+
+def test_misc_constants() -> None:
+    assert texts.SUMMARY_TITLE == "**Your DJ profile**"
+    assert texts.OVERVIEW_TITLE == "**My DJ profile**"
+    assert texts.ONBOARD_DONE.startswith("**You're in the Active DJ Booking Group**")
+    assert texts.ONBOARD_CANCELLED.startswith("Setup cancelled.")
+    assert texts.STALE_BUTTON.startswith("This message is out of date.")
+    assert texts.INVITES_ON_DONE.startswith("You're in the Active DJ Booking Group.")
+    assert "Active DJ Booking Group" in texts.INVITES_OFF_DONE
+    assert texts.INVITES_ROLE_NAME == "Active Booking"
+    assert texts.link_invalid and texts.BTN_TRY_AGAIN == "Try again"
+
+
+def test_edit_helpers() -> None:
+    assert texts.edit_saved("Name") == "Name updated."
+    assert texts.edit_prompt("name") == (
+        "**DJ name**\nWhich DJ name should be shown on posters and in the lineup? "
+        "Just write it as a message."
+    )
+    assert texts.edit_prompt("logo") == texts.EDIT_LOGO_PROMPT
+    assert "Step" not in texts.edit_prompt("alt_link")
+    assert texts.FIELD_LABELS == {
+        "name": "Name",
+        "vrchat": "VRChat name",
+        "logo": "Logo",
+        "link": "Stream link",
+        "alt_link": "Backup link",
+    }
+
+
+def test_profile_text_none_and_logo_variants() -> None:
+    base = dict(dj_name="Neon", vrchat_name="", stream_link="https://twitch.tv/x", alt_link="")
+    t = texts.profile_text(**base, logo=None, logo_attached=False)
+    assert t == (
+        "DJ name: Neon\nVRChat name: none\nLogo: none\n"
+        "Stream link: https://twitch.tv/x\nBackup link: none"
+    )
+    assert "Logo: shown below" in texts.profile_text(**base, logo=None, logo_attached=True)
+    assert "Logo: https://x/y.png" in texts.profile_text(
+        **base, logo="https://x/y.png", logo_attached=False
+    )
+
+
+@pytest.mark.parametrize(
+    "flag,line",
+    [(True, "Active DJ Booking Group: yes"), (False, "Active DJ Booking Group: no")],
+)
+def test_profile_text_group_line(flag: bool, line: str) -> None:
+    t = texts.profile_text(
+        dj_name="N", vrchat_name="v", logo=None, logo_attached=False,
+        stream_link="s", alt_link="a", show_group=flag,
+    )
+    assert t.endswith(line)

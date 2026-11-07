@@ -29,7 +29,11 @@ def _catalog_values() -> list[str]:
     for name in dir(texts):
         if name.startswith("_") or not name.isupper():
             continue
-        values.append(getattr(texts, name))
+        value = getattr(texts, name)
+        if isinstance(value, dict):
+            values.extend(value.values())
+        else:
+            values.append(value)
     values += [
         texts.link_invalid("a, b"),
         texts.invite_opener("EV"),

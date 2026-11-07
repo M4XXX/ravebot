@@ -34,17 +34,117 @@ NO_PROFILE = (
     "You haven't set up your DJ profile yet. Ask an organizer to give you the DJ role again."
 )
 WELCOME = (
-    "Welcome! I'm RaveBot and I handle DJ bookings on this server.\n"
-    "Join the DJ pool to get invites when a slot is open. "
-    "You can also book and cancel slots yourself at any time."
+    "**Welcome to the DJ team**\n"
+    "I'm RaveBot and I handle DJ bookings on this server.\n\n"
+    "Join the **Active DJ Booking Group** and I will contact you automatically "
+    "when a slot is open. If you don't join, you can still book and cancel slots "
+    "yourself at any time."
 )
-BTN_JOIN_POOL = "Join the DJ pool"
+BTN_JOIN_POOL = "Yes, I want to be booked"
 BTN_NOT_NOW = "Not now"
+BTN_SKIP = "Skip"
+BTN_CANCEL_SETUP = "Cancel"
+BTN_USE_AS_IS = "Use it as it is"
+BTN_LOOKS_GOOD = "Looks good"
+BTN_START_OVER = "Start over"
+BTN_REMOVE = "Remove"
+BTN_MY_PROFILE = "My DJ profile"
 ONBOARD_DECLINED = "No problem. Write me any message to open the menu and join later."
 ONBOARD_DONE = (
-    "You're in the DJ pool. I'll message you when a slot opens. "
-    "You can book any time from the menu."
+    "**You're in the Active DJ Booking Group**\n"
+    "I will message you when a slot opens. You can book any time from the menu, "
+    "and change your profile under **My DJ profile**."
 )
+ONBOARD_CANCELLED = "Setup cancelled. Write me any message to open the menu."
+STALE_BUTTON = "This message is out of date. Write me any message to open the menu."
+
+Q_NAME = (
+    "**Step 1 of 5: DJ name**\n"
+    "Which DJ name should be shown on posters and in the lineup? "
+    "Just write it as a message."
+)
+Q_VRCHAT = "**Step 2 of 5: VRChat name**\nWhat is your VRChat username?"
+Q_LOGO = (
+    "**Step 3 of 5: Logo**\n"
+    "Send me one image (PNG or JPEG, up to 5 MB). It will be used to advertise you."
+)
+Q_LINK = (
+    "**Step 4 of 5: Stream link**\n"
+    "Where do you stream? Send the link (Twitch, YouTube or stream.vrcdn)."
+)
+Q_ALT_LINK = (
+    "**Step 5 of 5: Backup stream link**\n"
+    "Do you have a second link in case the first one fails?"
+)
+NAME_EMPTY = "Please send a name."
+NAME_TOO_LONG = "That is too long. Please send a name with at most 80 characters."
+LOGO_MANY = "Please send just one image, the one you want used to advertise you."
+LOGO_NEEDS_FILE = "Please send the image as a file, not as a link."
+LOGO_BAD = "That file isn't a usable image. Please send a PNG or JPEG under 5 MB."
+SUMMARY_TITLE = "**Your DJ profile**"
+OVERVIEW_TITLE = "**My DJ profile**"
+EDIT_LOGO_PROMPT = "Send me the new logo as one image (PNG or JPEG, up to 5 MB)."
+FIELD_LABELS = {
+    "name": "Name",
+    "vrchat": "VRChat name",
+    "logo": "Logo",
+    "link": "Stream link",
+    "alt_link": "Backup link",
+}
+_EDIT_SOURCES = {
+    "name": Q_NAME,
+    "vrchat": Q_VRCHAT,
+    "link": Q_LINK,
+    "alt_link": Q_ALT_LINK,
+}
+
+
+def name_taken(name: str) -> str:
+    return f'There is already a DJ called "{name}". Please send a different name.'
+
+
+def link_check_failed(link: str) -> str:
+    return (
+        f"That link doesn't look like a Twitch, YouTube or stream.vrcdn link: {link}\n"
+        "Send a corrected link, or keep it if it is right."
+    )
+
+
+def edit_saved(field_label: str) -> str:
+    return f"{field_label} updated."
+
+
+def edit_prompt(field: str) -> str:
+    """Question for editing one field: the Q_* text without its step prefix."""
+    if field == "logo":
+        return EDIT_LOGO_PROMPT
+    return "**" + _EDIT_SOURCES[field].split(": ", 1)[1]
+
+
+def profile_text(
+    *,
+    dj_name: str,
+    vrchat_name: str | None,
+    logo: str | None,
+    logo_attached: bool,
+    stream_link: str | None,
+    alt_link: str | None,
+    show_group: bool | None = None,
+) -> str:
+    if logo_attached:
+        logo_line = "shown below"
+    else:
+        logo_line = logo or "none"
+    lines = [
+        f"DJ name: {dj_name}",
+        f"VRChat name: {vrchat_name or 'none'}",
+        f"Logo: {logo_line}",
+        f"Stream link: {stream_link or 'none'}",
+        f"Backup link: {alt_link or 'none'}",
+    ]
+    if show_group is not None:
+        lines.append(f"Active DJ Booking Group: {'yes' if show_group else 'no'}")
+    return "\n".join(lines)
 
 
 def link_invalid(fields: str) -> str:
@@ -120,9 +220,10 @@ BTN_CANCEL = "Cancel a slot"
 BTN_LINEUP = "Show lineup"
 BTN_INVITES_ON = "Contact me for Booking"
 BTN_INVITES_OFF = "Don't automatically ask for booking"
-INVITES_ON_DONE = "I'll contact you when a slot opens."
+INVITES_ON_DONE = "You're in the Active DJ Booking Group. I'll contact you when a slot opens."
 INVITES_OFF_DONE = (
-    "I won't ask you for bookings automatically anymore. You can still book any time."
+    "You left the Active DJ Booking Group. I won't ask you for bookings "
+    "automatically anymore. You can still book any time."
 )
 
 

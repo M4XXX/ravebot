@@ -111,11 +111,10 @@ async def test_on_member_update_sends_dm_to_new_dj() -> None:
 
     after.send.assert_awaited_once()
     sent_content = after.send.call_args[0][0]
-    assert sent_content == (
-        "Welcome! I'm RaveBot and I handle DJ bookings on this server.\n"
-        "Join the DJ pool to get invites when a slot is open. "
-        "You can also book and cancel slots yourself at any time."
-    )
+    from bot.ui import texts
+
+    assert sent_content == texts.WELCOME
+    assert "Active DJ Booking Group" in sent_content
 
 
 @pytest.mark.asyncio
