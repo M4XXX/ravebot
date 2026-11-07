@@ -317,3 +317,13 @@ async def test_logo_helpers() -> None:
     pool.fetch = AsyncMock(return_value=[{"discord_user_id": 3}, {"discord_user_id": 4}])
     assert await list_unsynced_logo_user_ids(pool) == [3, 4]
     assert "logo_synced = false" in pool.fetch.await_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_unsynced_logo_query_includes_djs_without_image() -> None:
+    from bot.db.djs import list_unsynced_logo_user_ids
+
+    pool = MagicMock()
+    pool.fetch = AsyncMock(return_value=[])
+    await list_unsynced_logo_user_ids(pool)
+    assert "logo_image" not in pool.fetch.await_args.args[0]

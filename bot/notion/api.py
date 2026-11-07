@@ -47,7 +47,6 @@ class NotionApi:
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Notion-Version": NOTION_API_VERSION,
-                "Content-Type": "application/json",
             },
             timeout=10.0,
             transport=transport,
@@ -68,6 +67,7 @@ class NotionApi:
         context: str,
         *,
         tolerate: tuple[int, ...] = (),
+        files: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Send a request with up to 3 attempts (1s, 2s backoff).
 
@@ -81,7 +81,10 @@ class NotionApi:
             delay = _RETRY_DELAYS[min(attempt - 1, len(_RETRY_DELAYS) - 1)]
             retryable = True
             try:
-                response = await self._client.request(method, path, json=payload)
+                if files is not None:
+                    response = await self._client.request(method, path, files=files)
+                else:
+                    response = await self._client.request(method, path, json=payload)
                 status = response.status_code
                 if status < 400:
                     return response.json()
@@ -129,6 +132,32 @@ class NotionApi:
         raise NotionWriteError(
             f"Notion {method} {path} failed ({failure}): {context}", last_status
         )
+
+    async def upload_file(
+        self, filename: str, content_type: str, data: bytes, context: str
+    ) -> str:
+        """Upload a small file to Notion and return the file upload id.
+
+        POST /file_uploads (JSON) then POST /file_uploads/{id}/send as multipart
+        form field ``file`` (httpx sets the multipart Content-Type itself; the
+        client has no default JSON Content-Type). The id must be attached to a
+        page within about an hour.
+        """
+        created = await self.request(
+            "POST",
+            "/file_uploads",
+            {"filename": filename, "content_type": content_type},
+            f"create file upload: {context}",
+        )
+        upload_id = created["id"]
+        await self.request(
+            "POST",
+            f"/file_uploads/{upload_id}/send",
+            None,
+            f"send file upload: {context}",
+            files={"file": (filename, data, content_type)},
+        )
+        return upload_id
 
     async def query_all(
         self, data_source_id: str, payload: dict[str, Any] | None = None

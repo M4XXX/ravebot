@@ -273,6 +273,6 @@ async def set_logo_synced(pool: asyncpg.Pool, user_id: int, synced: bool) -> Non
 
 async def list_unsynced_logo_user_ids(pool: asyncpg.Pool) -> list[int]:
     rows = await pool.fetch(
-        "SELECT discord_user_id FROM djs WHERE logo_synced = false AND logo_image IS NOT NULL"
+        "SELECT discord_user_id FROM djs WHERE logo_synced = false"
     )
     return [row["discord_user_id"] for row in rows]

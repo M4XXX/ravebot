@@ -171,3 +171,14 @@ async def test_dj_page_alive_other_error_raises(env):
     fake.fail_once("GET", f"/pages/{pid}", 403)
     with pytest.raises(NotionWriteError):
         await client.dj_page_alive(pid)
+
+
+async def test_upsert_with_logo_image_writes_file_upload(env):
+    fake, client, nids = env
+    client._api.upload_file = AsyncMock(return_value="up-9")
+    await client.upsert_dj(123, "DJ A", "alice", **{**KW, "logo_url": None}, logo_image=b"img")
+    client._api.upload_file.assert_awaited_once()
+    assert client._api.upload_file.await_args.args[:3] == ("logo.png", "image/png", b"img")
+    body = fake.requests_to("POST", "/pages")[-1][2]
+    files = body["properties"]["Logo"]["files"]
+    assert files == [{"name": "logo.png", "type": "file_upload", "file_upload": {"id": "up-9"}}]

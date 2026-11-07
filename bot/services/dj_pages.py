@@ -67,6 +67,7 @@ async def _ensure(
         logo_url=row["logo_url"],
         link=row["stream_url_primary"],
         alt_link=row["stream_url_backup"],
+        logo_image=row["logo_image"],
     )
     await set_notion_dj_page_id(db, discord_id, page_id)
     return page_id

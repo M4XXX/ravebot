@@ -279,12 +279,29 @@ class NotionClient:
         logo_url: str | None,
         link: str | None,
         alt_link: str | None,
+        logo_image: bytes | None = None,
     ) -> str:
         """Create or update the DJs row matched by ``Discord ID``; return its page id.
 
         Never creates a duplicate. ``Logo``/``Link``/``Alternative link`` are only
-        written for http(s) URLs, otherwise left empty. Rollups are never written.
+        written for http(s) URLs, otherwise left empty. A ``logo_image`` is uploaded
+        to Notion (file upload) and takes precedence over ``logo_url``. Rollups are
+        never written.
         """
+        logo_files: list[dict[str, Any]]
+        if logo_image is not None:
+            upload_id = await self._api.upload_file(
+                "logo.png", "image/png", logo_image, f"logo of DJ {discord_id}"
+            )
+            logo_files = [
+                {"name": "logo.png", "type": "file_upload", "file_upload": {"id": upload_id}}
+            ]
+        elif logo_url and _is_http_url(logo_url):
+            logo_files = [
+                {"name": "logo", "type": "external", "external": {"url": logo_url.strip()}}
+            ]
+        else:
+            logo_files = []
         digits = str(discord_id)
         pages = await self._api.query_all(
             self._ids.djs_ds,
@@ -304,17 +321,7 @@ class NotionClient:
             PROP_DJ_DISCORD_NAME: {"rich_text": _text(discord_name) if discord_name else []},
             PROP_DJ_DISCORD_ID: {"rich_text": _text(digits)},
             PROP_DJ_VRCHAT_NAME: {"rich_text": _text(vrchat_name) if vrchat_name else []},
-            PROP_DJ_LOGO: {
-                "files": [
-                    {
-                        "name": "logo",
-                        "type": "external",
-                        "external": {"url": logo_url.strip()},
-                    }
-                ]
-                if logo_url and _is_http_url(logo_url)
-                else []
-            },
+            PROP_DJ_LOGO: {"files": logo_files},
             PROP_DJ_LINK: _url_prop(link),
             PROP_DJ_ALT_LINK: _url_prop(alt_link),
         }

@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from bot.notion.api import NotionWriteError
 from bot.services.dj_pages import ensure_dj_page
 
-ROW = {"dj_name": "DJ A", "vrchat_name": "vrc", "logo_url": "https://l.test/a.png",
+ROW = {"logo_image": None, "dj_name": "DJ A", "vrchat_name": "vrc", "logo_url": "https://l.test/a.png",
        "stream_url_primary": "https://twitch.tv/a", "stream_url_backup": "https://alt.test"}
 
 
@@ -90,7 +90,7 @@ async def test_creates_and_stores_when_absent():
         assert await ensure_dj_page(db, notion, 1, "alice") == "new-page"
     notion.upsert_dj.assert_awaited_once_with(
         1, "DJ A", "alice", vrchat_name="vrc", logo_url="https://l.test/a.png",
-        link="https://twitch.tv/a", alt_link="https://alt.test")
+        link="https://twitch.tv/a", alt_link="https://alt.test", logo_image=None)
     setter.assert_awaited_once_with(db, 1, "new-page")
 
 
