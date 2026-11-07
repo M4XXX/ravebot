@@ -5,6 +5,7 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from disnake.ext import commands
 
 
 def make_mock_ctx(admin_ids: frozenset[int]) -> MagicMock:
@@ -1218,3 +1219,30 @@ async def test_config_show_in_a_dm_replies_privately() -> None:
     inter.response.send_message.assert_awaited_once_with(
         "Please use this command in a server channel.", ephemeral=True
     )
+
+
+def test_every_admin_command_is_server_only() -> None:
+    from bot.cogs.admin import AdminCog
+
+    cog = AdminCog(make_mock_ctx(frozenset({123})))
+    names = {"config", "create", "post", "book", "cancel", "automatic", "list"}
+    found = {c.name: c for c in cog.get_slash_commands()}
+    assert names <= set(found)
+    for name in names:
+        assert found[name].dm_permission is False, name
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("user_id", [123, 999])
+async def test_cog_check_in_a_private_message_answers_server_only(user_id: int) -> None:
+    from bot.cogs.admin import AdminCog
+    from bot.ui import texts
+
+    cog = AdminCog(make_mock_ctx(frozenset({123})))
+    inter = make_mock_inter(user_id=user_id)
+    inter.guild_id = None
+    assert await cog.cog_slash_command_check(inter) is False
+    inter.response.send_message.assert_awaited_once_with(texts.ADMIN_SERVER_ONLY, ephemeral=True)
+    inter.response.is_done = MagicMock(return_value=True)
+    await cog.cog_slash_command_error(inter, commands.CheckFailure())
+    inter.response.send_message.assert_awaited_once()

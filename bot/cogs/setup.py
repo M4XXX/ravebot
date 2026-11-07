@@ -26,14 +26,19 @@ class SetupCog(commands.Cog):
     def __init__(self, ctx: BotContext) -> None:
         self.ctx = ctx
 
-    def cog_slash_command_check(self, inter: disnake.ApplicationCommandInteraction) -> bool:
-        """Same admin whitelist as AdminCog."""
+    async def cog_slash_command_check(self, inter: disnake.ApplicationCommandInteraction) -> bool:
+        """Server only first, then the same admin whitelist as AdminCog."""
+        if inter.guild_id is None:
+            await inter.response.send_message(texts.ADMIN_SERVER_ONLY, ephemeral=True)
+            return False
         return self.ctx.is_admin(inter.author.id)
 
     async def cog_slash_command_error(
         self, inter: disnake.ApplicationCommandInteraction, error: Exception
     ) -> None:
         if isinstance(error, commands.CheckFailure):
+            if inter.response.is_done():
+                return  # the check already answered (server only)
             await inter.response.send_message(texts.SETUP_NO_PERMISSION, ephemeral=True)
             return
         logger.error("Unexpected error in /setup: %s", error, exc_info=True)
@@ -55,7 +60,9 @@ class SetupCog(commands.Cog):
         except disnake.HTTPException:
             return None
 
-    @commands.slash_command(name="setup", description="Guided setup for the bot (admin only)")
+    @commands.slash_command(
+        name="setup", description="Guided setup for the bot (admin only)", dm_permission=False
+    )
     async def setup(self, inter: disnake.ApplicationCommandInteraction) -> None:
         db: Any = self.ctx.db
         guild_id = inter.guild_id

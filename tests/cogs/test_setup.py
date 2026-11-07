@@ -28,16 +28,14 @@ def _inter(user=ADMIN):
     return inter
 
 
-def test_setup_command_qualified_name_and_admin_check():
+async def test_setup_command_qualified_name_and_admin_check():
     cog = SetupCog(make_ctx())
     assert cog.setup.qualified_name == "setup"
-    assert cog.cog_slash_command_check(_inter(ADMIN)) is True
-    assert cog.cog_slash_command_check(_inter(999)) is False
+    assert await cog.cog_slash_command_check(_inter(ADMIN)) is True
+    assert await cog.cog_slash_command_check(_inter(999)) is False
 
 
-def test_setup_check_accepts_an_added_admin():
-    from unittest.mock import patch  # noqa: F401
-
+async def test_setup_check_accepts_an_added_admin():
     from bot.services.admin_registry import AdminRegistry
 
     ctx = make_ctx()
@@ -45,8 +43,8 @@ def test_setup_check_accepts_an_added_admin():
     registry._added = [777]  # as loaded from the table
     ctx.is_admin = registry.is_admin
     cog = SetupCog(ctx)
-    assert cog.cog_slash_command_check(_inter(777)) is True
-    assert cog.cog_slash_command_check(_inter(999)) is False
+    assert await cog.cog_slash_command_check(_inter(777)) is True
+    assert await cog.cog_slash_command_check(_inter(999)) is False
 
 
 @pytest.mark.asyncio
@@ -119,3 +117,19 @@ async def test_setup_in_a_dm_replies_privately(store):  # noqa: F811
     inter.response.send_message.assert_awaited_once_with(
         "Please use this command in a server channel.", ephemeral=True
     )
+
+
+def test_setup_command_is_server_only():
+    assert SetupCog(make_ctx()).setup.dm_permission is False
+
+
+@pytest.mark.parametrize("user", [ADMIN, 999])
+async def test_setup_check_in_a_private_message_answers_server_only(user):
+    cog = SetupCog(make_ctx())
+    inter = _inter(user)
+    inter.guild_id = None
+    assert await cog.cog_slash_command_check(inter) is False
+    inter.response.send_message.assert_awaited_once_with(texts.ADMIN_SERVER_ONLY, ephemeral=True)
+    inter.response.is_done = MagicMock(return_value=True)  # the check answered
+    await cog.cog_slash_command_error(inter, commands.CheckFailure())
+    inter.response.send_message.assert_awaited_once()

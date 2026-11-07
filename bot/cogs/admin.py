@@ -60,6 +60,10 @@ class AdminCog(commands.Cog):
         [Source: architecture.md#Admin Whitelist: disnake Check Decorator]
         [Source: epics.md#FR41, NFR6]
         """
+        if inter.guild_id is None:
+            # Private message: the same answer for everyone (no information leak)
+            await inter.response.send_message(texts.ADMIN_SERVER_ONLY, ephemeral=True)
+            return False
         if not self.ctx.is_admin(inter.author.id):
             return False
         command = inter.application_command
@@ -122,7 +126,9 @@ class AdminCog(commands.Cog):
                         "AdminCog: could not send the error followup", exc_info=True
                     )
 
-    @commands.slash_command(name="config", description="Show the bot settings (admin only)")
+    @commands.slash_command(
+        name="config", description="Show the bot settings (admin only)", dm_permission=False
+    )
     async def config_base(self, inter: disnake.ApplicationCommandInteraction) -> None:
         """Top-level /config command."""
         pass
@@ -181,7 +187,9 @@ class AdminCog(commands.Cog):
         lines.append(texts.CONFIG_SHOW_HINT)
         await inter.response.send_message("\n".join(lines), ephemeral=True)
 
-    @commands.slash_command(name="create", description="Create things by hand (admin only)")
+    @commands.slash_command(
+        name="create", description="Create things by hand (admin only)", dm_permission=False
+    )
     async def create_base(self, inter: disnake.ApplicationCommandInteraction) -> None:
         pass
 
@@ -264,7 +272,9 @@ class AdminCog(commands.Cog):
             f"Event created in Notion for {texts.fmt_slot_when(event, 0)}.", ephemeral=True
         )
 
-    @commands.slash_command(name="post", description="Post to the DJ channel (admin only)")
+    @commands.slash_command(
+        name="post", description="Post to the DJ channel (admin only)", dm_permission=False
+    )
     async def post_base(self, inter: disnake.ApplicationCommandInteraction) -> None:
         pass
 
@@ -371,7 +381,9 @@ class AdminCog(commands.Cog):
         ids = [e.event_id for e in future_events(events, _today())]
         return [i for i in ids if needle in i.casefold()][:25]
 
-    @commands.slash_command(name="book", description="Book DJs (admin only)")
+    @commands.slash_command(
+        name="book", description="Book DJs (admin only)", dm_permission=False
+    )
     async def book_base(self, inter: disnake.ApplicationCommandInteraction) -> None:
         pass
 
@@ -379,7 +391,9 @@ class AdminCog(commands.Cog):
     async def book_dj_group(self, inter: disnake.ApplicationCommandInteraction) -> None:
         pass
 
-    @commands.slash_command(name="cancel", description="Cancel bookings (admin only)")
+    @commands.slash_command(
+        name="cancel", description="Cancel bookings (admin only)", dm_permission=False
+    )
     async def cancel_base(self, inter: disnake.ApplicationCommandInteraction) -> None:
         pass
 
@@ -480,7 +494,9 @@ class AdminCog(commands.Cog):
     ) -> list[str]:
         return await self.future_event_autocomplete(inter, user_input)
 
-    @commands.slash_command(name="automatic", description="Automatic bookings (admin only)")
+    @commands.slash_command(
+        name="automatic", description="Automatic bookings (admin only)", dm_permission=False
+    )
     async def automatic_base(self, inter: disnake.ApplicationCommandInteraction) -> None:
         pass
 
@@ -528,7 +544,9 @@ class AdminCog(commands.Cog):
         else:
             await inter.response.send_message(msg, ephemeral=True)
 
-    @commands.slash_command(name="list", description="Lists (admin only)")
+    @commands.slash_command(
+        name="list", description="Lists (admin only)", dm_permission=False
+    )
     async def list_base(self, inter: disnake.ApplicationCommandInteraction) -> None:
         pass
 

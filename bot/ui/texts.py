@@ -376,6 +376,7 @@ SETUP_OUTDATED = "This setup message is outdated. Run /setup to open the current
 SETUP_NOT_A_RERUN = "This is the first setup. Use Activate on the last step."
 SETUP_CHANGE_BUTTON = "Change settings"
 SETUP_ERROR = "Something went wrong during the setup. Press the button again."
+ADMIN_SERVER_ONLY = "Use this command on the server."
 SETUP_NO_PERMISSION = "You don't have permission to use this command."
 SETUP_SAVED = "Settings saved. To change a setting later, run /setup again."
 SETUP_MISSING_VALUES = "Some steps are not finished yet. Go back and choose a channel."
