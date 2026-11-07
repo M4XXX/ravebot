@@ -24,6 +24,7 @@ def make_mock_inter(user_id: int, guild_id: int = 111) -> MagicMock:
     inter.author.id = user_id
     inter.guild_id = guild_id
     inter.response = AsyncMock()
+    inter.response.is_done = MagicMock(return_value=False)
     inter.order = []
     inter.response.defer.side_effect = lambda *a, **k: inter.order.append("defer")
     inter.response.send_message.side_effect = (
@@ -45,22 +46,24 @@ def assert_deferred_reply(inter: MagicMock) -> tuple[str, dict]:
     return args[0], kwargs
 
 
-def test_cog_check_allows_admin() -> None:
+@pytest.mark.asyncio
+async def test_cog_check_allows_admin() -> None:
     """cog_slash_command_check returns True for a user in ADMIN_USER_IDS."""
     from bot.cogs.admin import AdminCog
 
     cog = AdminCog(make_mock_ctx(frozenset({123, 456})))
     inter = make_mock_inter(user_id=123)
-    assert cog.cog_slash_command_check(inter) is True
+    assert await cog.cog_slash_command_check(inter) is True
 
 
-def test_cog_check_rejects_non_admin() -> None:
+@pytest.mark.asyncio
+async def test_cog_check_rejects_non_admin() -> None:
     """cog_slash_command_check returns False for a user not in ADMIN_USER_IDS."""
     from bot.cogs.admin import AdminCog
 
     cog = AdminCog(make_mock_ctx(frozenset({123})))
     inter = make_mock_inter(user_id=999)
-    assert cog.cog_slash_command_check(inter) is False
+    assert await cog.cog_slash_command_check(inter) is False
 
 
 @pytest.mark.asyncio
@@ -1584,11 +1587,12 @@ async def test_lineup_autocomplete_max_25_and_errors(
     assert await cog.lineup_post_autocomplete(make_mock_inter(1), "") == []
 
 
-def test_lineup_post_is_admin_gated() -> None:
+@pytest.mark.asyncio
+async def test_lineup_post_is_admin_gated() -> None:
     from bot.cogs.admin import AdminCog
 
     cog = AdminCog(make_mock_ctx(frozenset({1})))
-    assert cog.cog_slash_command_check(make_mock_inter(user_id=2)) is False
+    assert await cog.cog_slash_command_check(make_mock_inter(user_id=2)) is False
 
 
 # ---------------------------------------------------------------------------

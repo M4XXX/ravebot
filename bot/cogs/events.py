@@ -19,6 +19,7 @@ from disnake.ext import commands, tasks
 from bot.context import BotContext
 from bot.notion.client import NotionWriteError
 from bot.notion.models import EventInfo
+from bot.services import activation
 from bot.services.event_replenish import replenish_events
 from bot.services.fully_booked import check_fully_booked
 from bot.ui import texts
@@ -145,6 +146,9 @@ class EventsCog(commands.Cog):
         guild_id = self._get_guild_id()
         if guild_id is None:
             return
+        if not await activation.is_active(self.ctx.db, guild_id):
+            logger.debug("_poll_notion: bot is idle, skipping cycle")
+            return
 
         # Reconcile hand edits in Notion with Postgres before reading the events
         await self._run_sync_cycle(guild_id)
@@ -200,6 +204,9 @@ class EventsCog(commands.Cog):
             return
         guild_id = self._get_guild_id()
         if guild_id is None:
+            return
+        if not await activation.is_active(self.ctx.db, guild_id):
+            logger.debug("_check_reminders: bot is idle, skipping")
             return
         if self.ctx.reminders_service is None:
             logger.warning("_check_reminders: reminders_service not available — skipping")

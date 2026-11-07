@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 import disnake
 
 from bot.db.config import get_value, set_value
+from bot.services import activation
 from bot.notion.models import EventInfo
 from bot.timezone import local_today
 from bot.ui import texts
@@ -108,6 +109,9 @@ class LineupService:
 
     async def _debounced_refresh(self) -> None:
         try:
+            guild_id = self._get_guild_id()
+            if guild_id is None or not await activation.is_active(self.db, guild_id):
+                return  # idle: nothing is scheduled or posted
             await asyncio.sleep(LINEUP_DEBOUNCE_SECONDS)
             # Cleared before the refresh so a change during it schedules another one
             self._pending = False
@@ -121,7 +125,7 @@ class LineupService:
         """Post the upcoming event if it differs from the last posted snapshot."""
         async with self._lock:
             guild_id = self._get_guild_id()
-            if guild_id is None:
+            if guild_id is None or not await activation.is_active(self.db, guild_id):
                 return False
             loaded = events if events is not None else await self.notion_client.list_events()
             upcoming = upcoming_event(loaded, _today())
@@ -145,7 +149,7 @@ class LineupService:
         """Post one event; store its snapshot if it is the current upcoming event."""
         async with self._lock:
             guild_id = self._get_guild_id()
-            if guild_id is None:
+            if guild_id is None or not await activation.is_active(self.db, guild_id):
                 return False
             if await self._send(guild_id, event, report_error=False) != _SENT:
                 return False

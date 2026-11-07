@@ -32,7 +32,9 @@ from bot.notion.api import NotionApi, NotionWriteError
 from bot.notion.client import NotionClient
 from bot.notion.schema import NotionSchemaError, ensure_schema
 from bot.notion.views import ensure_views
+from bot.services import activation
 from bot.timezone import load_stored_timezone
+from bot.ui.gates import STARTUP_ADMIN_DM
 
 load_dotenv()
 
@@ -62,6 +64,22 @@ def create_bot() -> commands.Bot:
     intents = disnake.Intents.default()
     intents.members = True  # Required for on_member_update (FR1 — DJ role detection)
     return commands.Bot(command_prefix="!", intents=intents)
+
+
+async def notify_admins_if_idle(bot: commands.Bot, db: object, admin_ids: object) -> None:
+    """While the bot is idle, DM every admin that setup is missing. Never raises."""
+    try:
+        if await activation.bot_is_active(bot, db):
+            return
+    except Exception:
+        logger.warning("Could not read the activation state", exc_info=True)
+        return
+    for admin_id in sorted(admin_ids):  # type: ignore[call-overload]
+        try:
+            user = bot.get_user(admin_id) or await bot.fetch_user(admin_id)
+            await user.send(STARTUP_ADMIN_DM)
+        except Exception:
+            logger.warning("Could not send the setup DM to admin %s", admin_id, exc_info=True)
 
 
 async def main() -> None:
@@ -167,8 +185,11 @@ async def main() -> None:
     bot.add_cog(AdminCog(ctx))
     bot.add_cog(EventsCog(ctx))
 
+    startup_dm_sent = False
+
     @bot.event
     async def on_ready() -> None:  # noqa: RUF029
+        nonlocal startup_dm_sent
         logger.info("Bot ready")
         # The time zone is a guild-level setting, so it can only load once guilds are known.
         if bot.guilds:
@@ -176,6 +197,10 @@ async def main() -> None:
                 await load_stored_timezone(ctx.db, bot.guilds[0].id)
             except Exception:
                 logger.warning("Could not load the stored time zone", exc_info=True)
+        # on_ready fires again on every reconnect: the admin DM goes out once per process
+        if not startup_dm_sent:
+            startup_dm_sent = True
+            await notify_admins_if_idle(bot, ctx.db, config.admin_user_ids)
 
     try:
         await bot.start(config.discord_bot_token)

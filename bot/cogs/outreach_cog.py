@@ -12,6 +12,7 @@ import asyncpg
 from disnake.ext import commands, tasks
 
 from bot.context import BotContext
+from bot.services import activation
 from bot.services.outreach import outreach_enabled
 from bot.ui.embeds import ErrorCode
 
@@ -89,6 +90,9 @@ class OutreachCog(commands.Cog):
 
         guild_id = self._get_guild_id()
         if guild_id is None:
+            return
+        if not await activation.is_active(self.ctx.db, guild_id):
+            logger.debug("OutreachCog._outreach_check: bot is idle, skipping")
             return
 
         # Global switch, read fresh each cycle. Off: no gap detection, no invites,

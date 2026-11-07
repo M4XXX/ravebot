@@ -18,8 +18,10 @@ from bot.context import BotContext
 from bot.db.djs import get_dj_by_discord_id
 from bot.db.interventions import is_under_intervention
 from bot.db.log_replies import save_log_reply
+from bot.services import activation
 from bot.ui import texts
 from bot.ui.embeds import ErrorCode
+from bot.ui.gates import IDLE_REPLY
 from bot.ui.log_reply import LogReplyView
 from bot.ui.views import FallbackMenuView, OnboardingIntroView
 
@@ -66,6 +68,11 @@ class OnboardingCog(commands.Cog):
                 "on_member_update: DB pool not available — skipping onboarding for user %s",
                 after.id,
             )
+            return
+
+        # Idle: the role assignment sends nothing
+        if not await activation.bot_is_active(getattr(self, "bot", None), self.ctx.db):
+            logger.debug("on_member_update: bot is idle — no onboarding DM for %s", after.id)
             return
 
         # Check if DJ already exists in DB (any state — prevents duplicate DMs)
@@ -148,6 +155,11 @@ class OnboardingCog(commands.Cog):
             return
         # Ignore bot messages (including our own)
         if message.author.bot:
+            return
+
+        # Idle: only the idle reply, nothing is logged and no menu is sent
+        if not await activation.bot_is_active(getattr(self, "bot", None), self.ctx.db):
+            await message.channel.send(IDLE_REPLY)
             return
 
         # Entry first, but in the background so the menu is not delayed by the log post

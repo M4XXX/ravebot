@@ -74,14 +74,19 @@ from bot.db import config as db_config
 from bot.db.bookings import init_event_slots
 from bot.db.djs import get_all_djs
 from bot.notion.client import DuplicateEventError, NotionWriteError
+from bot.services import activation
 from bot.services.event_defaults import default_event_shape
 from bot.services.lineup import future_events, upcoming_event
 from bot.services.outreach import parse_outreach_enabled
 from bot.timezone import local_today
 from bot.ui import texts
 from bot.ui.embeds import EmbedColors
+from bot.ui.gates import ADMIN_IDLE_REPLY
 
 logger = logging.getLogger(__name__)
+
+# Commands that work while the bot is idle (identified by qualified name)
+IDLE_EXEMPT_COMMANDS = frozenset({"setup", "config show"})
 
 
 def _today() -> date:
@@ -94,7 +99,7 @@ class AdminCog(commands.Cog):
     def __init__(self, ctx: BotContext) -> None:
         self.ctx = ctx
 
-    def cog_slash_command_check(
+    async def cog_slash_command_check(
         self, inter: disnake.ApplicationCommandInteraction
     ) -> bool:
         """Enforce admin whitelist for all slash commands in this cog.
@@ -105,7 +110,26 @@ class AdminCog(commands.Cog):
         [Source: architecture.md#Admin Whitelist: disnake Check Decorator]
         [Source: epics.md#FR41, NFR6]
         """
-        return inter.author.id in self.ctx.config.admin_user_ids
+        if inter.author.id not in self.ctx.config.admin_user_ids:
+            return False
+        command = inter.application_command
+        name = getattr(command, "qualified_name", None)
+        if name in IDLE_EXEMPT_COMMANDS:
+            return True
+        # Idle: every other command gets the admin idle text (the answer is sent here)
+        guild_id = inter.guild_id
+        if guild_id is None:
+            guilds = getattr(inter.bot, "guilds", None)
+            guild_id = guilds[0].id if guilds else None
+        active = (
+            self.ctx.db is not None
+            and guild_id is not None
+            and await activation.is_active(self.ctx.db, guild_id)
+        )
+        if active:
+            return True
+        await inter.response.send_message(ADMIN_IDLE_REPLY, ephemeral=True)
+        return False
 
     async def cog_slash_command_error(
         self,
@@ -119,6 +143,8 @@ class AdminCog(commands.Cog):
         [Source: epics.md#Story 1.4 AC3 — user sees "You don't have permission to use this command"]
         """
         if isinstance(error, commands.CheckFailure):
+            if inter.response.is_done():
+                return  # the check already answered (idle reply)
             await inter.response.send_message(
                 "You don't have permission to use this command.",
                 ephemeral=True,
@@ -624,7 +650,12 @@ class AdminCog(commands.Cog):
             inline=True,
         )
 
-        await inter.response.send_message(embed=embed, ephemeral=True)
+        if await activation.is_active(self.ctx.db, guild_id):
+            await inter.response.send_message(embed=embed, ephemeral=True)
+        else:
+            await inter.response.send_message(
+                texts.SETUP_NOT_FINISHED, embed=embed, ephemeral=True
+            )
 
     # ---------------------------------------------------------------------------
     # Story 6.2: /intervene command group — admin DM takeover (FR32, FR33)

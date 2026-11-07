@@ -34,3 +34,20 @@ def mock_config() -> Config:
         db_pool_min=2,
         db_pool_max=5,
     )
+
+
+@pytest.fixture(autouse=True)
+def _bot_is_active(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Most tests exercise the active bot: report the activation state as active.
+
+    Tests of the activation logic itself (test_activation) use the real functions;
+    idle behaviour is tested by overriding these patches in the test.
+    """
+    if request.module.__name__.endswith("test_activation"):
+        return
+    from unittest.mock import AsyncMock
+
+    from bot.services import activation
+
+    monkeypatch.setattr(activation, "is_active", AsyncMock(return_value=True))
+    monkeypatch.setattr(activation, "bot_is_active", AsyncMock(return_value=True))
