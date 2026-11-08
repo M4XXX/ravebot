@@ -13,7 +13,7 @@
   <Category>Tools:</Category>
   <WebUI>http://[IP]:[PORT:8080]/</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/M4XXX/ravebot/main/unraid/ravebot.xml</TemplateURL>
-  <Icon>https://raw.githubusercontent.com/M4XXX/ravebot/main/docs/assets/logo.png</Icon>
+  <Icon>https://raw.githubusercontent.com/M4XXX/ravebot/main/unraid/ravebot.png</Icon>
   <ExtraParams/>
   <PostArgs/>
   <CPUset/>
