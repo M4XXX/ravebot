@@ -19,7 +19,9 @@ import logging
 import os
 import subprocess
 import sys
+from pathlib import Path
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
 
 import asyncpg
 
@@ -27,6 +29,20 @@ if TYPE_CHECKING:
     from bot.config import Config
 
 logger = logging.getLogger(__name__)
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]  # holds alembic.ini and migrations/
+COMMAND_TIMEOUT_SECONDS = 60  # no query may hold a pool connection forever
+
+
+def redact_url(url: str) -> str:
+    """The database URL without user name and password, for messages and logs."""
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname or "?"
+        port = f":{parts.port}" if parts.port else ""
+        return f"{parts.scheme}://{host}{port}{parts.path}"
+    except ValueError:
+        return "(unreadable URL)"
 
 
 async def run_migrations(postgres_url: str) -> None:
@@ -48,10 +64,12 @@ async def run_migrations(postgres_url: str) -> None:
     env = {**os.environ, "POSTGRES_URL": postgres_url}
     result = await asyncio.to_thread(
         subprocess.run,  # noqa: S603
-        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        [sys.executable, "-m", "alembic", "-c", str(PROJECT_ROOT / "alembic.ini"),
+         "upgrade", "head"],
         capture_output=True,
         text=True,
         env=env,
+        cwd=PROJECT_ROOT,
     )
     if result.returncode != 0:
         error_detail = result.stderr.strip() or result.stdout.strip()
@@ -91,11 +109,12 @@ async def create_pool(config: "Config") -> asyncpg.Pool:
             dsn=config.postgres_url,
             min_size=config.db_pool_min,
             max_size=config.db_pool_max,
+            command_timeout=COMMAND_TIMEOUT_SECONDS,
         )
     except (OSError, asyncpg.PostgresConnectionError, asyncpg.InvalidCatalogNameError) as exc:
         sys.exit(
             f"Failed to connect to PostgreSQL. Cannot start bot.\n"
-            f"Check POSTGRES_URL: {config.postgres_url}\n"
+            f"Check POSTGRES_URL: {redact_url(config.postgres_url)}\n"
             f"Error: {exc}"
         )
     if pool is None:

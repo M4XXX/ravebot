@@ -135,5 +135,10 @@ async def logo_from_message(message: disnake.Message) -> bytes:
     if not message.attachments:
         raise LogoError("needs_file")
     data = await download_attachment(message.attachments[0])
+    return await process_logo_async(data)
+
+
+async def process_logo_async(data: bytes) -> bytes:
+    """process_logo in a worker thread, one image at a time (keeps the event loop free)."""
     async with _PROCESS_LIMIT:
         return await asyncio.to_thread(process_logo, data)

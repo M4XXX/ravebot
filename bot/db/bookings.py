@@ -111,8 +111,10 @@ async def release_slot_lock(
     event_id: str,
     slot_index: int,
     expected_holder: int | None = None,
-) -> None:
+) -> bool:
     """Release a previously claimed slot lock — sets discord_user_id back to NULL.
+
+    Returns True when a held slot was freed (False: nobody, or someone else, held it).
 
     Called when:
       - The Notion booking write fails after a successful acquire_slot_lock()
@@ -128,17 +130,17 @@ async def release_slot_lock(
     [Source: epics.md#Story 4.4 (cancellation flow)]
     """
     if expected_holder is None:
-        await pool.execute(
+        result = await pool.execute(
             """
             UPDATE slot_locks
             SET discord_user_id = NULL, booked_at = NULL
-            WHERE event_id = $1 AND slot_index = $2
+            WHERE event_id = $1 AND slot_index = $2 AND discord_user_id IS NOT NULL
             """,
             event_id,
             slot_index,
         )
-        return
-    await pool.execute(
+        return result == "UPDATE 1"
+    result = await pool.execute(
         """
         UPDATE slot_locks
         SET discord_user_id = NULL, booked_at = NULL
@@ -148,6 +150,7 @@ async def release_slot_lock(
         slot_index,
         expected_holder,
     )
+    return result == "UPDATE 1"
 
 
 async def get_dj_slot_locks(
@@ -164,7 +167,8 @@ async def get_dj_slot_locks(
     [Source: architecture.md#Slot Booking Atomicity]
     """
     rows = await pool.fetch(
-        "SELECT event_id, slot_index FROM slot_locks WHERE discord_user_id = $1",
+        "SELECT event_id, slot_index FROM slot_locks WHERE discord_user_id = $1"
+        " ORDER BY booked_at NULLS LAST, event_id, slot_index",
         discord_user_id,
     )
     return [{"event_id": row["event_id"], "slot_index": row["slot_index"]} for row in rows]

@@ -22,6 +22,7 @@ class TestCreatePool:
                 dsn=mock_config.postgres_url,
                 min_size=mock_config.db_pool_min,
                 max_size=mock_config.db_pool_max,
+                command_timeout=60,
             )
             assert result is mock_pool
 
@@ -92,3 +93,24 @@ class TestRunMigrations:
             env_passed = call_kwargs.kwargs.get("env") or call_kwargs[1].get("env")
             assert env_passed is not None
             assert env_passed["POSTGRES_URL"] == mock_config.postgres_url
+
+
+def test_redact_url_hides_user_and_password() -> None:
+    from bot.db.pool import redact_url
+
+    assert redact_url("postgresql://bot:s3cret@db:5432/rave") == "postgresql://db:5432/rave"
+    assert "s3cret" not in redact_url("postgres://u:s3cret@h/x")
+
+
+@pytest.mark.asyncio
+async def test_connect_error_message_has_no_password(mock_config):
+    from dataclasses import replace
+
+    from bot.db.pool import create_pool
+
+    config = replace(mock_config, postgres_url="postgresql://bot:s3cret@db/rave")
+    with patch("asyncpg.create_pool", new=AsyncMock(side_effect=OSError("refused"))):
+        with pytest.raises(SystemExit) as exc_info:
+            await create_pool(config)
+    assert "s3cret" not in str(exc_info.value)
+    assert "db/rave" in str(exc_info.value)

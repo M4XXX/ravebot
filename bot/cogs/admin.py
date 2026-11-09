@@ -914,8 +914,15 @@ class _ConfirmDelete(disnake.ui.View):
     ) -> None:
         self.stop()
         await inter.response.defer()
-        result = await self._service.delete_dj(admin_name=inter.author.name, dj_id=self._dj_id)
-        await inter.edit_original_message(content=result.message, view=None)
+        try:
+            result = await self._service.delete_dj(
+                admin_name=inter.author.name, dj_id=self._dj_id
+            )
+            text = result.message
+        except Exception:
+            logger.exception("dj remove: delete failed")
+            text = texts.GENERIC_ERROR
+        await inter.edit_original_message(content=text, view=None)
 
     @disnake.ui.button(label="Keep", style=disnake.ButtonStyle.secondary)
     async def keep(self, button: disnake.ui.Button, inter: disnake.MessageInteraction) -> None:

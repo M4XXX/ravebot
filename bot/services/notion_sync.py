@@ -178,7 +178,10 @@ class NotionSyncService:
     async def _free(self, action: SyncAction) -> None:
         event, index, dj = action.event, action.slot_index, action.discord_id
         assert index is not None and dj is not None
-        await release_slot_lock(self.db, event.page_id, index, expected_holder=dj)
+        if not await release_slot_lock(self.db, event.page_id, index, expected_holder=dj):
+            # The DJ no longer held it (cancelled or rebooked since the snapshot)
+            logger.info("Notion sync: %s no longer held %s slot %s", dj, event.event_id, index + 1)
+            return
         if not await dm_user(self.bot, dj, texts.dm_removed(event, index)):
             await self._dm_failed(action, "removed")
         logger.info("%s was removed from %s slot %s in Notion", dj, event.event_id, index + 1)
