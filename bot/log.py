@@ -243,6 +243,18 @@ class AdminLogService:
             )
         )
 
+    async def log_dj_list_change(self, admin_name: str, action: str, dj_name: str) -> None:
+        """An organizer added, edited or removed a DJ (action: "added", "edited", "removed")."""
+        await self._post_built(
+            lambda: LogEntryEmbed(
+                texts.LOG_DJ_LIST_TITLE,
+                texts.log_dj_list_text(
+                    _safe_dj_name(admin_name), action, _safe_dj_name(dj_name)
+                ),
+                EmbedColors.SUCCESS_GREEN,
+            )
+        )
+
     async def log_attention(self, title: str, what: str, todo: str | None = None) -> None:
         await self._post_built(lambda: LogEntryEmbed(title, what, EmbedColors.IMPERIAL_RED, todo))
 

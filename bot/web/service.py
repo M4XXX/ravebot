@@ -81,6 +81,13 @@ class AdminPageService:
         self._clock = clock
         self._cache: dict[int, tuple[float, UserInfo]] = {}
 
+    @property
+    def djs(self) -> Any:
+        """The DJ list service (add, edit, delete)."""
+        if self._ctx.dj_admin_service is None:
+            raise RuntimeError("The DJ list service is not ready")
+        return self._ctx.dj_admin_service
+
     def server_info(self) -> ServerInfo | None:
         if not self._bot.guilds:
             return None

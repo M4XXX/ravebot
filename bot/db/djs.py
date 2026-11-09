@@ -39,6 +39,7 @@ async def insert_dj(
     stream_url_primary: str | None,
     stream_url_backup: str | None,
     logo_image: bytes | None = None,
+    active_booking: bool = True,
 ) -> None:
     """Insert a new DJ profile row with onboarding completed.
 
@@ -60,7 +61,7 @@ async def insert_dj(
             logo_image, logo_synced,
             active_booking, onboarding_complete, onboarding_step
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, true, 0)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, true, 0)
         """,
         discord_user_id,
         dj_name,
@@ -70,6 +71,7 @@ async def insert_dj(
         stream_url_backup,
         logo_image,
         logo_image is None,
+        active_booking,
     )
 
 
@@ -141,7 +143,7 @@ async def get_active_booking_djs(pool: asyncpg.Pool) -> list[dict]:
         """
         SELECT discord_user_id, dj_name, last_contacted_at
         FROM djs
-        WHERE active_booking = true
+        WHERE active_booking = true AND discord_user_id > 0
         ORDER BY last_contacted_at ASC NULLS FIRST
         """,
     )
@@ -277,3 +279,43 @@ async def list_unsynced_logo_user_ids(pool: asyncpg.Pool) -> list[int]:
         "SELECT discord_user_id FROM djs WHERE logo_synced = false"
     )
     return [row["discord_user_id"] for row in rows]
+
+
+async def next_guest_id(pool: asyncpg.Pool) -> int:
+    """A fresh id for a guest DJ without a Discord account: -1, -2, ...
+
+    Discord ids are positive, so a negative id never collides with a real user.
+    """
+    lowest = await pool.fetchval("SELECT MIN(discord_user_id) FROM djs")
+    return min(-1, (lowest or 0) - 1)
+
+
+async def get_all_dj_rows(pool: asyncpg.Pool) -> list[dict]:
+    """All DJs with the fields the admin page and the admin commands show."""
+    rows = await pool.fetch(
+        """
+        SELECT discord_user_id, dj_name, vrchat_name, stream_url_primary,
+               stream_url_backup, active_booking, (logo_image IS NOT NULL) AS has_logo
+        FROM djs ORDER BY lower(dj_name) ASC, discord_user_id ASC
+        """
+    )
+    return [dict(row) for row in rows]
+
+
+async def get_dj_row(pool: asyncpg.Pool, user_id: int) -> dict | None:
+    """One DJ with the same fields as get_all_dj_rows, or None."""
+    row = await pool.fetchrow(
+        """
+        SELECT discord_user_id, dj_name, vrchat_name, stream_url_primary,
+               stream_url_backup, active_booking, (logo_image IS NOT NULL) AS has_logo
+        FROM djs WHERE discord_user_id = $1
+        """,
+        user_id,
+    )
+    return dict(row) if row is not None else None
+
+
+async def delete_dj(pool: asyncpg.Pool, user_id: int) -> bool:
+    """Delete the DJ row. True if a row was deleted."""
+    result = await pool.execute("DELETE FROM djs WHERE discord_user_id = $1", user_id)
+    return result == "DELETE 1"

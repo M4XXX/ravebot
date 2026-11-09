@@ -343,3 +343,37 @@ async def test_unsynced_logo_query_includes_djs_without_image() -> None:
     pool.fetch = AsyncMock(return_value=[])
     await list_unsynced_logo_user_ids(pool)
     assert "logo_image" not in pool.fetch.await_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_next_guest_id_counts_down_below_zero() -> None:
+    from bot.db.djs import next_guest_id
+
+    pool = MagicMock()
+    pool.fetchval = AsyncMock(return_value=None)
+    assert await next_guest_id(pool) == -1
+    pool.fetchval = AsyncMock(return_value=123456789012345678)  # only real users
+    assert await next_guest_id(pool) == -1
+    pool.fetchval = AsyncMock(return_value=-4)
+    assert await next_guest_id(pool) == -5
+
+
+@pytest.mark.asyncio
+async def test_delete_dj_reports_whether_a_row_went() -> None:
+    from bot.db.djs import delete_dj
+
+    pool = MagicMock()
+    pool.execute = AsyncMock(return_value="DELETE 1")
+    assert await delete_dj(pool, -1) is True
+    pool.execute = AsyncMock(return_value="DELETE 0")
+    assert await delete_dj(pool, -1) is False
+
+
+@pytest.mark.asyncio
+async def test_active_booking_pool_excludes_guests() -> None:
+    from bot.db.djs import get_active_booking_djs
+
+    pool = MagicMock()
+    pool.fetch = AsyncMock(return_value=[])
+    await get_active_booking_djs(pool)
+    assert "discord_user_id > 0" in pool.fetch.call_args.args[0]

@@ -142,3 +142,13 @@ def test_slots_exactly_100_parses():
     page["properties"]["Slots"]["number"] = 100
     ev = parse_event(page)
     assert ev is not None and ev.slot_count == 100
+
+
+def test_guest_dj_negative_discord_id_parses():
+    page = load("dj")
+    page["properties"]["Discord ID"]["rich_text"] = [{"plain_text": "-3"}]
+    assert parse_dj(page).discord_id == -3
+    page["properties"]["Discord ID"]["rich_text"] = [{"plain_text": "-"}]
+    assert parse_dj(page).discord_id is None
+    page["properties"]["Discord ID"]["rich_text"] = [{"plain_text": "--3"}]
+    assert parse_dj(page).discord_id is None

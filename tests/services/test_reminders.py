@@ -284,3 +284,20 @@ async def test_send_reminders_slot_unix_from_typed_event():
     assert "Friday 22.05.2026, slot 3 at 02:00" in user_mock.send.call_args[0][0]
     assert "<t:" not in user_mock.send.call_args[0][0]
     mock_record.assert_awaited_once_with(svc.db, "page-xyz", 7, 2)
+
+
+@pytest.mark.asyncio
+async def test_send_reminders_skips_guest_djs_without_a_log_entry():
+    event = _make_event(page_id="evt-001", event_date="2026-05-22")
+    svc = _make_service(list_events_result=[event])
+    svc.bot.get_user = MagicMock(return_value=None)
+    guest = {"discord_user_id": -1, "dj_name": "Guest", "slot_index": 0, "event_id": "evt-001"}
+    with patch(
+        "bot.services.reminders.get_booked_djs_for_event", new=AsyncMock(return_value=[guest])
+    ), patch(
+        "bot.services.reminders.has_reminder_been_sent", new=AsyncMock(return_value=False)
+    ), patch("bot.services.reminders.record_reminder_sent", new=AsyncMock()) as record:
+        await svc.send_reminders(guild_id=1, ctx=MagicMock(), _now=FIXED_NOW)
+    record.assert_not_awaited()
+    svc.bot.get_user.assert_not_called()
+    svc.log_service.post_error.assert_not_awaited()

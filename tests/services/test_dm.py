@@ -59,3 +59,11 @@ async def test_dm_user_fetch_failure_returns_false():
         side_effect=disnake.NotFound(MagicMock(status=404, reason="Not Found"), "Not Found")
     )
     assert await dm_user(bot, 5, "hi") is False
+
+
+@pytest.mark.asyncio
+async def test_dm_user_guest_has_nothing_to_send():
+    bot = _bot()
+    assert await dm_user(bot, -2, "hi") is True
+    bot.get_user.assert_not_called()
+    bot.fetch_user.assert_not_awaited()

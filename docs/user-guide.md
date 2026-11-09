@@ -371,9 +371,12 @@ All commands are for admins: the user IDs in `ADMIN_USER_IDS` plus the admins ad
 | `/config show` | Shows every setting (stored value or default) and the bot status. Works while idle. |
 | `/create event date:<YYYY-MM-DD> [slots] [start] [slot_minutes]` | Creates an event by hand. `slots`, `start` (`HH:MM`) and `slot_minutes` are optional and default to the setup values, so each event can differ. Works with scheduling on or off; scheduled events ignore it: it neither counts toward the events kept ready nor moves the schedule. |
 | `/post lineup update [event:<event id>]` | Posts the lineup of the upcoming event, or of a chosen future event, in the DJ channel. |
-| `/book dj slot dj:<member> event:<event> slot:<number>` | Books a DJ into a slot without asking for confirmation. |
-| `/cancel dj slot dj:<member> event:<event> slot:<number>` | Frees a DJ's slot. |
-| `/list all djs` | Lists all registered DJs and whether they get automatic invites. |
+| `/book dj slot event:<event> slot:<number> dj:<member>` or `guest:<name>` | Books a DJ into a slot without asking for confirmation. Use `dj` for a server member, or `guest` to pick a DJ from the DJ list by name (also DJs without Discord). |
+| `/cancel dj slot event:<event> slot:<number> dj:<member>` or `guest:<name>` | Frees a DJ's slot. |
+| `/dj add name:<name> link:<stream link> [backup_link] [vrchat_name] [logo] [discord_user]` | Adds a DJ to the DJ list. Leave `discord_user` empty for a guest who has no Discord account. `logo` is an optional PNG or JPEG up to 5 MB. |
+| `/dj edit dj:<name> [name] [link] [backup_link] [vrchat_name] [logo]` | Changes the given fields of a DJ. Send `-` for `backup_link` or `vrchat_name` to remove it. Changes are synced to Notion. |
+| `/dj remove dj:<name>` | Deletes a DJ after you confirm. Their bookings in upcoming events are cancelled. Past bookings stay. |
+| `/list all djs` | Lists all registered DJs and whether they get automatic invites. Guests are marked. |
 | `/automatic dj booking dj:<member> enabled:<on/off>` | Adds a DJ to or removes a DJ from the automatic booking pool and syncs the invites role. |
 
 The old commands `/config set`, `/add-event`, `/lineup post`, `/admin book`, `/admin cancel`, `/admin dj set-active`, `/list-djs`, `/status` and `/intervene` no longer exist. Settings are changed in `/setup`.
@@ -412,7 +415,7 @@ DJs that joined before this change keep their stored profile and stream links. T
 
 ### 7.7 The admin page
 
-A small web page to manage the admin list. It is off until you set `ADMIN_PAGE_PASSWORD`.
+A small web page to manage the admin list and the DJ list. It is off until you set `ADMIN_PAGE_PASSWORD`.
 
 **Warning:** the page has no HTTPS. Use it only on your local network and never expose it to the internet (no port forwarding, no public reverse proxy).
 
@@ -423,9 +426,12 @@ A small web page to manage the admin list. It is off until you set `ADMIN_PAGE_P
 What the page shows: the server name, the owners from `ADMIN_USER_IDS` (they cannot be removed) and the added admins with their Discord name when it can be found.
 
 What you can do:
+- Open **Manage DJs** to add, edit and delete DJs, with an optional logo upload. The same works with the `/dj` commands.
 - Add an admin by Discord user ID (17 to 19 digits). The ID does not have to be a server member. An added admin can use every admin command, including `/setup`. While the bot is active, adding an admin writes an entry to the admin log channel; removals do not.
 - Remove an added admin.
 - Log out. This clears the cookie in your browser only.
+
+A DJ added without a Discord user ID is a **guest**. Admins can book guests and they appear in the lineup, but the bot never sends them anything (no invites, reminders or booking notices) and they are not part of the automatic invites.
 
 Sessions end when the bot restarts; you log in again. Every wrong password is answered after a short delay (0.5 seconds), and after 5 wrong attempts from one address within 5 minutes, that address is blocked for 5 minutes.
 

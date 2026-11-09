@@ -85,7 +85,7 @@ All checks should pass before opening a PR or building a release image.
 output/ravebot/
 ├── bot/
 │   ├── cogs/               # Slash command handlers
-│   │   ├── admin.py        # /config show, /create event, /post lineup update, /book dj slot, /cancel dj slot, /list all djs, /automatic dj booking
+│   │   ├── admin.py        # /config show, /create event, /post lineup update, /book dj slot, /cancel dj slot, /dj add|edit|remove, /list all djs, /automatic dj booking
 │   │   ├── booking.py      # DJ self-service booking (thin shell - logic in views.py)
 │   │   ├── events.py       # Lineup post auto-update, event auto-creation
 │   │   ├── onboarding.py   # DJ role detection, welcome DM, DM routing
@@ -160,8 +160,11 @@ Registered by `AdminCog` (`bot/cogs/admin.py`) and `SetupCog` (`bot/cogs/setup.p
 /config show
 /create event date:<YYYY-MM-DD> [slots] [start] [slot_minutes]
 /post lineup update [event]
-/book dj slot dj event slot
-/cancel dj slot dj event slot
+/book dj slot event slot [dj | guest]
+/cancel dj slot event slot [dj | guest]
+/dj add name link [backup_link] [vrchat_name] [logo] [discord_user]
+/dj edit dj [name] [link] [backup_link] [vrchat_name] [logo]
+/dj remove dj
 /list all djs
 /automatic dj booking dj enabled
 ```
@@ -356,3 +359,8 @@ The images in `docs/assets` are rendered from `docs/assets/src` (and the admin p
 ### Unraid template
 
 `unraid/ravebot.xml` is the Unraid template: repository `ghcr.io/m4xxx/ravebot:latest`, all variables, the admin page port and the icon. Keep it in line with the variables in `bot/config.py`.
+
+
+## Guest DJs and the DJ list
+
+`bot/services/dj_admin.py` (`DjAdminService`) adds, edits and deletes DJs for the admin page (`/djs` routes in `bot/web/app.py`) and the `/dj` commands. A guest has no Discord account, so the `djs` table (keyed by Discord user ID) stores them under a negative ID from `next_guest_id`; Discord IDs are positive. The Notion `Discord ID` text holds the same negative number. Every place that contacts DJs skips negative IDs: `dm_user` returns True without sending, the reminders skip them, and the outreach pool (`get_active_booking_djs`) only returns IDs above 0. Deleting a DJ cancels their bookings in upcoming events through `AdminBookingService.cancel_slot_override`, moves their Notion DJ row to the trash, then deletes the row.

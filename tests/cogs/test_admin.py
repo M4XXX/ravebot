@@ -179,7 +179,7 @@ async def test_admin_book_calls_service_and_replies() -> None:
     )
     dj = make_mock_member(user_id=42, display_name="DJ Scope")
 
-    await cog.book_dj_slot.callback(cog, inter, dj, "Rave Night #12", 2)
+    await cog.book_dj_slot.callback(cog, inter, "Rave Night #12", 2, dj, None)
 
     ctx.admin_booking_service.book_slot_override.assert_awaited_once_with(
         admin_name=inter.author.name,
@@ -209,7 +209,7 @@ async def test_admin_book_service_returns_error_replies_with_error() -> None:
     inter = make_mock_inter(user_id=1)
     dj = make_mock_member(user_id=42)
 
-    await cog.book_dj_slot.callback(cog, inter, dj, "Ghost", 1)
+    await cog.book_dj_slot.callback(cog, inter, "Ghost", 1, dj, None)
 
     reply, _ = assert_deferred_reply(inter)
     assert "not found" in reply.lower()
@@ -227,7 +227,7 @@ async def test_admin_book_returns_not_ready_when_service_none() -> None:
     inter = make_mock_inter(user_id=1)
     dj = make_mock_member()
 
-    await cog.book_dj_slot.callback(cog, inter, dj, "Event", 1)
+    await cog.book_dj_slot.callback(cog, inter, "Event", 1, dj, None)
 
     inter.response.send_message.assert_awaited_once()
     assert "not ready" in inter.response.send_message.call_args[0][0].lower()
@@ -248,7 +248,7 @@ async def test_admin_cancel_calls_service_and_replies() -> None:
     )
     dj = make_mock_member(user_id=7, display_name="DJ Wave")
 
-    await cog.cancel_dj_slot.callback(cog, inter, dj, "Rave Night #12", 1)
+    await cog.cancel_dj_slot.callback(cog, inter, "Rave Night #12", 1, dj, None)
 
     ctx.admin_booking_service.cancel_slot_override.assert_awaited_once_with(
         admin_name=inter.author.name,
@@ -278,7 +278,7 @@ async def test_admin_cancel_no_booking_replies_with_message() -> None:
     inter = make_mock_inter(user_id=1)
     dj = make_mock_member(user_id=7, display_name="DJ Wave")
 
-    await cog.cancel_dj_slot.callback(cog, inter, dj, "Rave Night #12", 1)
+    await cog.cancel_dj_slot.callback(cog, inter, "Rave Night #12", 1, dj, None)
 
     reply, _ = assert_deferred_reply(inter)
     assert "no booking found" in reply.lower()
@@ -943,6 +943,9 @@ def test_command_tree_is_exactly_the_new_set() -> None:
         "post lineup update",
         "book dj slot",
         "cancel dj slot",
+        "dj add",
+        "dj edit",
+        "dj remove",
         "list all djs",
         "automatic dj booking",
     }
@@ -956,7 +959,7 @@ def test_old_commands_are_gone() -> None:
     for old in ("status", "intervene", "admin", "add-event", "lineup", "list-djs"):
         assert old not in top
     assert "set" not in {c.name for c in cog.config_base.children.values()}
-    assert top == {"config", "create", "post", "book", "cancel", "list", "automatic"}
+    assert top == {"config", "create", "post", "book", "cancel", "dj", "list", "automatic"}
 
 
 def test_idle_exempt_names_match_the_tree() -> None:
@@ -1436,3 +1439,144 @@ async def test_create_event_tells_organizer_when_marker_fails(
     reply, _ = assert_deferred_reply(inter)
     assert reply.startswith("Event created in Notion")
     assert "scheduled" in reply and "could not" in reply.lower()
+
+
+# ---------------------------------------------------------------------------
+# /dj add, /dj edit, /dj remove and the guest option of /book and /cancel
+# ---------------------------------------------------------------------------
+
+GUEST_ROW = {"discord_user_id": -1, "dj_name": "Moonbeat"}
+
+
+def _dj_cog():
+    from bot.cogs.admin import AdminCog
+    from bot.services.dj_admin import DjResult
+
+    ctx = make_mock_ctx(frozenset({1}))
+    ctx.dj_admin_service = MagicMock()
+    ctx.dj_admin_service.add_dj = AsyncMock(return_value=DjResult(True, "Added."))
+    ctx.dj_admin_service.edit_dj = AsyncMock(return_value=DjResult(True, "Saved."))
+    ctx.dj_admin_service.delete_dj = AsyncMock(return_value=DjResult(True, "Deleted."))
+    ctx.dj_admin_service.find_by_name = AsyncMock(return_value=GUEST_ROW)
+    ctx.dj_admin_service.future_bookings = AsyncMock(return_value=[])
+    ctx.dj_admin_service.list_djs = AsyncMock(return_value=[GUEST_ROW])
+    return AdminCog(ctx), ctx
+
+
+def _attachment(size=10, data=b"png"):
+    attachment = MagicMock()
+    attachment.size = size
+    attachment.read = AsyncMock(return_value=data)
+    return attachment
+
+
+async def test_dj_add_guest_with_logo() -> None:
+    cog, ctx = _dj_cog()
+    inter = make_mock_inter(user_id=1)
+    await cog.dj_add.callback(
+        cog, inter, "Moonbeat", "twitch.tv/m", None, "Moon", _attachment(), None
+    )
+    ctx.dj_admin_service.add_dj.assert_awaited_once_with(
+        admin_name=inter.author.name, name="Moonbeat", link="twitch.tv/m", alt_link=None,
+        vrchat="Moon", discord_id=None, logo=b"png",
+    )
+    assert assert_deferred_reply(inter)[0] == "Added."
+
+
+async def test_dj_add_with_discord_user_and_big_logo() -> None:
+    cog, ctx = _dj_cog()
+    inter = make_mock_inter(user_id=1)
+    user = MagicMock(id=42)
+    await cog.dj_add.callback(cog, inter, "Nova", "https://a.b", None, None, None, user)
+    assert ctx.dj_admin_service.add_dj.call_args.kwargs["discord_id"] == 42
+    inter = make_mock_inter(user_id=1)
+    ctx.dj_admin_service.add_dj.reset_mock()
+    await cog.dj_add.callback(
+        cog, inter, "Nova", "https://a.b", None, None, _attachment(size=6_000_000), None
+    )
+    ctx.dj_admin_service.add_dj.assert_not_awaited()
+    assert "too big" in inter.followup.send.call_args.args[0]
+
+
+async def test_dj_edit_clears_with_a_dash_and_changes_only_given_fields() -> None:
+    cog, ctx = _dj_cog()
+    inter = make_mock_inter(user_id=1)
+    await cog.dj_edit.callback(cog, inter, "moonbeat", None, "twitch.tv/new", "-", None, None)
+    ctx.dj_admin_service.edit_dj.assert_awaited_once_with(
+        admin_name=inter.author.name, dj_id=-1,
+        fields={"link": "twitch.tv/new", "alt_link": ""}, logo=None,
+    )
+    ctx.dj_admin_service.find_by_name = AsyncMock(return_value=None)
+    inter = make_mock_inter(user_id=1)
+    await cog.dj_edit.callback(cog, inter, "ghost", None, None, None, None, None)
+    assert "no DJ" in inter.followup.send.call_args.args[0]
+
+
+async def test_dj_remove_asks_first_and_deletes_on_confirm() -> None:
+    from bot.cogs.admin import _ConfirmDelete
+
+    cog, ctx = _dj_cog()
+    ctx.dj_admin_service.future_bookings = AsyncMock(
+        return_value=[(MagicMock(event_id="Rave One"), 0)]
+    )
+    inter = make_mock_inter(user_id=1)
+    with patch("bot.cogs.admin.texts.slot_phrase", return_value="slot 1 at 20:00"):
+        await cog.dj_remove.callback(cog, inter, "Moonbeat")
+    text = inter.followup.send.call_args.args[0]
+    view = inter.followup.send.call_args.kwargs["view"]
+    assert "Moonbeat" in text and "Rave One, slot 1 at 20:00" in text
+    assert isinstance(view, _ConfirmDelete)
+    ctx.dj_admin_service.delete_dj.assert_not_awaited()
+
+    click = MagicMock()
+    click.author.id = 1
+    click.author.name = "Admin"
+    click.response.defer = AsyncMock()
+    click.edit_original_message = AsyncMock()
+    assert await view.interaction_check(click) is True
+    await view.confirm.callback(click)
+    ctx.dj_admin_service.delete_dj.assert_awaited_once_with(admin_name="Admin", dj_id=-1)
+    click.edit_original_message.assert_awaited_once_with(content="Deleted.", view=None)
+    other = MagicMock()
+    other.author.id = 2
+    assert await view.interaction_check(other) is False
+
+
+async def test_book_and_cancel_accept_a_guest_by_name() -> None:
+    cog, ctx = _dj_cog()
+    ctx.admin_booking_service = MagicMock()
+    ctx.admin_booking_service.book_slot_override = AsyncMock(return_value=(True, ""))
+    ctx.admin_booking_service.cancel_slot_override = AsyncMock(return_value=(True, ""))
+    inter = make_mock_inter(user_id=1)
+    await cog.book_dj_slot.callback(cog, inter, "Rave", 2, None, "Moonbeat")
+    ctx.admin_booking_service.book_slot_override.assert_awaited_once_with(
+        admin_name=inter.author.name, dj_id=-1, dj_name="Moonbeat", event_name="Rave", slot_num=2
+    )
+    assert "**Moonbeat** is booked into slot 2" in assert_deferred_reply(inter)[0]
+    inter = make_mock_inter(user_id=1)
+    await cog.cancel_dj_slot.callback(cog, inter, "Rave", 2, None, "Moonbeat")
+    assert ctx.admin_booking_service.cancel_slot_override.call_args.kwargs["dj_id"] == -1
+
+
+async def test_book_needs_exactly_one_of_member_and_guest() -> None:
+    cog, ctx = _dj_cog()
+    ctx.admin_booking_service = MagicMock(book_slot_override=AsyncMock())
+    member = make_mock_member(user_id=42, display_name="X")
+    for dj, guest in ((None, None), (member, "Moonbeat")):
+        inter = make_mock_inter(user_id=1)
+        await cog.book_dj_slot.callback(cog, inter, "Rave", 1, dj, guest)
+        assert "exactly one" in inter.followup.send.call_args.args[0]
+    ctx.admin_booking_service.book_slot_override.assert_not_awaited()
+    inter = make_mock_inter(user_id=1)
+    ctx.dj_admin_service.find_by_name = AsyncMock(return_value=None)
+    await cog.book_dj_slot.callback(cog, inter, "Rave", 1, None, "ghost")
+    assert "no DJ" in inter.followup.send.call_args.args[0]
+
+
+async def test_dj_name_autocomplete_is_admin_only_and_filters() -> None:
+    cog, ctx = _dj_cog()
+    inter = make_mock_inter(user_id=1)
+    with patch("bot.cogs.admin.activation.is_active", new=AsyncMock(return_value=True)):
+        assert await cog.dj_name_autocomplete(inter, "moon") == ["Moonbeat"]
+        assert await cog.dj_name_autocomplete(inter, "zzz") == []
+        assert await cog.dj_name_autocomplete(make_mock_inter(user_id=2), "") == []

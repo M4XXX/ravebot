@@ -41,6 +41,7 @@ background:linear-gradient(135deg,#7c5cff,#2ad4ff)}
 .who{min-width:0;overflow-wrap:anywhere}
 .who b{display:block}
 .who small{opacity:.65}
+.tag.g{border-color:#ffb86b99;color:#ffd9a8}
 .tag{margin-left:auto;font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid #9d8cff88;
 color:#cfc6ff;white-space:nowrap}
 .btn{display:inline-block;padding:6px 14px;border:0;border-radius:6px;background:#7c5cff;
@@ -172,6 +173,9 @@ def render_dashboard(
         "Name and picture are shown when the person is on the server.</p></section>"
         f'<section class="card"><h3>Admins with bot commands ({len(rows)})</h3>'
         f"{admin_rows}</section>"
+        '<section class="card"><h3>DJs</h3>'
+        '<p class="muted">Add, edit or delete DJs, including guests without a Discord account.</p>'
+        '<a class="btn" href="/djs">Manage DJs</a></section>'
     )
 
 
@@ -187,6 +191,119 @@ def render_confirm_remove(row: AdminRow, csrf: str) -> str:
         f'{_csrf_field(csrf)}<input type="hidden" name="id" value="{_e(row.info.user_id)}">'
         '<button class="btn red" type="submit">Remove</button></form>'
         '<a class="btn g" href="/">Cancel</a></div></section>'
+    )
+
+
+_TOP = f'<div class="top"><div class="brand">{_BRAND}</div></div>'
+
+
+def _dj_row(row: dict, actions: bool = True) -> str:
+    guest = row["discord_user_id"] < 0
+    tag = '<span class="tag g">Guest</span>' if guest else '<span class="tag">Discord</span>'
+    link = row["stream_url_primary"] or ""
+    dj_id = _e(row["discord_user_id"])
+    buttons = (
+        f'<a class="btn g" href="/djs/edit?id={dj_id}">Edit</a>'
+        f'<a class="btn red" href="/djs/delete?id={dj_id}">Delete</a>'
+        if actions
+        else ""
+    )
+    return (
+        f'<div class="row"><div class="who"><b>{_e(row["dj_name"])}</b>'
+        f"<small>{_e(link)}</small></div>{tag}{buttons}</div>"
+    )
+
+
+def _dj_fields(values: dict[str, str], with_discord: bool) -> str:
+    def field(name: str, placeholder: str, required: bool = False, maxlen: int = 500) -> str:
+        req = " required" if required else ""
+        return (
+            f'<input class="in" type="text" name="{name}" maxlength="{maxlen}" '
+            f'placeholder="{_e(placeholder)}" aria-label="{_e(placeholder)}" '
+            f'value="{_e(values.get(name, ""))}" autocomplete="off"{req}>'
+        )
+
+    html = (
+        field("name", "DJ name (required)", True, 80)
+        + field("link", "Stream link (required)", True)
+        + field("alt_link", "Backup stream link")
+        + field("vrchat", "VRChat name", False, 80)
+    )
+    if with_discord:
+        html += field(
+            "discord_id", "Discord user ID (leave empty for a guest without Discord)", False, 25
+        )
+    return html
+
+
+_LOGO_INPUT = (
+    '<p class="muted">Logo (optional, PNG or JPEG, up to 5 MB)</p>'
+    '<input class="in" type="file" name="logo" accept="image/png,image/jpeg" '
+    'aria-label="DJ logo">'
+)
+
+
+def render_djs(
+    rows: list[dict],
+    csrf: str,
+    message: ActionResult | None = None,
+    values: dict[str, str] | None = None,
+) -> str:
+    items = "".join(_dj_row(r) for r in rows) or '<p class="muted">No DJs yet.</p>'
+    return _page(
+        f'<div class="top"><div class="brand">{_BRAND}</div>'
+        '<a class="btn g" href="/">Back</a></div>'
+        f"{_message(message)}"
+        '<section class="card"><h3>Add a DJ</h3>'
+        f'<form method="post" action="/djs/add" enctype="multipart/form-data">{_csrf_field(csrf)}'
+        f'{_dj_fields(values or {}, True)}{_LOGO_INPUT}'
+        '<button class="btn" type="submit">Add DJ</button></form>'
+        '<p class="muted">A DJ without a Discord user ID is a guest: the bot books them '
+        "but never sends them messages.</p></section>"
+        f'<section class="card"><h3>DJ list ({len(rows)})</h3>{items}</section>'
+    )
+
+
+def render_edit_dj(
+    row: dict,
+    csrf: str,
+    message: ActionResult | None = None,
+    values: dict[str, str] | None = None,
+) -> str:
+    shown = values or {
+        "name": row["dj_name"] or "",
+        "link": row["stream_url_primary"] or "",
+        "alt_link": row["stream_url_backup"] or "",
+        "vrchat": row["vrchat_name"] or "",
+    }
+    logo_note = "A logo is saved. Choose a file to replace it." if row["has_logo"] else ""
+    return _page(
+        f"{_TOP}{_message(message)}"
+        '<section class="card"><h3>Edit a DJ</h3>'
+        f'<form method="post" action="/djs/edit" enctype="multipart/form-data">'
+        f'{_csrf_field(csrf)}<input type="hidden" name="id" value="{_e(row["discord_user_id"])}">'
+        f"{_dj_fields(shown, False)}"
+        f'{_LOGO_INPUT}<p class="muted">{_e(logo_note)}</p>'
+        '<div class="actions"><button class="btn" type="submit">Save</button>'
+        '<a class="btn g" href="/djs">Cancel</a></div></form></section>'
+    )
+
+
+def render_confirm_delete_dj(row: dict, bookings: list[tuple[str, str]], csrf: str) -> str:
+    if bookings:
+        items = "".join(f"<li>{_e(event)}, {_e(slot)}</li>" for event, slot in bookings)
+        extra = f"<p>These upcoming bookings are cancelled:</p><ul>{items}</ul>"
+    else:
+        extra = '<p class="muted">The DJ has no upcoming bookings.</p>'
+    return _page(
+        f"{_TOP}"
+        '<section class="card"><h3>Delete a DJ</h3>'
+        f"{_dj_row(row, actions=False)}"
+        f"<p>Delete {_e(row['dj_name'])}?</p>{extra}"
+        '<div class="actions"><form method="post" action="/djs/delete">'
+        f'{_csrf_field(csrf)}<input type="hidden" name="id" value="{_e(row["discord_user_id"])}">'
+        '<button class="btn red" type="submit">Delete</button></form>'
+        '<a class="btn g" href="/djs">Cancel</a></div></section>'
     )
 
 
