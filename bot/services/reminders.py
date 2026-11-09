@@ -141,6 +141,9 @@ class RemindersService:
                     )
                     continue
 
+                if discord_user_id <= 0:
+                    continue  # guest DJ: no Discord account, no reminder
+
                 # Get Discord user from cache
                 user = self.bot.get_user(discord_user_id)
                 if user is None:

@@ -216,6 +216,9 @@ async def main() -> None:
         log_service=ctx.log_service,
     )
 
+    from bot.services.dj_admin import DjAdminService
+    ctx.dj_admin_service = DjAdminService(ctx, bot)
+
     _add_cog(bot, OnboardingCog(ctx))
     _add_cog(bot, BookingCog(ctx))
     _add_cog(bot, OutreachCog(ctx))

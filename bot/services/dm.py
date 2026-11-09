@@ -11,7 +11,13 @@ logger = logging.getLogger(__name__)
 
 
 async def dm_user(bot: "commands.Bot", user_id: int, text: str) -> bool:
-    """DM the user; True on success. Never raises: a failed DM is non-fatal."""
+    """DM the user; True on success. Never raises: a failed DM is non-fatal.
+
+    Guest DJs (negative ids) have no Discord account: there is nothing to send and
+    nothing failed, so this returns True without sending.
+    """
+    if user_id <= 0:
+        return True
     try:
         user = bot.get_user(user_id)
         if user is None:

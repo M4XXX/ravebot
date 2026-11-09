@@ -20,6 +20,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- DJ list management for admins. The admin page has a new **Manage DJs** page to add, edit and delete DJs, with an optional logo upload. The same works with `/dj add`, `/dj edit` and `/dj remove`. Edits are synced to Notion. Deleting a DJ cancels their bookings in upcoming events after a confirmation.
+- Guest DJs: a DJ added without a Discord user ID is a guest. Admins can book them with `/book dj slot guest:<name>` (and cancel with `/cancel dj slot`). The bot never contacts guests: no invites, reminders or booking notices. `/list all djs` marks them.
 - `/setup`: the Events popup is split into one step per setting (slots, start time, slot length, interval, first event date, events kept ready, time zone). Each step has a dropdown with common values and an **Other** button for your own value.
 - `/setup`: the first scheduled event can start on a chosen date (setting `first_event_date`), for example next Saturday and then every 14 days. Without a date the schedule starts one interval after the day of setup, as before.
 - `/setup`: scheduled events can be turned off (setting `event_schedule_enabled`). The bot is then fully set up and creates no events by itself.

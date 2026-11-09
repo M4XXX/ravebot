@@ -144,7 +144,9 @@ def _parse_time(value: str | None) -> datetime.time | None:
 
 def _discord_id(page: dict) -> int | None:
     raw = _rich(page, PROP_DJ_DISCORD_ID)
-    if raw and raw.isascii() and raw.isdigit():
+    # Guests (no Discord account) carry a negative number made up by the bot.
+    digits = raw[1:] if raw and raw.startswith("-") else raw
+    if digits and digits.isascii() and digits.isdigit():
         return int(raw)
     return None
 

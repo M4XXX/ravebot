@@ -6,6 +6,7 @@ Command tree (disnake nesting, spaces are levels):
   /post lineup update
   /book dj slot
   /cancel dj slot
+  /dj add, /dj edit, /dj remove
   /list all djs
   /automatic dj booking
 (/setup lives in bot/cogs/setup.py.)
@@ -26,9 +27,11 @@ from bot.db.djs import get_all_djs
 from bot.db.manual_events import mark_manual
 from bot.notion.client import DuplicateEventError, NotionWriteError
 from bot.services import activation
+from bot.services.dj_admin import UNKNOWN_DJ, is_guest
 from bot.services.event_defaults import default_event_shape
 from bot.services.event_replenish import replenish_guard
 from bot.services.lineup import future_events, upcoming_event
+from bot.services.logo import MAX_LOGO_BYTES
 from bot.services.outreach import parse_outreach_enabled
 from bot.services.roles import DJ_ROLE_KEY, INVITES_ROLE_KEY
 from bot.timezone import DEFAULT_TIMEZONE, local_today
@@ -472,9 +475,14 @@ class AdminCog(commands.Cog):
     async def book_dj_slot(
         self,
         inter: disnake.ApplicationCommandInteraction,
-        dj: disnake.Member = commands.Param(description="The DJ to book"),
         event: str = commands.Param(description="Event ID (pick one from the list)"),
         slot: int = commands.Param(ge=1, description="Slot number (1 = first slot of event)"),
+        dj: disnake.Member | None = commands.Param(
+            default=None, description="The DJ to book (a server member)"
+        ),
+        guest: str | None = commands.Param(
+            default=None, description="Or a DJ from the DJ list (guests without Discord)"
+        ),
     ) -> None:
         """Force-book a DJ into a slot, writing directly to Notion without confirmation.
 
@@ -491,20 +499,30 @@ class AdminCog(commands.Cog):
             return
         # Notion work can exceed Discord's 3 s response deadline: defer first.
         await inter.response.defer(ephemeral=True)
+        target = await self._resolve_dj(inter, dj, guest)
+        if target is None:
+            return
+        dj_id, dj_name, dj_mention = target
         success, msg = await self.ctx.admin_booking_service.book_slot_override(
             admin_name=inter.author.name,
-            dj_id=dj.id,
-            dj_name=dj.display_name,
+            dj_id=dj_id,
+            dj_name=dj_name,
             event_name=event,
             slot_num=slot,
         )
         if success:
             await inter.followup.send(
-                f"Done. {dj.mention} is booked into slot {slot} of '{event}'.",
+                f"Done. {dj_mention} is booked into slot {slot} of '{event}'.",
                 ephemeral=True,
             )
         else:
             await inter.followup.send(msg, ephemeral=True)
+
+    @book_dj_slot.autocomplete("guest")
+    async def book_guest_autocomplete(
+        self, inter: disnake.ApplicationCommandInteraction, user_input: str
+    ) -> list[str]:
+        return await self.dj_name_autocomplete(inter, user_input)
 
     @book_dj_slot.autocomplete("event")
     async def book_event_autocomplete(
@@ -518,9 +536,14 @@ class AdminCog(commands.Cog):
     async def cancel_dj_slot(
         self,
         inter: disnake.ApplicationCommandInteraction,
-        dj: disnake.Member = commands.Param(description="The DJ whose booking to cancel"),
         event: str = commands.Param(description="Event ID (pick one from the list)"),
         slot: int = commands.Param(ge=1, description="Slot number (1 = first slot of event)"),
+        dj: disnake.Member | None = commands.Param(
+            default=None, description="The DJ whose booking to cancel (a server member)"
+        ),
+        guest: str | None = commands.Param(
+            default=None, description="Or a DJ from the DJ list (guests without Discord)"
+        ),
     ) -> None:
         """Force-cancel a DJ's booking, removing it from Notion and slot_locks.
 
@@ -538,20 +561,30 @@ class AdminCog(commands.Cog):
             return
         # Notion work can exceed Discord's 3 s response deadline: defer first.
         await inter.response.defer(ephemeral=True)
+        target = await self._resolve_dj(inter, dj, guest)
+        if target is None:
+            return
+        dj_id, dj_name, dj_mention = target
         success, msg = await self.ctx.admin_booking_service.cancel_slot_override(
             admin_name=inter.author.name,
-            dj_id=dj.id,
-            dj_name=dj.display_name,
+            dj_id=dj_id,
+            dj_name=dj_name,
             event_name=event,
             slot_num=slot,
         )
         if success:
             await inter.followup.send(
-                f"Done. {dj.mention}'s booking in slot {slot} of '{event}' is cancelled.",
+                f"Done. {dj_mention}'s booking in slot {slot} of '{event}' is cancelled.",
                 ephemeral=True,
             )
         else:
             await inter.followup.send(msg, ephemeral=True)
+
+    @cancel_dj_slot.autocomplete("guest")
+    async def cancel_guest_autocomplete(
+        self, inter: disnake.ApplicationCommandInteraction, user_input: str
+    ) -> list[str]:
+        return await self.dj_name_autocomplete(inter, user_input)
 
     @cancel_dj_slot.autocomplete("event")
     async def cancel_event_autocomplete(
@@ -646,8 +679,12 @@ class AdminCog(commands.Cog):
             return
 
         lines = [
-            f"<@{dj['discord_user_id']}> · {dj['dj_name']} · "
-            f"{'Active' if dj['active_booking'] else 'Inactive'}"
+            (
+                f"{dj['dj_name']} · Guest (no Discord)"
+                if is_guest(dj["discord_user_id"])
+                else f"<@{dj['discord_user_id']}> · {dj['dj_name']} · "
+                f"{'Active' if dj['active_booking'] else 'Inactive'}"
+            )
             for dj in djs
         ]
         embed = disnake.Embed(
@@ -657,3 +694,230 @@ class AdminCog(commands.Cog):
         )
         embed.set_footer(text=f"{len(djs)} DJ(s) registered")
         await inter.response.send_message(embed=embed, ephemeral=True)
+
+
+    # ------------------------------------------------------------------ /dj
+
+    async def dj_name_autocomplete(
+        self, inter: disnake.ApplicationCommandInteraction, user_input: str
+    ) -> list[str]:
+        """DJ names from the DJ list matching the typed text (max 25). Admins only."""
+        service = self.ctx.dj_admin_service
+        if service is None or not self.ctx.is_admin(inter.author.id):
+            return []
+        if (
+            self.ctx.db is None
+            or inter.guild_id is None
+            or not await activation.is_active(self.ctx.db, inter.guild_id)
+        ):
+            return []
+        try:
+            rows = await service.list_djs()
+        except Exception:
+            logger.warning("DJ name autocomplete failed", exc_info=True)
+            return []
+        needle = user_input.strip().casefold()
+        return [r["dj_name"] for r in rows if needle in r["dj_name"].casefold()][:25]
+
+    async def _resolve_dj(
+        self,
+        inter: disnake.ApplicationCommandInteraction,
+        member: disnake.Member | None,
+        guest_name: str | None,
+    ) -> tuple[int, str, str] | None:
+        """(id, name, mention text) for /book and /cancel; answers the admin and returns
+        None when the choice is invalid."""
+        if (member is None) == (guest_name is None):
+            await inter.followup.send(
+                "Pick exactly one: the dj option (a server member) or the guest option "
+                "(a DJ from the DJ list).",
+                ephemeral=True,
+            )
+            return None
+        if member is not None:
+            return member.id, member.display_name, member.mention
+        service = self.ctx.dj_admin_service
+        row = await service.find_by_name(guest_name or "") if service is not None else None
+        if row is None:
+            await inter.followup.send(UNKNOWN_DJ, ephemeral=True)
+            return None
+        return row["discord_user_id"], row["dj_name"], f"**{row['dj_name']}**"
+
+    async def _read_logo(
+        self, inter: disnake.ApplicationCommandInteraction, logo: disnake.Attachment | None
+    ) -> tuple[bool, bytes | None]:
+        """(ok, bytes). On a bad file the admin is answered and ok is False."""
+        if logo is None:
+            return True, None
+        if logo.size > MAX_LOGO_BYTES:
+            await inter.followup.send(
+                "The logo is too big. Use a PNG or JPEG under 5 MB.", ephemeral=True
+            )
+            return False, None
+        try:
+            return True, await logo.read()
+        except disnake.HTTPException:
+            await inter.followup.send("The logo could not be downloaded.", ephemeral=True)
+            return False, None
+
+    @commands.slash_command(
+        name="dj", description="Manage the DJ list (admin only)", contexts=SERVER_ONLY
+    )
+    async def dj_base(self, inter: disnake.ApplicationCommandInteraction) -> None:
+        pass
+
+    @dj_base.sub_command(
+        name="add",
+        description="Add a DJ to the DJ list (also DJs who are not on the server)",
+    )
+    async def dj_add(
+        self,
+        inter: disnake.ApplicationCommandInteraction,
+        name: str = commands.Param(description="DJ name"),
+        link: str = commands.Param(description="Stream link"),
+        backup_link: str | None = commands.Param(default=None, description="Backup stream link"),
+        vrchat_name: str | None = commands.Param(default=None, description="VRChat name"),
+        logo: disnake.Attachment | None = commands.Param(
+            default=None, description="Logo (PNG or JPEG, up to 5 MB)"
+        ),
+        discord_user: disnake.User | None = commands.Param(
+            default=None, description="The DJ's Discord account. Leave empty for a guest."
+        ),
+    ) -> None:
+        service = self.ctx.dj_admin_service
+        if service is None:
+            await inter.response.send_message(
+                "The bot is not ready yet. Please try again in a moment.", ephemeral=True
+            )
+            return
+        await inter.response.defer(ephemeral=True)
+        ok, image = await self._read_logo(inter, logo)
+        if not ok:
+            return
+        result = await service.add_dj(
+            admin_name=inter.author.name,
+            name=name,
+            link=link,
+            alt_link=backup_link,
+            vrchat=vrchat_name,
+            discord_id=discord_user.id if discord_user is not None else None,
+            logo=image,
+        )
+        await inter.followup.send(result.message, ephemeral=True)
+
+    @dj_base.sub_command(name="edit", description="Change a DJ on the DJ list")
+    async def dj_edit(
+        self,
+        inter: disnake.ApplicationCommandInteraction,
+        dj: str = commands.Param(description="The DJ to change"),
+        name: str | None = commands.Param(default=None, description="New DJ name"),
+        link: str | None = commands.Param(default=None, description="New stream link"),
+        backup_link: str | None = commands.Param(
+            default=None, description="New backup link (send - to remove it)"
+        ),
+        vrchat_name: str | None = commands.Param(
+            default=None, description="New VRChat name (send - to remove it)"
+        ),
+        logo: disnake.Attachment | None = commands.Param(
+            default=None, description="New logo (PNG or JPEG, up to 5 MB)"
+        ),
+    ) -> None:
+        service = self.ctx.dj_admin_service
+        if service is None:
+            await inter.response.send_message(
+                "The bot is not ready yet. Please try again in a moment.", ephemeral=True
+            )
+            return
+        await inter.response.defer(ephemeral=True)
+        row = await service.find_by_name(dj)
+        if row is None:
+            await inter.followup.send(UNKNOWN_DJ, ephemeral=True)
+            return
+        ok, image = await self._read_logo(inter, logo)
+        if not ok:
+            return
+        fields: dict[str, str | None] = {}
+        for key, value in (
+            ("name", name), ("link", link), ("alt_link", backup_link), ("vrchat", vrchat_name),
+        ):
+            if value is not None:
+                fields[key] = "" if value.strip() == "-" else value
+        result = await service.edit_dj(
+            admin_name=inter.author.name,
+            dj_id=row["discord_user_id"],
+            fields=fields,
+            logo=image,
+        )
+        await inter.followup.send(result.message, ephemeral=True)
+
+    @dj_base.sub_command(name="remove", description="Delete a DJ from the DJ list")
+    async def dj_remove(
+        self,
+        inter: disnake.ApplicationCommandInteraction,
+        dj: str = commands.Param(description="The DJ to delete"),
+    ) -> None:
+        service = self.ctx.dj_admin_service
+        if service is None:
+            await inter.response.send_message(
+                "The bot is not ready yet. Please try again in a moment.", ephemeral=True
+            )
+            return
+        await inter.response.defer(ephemeral=True)
+        row = await service.find_by_name(dj)
+        if row is None:
+            await inter.followup.send(UNKNOWN_DJ, ephemeral=True)
+            return
+        try:
+            bookings = await service.future_bookings(row["discord_user_id"])
+        except Exception:
+            logger.warning("dj remove: listing the bookings failed", exc_info=True)
+            await inter.followup.send(texts.GENERIC_ERROR, ephemeral=True)
+            return
+        text = f"Delete the DJ **{row['dj_name']}**?"
+        if bookings:
+            text += "\nTheir upcoming bookings are cancelled:\n" + "\n".join(
+                f"- {event.event_id}, {texts.slot_phrase(event, index)}"
+                for event, index in bookings[:15]
+            )
+        view = _ConfirmDelete(self.ctx, service, row["discord_user_id"], inter.author.id)
+        await inter.followup.send(text, view=view, ephemeral=True)
+
+    @dj_edit.autocomplete("dj")
+    async def dj_edit_autocomplete(
+        self, inter: disnake.ApplicationCommandInteraction, user_input: str
+    ) -> list[str]:
+        return await self.dj_name_autocomplete(inter, user_input)
+
+    @dj_remove.autocomplete("dj")
+    async def dj_remove_autocomplete(
+        self, inter: disnake.ApplicationCommandInteraction, user_input: str
+    ) -> list[str]:
+        return await self.dj_name_autocomplete(inter, user_input)
+
+
+class _ConfirmDelete(disnake.ui.View):
+    """Delete / Keep buttons for /dj remove. Admin only, expires after two minutes."""
+
+    def __init__(self, ctx: BotContext, service, dj_id: int, admin_id: int) -> None:
+        super().__init__(timeout=120)
+        self._ctx = ctx
+        self._service = service
+        self._dj_id = dj_id
+        self._admin_id = admin_id
+
+    async def interaction_check(self, inter: disnake.MessageInteraction) -> bool:
+        return inter.author.id == self._admin_id and self._ctx.is_admin(inter.author.id)
+
+    @disnake.ui.button(label="Delete", style=disnake.ButtonStyle.danger)
+    async def confirm(
+        self, button: disnake.ui.Button, inter: disnake.MessageInteraction
+    ) -> None:
+        self.stop()
+        await inter.response.defer()
+        result = await self._service.delete_dj(admin_name=inter.author.name, dj_id=self._dj_id)
+        await inter.edit_original_message(content=result.message, view=None)
+
+    @disnake.ui.button(label="Keep", style=disnake.ButtonStyle.secondary)
+    async def keep(self, button: disnake.ui.Button, inter: disnake.MessageInteraction) -> None:
+        self.stop()
+        await inter.response.edit_message(content="Nothing was deleted.", view=None)

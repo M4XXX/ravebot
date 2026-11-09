@@ -382,6 +382,17 @@ class NotionClient:
         )
         return page["id"]
 
+    async def trash_dj_page(self, page_id: str) -> None:
+        """Move a DJ row of the Notion DJs database to the trash (a 404 is fine)."""
+        try:
+            await self._api.request(
+                "PATCH", f"/pages/{page_id}", {"in_trash": True},
+                f"trash DJ page {page_id}", tolerate=(404,),
+            )
+        except NotionWriteError as exc:
+            if exc.status_code != 404:
+                raise
+
     async def dj_page_alive(self, page_id: str) -> bool:
         """True if the DJ page exists and is not in the trash.
 

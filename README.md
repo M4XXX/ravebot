@@ -221,8 +221,9 @@ All admin commands work on the server only (not in DMs).
 | `/config show` | Admin | Show all settings and the bot status |
 | `/create event` | Admin | Create an event in Notion for a date |
 | `/post lineup update` | Admin | Post the lineup of the next (or a chosen future) event |
-| `/book dj slot` | Admin | Book a slot for any DJ |
+| `/book dj slot` | Admin | Book a slot for any DJ, also a guest |
 | `/cancel dj slot` | Admin | Free any booking |
+| `/dj add`, `/dj edit`, `/dj remove` | Admin | Add, change or delete a DJ, also guests without Discord |
 | `/list all djs` | Admin | List all DJs and who gets automatic invites |
 | `/automatic dj booking` | Admin | Put a DJ into or out of the automatic invites |
 

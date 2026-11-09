@@ -19,6 +19,8 @@ from typing import Any
 from aiohttp import web
 from multidict import MultiDictProxy
 
+from bot.services.dj_admin import parse_discord_id
+from bot.ui import texts
 from bot.web.auth import (
     COOKIE_NAME,
     SESSION_LIFETIME_SECONDS,
@@ -26,15 +28,28 @@ from bot.web.auth import (
     SessionManager,
     check_password,
 )
-from bot.web.pages import render_confirm_remove, render_dashboard, render_login, render_notice
+from bot.web.pages import (
+    render_confirm_delete_dj,
+    render_confirm_remove,
+    render_dashboard,
+    render_djs,
+    render_edit_dj,
+    render_login,
+    render_notice,
+)
 from bot.web.service import FORMAT_MESSAGE, ActionResult
 
 logger = logging.getLogger(__name__)
 
 MAX_BODY = 4096
+MAX_UPLOAD = 6 * 1024 * 1024  # a DJ logo (up to 5 MB) plus the other form fields
+UPLOAD_PATHS = frozenset({"/djs/add", "/djs/edit"})
+ADMIN_NAME = "The admin page"
 WRONG_PASSWORD = "Wrong password."
 OWNER_MESSAGE = "Owners can only be changed with ADMIN_USER_IDS."
 NOT_ADDED_MESSAGE = "This person is not an added admin."
+NO_DJ_MESSAGE = "There is no DJ with this ID."
+BOOKINGS_FAILED = "Could not read the bookings from Notion. Try again."
 CSRF_MESSAGE = "This form has expired. Go back, reload the page and try again."
 
 SECURITY_HEADERS = {
@@ -82,6 +97,15 @@ def _from_http_exception(exc: web.HTTPException) -> web.Response:
 @web.middleware
 async def security_middleware(request: web.Request, handler: Handler) -> web.StreamResponse:
     try:
+        if (
+            request.method not in _SAFE_METHODS
+            and request.path not in UPLOAD_PATHS
+            and (
+                (request.content_length or 0) > MAX_BODY
+                or "chunked" in request.headers.get("Transfer-Encoding", "").lower()
+            )
+        ):
+            raise web.HTTPRequestEntityTooLarge(max_size=MAX_BODY, actual_size=0)
         resp = await handler(request)
     except web.HTTPException as exc:
         resp = _from_http_exception(exc)
@@ -105,6 +129,22 @@ async def _read_form(request: web.Request) -> MultiDictProxy[Any]:
 def _field(form: MultiDictProxy[Any], name: str) -> str | None:
     value = form.get(name)
     return value if isinstance(value, str) else None
+
+
+def _logo_bytes(form: MultiDictProxy[Any]) -> bytes | None:
+    """The uploaded logo file, or None when no file was chosen."""
+    value = form.get("logo")
+    file = getattr(value, "file", None)
+    if file is None or not getattr(value, "filename", ""):
+        return None
+    return file.read() or None
+
+
+_DJ_FIELDS = ("name", "link", "alt_link", "vrchat", "discord_id")
+
+
+def _dj_values(form: MultiDictProxy[Any]) -> dict[str, str]:
+    return {name: (_field(form, name) or "") for name in _DJ_FIELDS}
 
 
 def create_app(
@@ -210,8 +250,99 @@ def create_app(
     async def post_remove(request: web.Request) -> web.Response:
         return await post_action(request, service.remove_admin)
 
+    # --- DJ list ---
+
+    async def djs_page(
+        request: web.Request,
+        message: ActionResult | None = None,
+        status: int = 200,
+        values: dict[str, str] | None = None,
+    ) -> web.Response:
+        rows = await service.djs.list_djs()
+        return _html(render_djs(rows, request["session"].csrf, message, values), status)
+
+    async def get_djs(request: web.Request) -> web.Response:
+        return await djs_page(request)
+
+    async def post_dj_add(request: web.Request) -> web.Response:
+        form = await _read_form(request)
+        values = _dj_values(form)
+        raw_discord = values["discord_id"].strip()
+        discord_id = parse_discord_id(raw_discord) if raw_discord else None
+        if raw_discord and discord_id is None:
+            return await djs_page(
+                request, ActionResult(False, FORMAT_MESSAGE), 400, values
+            )
+        result = await service.djs.add_dj(
+            admin_name=ADMIN_NAME,
+            name=values["name"],
+            link=values["link"],
+            alt_link=values["alt_link"],
+            vrchat=values["vrchat"],
+            discord_id=discord_id,
+            logo=_logo_bytes(form),
+        )
+        keep = None if result.ok else values
+        return await djs_page(request, ActionResult(result.ok, result.message),
+                              200 if result.ok else 400, keep)
+
+    async def _dj_or_none(raw: str | None) -> dict | None:
+        try:
+            dj_id = int(raw or "")
+        except ValueError:
+            return None
+        return await service.djs.get_dj(dj_id)
+
+    async def get_dj_edit(request: web.Request) -> web.Response:
+        row = await _dj_or_none(request.query.get("id"))
+        if row is None:
+            return await djs_page(request, ActionResult(False, NO_DJ_MESSAGE), 404)
+        return _html(render_edit_dj(row, request["session"].csrf))
+
+    async def post_dj_edit(request: web.Request) -> web.Response:
+        form = await _read_form(request)
+        row = await _dj_or_none(_field(form, "id"))
+        if row is None:
+            return await djs_page(request, ActionResult(False, NO_DJ_MESSAGE), 404)
+        values = _dj_values(form)
+        result = await service.djs.edit_dj(
+            admin_name=ADMIN_NAME,
+            dj_id=row["discord_user_id"],
+            fields={k: values[k] for k in ("name", "link", "alt_link", "vrchat")},
+            logo=_logo_bytes(form),
+        )
+        if not result.ok:
+            page = render_edit_dj(
+                row, request["session"].csrf, ActionResult(False, result.message), values
+            )
+            return _html(page, 400)
+        return await djs_page(request, ActionResult(True, result.message))
+
+    async def get_dj_delete(request: web.Request) -> web.Response:
+        row = await _dj_or_none(request.query.get("id"))
+        if row is None:
+            return await djs_page(request, ActionResult(False, NO_DJ_MESSAGE), 404)
+        try:
+            found = await service.djs.future_bookings(row["discord_user_id"])
+        except Exception:
+            logger.warning("Could not list the bookings of a DJ", exc_info=True)
+            return await djs_page(request, ActionResult(False, BOOKINGS_FAILED), 502)
+        bookings = [(e.event_id, texts.slot_phrase(e, i)) for e, i in found]
+        return _html(render_confirm_delete_dj(row, bookings, request["session"].csrf))
+
+    async def post_dj_delete(request: web.Request) -> web.Response:
+        row = await _dj_or_none(_field(await _read_form(request), "id"))
+        if row is None:
+            return await djs_page(request, ActionResult(False, NO_DJ_MESSAGE), 404)
+        result = await service.djs.delete_dj(
+            admin_name=ADMIN_NAME, dj_id=row["discord_user_id"]
+        )
+        return await djs_page(
+            request, ActionResult(result.ok, result.message), 200 if result.ok else 400
+        )
+
     app = web.Application(
-        middlewares=[security_middleware, session_middleware], client_max_size=MAX_BODY
+        middlewares=[security_middleware, session_middleware], client_max_size=MAX_UPLOAD
     )
     app.router.add_get("/login", get_login)
     app.router.add_post("/login", post_login)
@@ -220,4 +351,10 @@ def create_app(
     app.router.add_get("/admins/remove", get_remove)
     app.router.add_post("/admins/remove", post_remove)
     app.router.add_post("/admins/add", post_add)
+    app.router.add_get("/djs", get_djs)
+    app.router.add_post("/djs/add", post_dj_add)
+    app.router.add_get("/djs/edit", get_dj_edit)
+    app.router.add_post("/djs/edit", post_dj_edit)
+    app.router.add_get("/djs/delete", get_dj_delete)
+    app.router.add_post("/djs/delete", post_dj_delete)
     return app
