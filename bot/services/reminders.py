@@ -14,7 +14,11 @@ from typing import TYPE_CHECKING, Any
 import disnake
 
 from bot.db.bookings import get_booked_djs_for_event
-from bot.db.reminders import has_reminder_been_sent, record_reminder_sent
+from bot.db.reminders import (
+    forget_reminder_sent,
+    has_reminder_been_sent,
+    record_reminder_sent,
+)
 from bot.notion.models import EventInfo
 from bot.ui import texts
 from bot.ui.embeds import ErrorCode
@@ -47,6 +51,9 @@ class RemindersService:
         self.db = db
         self.notion_client = notion_client
         self.log_service = log_service
+        # (event, DJ, slot) whose failed reminder was already posted: the hourly runs
+        # in the 20-28 h window retry silently instead of posting the same error again
+        self._reported: set[tuple[str, int, int]] = set()
 
     @staticmethod
     def _is_in_reminder_window(
@@ -145,78 +152,78 @@ class RemindersService:
                     continue  # guest DJ: no Discord account, no reminder
 
                 # Get Discord user from cache
+                key = (event_id, discord_user_id, slot_index)
                 user = self.bot.get_user(discord_user_id)
                 if user is None:
                     logger.warning(
                         "RemindersService.send_reminders: user %s not in cache — skipping",
                         discord_user_id,
                     )
-                    if self.log_service is not None:
-                        try:
-                            await self.log_service.post_error(
-                                error_code=ErrorCode.ERR_DM_FAILED,
-                                trigger=(
-                                    f"The reminder for {dj_name} could not be delivered "
-                                    f"({event.event_id}, "
-                                    f"{texts.slot_phrase(event, slot_index)}) "
-                                    "because the bot cannot find them on the server."
-                                ),
-                                action_taken="The bot tries again on the next run.",
-                                manual_action=texts.dm_failed_todo(dj_name),
-                            )
-                        except Exception as log_exc:
-                            logger.warning(
-                                "RemindersService.send_reminders: post_error failed: %s",
-                                log_exc,
-                            )
-                    continue
-
-                # Step 6/7: send DM
-                dm_text = texts.reminder(event, slot_index)
-                try:
-                    await user.send(dm_text)
-                except disnake.Forbidden:
-                    # AC3: DMs blocked — log error, do NOT record sent (allow retry next cycle)
-                    if self.log_service is not None:
-                        try:
-                            await self.log_service.post_error(
-                                error_code=ErrorCode.ERR_DM_FAILED,
-                                trigger=(
-                                    f"The reminder for {dj_name} could not be delivered "
-                                    f"({event.event_id}, "
-                                    f"{texts.slot_phrase(event, slot_index)}) "
-                                    "because their DMs are closed."
-                                ),
-                                action_taken="The bot tries again on the next run.",
-                                manual_action=texts.dm_failed_todo(dj_name),
-                            )
-                        except Exception as log_exc:
-                            logger.warning(
-                                "RemindersService.send_reminders: post_error failed: %s",
-                                log_exc,
-                            )
-                    continue
-                except Exception as exc:
-                    logger.warning(
-                        "RemindersService.send_reminders: unexpected DM error for %s: %s",
-                        discord_user_id,
-                        exc,
+                    await self._report_once(
+                        key, dj_name,
+                        f"The reminder for {dj_name} could not be delivered "
+                        f"({event.event_id}, {texts.slot_phrase(event, slot_index)}) "
+                        "because the bot cannot find them on the server.",
                     )
                     continue
 
-                # Record sent (AC2, AC4) — only on successful delivery
+                # Record first: a database error after a delivered DM would otherwise
+                # send the reminder again on the next run
                 try:
                     await record_reminder_sent(self.db, event_id, discord_user_id, slot_index)
-                    reminder_count += 1
                 except Exception as exc:
                     logger.warning(
                         "RemindersService.send_reminders: failed to record for DJ %s: %s",
                         discord_user_id,
                         exc,
                     )
+                    continue
+
+                # Step 6/7: send DM
+                try:
+                    await user.send(texts.reminder(event, slot_index))
+                except Exception as exc:
+                    await self._forget(key)
+                    if isinstance(exc, disnake.Forbidden):
+                        await self._report_once(
+                            key, dj_name,
+                            f"The reminder for {dj_name} could not be delivered "
+                            f"({event.event_id}, {texts.slot_phrase(event, slot_index)}) "
+                            "because their DMs are closed.",
+                        )
+                    else:
+                        logger.warning(
+                            "RemindersService.send_reminders: unexpected DM error for %s: %s",
+                            discord_user_id,
+                            exc,
+                        )
+                    continue
+                reminder_count += 1
+                self._reported.discard(key)
 
         logger.info(
             "RemindersService.send_reminders: %d reminder(s) sent across %d upcoming event(s)",
             reminder_count,
             len(upcoming),
         )
+
+    async def _forget(self, key: tuple[str, int, int]) -> None:
+        try:
+            await forget_reminder_sent(self.db, *key)
+        except Exception:
+            logger.warning("RemindersService: could not undo the reminder record", exc_info=True)
+
+    async def _report_once(self, key: tuple[str, int, int], dj_name: str, trigger: str) -> None:
+        """Post ERR_DM_FAILED for this (event, DJ, slot) the first time only."""
+        if key in self._reported or self.log_service is None:
+            return
+        self._reported.add(key)
+        try:
+            await self.log_service.post_error(
+                error_code=ErrorCode.ERR_DM_FAILED,
+                trigger=trigger,
+                action_taken="The bot tries again on the next run.",
+                manual_action=texts.dm_failed_todo(dj_name),
+            )
+        except Exception as log_exc:
+            logger.warning("RemindersService.send_reminders: post_error failed: %s", log_exc)

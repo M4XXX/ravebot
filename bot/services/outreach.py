@@ -78,8 +78,17 @@ class OutreachService:
 
     @staticmethod
     def _open_slots(event: EventInfo) -> int:
-        """Open slots = slot_count minus slot rows holding a DJ (a DJ with two slots counts two)."""
-        filled = sum(1 for slot in event.slots if slot.dj_page_id is not None)
+        """Open slots among 1..slot_count (a DJ with two slots counts two).
+
+        Uses resolved_slots like the booking views: a duplicate row or a row above
+        slot_count never counts as a filled slot.
+        """
+        rows = event.resolved_slots()
+        filled = sum(
+            1
+            for number in range(1, event.slot_count + 1)
+            if rows.get(number) is not None and rows[number].dj_page_id is not None
+        )
         return event.slot_count - filled
 
     async def run_gap_detection(self, guild_id: int) -> list[EventInfo]:
@@ -104,13 +113,13 @@ class OutreachService:
         try:
             days_raw = await get_value(self.db, guild_id, "outreach_days_before")
             outreach_days = int(days_raw) if days_raw is not None else _DEFAULT_OUTREACH_DAYS
-        except (ValueError, TypeError):
+        except Exception:  # a bad value or a database error: use the default
             outreach_days = _DEFAULT_OUTREACH_DAYS
 
         try:
             hours_raw = await get_value(self.db, guild_id, "outreach_cooldown_hours")
             cooldown_hours = int(hours_raw) if hours_raw is not None else _DEFAULT_COOLDOWN_HOURS
-        except (ValueError, TypeError):
+        except Exception:  # a bad value or a database error: use the default
             cooldown_hours = _DEFAULT_COOLDOWN_HOURS
 
         # Fetch all future events from Notion (AC1)
@@ -273,7 +282,13 @@ class OutreachService:
             logger.warning("OutreachService.contact_next_dj: DB error: %s", exc)
             return False
 
-        not_yet_asked = [dj for dj in all_active if dj["discord_user_id"] not in already_contacted]
+        # DJs already playing at this event are not invited to it again
+        booked_here = {slot.discord_id for slot in event.slots if slot.discord_id is not None}
+        not_yet_asked = [
+            dj for dj in all_active
+            if dj["discord_user_id"] not in already_contacted
+            and dj["discord_user_id"] not in booked_here
+        ]
         if not not_yet_asked:
             logger.info(
                 "OutreachService.contact_next_dj: no eligible DJs for event %s — all contacted",

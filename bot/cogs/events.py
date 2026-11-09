@@ -13,18 +13,16 @@ Full lineup post (FR10) implemented in Story 3.2.
 import datetime
 import logging
 
-import asyncpg
 from disnake.ext import commands, tasks
 
+from bot.cogs.loop_support import first_guild_id, guard_db, prepare_loop, run_cycle
 from bot.context import BotContext
 from bot.notion.client import NotionWriteError
 from bot.notion.models import EventInfo
 from bot.services import activation
 from bot.services.event_replenish import replenish_events
 from bot.services.fully_booked import check_fully_booked
-from bot.timezone import load_stored_timezone_for_bot
 from bot.ui import texts
-from bot.ui.embeds import ErrorCode
 
 logger = logging.getLogger(__name__)
 
@@ -46,45 +44,11 @@ class EventsCog(commands.Cog):
         self._check_reminders.cancel()
 
     async def _guard_db(self, operation: str) -> bool:
-        """Return True if DB is available; post ERR_DB_UNAVAILABLE and return False if not.
-
-        Call at the start of every scheduled task that requires DB access.
-        On False: caller must return immediately — loop will retry next cycle.
-
-        [Source: epics.md#Story 1.5 AC1]
-        [Source: architecture.md#Error Routing: Centralized AdminLogService]
-        """
-        if self.ctx.db is None:
-            logger.warning("DB pool not available during %s — skipping cycle", operation)
-            if self.ctx.log_service is not None:
-                await self.ctx.log_service.post_error(
-                    error_code=ErrorCode.ERR_DB_UNAVAILABLE,
-                    trigger="The bot cannot reach its database.",
-                    action_taken="It skips this run and tries again on the next one.",
-                )
-            return False
-        try:
-            await self.ctx.db.fetchval("SELECT 1")
-            return True
-        except (asyncpg.PostgresConnectionError, OSError) as exc:
-            logger.warning("DB unavailable during %s: %s", operation, exc)
-            if self.ctx.log_service is not None:
-                await self.ctx.log_service.post_error(
-                    error_code=ErrorCode.ERR_DB_UNAVAILABLE,
-                    trigger="The bot lost its connection to the database.",
-                    action_taken="It skips this run and tries again on the next one.",
-                )
-            return False
+        """True if the DB answers (see loop_support.guard_db)."""
+        return await guard_db(self.ctx, operation)
 
     def _get_guild_id(self) -> int | None:
-        """Return the first guild's ID, or None if the bot has no guilds yet.
-
-        [Source: epics.md#Story 3.1 AC1]
-        """
-        if not self.bot.guilds:
-            logger.warning("_get_guild_id: bot has no guilds — skipping poll cycle")
-            return None
-        return self.bot.guilds[0].id
+        return first_guild_id(self.bot)
 
     async def _auto_create_events(self, events: list[EventInfo], guild_id: int) -> int:
         """Create Notion events to maintain the configured look-ahead count.
@@ -126,6 +90,9 @@ class EventsCog(commands.Cog):
 
     @tasks.loop(minutes=5)
     async def _poll_notion(self) -> None:
+        await run_cycle("notion poll", self._poll_notion_cycle)
+
+    async def _poll_notion_cycle(self) -> None:
         """Notion event polling — syncs hand edits, fetches events, updates the lineup.
 
         Order per cycle: (1) NotionSyncService.run_cycle (skipped if the service is
@@ -193,11 +160,13 @@ class EventsCog(commands.Cog):
 
     @_poll_notion.before_loop
     async def _before_poll_notion(self) -> None:
-        await self.bot.wait_until_ready()
-        await load_stored_timezone_for_bot(self.bot, self.ctx.db)
+        await prepare_loop(self.bot, self.ctx.db)
 
     @tasks.loop(hours=1)
     async def _check_reminders(self) -> None:
+        await run_cycle("reminder check", self._check_reminders_cycle)
+
+    async def _check_reminders_cycle(self) -> None:
         """Reminder scheduler loop — delegates to RemindersService.send_reminders.
 
         Guard ensures DB is available before any DB-dependent work.
@@ -220,5 +189,4 @@ class EventsCog(commands.Cog):
 
     @_check_reminders.before_loop
     async def _before_check_reminders(self) -> None:
-        await self.bot.wait_until_ready()
-        await load_stored_timezone_for_bot(self.bot, self.ctx.db)
+        await prepare_loop(self.bot, self.ctx.db)
