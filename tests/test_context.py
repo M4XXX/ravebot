@@ -1,5 +1,4 @@
 """Tests for bot/context.py — BotContext dataclass."""
-import asyncio
 
 import pytest
 
@@ -28,10 +27,12 @@ class TestBotContext:
         assert ctx.db is None
 
     def test_get_user_lock_creates_lock(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """get_user_lock() creates a new asyncio.Lock for unknown user_id."""
+        """get_user_lock() creates a new FlowLock for unknown user_id."""
+        from bot.context import FlowLock
+
         ctx = BotContext(config=make_config(monkeypatch))
         lock = ctx.get_user_lock(42)
-        assert isinstance(lock, asyncio.Lock)
+        assert isinstance(lock, FlowLock)
 
     def test_get_user_lock_returns_same_lock(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """get_user_lock() returns the same lock object on repeated calls."""
@@ -78,3 +79,42 @@ class TestAdminAccess:
         ctx.admins = registry
         assert ctx.is_admin(9) and ctx.is_admin(2) and not ctx.is_admin(1)
         assert ctx.admin_ids() == [2, 9]
+
+
+class TestFlowLock:
+    async def test_acquire_release_and_tokens(self) -> None:
+        from bot.context import FlowLock
+
+        lock = FlowLock()
+        assert not lock.locked() and lock.token == 0
+        await lock.acquire()
+        first = lock.token
+        assert lock.locked() and lock.owns(first)
+        with pytest.raises(RuntimeError):
+            await lock.acquire()
+        assert lock.release_if(first) and not lock.locked()
+        await lock.acquire()
+        second = lock.token
+        assert second != first
+        assert not lock.release_if(first)  # an old flow cannot free the new one
+        assert not lock.owns(first) and lock.locked()
+        lock.release()
+        assert not lock.locked()
+
+    async def test_abandoned_flow_expires(self) -> None:
+        from bot.context import FlowLock
+
+        now = [0.0]
+        lock = FlowLock(ttl=10, clock=lambda: now[0])
+        await lock.acquire()
+        token = lock.token
+        now[0] = 11
+        assert not lock.locked() and not lock.owns(token)
+        await lock.acquire()  # a new flow may start
+        assert lock.locked() and lock.token != token
+
+    def test_free_locks_are_dropped_when_the_dict_grows(self, monkeypatch) -> None:
+        ctx = BotContext(config=make_config(monkeypatch))
+        for uid in range(1002):
+            ctx.get_user_lock(uid)
+        assert len(ctx.user_locks) < 10

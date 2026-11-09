@@ -34,7 +34,7 @@ from bot.services.dj_validation import (
     name_error,
     normalize_link,
 )
-from bot.services.logo import LogoError, process_logo
+from bot.services.logo import LogoError, process_logo_async
 
 if TYPE_CHECKING:
     from bot.context import BotContext
@@ -50,6 +50,12 @@ _LOGO_TEXT = {
     "not_image": "The logo is not a usable image. Use a PNG or JPEG under 5 MB.",
 }
 _LOGO_DEFAULT = "The logo could not be read. Use a PNG or JPEG under 5 MB."
+
+
+def _duplicate_text(exc: asyncpg.UniqueViolationError, name: str) -> str:
+    if getattr(exc, "constraint_name", None) == "ux_djs_dj_name_norm":
+        return f'There is already a DJ called "{name}".'
+    return "This DJ already exists."
 
 
 @dataclass
@@ -72,11 +78,15 @@ def parse_discord_id(raw: str | None) -> int | None:
 
 
 def check_link(raw: str, label: str) -> tuple[str | None, str | None]:
-    """(clean link, None) or (None, error). Only http(s) links with a host."""
+    """(clean link, None) or (None, error).
+
+    The same links a DJ can save in the DM conversation ("Use as is"): any scheme
+    such as https:// or rtmp://, followed by a host, no spaces.
+    """
     link = normalize_link(raw)
     scheme, _, rest = link.partition("://")
-    if scheme.lower() not in ("http", "https") or not rest.strip("/"):
-        return None, f"The {label} must be a web link (https://...)."
+    if not scheme.isalpha() or not rest.strip("/") or any(c.isspace() for c in link):
+        return None, f"The {label} must be a link (for example https://...)."
     if len(link) > MAX_LINK_LENGTH:
         return None, f"The {label} is too long."
     return link, None
@@ -122,11 +132,11 @@ class DjAdminService:
     # --- validation ---
 
     @staticmethod
-    def _logo(data: bytes | None) -> tuple[bytes | None, str | None]:
+    async def _logo(data: bytes | None) -> tuple[bytes | None, str | None]:
         if not data:
             return None, None
         try:
-            return process_logo(data), None
+            return await process_logo_async(data), None
         except LogoError as exc:
             return None, _LOGO_TEXT.get(exc.reason, _LOGO_DEFAULT)
 
@@ -180,7 +190,7 @@ class DjAdminService:
         clean_vrchat, err = self._vrchat(vrchat)
         if err:
             return DjResult(False, err)
-        image, err = self._logo(logo)
+        image, err = await self._logo(logo)
         if err:
             return DjResult(False, err)
         assert clean_name is not None and clean_link is not None
@@ -202,8 +212,8 @@ class DjAdminService:
                     logo_image=image,
                     active_booking=discord_id is not None,
                 )
-            except asyncpg.UniqueViolationError:
-                return DjResult(False, "This DJ already exists.")
+            except asyncpg.UniqueViolationError as exc:
+                return DjResult(False, _duplicate_text(exc, clean_name))
         synced = await sync_dj(self._ctx, dj_id, self._discord_name(dj_id, clean_name))
         await self._log(admin_name, "added", clean_name)
         what = "guest DJ" if is_guest(dj_id) else "DJ"
@@ -256,7 +266,7 @@ class DjAdminService:
             if err:
                 return DjResult(False, err)
             updates["vrchat_name"] = clean_vrchat
-        image, err = self._logo(logo)
+        image, err = await self._logo(logo)
         if err:
             return DjResult(False, err)
         if image is not None:
@@ -269,7 +279,11 @@ class DjAdminService:
                 db, new_name, exclude_user_id=dj_id
             ):
                 return DjResult(False, f'There is already a DJ called "{new_name}".')
-            if not await update_dj_fields(db, dj_id, **updates):
+            try:
+                updated = await update_dj_fields(db, dj_id, **updates)
+            except asyncpg.UniqueViolationError as exc:
+                return DjResult(False, _duplicate_text(exc, str(new_name)))
+            if not updated:
                 return DjResult(False, UNKNOWN_DJ)
         fresh = await get_dj_row(db, dj_id)
         name = fresh["dj_name"] if fresh is not None else row["dj_name"]
@@ -296,6 +310,24 @@ class DjAdminService:
         if row is None:
             return DjResult(False, UNKNOWN_DJ)
         name = row["dj_name"]
+        # A DJ in the middle of booking or cancelling must not be deleted under it
+        flow = None if is_guest(dj_id) else self._ctx.get_user_lock(dj_id)
+        if flow is not None:
+            if flow.locked():
+                return DjResult(
+                    False, f"{name} is booking or cancelling right now. Try again in a minute."
+                )
+            await flow.acquire()
+        try:
+            return await self._delete(admin_name, dj_id, name)
+        finally:
+            if flow is not None:
+                flow.release()
+
+    async def _delete(self, admin_name: str, dj_id: int, name: str) -> DjResult:
+        db, notion = self._ctx.db, self._ctx.notion_client
+        booking = self._ctx.admin_booking_service
+        assert db is not None and notion is not None and booking is not None
         try:
             bookings = await self.future_bookings(dj_id)
         except Exception:
@@ -322,7 +354,15 @@ class DjAdminService:
         except Exception:
             logger.warning("Could not trash the Notion page of DJ %s", dj_id, exc_info=True)
             return DjResult(False, "Notion could not be updated. The DJ was not deleted.")
-        await delete_dj(db, dj_id)
+        try:
+            await delete_dj(db, dj_id)
+        except Exception:
+            logger.exception("Deleting DJ %s failed", dj_id)
+            return DjResult(
+                False,
+                "The database could not be updated. The DJ was not deleted; their Notion "
+                "entry is in the Notion trash and comes back when you save the DJ again.",
+            )
         await self._log(admin_name, "removed", name)
         count = len(bookings)
         extra = f" {count} upcoming booking{'s' if count != 1 else ''} cancelled." if count else ""

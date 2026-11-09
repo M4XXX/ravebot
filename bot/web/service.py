@@ -11,6 +11,7 @@ import disnake
 from bot.context import BotContext
 from bot.services.activation import bot_is_active
 from bot.services.admin_registry import AdminRegistry
+from bot.services.dj_admin import parse_discord_id
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +20,7 @@ _FAIL_TTL = 30.0
 _MAX_NAME = 80
 _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f​-‏ -‮⁦-⁩]")
 SAVE_FAILED = "Could not save the change. Try again."
-FORMAT_MESSAGE = "Please enter a Discord user ID (17 to 19 digits)."
+FORMAT_MESSAGE = "Please enter a Discord user ID (17 to 20 digits)."
 
 
 @dataclass(frozen=True)
@@ -57,11 +58,7 @@ def _clean_name(name: str | None) -> str | None:
 
 
 def _parse_id(raw: str) -> int | None:
-    text = raw.strip()
-    if not (text.isascii() and text.isdigit() and 17 <= len(text) <= 20):
-        return None
-    value = int(text)
-    return value if value < 2**63 else None
+    return parse_discord_id(raw)
 
 
 def _avatar_url(obj: Any) -> str | None:

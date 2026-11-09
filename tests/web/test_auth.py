@@ -217,3 +217,15 @@ def test_throttle_pruning_bounds_table():
         clock.now += 1
         t.record_failure(f"k{i}")
     assert len(t._entries) <= 100
+
+
+def test_revoked_session_no_longer_verifies() -> None:
+    from bot.web.auth import SessionManager
+
+    sessions = SessionManager(secret=b"k" * 32)
+    token, _ = sessions.create()
+    other, _ = sessions.create()
+    sessions.revoke(token)
+    assert sessions.verify(token) is None
+    assert sessions.verify(other) is not None
+    sessions.revoke("garbage")  # ignored

@@ -65,6 +65,12 @@ uv run pytest -v
 uv run pytest tests/cogs/
 uv run pytest tests/services/
 
+# Real-SQL tests (tests/pg): need a throwaway PostgreSQL database whose name ends in
+# _test, the suite drops and recreates the schema. Without the variable they are skipped.
+podman run -d --name ravebot-pg-test -e POSTGRES_USER=ravebot \
+  -e POSTGRES_HOST_AUTH_METHOD=trust -e POSTGRES_DB=ravebot_test -p 55432:5432 postgres:16-alpine
+RAVEBOT_TEST_POSTGRES_URL=postgresql://ravebot@localhost:55432/ravebot_test uv run pytest -m pg tests/pg
+
 # Linting (ruff: 100-char line limit, E/F/I/UP rule sets)
 uv run ruff check .
 
@@ -334,7 +340,7 @@ Two GitHub Actions workflows live in `.github/workflows/`:
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| `ci.yml` | push to `main`, pull requests | `uv sync --frozen` and `uv run pytest -q` |
+| `ci.yml` | push to `main`, pull requests | `uv sync --frozen` and `uv run pytest -q`; a second job runs `tests/pg` against a PostgreSQL service |
 | `release.yml` | push of a tag `vMAJOR.MINOR.PATCH` (or with a `-suffix`, a pre-release) | tests, builds the Docker image, pushes it to `ghcr.io/<owner>/ravebot`, creates the GitHub release |
 
 All third-party actions are pinned to full commit SHAs (the version is in a comment), because the release job can write packages. `.github/dependabot.yml` opens a weekly pull request when a pinned action has a new release; review it like any dependency update. The release workflow refuses a tag that is not on `main`. The image gets the tags `X.Y.Z`, `X.Y` and `latest` (and `X` from major version 1 on); a pre-release tag (`v1.2.0-rc1`) only gets its own tag and no `latest`. The image is built for `linux/amd64`. The GitHub release text is the matching `## [X.Y.Z]` section of `CHANGELOG.md` plus the image name; without such a section it falls back to a pointer to the changelog.

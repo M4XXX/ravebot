@@ -47,8 +47,8 @@ async def record_reminder_sent(
     ON CONFLICT DO NOTHING makes this idempotent — safe to call even if
     a row already exists (e.g., concurrent task cycles).
 
-    Only call this AFTER a successful user.send() — do NOT record for failed
-    DM attempts (caller retries on next cycle within the 20-28h window).
+    Called right before the DM is sent, so a database failure can never lead to a
+    second reminder; forget_reminder_sent removes the row when the DM fails.
 
     [Source: epics.md#Story 5.4 AC2]
     [Source: architecture.md#Repository Pattern]
@@ -59,6 +59,22 @@ async def record_reminder_sent(
         VALUES ($1, $2, $3)
         ON CONFLICT (event_id, discord_user_id, slot_index) DO NOTHING
         """,
+        event_id,
+        discord_user_id,
+        slot_index,
+    )
+
+
+async def forget_reminder_sent(
+    pool: asyncpg.Pool,
+    event_id: str,
+    discord_user_id: int,
+    slot_index: int,
+) -> None:
+    """Remove a reminder record again: the DM it was written for could not be sent."""
+    await pool.execute(
+        "DELETE FROM reminders_sent"
+        " WHERE event_id = $1 AND discord_user_id = $2 AND slot_index = $3",
         event_id,
         discord_user_id,
         slot_index,

@@ -81,7 +81,7 @@ class FakeService:
         try:
             uid = int(raw_id.strip())
         except ValueError:
-            return ActionResult(False, "Please enter a Discord user ID (17 to 19 digits).")
+            return ActionResult(False, "Please enter a Discord user ID (17 to 20 digits).")
         if uid in self.owners:
             return ActionResult(False, "Owners can only be changed with ADMIN_USER_IDS.")
         if uid not in self.added:

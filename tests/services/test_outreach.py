@@ -475,3 +475,30 @@ async def test_contact_next_dj_waits_when_only_waiting_djs_remain():
         assert await svc.contact_next_dj(event, guild_id=1, ctx=MagicMock()) is True
     record.assert_not_awaited()
     user.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_contact_next_dj_skips_djs_booked_in_the_event():
+    event = _make_event(days_ahead=5, slots=6, djs_booked=0)
+    event = make_event(
+        event_id=event.event_id, page_id=event.page_id, date=event.date, slot_count=6,
+        slots=[make_slot(1, dj_page_id="p", dj_name="Booked", discord_id=101)],
+    )
+    svc = _make_service()
+    svc.bot.get_user = MagicMock(return_value=MagicMock(send=AsyncMock()))
+    djs = [_make_dj(101, "Booked"), _make_dj(102, "Free")]
+    with patch("bot.services.outreach.get_active_booking_djs", new=AsyncMock(return_value=djs)), \
+         patch("bot.services.outreach.get_contacted_discord_ids", new=AsyncMock(return_value=[])), \
+         patch("bot.services.outreach.record_outreach_contact", new=AsyncMock()) as record, \
+         patch("bot.services.outreach.update_last_contact_at", new=AsyncMock()), \
+         patch("bot.services.outreach.update_dj_last_contacted_at", new=AsyncMock()):
+        await svc.contact_next_dj(event, guild_id=1, ctx=MagicMock())
+    assert record.await_args.args[2] == 102
+
+
+def test_open_slots_ignores_duplicate_rows_and_rows_above_the_count():
+    event = make_event(slot_count=2, slots=[
+        make_slot(1, page_id="a"), make_slot(1, dj_page_id="d", page_id="b"),
+        make_slot(3, dj_page_id="d", page_id="c"),
+    ])
+    assert OutreachService._open_slots(event) == 2

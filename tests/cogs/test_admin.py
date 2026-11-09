@@ -405,7 +405,7 @@ async def test_list_djs_returns_embed_with_all_djs(monkeypatch: pytest.MonkeyPat
 
     call_kwargs = inter.response.send_message.call_args[1]
     assert call_kwargs.get("ephemeral") is True
-    embed = call_kwargs.get("embed")
+    embed = call_kwargs.get("embeds")[0]
     assert embed is not None
     assert "DJ Scope" in embed.description
     assert "Active" in embed.description
@@ -1580,3 +1580,22 @@ async def test_dj_name_autocomplete_is_admin_only_and_filters() -> None:
         assert await cog.dj_name_autocomplete(inter, "moon") == ["Moonbeat"]
         assert await cog.dj_name_autocomplete(inter, "zzz") == []
         assert await cog.dj_name_autocomplete(make_mock_inter(user_id=2), "") == []
+
+
+
+async def test_list_djs_splits_a_long_list_into_several_embeds() -> None:
+    from bot.cogs.admin import AdminCog
+
+    ctx = make_mock_ctx(frozenset({1}))
+    cog = AdminCog(ctx)
+    inter = make_mock_inter(user_id=1)
+    djs = [
+        {"discord_user_id": 100000000000000000 + i, "dj_name": f"DJ {'x' * 60} {i}",
+         "active_booking": True}
+        for i in range(200)
+    ]
+    with patch("bot.cogs.admin.get_all_djs", new=AsyncMock(return_value=djs)):
+        await cog.list_all_djs.callback(cog, inter)
+    embeds = inter.response.send_message.call_args.kwargs["embeds"]
+    assert len(embeds) > 1
+    assert all(len(e.description) <= 4096 for e in embeds)

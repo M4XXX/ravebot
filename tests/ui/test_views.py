@@ -26,6 +26,9 @@ async def test_pass_for_now_sends_warm_response() -> None:
     inter.author.id = 12345
     inter.response.is_done = MagicMock(return_value=False)
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     await view.pass_for_now.callback(inter)
 
@@ -46,6 +49,9 @@ async def test_fallback_go_active_updates_db_assigns_role() -> None:
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.author.id = 77777
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     role = MagicMock(spec=disnake.Role)
     role.name = "Active Booking"
@@ -233,6 +239,9 @@ async def test_fallback_go_inactive_updates_db_removes_role() -> None:
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.author.id = 66666
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     role = MagicMock(spec=disnake.Role)
     role.name = "Active Booking"
@@ -283,6 +292,9 @@ async def test_show_lineup_sends_embed_for_first_event() -> None:
 
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     await view.show_lineup.callback(inter)
 
@@ -305,6 +317,9 @@ async def test_show_lineup_sends_no_events_message_when_empty() -> None:
 
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     await view.show_lineup.callback(inter)
 
@@ -325,6 +340,9 @@ async def test_show_lineup_handles_notion_client_none() -> None:
 
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     await view.show_lineup.callback(inter)
 
@@ -347,6 +365,9 @@ async def test_show_lineup_handles_poll_exception() -> None:
 
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     await view.show_lineup.callback(inter)
 
@@ -374,6 +395,9 @@ async def test_show_lineup_single_event_has_no_pick_view() -> None:
     view = FallbackMenuView(ctx)
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     await view.show_lineup.callback(inter)
 
@@ -399,6 +423,9 @@ async def test_show_lineup_multi_event_offers_picker_capped_at_five() -> None:
     view = FallbackMenuView(ctx)
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     await view.show_lineup.callback(inter)
 
@@ -423,6 +450,9 @@ async def test_tapping_an_event_edits_the_same_message_and_keeps_the_buttons() -
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.response.edit_message = AsyncMock()
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     await pick.children[2].callback(inter)
 
@@ -486,6 +516,9 @@ async def test_pick_when_notion_fails_replies_privately_and_keeps_the_message() 
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.response.edit_message = AsyncMock()
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
     await LineupEventPickView([], ctx, all_buttons=True).children[0].callback(inter)
     inter.response.edit_message.assert_not_awaited()
     inter.response.send_message.assert_awaited_once_with(texts.GENERIC_ERROR, ephemeral=True)
@@ -511,6 +544,9 @@ async def test_show_lineup_ignores_past_events() -> None:
     view = FallbackMenuView(ctx)
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     await view.show_lineup.callback(inter)
 
@@ -563,7 +599,8 @@ def _slot_button_indices(view: object) -> list[int]:
     return [
         int(item.custom_id.rsplit(":", 1)[1])
         for item in view.children  # type: ignore[attr-defined]
-        if item.custom_id.startswith("slot_select:") and item.custom_id != "slot_select:cancel"
+        if item.custom_id.startswith("slot_select:")
+        and not item.custom_id.startswith("slot_select:cancel")
     ]
 
 
@@ -578,6 +615,9 @@ async def test_book_slot_lock_already_held_returns_message() -> None:
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.author.id = 11111
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     # Pre-acquire lock to simulate active flow
     lock = ctx.get_user_lock(11111)
@@ -604,6 +644,9 @@ async def test_book_slot_notion_client_none_releases_lock() -> None:
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.author.id = 22222
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     await view.book_slot.callback(inter)
 
@@ -625,6 +668,9 @@ async def test_book_slot_list_events_raises_releases_lock() -> None:
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.author.id = 33333
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     await view.book_slot.callback(inter)
 
@@ -647,6 +693,9 @@ async def test_book_slot_all_events_full_releases_lock() -> None:
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.author.id = 44444
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     await view.book_slot.callback(inter)
 
@@ -671,6 +720,9 @@ async def test_book_slot_no_events_at_all_releases_lock() -> None:
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.author.id = 55555
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     await view.book_slot.callback(inter)
 
@@ -694,6 +746,9 @@ async def test_book_slot_open_slots_shows_event_selection_view() -> None:
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.author.id = 66666
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     await view.book_slot.callback(inter)
 
@@ -721,6 +776,9 @@ async def test_event_selection_never_mind_releases_lock() -> None:
 
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     await view._handle_cancel(inter)
 
@@ -745,6 +803,9 @@ async def test_event_selection_handle_event_sends_embed_and_slot_view() -> None:
 
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     await view._handle_event(inter, event)
 
@@ -772,6 +833,9 @@ async def test_slot_selection_never_mind_releases_lock() -> None:
 
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     await view._handle_cancel(inter)
 
@@ -797,6 +861,9 @@ async def test_slot_selection_handle_slot_presents_booking_confirm_view() -> Non
 
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     await view._handle_slot(inter, 2)
 
@@ -847,6 +914,9 @@ async def test_booking_confirm_cancel_releases_lock() -> None:
 
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     await view._handle_cancel(inter)
 
@@ -866,6 +936,9 @@ async def test_booking_confirm_db_none_releases_lock() -> None:
 
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     await view._handle_confirm(inter)
 
@@ -889,6 +962,9 @@ async def test_booking_confirm_slot_taken_presents_slot_selection_view() -> None
 
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     with patch("bot.db.bookings.acquire_slot_lock", new=AsyncMock(return_value=False)), \
          patch("bot.db.bookings.get_slot_lock_holder", new=AsyncMock(return_value=None)):
@@ -919,6 +995,9 @@ async def test_booking_confirm_notion_failure_releases_lock() -> None:
 
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     with patch("bot.db.bookings.acquire_slot_lock", new=AsyncMock(return_value=True)), \
          patch("bot.db.bookings.release_slot_lock", new=AsyncMock()) as mock_release, \
@@ -951,6 +1030,9 @@ async def test_booking_confirm_success_sends_confirmed_embed() -> None:
 
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     with patch("bot.db.bookings.acquire_slot_lock", new=AsyncMock(return_value=True)), \
          patch("bot.services.dj_pages.ensure_dj_page", new=AsyncMock(return_value="notion-dj-001")):
@@ -983,6 +1065,9 @@ async def test_booking_confirm_success_triggers_lineup_post() -> None:
 
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     with patch("bot.db.bookings.acquire_slot_lock", new=AsyncMock(return_value=True)), \
          patch("bot.services.dj_pages.ensure_dj_page", new=AsyncMock(return_value="dj-page")):
@@ -1014,6 +1099,9 @@ async def test_booking_confirm_success_posts_admin_log() -> None:
     inter.author = MagicMock()
     inter.author.display_name = "Nova"
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     with patch("bot.db.bookings.acquire_slot_lock", new=AsyncMock(return_value=True)), \
          patch("bot.services.dj_pages.ensure_dj_page", new=AsyncMock(return_value="dj-page")):
@@ -1034,6 +1122,9 @@ async def test_booking_confirm_notion_client_none_releases_lock() -> None:
 
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     await view._handle_confirm(inter)
 
@@ -1064,6 +1155,9 @@ async def test_booking_confirm_slot_conflict_logs_err_slot_conflict() -> None:
 
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     with patch("bot.db.bookings.acquire_slot_lock", new=AsyncMock(return_value=False)), \
          patch("bot.db.bookings.get_slot_lock_holder", new=AsyncMock(return_value=99999)):
@@ -1093,6 +1187,9 @@ async def test_booking_confirm_slot_conflict_uses_fresh_notion_data() -> None:
 
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     with patch("bot.db.bookings.acquire_slot_lock", new=AsyncMock(return_value=False)):
         await view._handle_confirm(inter)
@@ -1121,6 +1218,9 @@ async def test_booking_confirm_slot_conflict_all_slots_taken() -> None:
 
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     with patch("bot.db.bookings.acquire_slot_lock", new=AsyncMock(return_value=False)):
         await view._handle_confirm(inter)
@@ -1143,6 +1243,9 @@ async def test_booking_confirm_pg_failure_releases_lock() -> None:
 
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     with patch(
         "bot.db.bookings.acquire_slot_lock",
@@ -1174,6 +1277,9 @@ async def test_cancel_slot_lock_already_held() -> None:
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.author.id = 30001
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     await view.cancel_slot.callback(inter)
 
@@ -1196,6 +1302,9 @@ async def test_cancel_slot_no_bookings_releases_lock() -> None:
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.author.id = 30002
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     with patch("bot.db.bookings.get_dj_slot_locks", new=AsyncMock(return_value=[])):
         await view.cancel_slot.callback(inter)
@@ -1220,6 +1329,9 @@ async def test_cancel_slot_presents_cancellation_view() -> None:
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.author.id = 30003
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     slot_rows = [{"event_id": "evt-cancel-01", "slot_index": 0}]
     with patch("bot.db.bookings.get_dj_slot_locks", new=AsyncMock(return_value=slot_rows)):
@@ -1247,6 +1359,9 @@ async def test_cancellation_view_never_mind_releases_lock() -> None:
 
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     await view._handle_never_mind(inter)
 
@@ -1270,6 +1385,9 @@ async def test_cancel_confirm_keep_releases_lock() -> None:
 
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     await view._handle_keep(inter)
 
@@ -1301,6 +1419,9 @@ async def test_cancel_confirm_confirm_calls_clear_slot() -> None:
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.author = MagicMock()
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     with patch("bot.services.dj_pages.ensure_dj_page", new=AsyncMock(return_value="notion-page-dj")), \
          patch("bot.db.bookings.release_slot_lock", new=AsyncMock()) as mock_release:
@@ -1337,13 +1458,16 @@ async def test_cancel_confirm_notion_write_error_releases_lock() -> None:
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.author = MagicMock()
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     with patch("bot.services.dj_pages.ensure_dj_page", new=AsyncMock(return_value="notion-page-dj")), \
          patch("bot.db.bookings.release_slot_lock", new=AsyncMock()) as mock_release:
         await view._handle_confirm(inter)
 
-    # Even on Notion failure, slot lock must be freed
-    mock_release.assert_awaited_once_with(ctx.db, "evt-cancel-05", 0, expected_holder=30007)
+    # Notion still shows the booking: the Postgres lock stays so both agree
+    mock_release.assert_not_awaited()
     inter.response.send_message.assert_awaited_once()
     msg = inter.response.send_message.call_args[0][0]
     assert "something went wrong" in msg.lower() or "try again" in msg.lower()
@@ -1363,6 +1487,9 @@ async def test_cancel_slot_list_events_failure_releases_lock() -> None:
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.author.id = 30008
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     slot_rows = [{"event_id": "evt-stale-01", "slot_index": 0}]
     with patch("bot.db.bookings.get_dj_slot_locks", new=AsyncMock(return_value=slot_rows)):
@@ -1390,6 +1517,9 @@ async def test_cancel_slot_all_events_expired_releases_lock() -> None:
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.author.id = 30009
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     slot_rows = [{"event_id": "evt-gone-01", "slot_index": 0}]
     with patch("bot.db.bookings.get_dj_slot_locks", new=AsyncMock(return_value=slot_rows)):
@@ -1416,6 +1546,9 @@ async def test_cancellation_view_handle_booking_send_message_failure_releases_lo
 
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.response.send_message = AsyncMock(side_effect=RuntimeError("discord error"))
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     await view._handle_booking(inter, bookings[0])
 
@@ -1482,6 +1615,9 @@ async def test_event_selection_offers_exactly_the_open_gap_slot() -> None:
 
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
     await view._handle_event(inter, event)
 
     slot_view = inter.response.send_message.call_args.kwargs["view"]
@@ -1489,7 +1625,8 @@ async def test_event_selection_offers_exactly_the_open_gap_slot() -> None:
     assert _slot_button_indices(slot_view) == [1]
     labels = [i.label for i in slot_view.children if i.custom_id.endswith(":1")]
     assert labels == [texts.slot_button(event, 1)]
-    assert slot_view.children[0].custom_id == "slot_select:evt-gap:1"
+    cid = slot_view.children[0].custom_id
+    assert cid.startswith("slot_select:evt-gap:") and cid.endswith(":1")
 
 
 @pytest.mark.asyncio
@@ -1511,6 +1648,9 @@ async def test_event_selection_dj_with_two_slots_leaves_only_real_gaps() -> None
     view = EventSelectionView(ctx, [event], lock, 40002)
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
     await view._handle_event(inter, event)
 
     assert _slot_button_indices(inter.response.send_message.call_args.kwargs["view"]) == [2, 3]
@@ -1526,7 +1666,7 @@ async def test_event_selection_button_uses_event_id_and_page_id() -> None:
     view = EventSelectionView(ctx, [_gap_event()], lock, 40003)
     first = view.children[0]
     assert first.label == _gap_event().date.strftime("%d.%m.%Y")
-    assert first.custom_id == "event_select:evt-gap"
+    assert first.custom_id.startswith("event_select:evt-gap:")
 
 
 @pytest.mark.asyncio
@@ -1541,6 +1681,9 @@ async def test_book_slot_lists_event_name_and_start_timestamp() -> None:
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.author.id = 40004
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     await view.book_slot.callback(inter)
 
@@ -1560,6 +1703,9 @@ async def test_slot_selection_slot_time_uses_slot_length() -> None:
     view = SlotSelectionView(ctx, event, [0, 1, 2, 3], lock, 40005)
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     await view._handle_slot(inter, 2)
 
@@ -1597,6 +1743,9 @@ async def test_booking_confirm_lost_lock_lists_open_slots_from_fresh_event() -> 
     )
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     with patch("bot.db.bookings.acquire_slot_lock", new=AsyncMock(return_value=False)) as acq:
         await view._handle_confirm(inter)
@@ -1626,6 +1775,9 @@ async def test_booking_confirm_assigns_slot_with_dj_page_id() -> None:
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.author.display_name = "Disp"
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     with patch("bot.db.bookings.acquire_slot_lock", new=AsyncMock(return_value=True)) as acq, \
          patch("bot.services.dj_pages.ensure_dj_page", new=AsyncMock(return_value="dj-me")) as ens:
@@ -1659,6 +1811,9 @@ async def _run_booking(ctx, user_id, *, ensure, assign=None, lock_ok=True):
     )
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
     with patch("bot.db.bookings.acquire_slot_lock", new=AsyncMock(return_value=lock_ok)), \
          patch("bot.db.bookings.release_slot_lock", new=AsyncMock()) as rel, \
          patch("bot.services.dj_pages.ensure_dj_page", new=ensure):
@@ -1701,6 +1856,9 @@ async def test_booking_confirm_assign_false_logs_slot_conflict() -> None:
     )
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
     with patch("bot.db.bookings.acquire_slot_lock", new=AsyncMock(return_value=True)), \
          patch("bot.db.bookings.release_slot_lock", new=AsyncMock()), \
          patch("bot.db.bookings.get_slot_lock_holder", new=AsyncMock(return_value=None)), \
@@ -1753,6 +1911,9 @@ async def test_cancel_slot_matches_lock_rows_by_page_id_and_slot_time() -> None:
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.author.id = 40008
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     rows = [{"event_id": "evt-c", "slot_index": 3}]
     with patch("bot.db.bookings.get_dj_slot_locks", new=AsyncMock(return_value=rows)), \
@@ -1788,6 +1949,9 @@ async def _run_cancel(user_id, *, ensure, clear, lineup=None):
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.author.display_name = "Disp"
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
     with patch("bot.services.dj_pages.ensure_dj_page", new=ensure), \
          patch("bot.db.bookings.release_slot_lock", new=AsyncMock()) as rel:
         await view._handle_confirm(inter)
@@ -1833,7 +1997,8 @@ async def test_cancel_confirm_notion_write_error_still_releases_both_locks() -> 
     ctx, event, inter, lock, rel = await _run_cancel(
         40031, ensure=AsyncMock(return_value="dj-me"), clear=clear
     )
-    rel.assert_awaited_once_with(ctx.db, "evt-gap", 2, expected_holder=40031)
+    # Notion still shows the booking: the Postgres lock stays so both agree
+    rel.assert_not_awaited()
     assert inter.response.send_message.call_args[0][0] == texts.GENERIC_ERROR
     assert not lock.locked()
 
@@ -1853,6 +2018,9 @@ async def test_outreach_accept_offers_open_slots_from_fresh_event() -> None:
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.author.id = 40010
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     await view.accept.callback(inter)
 
@@ -1874,6 +2042,9 @@ async def test_outreach_accept_full_event_releases_lock() -> None:
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.author.id = 40011
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     await view.accept.callback(inter)
 
@@ -1905,6 +2076,9 @@ async def test_outreach_pick_slot_sends_lineup_and_open_slot_buttons() -> None:
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.author.id = 40050
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     await view.accept.callback(inter)
 
@@ -1943,6 +2117,9 @@ async def test_outreach_decline_replies_invite_declined() -> None:
     view = OutreachView(ctx=ctx, event=make_event(), discord_user_id=40051)
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     await view.decline.callback(inter)
 
@@ -2006,6 +2183,9 @@ async def test_booking_confirm_assign_false_log_names_user_not_none_holder() -> 
     )
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
     with patch("bot.db.bookings.acquire_slot_lock", new=AsyncMock(return_value=True)), \
          patch("bot.db.bookings.release_slot_lock", new=release), \
          patch("bot.db.bookings.get_slot_lock_holder", new=holder), \
@@ -2052,6 +2232,8 @@ async def _drive_booking(user_id, *, assign, send=None, present=None):
     )
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.response.send_message = send or AsyncMock()
+    inter.response.defer = AsyncMock()
+    inter.followup.send = inter.response.send_message  # answers after the defer
     rel = AsyncMock()
     raised = None
     with contextlib.ExitStack() as stack:
@@ -2347,6 +2529,9 @@ async def test_picker_note_only_when_slots_hidden(slot_count: int, note: bool) -
     await lock.acquire()
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
     await EventSelectionView(ctx, [event], lock, 40060)._handle_event(inter, event)
     assert inter.response.send_message.call_args.kwargs["content"] == expected
 
@@ -2356,6 +2541,9 @@ async def test_picker_note_only_when_slots_hidden(slot_count: int, note: bool) -
     inter2 = MagicMock(spec=disnake.MessageInteraction)
     inter2.author.id = 40061
     inter2.response.send_message = AsyncMock()
+    inter2.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter2.followup.send = inter2.response.send_message
     await OutreachView(ctx=ctx2, event=event, discord_user_id=40061).accept.callback(inter2)
     assert inter2.response.send_message.call_args.kwargs["content"] == expected
 
@@ -2534,7 +2722,8 @@ async def test_dm_book_slot_with_profile_books_as_before() -> None:
     await FallbackMenuView(ctx).book_slot.callback(inter)  # profile exists (autouse fixture)
     ctx.dj_conversations.start_onboarding.assert_not_awaited()
     ctx.notion_client.list_events.assert_awaited_once()
-    inter.response.send_message.assert_awaited_once()
+    inter.response.defer.assert_awaited_once()
+    inter.followup.send.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -2593,6 +2782,9 @@ async def test_cancel_confirm_success_logs_one_cancelled_entry() -> None:
     inter.author = MagicMock()
     inter.author.display_name = "Nova"
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     with patch("bot.services.dj_pages.ensure_dj_page", new=AsyncMock(return_value="page")), \
          patch("bot.db.bookings.release_slot_lock", new=AsyncMock()):
@@ -2614,6 +2806,9 @@ async def test_booking_confirm_success_without_log_service() -> None:
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.author = MagicMock()
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
     with patch("bot.db.bookings.acquire_slot_lock", new=AsyncMock(return_value=True)), \
          patch("bot.services.dj_pages.ensure_dj_page", new=AsyncMock(return_value="dj-page")):
         await view._handle_confirm(inter)
@@ -2652,6 +2847,9 @@ async def test_booking_by_last_open_slot_logs_fully_booked(monkeypatch) -> None:
     inter.author = MagicMock()
     inter.author.display_name = "Nova"
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     with patch("bot.db.bookings.acquire_slot_lock", new=AsyncMock(return_value=True)), \
          patch("bot.services.dj_pages.ensure_dj_page", new=AsyncMock(return_value="dj-page")):
@@ -2689,6 +2887,9 @@ async def test_cancellation_reopens_event_and_clears_fully_booked(monkeypatch) -
     inter.author = MagicMock()
     inter.author.display_name = "Nova"
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
 
     with patch("bot.services.dj_pages.ensure_dj_page", new=AsyncMock(return_value="page")), \
          patch("bot.db.bookings.release_slot_lock", new=AsyncMock()):
@@ -2747,6 +2948,9 @@ def _fallback_inter_with_stored_role():
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.author.id = 77777
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
     old = MagicMock(spec=disnake.Role)
     old.name = "Active Booking"
     old.id = 1

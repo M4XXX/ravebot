@@ -8,11 +8,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Booking and cancelling: buttons of one DJ can no longer reach another DJ's menu, an old menu can no longer free or continue a newer booking, and a menu that is closed or ignored no longer blocks the DJ until a restart (it ends by itself after 15 minutes). Slow Notion answers no longer make Discord show "This interaction failed" while the booking went through.
+- A failed Notion write during a self-cancel keeps the booking in the database too, so Notion and the bot agree; the DJ is asked to try again.
+- Background jobs (Notion poll, reminders, invites) keep running after an unexpected error instead of stopping until the next restart.
+- A reminder that cannot be delivered is reported once, not on every hourly run, and a database error can no longer send a reminder twice.
+- Invites skip DJs who already play at that event.
+- Notion: a page that may already exist is never created a second time after a timeout, and one DJ can no longer get two rows in the DJs database.
+- Admin booking rejects slot numbers outside the event and tells the DJ who lost the slot.
+- Guest DJ ids are never reused; deleting a DJ also removes their reminders, invite history and leftover slot locks.
+- Security: the database password is no longer printed when the connection fails, secrets stay out of debug output, and logging out of the admin page ends that session everywhere.
+- `/list all djs` works with long DJ lists.
 - A DJ now gets one invite at a time. While an invite for any event is unanswered (up to 12 hours, until they accept, decline or it times out), the bot does not invite them to another event. Before, two open events meant two invite DMs to the same DJ in the same round.
 - A member with the DJ role but no DJ profile no longer goes through the whole booking flow to fail at the end. Pressing `Book a slot` (on the Lineup Update post or in the DMs) now starts the DJ onboarding first; the DJ presses `Book a slot` again when the profile is saved.
 
 ### Changed
 
+- Database: DJ names are unique in the database (migration 0016, created only when there are no duplicates yet), status values are checked, and migrations wait for each other and give up on a blocked table after 30 seconds.
 - `Book a slot` under a Lineup Update post now opens the slot picker of that event directly, instead of asking for the event first. If that event is fully booked, the DJ is told so. The button in the DM menu still asks for the event.
 - Event picker: an overview embed with one block per event (name, date, open slots, start time). The buttons show only the date, in the same style as Show lineup.
 - Lineup Update design: the title shows the event name and date, a summary line shows how many slots are booked, and each slot is one line with a bold time (`**20:00**  🎧 DJ name` or `**21:00**  ▫️ *open slot*`).

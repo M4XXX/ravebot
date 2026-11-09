@@ -210,3 +210,29 @@ def test_repr_does_not_contain_the_admin_page_password() -> None:
         db_pool_min=1, db_pool_max=2, admin_page_password="hunter2-secret",
     )
     assert "hunter2-secret" not in repr(config)
+
+
+def test_secrets_are_not_in_repr(monkeypatch) -> None:
+    from bot.config import Config
+
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok-SECRET")
+    monkeypatch.setenv("POSTGRES_URL", "postgresql://u:pw-SECRET@h/db")
+    monkeypatch.setenv("NOTION_API_KEY", "key-SECRET")
+    monkeypatch.setenv("NOTION_PARENT_PAGE_ID", "p")
+    monkeypatch.setenv("ADMIN_USER_IDS", "1")
+    assert "SECRET" not in repr(Config.from_env())
+
+
+def test_non_numeric_admin_ids_exit_with_a_clear_message(monkeypatch) -> None:
+    import pytest as _pytest
+
+    from bot.config import Config
+
+    for key, value in {
+        "DISCORD_BOT_TOKEN": "t", "POSTGRES_URL": "postgresql://h/db",
+        "NOTION_API_KEY": "k", "NOTION_PARENT_PAGE_ID": "p", "ADMIN_USER_IDS": "1,abc",
+    }.items():
+        monkeypatch.setenv(key, value)
+    with _pytest.raises(SystemExit) as exc_info:
+        Config.from_env()
+    assert "ADMIN_USER_IDS" in str(exc_info.value)

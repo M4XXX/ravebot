@@ -1,4 +1,5 @@
 """Notion client for the Events, Slots and DJs data sources (new schema)."""
+import asyncio
 import dataclasses
 import datetime
 import logging
@@ -102,6 +103,9 @@ class NotionClient:
     def __init__(self, api: NotionApi, ids: NotionIds) -> None:
         self._api = api
         self._ids = ids
+        # upsert_dj is query-then-create: one at a time per DJ, or two parallel
+        # calls (a booking and a profile sync) would both create a row
+        self._dj_locks: dict[int, asyncio.Lock] = {}
 
     async def _rows(self, data_source_id: str) -> list[dict[str, Any]]:
         pages = await self._api.query_all(data_source_id)
@@ -281,7 +285,13 @@ class NotionClient:
                 f"trash slot row {row.number} ({row.page_id})",
             )
 
-    async def upsert_dj(
+    async def upsert_dj(self, discord_id: int, *args: Any, **kwargs: Any) -> str:
+        """See _upsert_dj; calls for the same DJ run one after the other."""
+        lock = self._dj_locks.setdefault(discord_id, asyncio.Lock())
+        async with lock:
+            return await self._upsert_dj(discord_id, *args, **kwargs)
+
+    async def _upsert_dj(
         self,
         discord_id: int,
         dj_name: str,

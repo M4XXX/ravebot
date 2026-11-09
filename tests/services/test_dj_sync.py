@@ -1,6 +1,8 @@
 """Tests for bot.services.dj_sync."""
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from bot.notion.api import NotionWriteError
 from bot.notion.client import DjLogoUploadError
 from bot.services.dj_sync import retry_unsynced_logos, sync_dj
@@ -8,6 +10,29 @@ from bot.services.dj_sync import retry_unsynced_logos, sync_dj
 ROW = {"dj_name": "DJ A", "vrchat_name": "v", "logo_url": None, "logo_image": b"img",
        "stream_url_primary": "https://t.tv/a", "stream_url_backup": None,
        "logo_synced": False}
+
+
+@pytest.fixture(autouse=True)
+def _mark_goes_through_set_logo_synced():
+    """The conditional mark ends in logo_synced = true; tests read it via set_logo_synced."""
+    import bot.services.dj_sync as mod
+
+    async def mark(db, user_id, image):
+        await mod.set_logo_synced(db, user_id, True)
+
+    with patch("bot.services.dj_sync.mark_logo_synced_if_unchanged", new=mark):
+        yield
+
+
+async def test_mark_only_applies_to_the_logo_that_was_uploaded():
+    from bot.db.djs import mark_logo_synced_if_unchanged
+
+    pool = MagicMock()
+    pool.execute = AsyncMock()
+    await mark_logo_synced_if_unchanged(pool, 1, b"img")
+    sql, user_id, image = pool.execute.call_args.args
+    assert "logo_image IS NOT DISTINCT FROM $2" in sql
+    assert (user_id, image) == (1, b"img")
 
 
 def _ctx(upsert=None):

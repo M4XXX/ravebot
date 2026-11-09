@@ -748,3 +748,34 @@ async def test_set_dj_active_status_deleted_stored_role_is_warning_only(monkeypa
 
     assert await svc.set_dj_active_status(111, 42, "DJ Scope", True) == (True, "")
     mock_member.add_roles.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("slot", [0, 4])
+async def test_slot_number_outside_the_event_is_rejected(monkeypatch, slot) -> None:
+    force, release, _ = _patch_db(monkeypatch)
+    service = _make_service()
+    ok, msg = await service.book_slot_override("admin", 42, "DJ X", EVENT_NAME, slot)
+    assert not ok and "slots 1 to 3" in msg
+    ok, msg = await service.cancel_slot_override("admin", 42, "DJ X", EVENT_NAME, slot)
+    assert not ok and "slots 1 to 3" in msg
+    force.assert_not_awaited()
+    release.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_force_book_tells_the_displaced_dj(monkeypatch) -> None:
+    _patch_db(monkeypatch, holder=999)
+    monkeypatch.setattr("bot.services.admin_booking.recheck_fully_booked", AsyncMock())
+    service = _make_service()
+    sent: list[tuple[int, str]] = []
+
+    async def fake_dm(bot, user_id, text):
+        sent.append((user_id, text))
+        return True
+
+    monkeypatch.setattr("bot.services.admin_booking.dm_user", fake_dm)
+    ok, _ = await service.book_slot_override("admin", 42, "DJ X", EVENT_NAME, 1)
+    assert ok
+    assert [uid for uid, _ in sent] == [42, 999]
+    assert sent[1][1] == texts.dm_cancelled(_make_event(), 0)

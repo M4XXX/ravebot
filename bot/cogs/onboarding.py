@@ -216,9 +216,13 @@ class OnboardingCog(commands.Cog):
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
-        # If user is in an active multi-step flow, do not interrupt
+        # If user is in an active multi-step flow, do not interrupt it, but say so
         lock = self.ctx.get_user_lock(message.author.id)
         if lock.locked():
+            try:
+                await message.channel.send(texts.FLOW_OPEN)
+            except disnake.HTTPException:
+                logger.warning("on_message: could not send the open-flow hint", exc_info=True)
             return
         active: bool | None = None
         onboarded = False

@@ -63,7 +63,8 @@ def test_helpers() -> None:
     assert parse_discord_id(" 123456789012345678 ") == 123456789012345678
     assert parse_discord_id("12") is None and parse_discord_id("abc") is None
     assert check_link("twitch.tv/x", "link") == ("https://twitch.tv/x", None)
-    assert check_link("ftp://x.y", "stream link")[1] == "The stream link must be a web link (https://...)."
+    assert check_link("rtmp://my.server/live", "link") == ("rtmp://my.server/live", None)
+    assert "must be a link" in check_link("not a link", "stream link")[1]
     assert check_link("https://", "link")[0] is None
 
 
@@ -101,8 +102,8 @@ async def test_add_discord_dj_is_active_and_keeps_the_id() -> None:
     [
         ({"name": "  ", "link": "https://a.b"}, "name is required"),
         ({"name": "x" * 81, "link": "https://a.b"}, "too long"),
-        ({"name": "A", "link": "ftp://a"}, "web link"),
-        ({"name": "A", "link": "https://a.b", "alt_link": "ftp://x"}, "backup link"),
+        ({"name": "A", "link": "two words"}, "must be a link"),
+        ({"name": "A", "link": "https://a.b", "alt_link": "1://"}, "backup link"),
         ({"name": "A", "link": "https://a.b", "vrchat": "v" * 81}, "VRChat name is too long"),
         ({"name": "A", "link": "https://a.b", "logo": b"not an image"}, "logo"),
     ],
@@ -231,3 +232,28 @@ async def test_find_by_name_ignores_case_and_spacing() -> None:
     with patch.object(mod, "get_all_dj_rows", new=AsyncMock(return_value=[ROW])):
         assert await service.find_by_name("  moonBEAT ") == ROW
         assert await service.find_by_name("nobody") is None
+
+
+async def test_delete_waits_for_a_dj_who_is_booking() -> None:
+    booking = MagicMock(cancel_slot_override=AsyncMock())
+    service, ctx = _service(admin_booking_service=booking)
+    row = {**ROW, "discord_user_id": 123456789012345678}
+    await ctx.get_user_lock(123456789012345678).acquire()
+    with patch.object(mod, "get_dj_row", new=AsyncMock(return_value=row)), \
+         patch.object(mod, "delete_dj", new=AsyncMock()) as delete:
+        result = await service.delete_dj(admin_name="A", dj_id=123456789012345678)
+    assert not result.ok and "right now" in result.message
+    delete.assert_not_awaited()
+
+
+async def test_delete_db_error_is_reported() -> None:
+    booking = MagicMock(cancel_slot_override=AsyncMock())
+    service, ctx = _service(admin_booking_service=booking)
+    ctx.notion_client.list_events = AsyncMock(return_value=[])
+    ctx.notion_client.trash_dj_page = AsyncMock()
+    with patch.object(mod, "get_dj_row", new=AsyncMock(return_value=ROW)), \
+         patch.object(mod, "get_dj_slot_locks", new=AsyncMock(return_value=[])), \
+         patch.object(mod, "get_notion_dj_page_id", new=AsyncMock(return_value=None)), \
+         patch.object(mod, "delete_dj", new=AsyncMock(side_effect=OSError("db"))):
+        result = await service.delete_dj(admin_name="A", dj_id=-1)
+    assert not result.ok and "not deleted" in result.message

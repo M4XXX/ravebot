@@ -25,3 +25,35 @@ jobs:
         run: uv sync --frozen
       - name: Run the tests
         run: uv run pytest -q
+
+  real-sql:
+    name: Real-SQL tests (PostgreSQL service)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: ravebot
+          # throwaway database inside the job; nothing else can reach it
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: ravebot_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ravebot"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # the database name must end in _test: the suite drops and recreates its schema
+      RAVEBOT_TEST_POSTGRES_URL: postgresql://ravebot@localhost:5432/ravebot_test
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - name: Install dependencies
+        run: uv sync --frozen
+      - name: Real-SQL tests
+        run: uv run pytest -m pg -q tests/pg

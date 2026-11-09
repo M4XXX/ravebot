@@ -25,11 +25,16 @@ def slot_phrase(event: EventInfo, slot_index: int) -> str:
     return f"slot {slot_index + 1} at {fmt_time(event, slot_index)}"
 
 
+FLOW_STALE = "This menu is out of date. Open the menu again to start over."
+FLOW_BUSY = "I'm already working on it. One moment, please."
 GENERIC_ERROR = (
     "Something went wrong. Please try again in a moment. "
     "If it keeps happening, tell an organizer."
 )
-FLOW_OPEN = "You already have a booking open. Finish or dismiss it first."
+FLOW_OPEN = (
+    "You already have a booking open. Finish it or press Never mind. "
+    "It closes by itself after 15 minutes."
+)
 NO_PROFILE = (
     "You haven't set up your DJ profile yet. Ask an organizer to give you the DJ role again."
 )
@@ -204,6 +209,13 @@ EVENT_FULL = "All slots of this event are now booked. I'll message you if one op
 ALL_BOOKED = "All slots are booked. I'll message you if one opens up."
 NO_EVENTS = "There are no upcoming events yet."
 CANCEL_WHICH = "Which booking do you want to cancel?"
+
+
+def cancel_more(total: int) -> str:
+    return (
+        f"You have {total} bookings; your next 4 are shown. "
+        "Cancel one of them to see the others, or ask an organizer."
+    )
 
 
 def cancel_confirm(event: EventInfo, slot_index: int) -> str:

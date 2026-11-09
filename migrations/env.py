@@ -55,11 +55,25 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 
+# Any constant: two bot instances starting at once run the migrations one after the other.
+MIGRATION_LOCK_KEY = 7212650291
+# A migration waiting for a table lock gives up instead of blocking the start forever.
+LOCK_TIMEOUT = "30s"
+
+
 def do_run_migrations(connection) -> None:  # type: ignore[no-untyped-def]
     """Configure Alembic context with a live connection and run pending migrations."""
-    context.configure(connection=connection, target_metadata=target_metadata)
-    with context.begin_transaction():
-        context.run_migrations()
+    connection.exec_driver_sql(f"SET lock_timeout = '{LOCK_TIMEOUT}'")
+    connection.exec_driver_sql(f"SELECT pg_advisory_lock({MIGRATION_LOCK_KEY})")
+    connection.commit()
+    try:
+        context.configure(connection=connection, target_metadata=target_metadata)
+        with context.begin_transaction():
+            context.run_migrations()
+        connection.commit()
+    finally:
+        connection.exec_driver_sql(f"SELECT pg_advisory_unlock({MIGRATION_LOCK_KEY})")
+        connection.commit()
 
 
 async def run_migrations_online() -> None:

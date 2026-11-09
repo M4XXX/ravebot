@@ -280,7 +280,8 @@ async def test_on_message_skips_during_active_flow(monkeypatch: pytest.MonkeyPat
 
     await cog.on_message(message)
 
-    message.channel.send.assert_not_called()
+    # No menu, only the hint that a booking is open
+    message.channel.send.assert_called_once_with(texts.FLOW_OPEN)
 
 
 @pytest.mark.asyncio
@@ -468,7 +469,7 @@ async def test_on_message_flow_lock_logs_but_no_menu(_plain: dict) -> None:
     msg = _dm()
     await _send(cog, msg)
     log_service.log_user_message.assert_awaited_once()
-    msg.channel.send.assert_not_awaited()
+    msg.channel.send.assert_awaited_once_with(texts.FLOW_OPEN)  # hint, no menu
 
 
 @pytest.mark.asyncio

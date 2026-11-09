@@ -6,11 +6,12 @@ Views: BookingConfirmView (Story 4.2), SlotSelectionView (Story 4.1),
 
 RULE: Every View subclass MUST:
   1. Accept BotContext as a constructor argument
-  2. Implement on_timeout() — re-present flow or send warm timeout message
-  3. Acquire user's asyncio.Lock on entry; release on completion, abandonment, and in on_timeout()
+  2. Views of a booking or cancel flow extend FlowView: they hold the user's FlowLock
+     (bot.context) and free it on completion, abandonment, error and timeout.
 """
 import asyncio
 import logging
+import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -28,6 +29,51 @@ if TYPE_CHECKING:
     from bot.notion.models import EventInfo
 
 logger = logging.getLogger(__name__)
+
+FLOW_VIEW_TIMEOUT = 15 * 60  # the same as the FlowLock time limit (bot.context)
+
+
+class FlowView(GatedView):
+    """A view that carries one step of a user's booking or cancel flow.
+
+    The user's FlowLock is held while the view lives. The view remembers the flow's
+    token: an old view (a newer flow started since) can neither free the lock nor
+    move the flow on. Its custom ids get a random suffix, because disnake keys views
+    sent as interaction responses by custom id only: equal ids would let one user's
+    click reach another user's view. Only the owner may press the buttons (GatedView).
+    """
+
+    def _bind_flow(self, lock: "asyncio.Lock", user_id: int) -> None:
+        self._lock = lock
+        self._user_id = user_id
+        self._token = getattr(lock, "token", 0)
+        self._nonce = uuid.uuid4().hex[:12]
+        self._busy = False
+
+    def _cid(self, base: str) -> str:
+        return f"{base}:{self._nonce}"
+
+    def _release_flow(self) -> None:
+        release_if = getattr(self._lock, "release_if", None)
+        if release_if is not None:
+            release_if(self._token)
+        elif self._lock.locked():
+            self._lock.release()
+
+    def _flow_current(self) -> bool:
+        owns = getattr(self._lock, "owns", None)
+        return owns(self._token) if owns is not None else self._lock.locked()
+
+    async def _stale(self, inter: disnake.MessageInteraction) -> bool:
+        """True (and the user is told) when this view's flow is over."""
+        if self._flow_current() and not self._busy:
+            return False
+        text = texts.FLOW_BUSY if self._busy and self._flow_current() else texts.FLOW_STALE
+        await inter.response.send_message(text, ephemeral=True)
+        return True
+
+    async def on_timeout(self) -> None:
+        self._release_flow()
 
 
 class FallbackMenuView(GatedView):
@@ -95,14 +141,20 @@ class FallbackMenuView(GatedView):
         if not await _has_dj_profile(self.ctx, inter.author.id):
             await self._onboard_before_booking(inter)
             return
+        # Notion is read next: acknowledge first (Discord's 3 second answer limit)
+        await inter.response.defer(ephemeral=True)
         start = await prepare_booking(self.ctx, inter.author.id)
         if start.error is not None:
-            await inter.response.send_message(start.error, ephemeral=True)
+            await inter.followup.send(start.error, ephemeral=True)
             return
-
-        await inter.response.send_message(
-            start.content or None, embed=start.embed, view=start.view, ephemeral=True
-        )
+        try:
+            await inter.followup.send(
+                start.content or None, embed=start.embed, view=start.view, ephemeral=True
+            )
+        except Exception:
+            logger.exception("book_slot: sending the event picker failed")
+            if start.view is not None:
+                start.view._release_flow()
 
     async def _onboard_before_booking(self, inter: disnake.MessageInteraction) -> None:
         """A DJ role holder without a profile starts the onboarding instead of booking.
@@ -154,11 +206,17 @@ class FallbackMenuView(GatedView):
             )
             return
         await lock.acquire()
+        # Database and Notion are read next: acknowledge first (3 second answer limit)
+        try:
+            await inter.response.defer(ephemeral=True)
+        except Exception:
+            lock.release()
+            raise
 
         # Guard: DB must be available
         if self.ctx.db is None:
             lock.release()
-            await inter.response.send_message(
+            await inter.followup.send(
                 texts.GENERIC_ERROR,
                 ephemeral=True,
             )
@@ -167,7 +225,7 @@ class FallbackMenuView(GatedView):
         # Guard: Notion client must be available
         if self.ctx.notion_client is None:
             lock.release()
-            await inter.response.send_message(
+            await inter.followup.send(
                 texts.GENERIC_ERROR,
                 ephemeral=True,
             )
@@ -179,7 +237,7 @@ class FallbackMenuView(GatedView):
         except Exception:
             logger.exception("cancel_slot: get_dj_slot_locks failed")
             lock.release()
-            await inter.response.send_message(
+            await inter.followup.send(
                 texts.GENERIC_ERROR,
                 ephemeral=True,
             )
@@ -187,7 +245,7 @@ class FallbackMenuView(GatedView):
 
         if not slot_lock_rows:
             lock.release()
-            await inter.response.send_message(
+            await inter.followup.send(
                 texts.NO_BOOKINGS,
                 ephemeral=True,
             )
@@ -199,7 +257,7 @@ class FallbackMenuView(GatedView):
         except Exception:
             logger.exception("cancel_slot: list_events() failed")
             lock.release()
-            await inter.response.send_message(
+            await inter.followup.send(
                 texts.GENERIC_ERROR,
                 ephemeral=True,
             )
@@ -218,15 +276,22 @@ class FallbackMenuView(GatedView):
 
         if not bookings:
             lock.release()
-            await inter.response.send_message(
+            await inter.followup.send(
                 texts.NO_BOOKINGS,
                 ephemeral=True,
             )
             return
 
+        bookings.sort(key=lambda b: b["slot_unix"])
         view = CancellationView(self.ctx, bookings, lock, user_id)
-        cancel_prompt = texts.CANCEL_WHICH
-        await inter.response.send_message(cancel_prompt, view=view, ephemeral=True)
+        prompt = texts.CANCEL_WHICH
+        if len(bookings) > 4:
+            prompt += "\n" + texts.cancel_more(len(bookings))
+        try:
+            await inter.followup.send(prompt, view=view, ephemeral=True)
+        except Exception:
+            logger.exception("cancel_slot: sending the booking list failed")
+            view._release_flow()
 
     @disnake.ui.button(
         label=texts.BTN_INVITES_ON,
@@ -707,7 +772,7 @@ class LineupPostView(GatedView):
 # Story 4.1: EventSelectionView
 # ---------------------------------------------------------------------------
 
-class EventSelectionView(GatedView):
+class EventSelectionView(FlowView):
     """Event selection — one button per upcoming event with open slots.
 
     Presented after DJ taps [Book a Slot] from FallbackMenuView.
@@ -731,16 +796,15 @@ class EventSelectionView(GatedView):
         lock: asyncio.Lock,
         user_id: int,
     ) -> None:
-        super().__init__(timeout=None)
+        super().__init__(timeout=FLOW_VIEW_TIMEOUT)
         self._ctx = ctx
-        self._lock = lock
-        self._user_id = user_id
+        self._bind_flow(lock, user_id)
 
         for event in events:
             btn = disnake.ui.Button(
                 label=_pick_label(event, events),
                 style=disnake.ButtonStyle.secondary,
-                custom_id=f"event_select:{event.page_id}",
+                custom_id=self._cid(f"event_select:{event.page_id}"),
                 row=0,
             )
 
@@ -756,21 +820,16 @@ class EventSelectionView(GatedView):
         never_mind = disnake.ui.Button(
             label=texts.BTN_NEVER_MIND,
             style=disnake.ButtonStyle.secondary,
-            custom_id="event_select:cancel",
+            custom_id=self._cid("event_select:cancel"),
             row=1,
         )
         never_mind.callback = self._handle_cancel
         self.add_item(never_mind)
 
-    async def on_timeout(self) -> None:
-        """No-op: timeout=None means this never fires.
-        [Source: architecture.md#View Lifecycle Contract]
-        """
 
     async def _handle_cancel(self, inter: disnake.MessageInteraction) -> None:
         """[Never mind] — release lock and respond warmly. (AC5)"""
-        if self._lock.locked():
-            self._lock.release()
+        self._release_flow()
         await inter.response.send_message(texts.BOOKING_ABORTED, ephemeral=True)
 
     async def _handle_event(
@@ -782,6 +841,8 @@ class EventSelectionView(GatedView):
 
         [Source: epics.md#Story 4.1 AC2]
         """
+        if await self._stale(inter):
+            return
         from bot.ui.embeds import LineupUpdateEmbed
 
         open_slot_indices = _open_slot_indices(event)
@@ -803,14 +864,14 @@ class EventSelectionView(GatedView):
             )
         except Exception:
             logger.exception("_handle_event: send_message failed")
-            self._lock.release()
+            self._release_flow()
 
 
 # ---------------------------------------------------------------------------
 # Story 4.1: SlotSelectionView
 # ---------------------------------------------------------------------------
 
-class SlotSelectionView(GatedView):
+class SlotSelectionView(FlowView):
     """Slot selection — one button per open slot in the chosen event.
 
     Presented alongside LineupUpdateEmbed after DJ selects an event in
@@ -836,11 +897,10 @@ class SlotSelectionView(GatedView):
         lock: asyncio.Lock,
         user_id: int,
     ) -> None:
-        super().__init__(timeout=None)
+        super().__init__(timeout=FLOW_VIEW_TIMEOUT)
         self._ctx = ctx
         self._event = event
-        self._lock = lock
-        self._user_id = user_id
+        self._bind_flow(lock, user_id)
 
         event_id = event.page_id
 
@@ -848,7 +908,7 @@ class SlotSelectionView(GatedView):
             btn = disnake.ui.Button(
                 label=texts.slot_button(event, slot_index),
                 style=disnake.ButtonStyle.secondary,
-                custom_id=f"slot_select:{event_id}:{slot_index}",
+                custom_id=f"slot_select:{event_id}:{self._nonce}:{slot_index}",
                 row=row_idx // 5,
             )
 
@@ -864,21 +924,16 @@ class SlotSelectionView(GatedView):
         never_mind = disnake.ui.Button(
             label=texts.BTN_NEVER_MIND,
             style=disnake.ButtonStyle.secondary,
-            custom_id="slot_select:cancel",
+            custom_id=self._cid("slot_select:cancel"),
             row=4,
         )
         never_mind.callback = self._handle_cancel
         self.add_item(never_mind)
 
-    async def on_timeout(self) -> None:
-        """No-op: timeout=None means this never fires.
-        [Source: architecture.md#View Lifecycle Contract]
-        """
 
     async def _handle_cancel(self, inter: disnake.MessageInteraction) -> None:
         """[Never mind] — release lock and respond warmly. (AC5)"""
-        if self._lock.locked():
-            self._lock.release()
+        self._release_flow()
         await inter.response.send_message(texts.BOOKING_ABORTED, ephemeral=True)
 
     async def _handle_slot(
@@ -895,6 +950,8 @@ class SlotSelectionView(GatedView):
         [Source: epics.md#Story 4.2 AC1]
         [Source: architecture.md#Per-User Flow Lock: asyncio.Lock per user_id]
         """
+        if await self._stale(inter):
+            return
         from bot.ui.embeds import BookingConfirmEmbed
 
         slot_unix = int(self._event.slot_start(slot_index).timestamp())
@@ -912,15 +969,14 @@ class SlotSelectionView(GatedView):
             await inter.response.send_message(embed=embed, view=view, ephemeral=True)
         except Exception:
             logger.exception("_handle_slot: send_message failed")
-            if self._lock.locked():
-                self._lock.release()
+            self._release_flow()
 
 
 # ---------------------------------------------------------------------------
 # Story 4.2: BookingConfirmView
 # ---------------------------------------------------------------------------
 
-class BookingConfirmView(GatedView):
+class BookingConfirmView(FlowView):
     """Two-button confirmation view — confirms or cancels a pending slot booking.
 
     Presented alongside BookingConfirmEmbed after DJ selects a slot in
@@ -956,20 +1012,15 @@ class BookingConfirmView(GatedView):
         lock: asyncio.Lock,
         user_id: int,
     ) -> None:
-        super().__init__(timeout=None)
+        super().__init__(timeout=FLOW_VIEW_TIMEOUT)
         self._ctx = ctx
         self._event = event
         self._slot_index = slot_index
         self._slot_unix = slot_unix
-        self._lock = lock
-        self._user_id = user_id
+        self._bind_flow(lock, user_id)
+        self.confirm.custom_id = self._cid(self.confirm.custom_id)
+        self.cancel.custom_id = self._cid(self.cancel.custom_id)
 
-    async def on_timeout(self) -> None:
-        """No-op: timeout=None means this never fires.
-
-        Required by View lifecycle contract. Lock would be released here if it fired.
-        [Source: architecture.md#View Lifecycle Contract]
-        """
 
     @disnake.ui.button(
         label=texts.BTN_CONFIRM,
@@ -999,8 +1050,7 @@ class BookingConfirmView(GatedView):
 
     async def _handle_cancel(self, inter: disnake.MessageInteraction) -> None:
         """[✖ Cancel] — release per-user lock and respond warmly. (AC4)"""
-        if self._lock.locked():
-            self._lock.release()
+        self._release_flow()
         await inter.response.send_message(
             texts.BOOKING_ABORTED,
             ephemeral=True,
@@ -1060,9 +1110,8 @@ class BookingConfirmView(GatedView):
         ]
 
         if not remaining:
-            if self._lock.locked():
-                self._lock.release()
-            await inter.response.send_message(
+            self._release_flow()
+            await inter.followup.send(
                 texts.EVENT_FULL,
                 ephemeral=True,
             )
@@ -1071,11 +1120,15 @@ class BookingConfirmView(GatedView):
         refresh_view = SlotSelectionView(
             self._ctx, event_for_refresh, remaining, self._lock, self._user_id
         )
-        await inter.response.send_message(
-            texts.SLOT_TAKEN,
-            view=refresh_view,
-            ephemeral=True,
-        )
+        try:
+            await inter.followup.send(
+                texts.SLOT_TAKEN,
+                view=refresh_view,
+                ephemeral=True,
+            )
+        except Exception:
+            logger.exception("BookingConfirmView: could not offer the remaining slots")
+            self._release_flow()
 
     async def _handle_confirm(self, inter: disnake.MessageInteraction) -> None:
         """[✅ Confirm Booking] — full booking flow with PG lock + Notion write. (AC2–AC3, AC5–AC6)
@@ -1089,11 +1142,16 @@ class BookingConfirmView(GatedView):
         from bot.services.dj_pages import ensure_dj_page
         from bot.ui.embeds import BookedEmbed
 
+        if await self._stale(inter):
+            return
+        self._busy = True  # a second press while this runs gets FLOW_BUSY
+        # Notion calls below can take longer than Discord's 3 second answer limit
+        await inter.response.defer(ephemeral=True)
+
         # Guard: DB must be available (AC6)
         if self._ctx.db is None:
-            if self._lock.locked():
-                self._lock.release()
-            await inter.response.send_message(
+            self._release_flow()
+            await inter.followup.send(
                 texts.GENERIC_ERROR,
                 ephemeral=True,
             )
@@ -1103,9 +1161,8 @@ class BookingConfirmView(GatedView):
 
         # Guard: Notion client must be available — without it we cannot write the booking (AC2)
         if self._ctx.notion_client is None:
-            if self._lock.locked():
-                self._lock.release()
-            await inter.response.send_message(
+            self._release_flow()
+            await inter.followup.send(
                 texts.GENERIC_ERROR,
                 ephemeral=True,
             )
@@ -1124,9 +1181,8 @@ class BookingConfirmView(GatedView):
             logger.exception(
                 "BookingConfirmView: acquire_slot_lock raised — transaction rolled back"
             )
-            if self._lock.locked():
-                self._lock.release()
-            await inter.response.send_message(
+            self._release_flow()
+            await inter.followup.send(
                 texts.GENERIC_ERROR,
                 ephemeral=True,
             )
@@ -1153,8 +1209,7 @@ class BookingConfirmView(GatedView):
                 logger.exception("BookingConfirmView: release_slot_lock failed")
 
         def _release_user_lock() -> None:
-            if self._lock.locked():
-                self._lock.release()
+            self._release_flow()
 
         async def _abort_with_error() -> None:
             nonlocal responded
@@ -1163,7 +1218,7 @@ class BookingConfirmView(GatedView):
             if responded:
                 return
             responded = True
-            await inter.response.send_message(
+            await inter.followup.send(
                 texts.GENERIC_ERROR,
                 ephemeral=True,
             )
@@ -1220,7 +1275,7 @@ class BookingConfirmView(GatedView):
 
             # Send booking confirmed embed (AC3)
             embed = BookedEmbed(self._event, self._slot_index)
-            await inter.response.send_message(embed=embed)
+            await inter.followup.send(embed=embed)
         except asyncio.CancelledError:
             if not booked:
                 await _release_pg_lock()
@@ -1253,8 +1308,7 @@ class BookingConfirmView(GatedView):
                 logger.exception("BookingConfirmView: admin log post failed")
 
         # Release per-user lock — flow complete (AC3)
-        if self._lock.locked():
-            self._lock.release()
+        self._release_flow()
 
         # Announce the event when this booking filled it, clear the flag when a slot opened.
         # After the lock release: the Notion read can be slow and must not hold the DJ's flow.
@@ -1269,7 +1323,7 @@ class BookingConfirmView(GatedView):
 # Story 4.4: CancellationView
 # ---------------------------------------------------------------------------
 
-class CancellationView(GatedView):
+class CancellationView(FlowView):
     """One button per DJ's upcoming booked slot + [Never mind].
 
     Presented after DJ taps [❌ Cancel a Slot] from FallbackMenuView.
@@ -1291,10 +1345,9 @@ class CancellationView(GatedView):
         lock: asyncio.Lock,
         user_id: int,
     ) -> None:
-        super().__init__(timeout=None)
+        super().__init__(timeout=FLOW_VIEW_TIMEOUT)
         self._ctx = ctx
-        self._lock = lock
-        self._user_id = user_id
+        self._bind_flow(lock, user_id)
 
         for i, booking in enumerate(bookings[:4]):  # max 4 booking buttons on rows 0-3
             event = booking["event"]
@@ -1303,7 +1356,7 @@ class CancellationView(GatedView):
             btn = disnake.ui.Button(
                 label=label,
                 style=disnake.ButtonStyle.secondary,
-                custom_id=f"cancel_select:{event.page_id}:{booking['slot_index']}",
+                custom_id=self._cid(f"cancel_select:{event.page_id}:{booking['slot_index']}"),
                 row=i,
             )
 
@@ -1319,21 +1372,16 @@ class CancellationView(GatedView):
         never_mind = disnake.ui.Button(
             label=texts.BTN_NEVER_MIND,
             style=disnake.ButtonStyle.secondary,
-            custom_id="cancel_select:nevermind",
+            custom_id=self._cid("cancel_select:nevermind"),
             row=4,
         )
         never_mind.callback = self._handle_never_mind
         self.add_item(never_mind)
 
-    async def on_timeout(self) -> None:
-        """No-op: timeout=None means this never fires.
-        [Source: architecture.md#View Lifecycle Contract]
-        """
 
     async def _handle_never_mind(self, inter: disnake.MessageInteraction) -> None:
         """[Never mind] — release lock and respond warmly."""
-        if self._lock.locked():
-            self._lock.release()
+        self._release_flow()
         await inter.response.send_message(
             texts.CANCEL_KEPT,
             ephemeral=True,
@@ -1348,6 +1396,8 @@ class CancellationView(GatedView):
 
         [Source: epics.md#Story 4.4 AC3]
         """
+        if await self._stale(inter):
+            return
         event = booking["event"]
         slot_index = booking["slot_index"]
         slot_unix = booking["slot_unix"]
@@ -1367,15 +1417,14 @@ class CancellationView(GatedView):
             )
         except Exception:
             logger.exception("CancellationView: send_message failed")
-            if self._lock.locked():
-                self._lock.release()
+            self._release_flow()
 
 
 # ---------------------------------------------------------------------------
 # Story 4.4: CancelConfirmView
 # ---------------------------------------------------------------------------
 
-class CancelConfirmView(GatedView):
+class CancelConfirmView(FlowView):
     """Two-button confirmation — confirms or keeps a pending slot cancellation.
 
     Presented alongside the "Are you sure?" message after DJ selects a booking
@@ -1401,18 +1450,15 @@ class CancelConfirmView(GatedView):
         lock: asyncio.Lock,
         user_id: int,
     ) -> None:
-        super().__init__(timeout=None)
+        super().__init__(timeout=FLOW_VIEW_TIMEOUT)
         self._ctx = ctx
         self._event = event
         self._slot_index = slot_index
         self._slot_unix = slot_unix
-        self._lock = lock
-        self._user_id = user_id
+        self._bind_flow(lock, user_id)
+        self.confirm.custom_id = self._cid(self.confirm.custom_id)
+        self.keep.custom_id = self._cid(self.keep.custom_id)
 
-    async def on_timeout(self) -> None:
-        """No-op: timeout=None means this never fires.
-        [Source: architecture.md#View Lifecycle Contract]
-        """
 
     @disnake.ui.button(
         label=texts.BTN_CANCEL_YES,
@@ -1442,8 +1488,7 @@ class CancelConfirmView(GatedView):
 
     async def _handle_keep(self, inter: disnake.MessageInteraction) -> None:
         """[✖ Keep It] — release per-user lock and respond warmly. (AC5)"""
-        if self._lock.locked():
-            self._lock.release()
+        self._release_flow()
         await inter.response.send_message(
             texts.CANCEL_KEPT,
             ephemeral=True,
@@ -1457,16 +1502,27 @@ class CancelConfirmView(GatedView):
         [Source: architecture.md#Gap Analysis — PG lock vs Notion write boundary]
         """
         from bot.db.bookings import release_slot_lock
-        from bot.notion.client import NotionWriteError, SlotRowMissingError
         from bot.services.dj_pages import ensure_dj_page
+
+        if await self._stale(inter):
+            return
+        self._busy = True
+        await inter.response.defer(ephemeral=True)
+        try:
+            await self._cancel_booking(inter, release_slot_lock, ensure_dj_page)
+        finally:
+            # Every exit, also an unexpected error, ends the flow
+            self._release_flow()
+
+    async def _cancel_booking(self, inter, release_slot_lock, ensure_dj_page) -> None:
+        from bot.notion.client import NotionWriteError, SlotRowMissingError
 
         event_id = self._event.page_id
 
         # Guard: DB must be available
         if self._ctx.db is None:
-            if self._lock.locked():
-                self._lock.release()
-            await inter.response.send_message(
+            self._release_flow()
+            await inter.followup.send(
                 texts.GENERIC_ERROR,
                 ephemeral=True,
             )
@@ -1474,9 +1530,8 @@ class CancelConfirmView(GatedView):
 
         # Guard: Notion client must be available
         if self._ctx.notion_client is None:
-            if self._lock.locked():
-                self._lock.release()
-            await inter.response.send_message(
+            self._release_flow()
+            await inter.followup.send(
                 texts.GENERIC_ERROR,
                 ephemeral=True,
             )
@@ -1515,13 +1570,10 @@ class CancelConfirmView(GatedView):
             )
         except NotionWriteError:
             logger.exception("CancelConfirmView: clear_slot failed")
-            # Free the slot lock even on Notion failure — slot must become available
-            await release_slot_lock(
-                self._ctx.db, event_id, self._slot_index, expected_holder=self._user_id
-            )
-            if self._lock.locked():
-                self._lock.release()
-            await inter.response.send_message(
+            # Notion still shows the booking: keep the Postgres lock so both agree, and
+            # let the DJ try again (the sync reconciles a later hand edit in Notion).
+            self._release_flow()
+            await inter.followup.send(
                 texts.GENERIC_ERROR,
                 ephemeral=True,
             )
@@ -1531,12 +1583,17 @@ class CancelConfirmView(GatedView):
             logger.exception("CancelConfirmView: unexpected error clearing Notion slot")
 
         # Free the slot_locks DB row — slot is now open (AC4)
-        await release_slot_lock(
-            self._ctx.db, event_id, self._slot_index, expected_holder=self._user_id
-        )
+        try:
+            await release_slot_lock(
+                self._ctx.db, event_id, self._slot_index, expected_holder=self._user_id
+            )
+        except Exception:
+            logger.exception("CancelConfirmView: release_slot_lock failed")
+            await inter.followup.send(texts.GENERIC_ERROR, ephemeral=True)
+            return
 
         # Confirmation message (AC4)
-        await inter.response.send_message(
+        await inter.followup.send(
             texts.CANCELLED,
         )
 
@@ -1558,8 +1615,7 @@ class CancelConfirmView(GatedView):
                 logger.exception("CancelConfirmView: admin log post failed")
 
         # Release per-user lock — flow complete (AC4)
-        if self._lock.locked():
-            self._lock.release()
+        self._release_flow()
 
         # Announce the event when this booking filled it, clear the flag when a slot opened.
         # After the lock release: the Notion read can be slow and must not hold the DJ's flow.
@@ -1667,6 +1723,11 @@ class OutreachView(GatedView):
             return  # Don't stop view — DJ can still tap [Not this time]
         await lock.acquire()
         self.stop()  # Prevent re-use once booking flow is starting
+        try:
+            await inter.response.defer()  # Notion is read next (3 second answer limit)
+        except Exception:
+            lock.release()
+            raise
 
         # Record acceptance AFTER lock acquired (accurate: DJ is entering booking flow)
         if self._ctx.db is not None and event_id:
@@ -1693,20 +1754,20 @@ class OutreachView(GatedView):
 
         if not open_slot_indices:
             lock.release()
-            await inter.response.send_message(texts.INVITE_FILLED, ephemeral=True)
+            await inter.followup.send(texts.INVITE_FILLED, ephemeral=True)
             return
 
         embed = LineupUpdateEmbed(event)
         slot_view = SlotSelectionView(self._ctx, event, open_slot_indices, lock, inter.author.id)
         try:
-            await inter.response.send_message(
+            await inter.followup.send(
                 content=_pick_slot_content(open_slot_indices),
                 embed=embed,
                 view=slot_view,
             )
         except Exception:
             logger.exception("OutreachView.accept: send_message failed")
-            lock.release()
+            slot_view._release_flow()
 
     @disnake.ui.button(
         label=texts.BTN_NOT_THIS_TIME,

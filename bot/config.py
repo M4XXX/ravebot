@@ -17,9 +17,9 @@ class Config:
     Optional fields use safe defaults.
     """
 
-    discord_bot_token: str
-    postgres_url: str
-    notion_api_key: str
+    discord_bot_token: str = field(repr=False)
+    postgres_url: str = field(repr=False)
+    notion_api_key: str = field(repr=False)
     notion_parent_page_id: str
     admin_user_ids: frozenset[int]
     log_level: str
@@ -53,9 +53,12 @@ class Config:
         if missing:
             sys.exit(f"Missing required environment variables: {', '.join(missing)}")
 
-        admin_ids = frozenset(
-            int(uid.strip()) for uid in raw_admin_ids.split(",") if uid.strip()
-        )
+        try:
+            admin_ids = frozenset(
+                int(uid.strip()) for uid in raw_admin_ids.split(",") if uid.strip()
+            )
+        except ValueError:
+            sys.exit("ADMIN_USER_IDS must be a comma-separated list of Discord user IDs")
         if not admin_ids:
             sys.exit("ADMIN_USER_IDS must contain at least one valid integer Discord user ID")
 

@@ -284,10 +284,10 @@ async def list_unsynced_logo_user_ids(pool: asyncpg.Pool) -> list[int]:
 async def next_guest_id(pool: asyncpg.Pool) -> int:
     """A fresh id for a guest DJ without a Discord account: -1, -2, ...
 
-    Discord ids are positive, so a negative id never collides with a real user.
+    Discord ids are positive, so a negative id never collides with a real user. The
+    sequence (migration 0016) never hands out a number twice, also after a delete.
     """
-    lowest = await pool.fetchval("SELECT MIN(discord_user_id) FROM djs")
-    return min(-1, (lowest or 0) - 1)
+    return await pool.fetchval("SELECT nextval('guest_dj_id_seq')")
 
 
 async def get_all_dj_rows(pool: asyncpg.Pool) -> list[dict]:
@@ -316,6 +316,33 @@ async def get_dj_row(pool: asyncpg.Pool, user_id: int) -> dict | None:
 
 
 async def delete_dj(pool: asyncpg.Pool, user_id: int) -> bool:
-    """Delete the DJ row. True if a row was deleted."""
-    result = await pool.execute("DELETE FROM djs WHERE discord_user_id = $1", user_id)
+    """Delete the DJ and what the bot keeps about them, in one transaction.
+
+    Remaining slot locks (past events) are freed, reminder and invite history and an
+    open DM conversation are removed. True if the DJ row was deleted.
+    """
+    async with pool.acquire() as conn, conn.transaction():
+        await conn.execute(
+            "UPDATE slot_locks SET discord_user_id = NULL, booked_at = NULL"
+            " WHERE discord_user_id = $1",
+            user_id,
+        )
+        for table in ("reminders_sent", "outreach_contacts", "dj_conversations"):
+            await conn.execute(f"DELETE FROM {table} WHERE discord_user_id = $1", user_id)  # noqa: S608
+        result = await conn.execute("DELETE FROM djs WHERE discord_user_id = $1", user_id)
     return result == "DELETE 1"
+
+
+async def mark_logo_synced_if_unchanged(
+    pool: asyncpg.Pool, user_id: int, image: bytes | None
+) -> None:
+    """Set logo_synced = true unless the logo changed since `image` was read.
+
+    A logo saved during a running sync stays unsynced and is uploaded on the next one.
+    """
+    await pool.execute(
+        "UPDATE djs SET logo_synced = true"
+        " WHERE discord_user_id = $1 AND logo_image IS NOT DISTINCT FROM $2",
+        user_id,
+        image,
+    )

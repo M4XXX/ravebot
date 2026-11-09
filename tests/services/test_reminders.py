@@ -211,11 +211,17 @@ async def test_send_reminders_handles_dm_forbidden():
     ), patch(
         "bot.services.reminders.record_reminder_sent",
         new=AsyncMock(),
-    ) as mock_record:
+    ) as mock_record, patch(
+        "bot.services.reminders.forget_reminder_sent",
+        new=AsyncMock(),
+    ) as mock_forget:
+        await svc.send_reminders(guild_id=1, ctx=MagicMock(), _now=FIXED_NOW)
+        # A second hourly run retries without posting the same error again
         await svc.send_reminders(guild_id=1, ctx=MagicMock(), _now=FIXED_NOW)
 
-    # Reminder must NOT be recorded on DM failure (AC3)
-    mock_record.assert_not_awaited()
+    # The record written before the send is removed again on DM failure (AC3)
+    assert mock_record.await_count == 2
+    assert mock_forget.await_count == 2
 
     # ERR_DM_FAILED must be posted with DJ name, user ID, and slot time
     svc.log_service.post_error.assert_awaited_once()

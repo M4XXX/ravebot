@@ -50,10 +50,48 @@ async def test_succeeds_on_third_attempt_after_two_500s() -> None:
     log = make_log()
     api = make_api(handler, log)
     with patch("bot.notion.api.asyncio.sleep", new=AsyncMock()) as sleep:
-        result = await api.request("POST", "/pages", {}, "ctx")
+        result = await api.request("PATCH", "/pages/x", {}, "ctx")
     assert result == {"id": "p"}
     assert [c.args[0] for c in sleep.call_args_list] == [1.0, 2.0]
     log.post_error.assert_not_called()
+
+
+async def test_create_is_not_retried_after_a_500_or_a_read_timeout() -> None:
+    for reply in (
+        lambda r: httpx.Response(500, json={}),
+        lambda r: (_ for _ in ()).throw(httpx.ReadTimeout("slow", request=r)),
+    ):
+        calls = {"n": 0}
+
+        def handler(request: httpx.Request, reply=reply) -> httpx.Response:
+            calls["n"] += 1
+            return reply(request)
+
+        api = make_api(handler, make_log())
+        with patch("bot.notion.api.asyncio.sleep", new=AsyncMock()):
+            with pytest.raises(NotionWriteError):
+                await api.request("POST", "/pages", {}, "ctx")
+        assert calls["n"] == 1  # the page may exist already: never sent twice
+
+
+async def test_create_is_retried_when_the_connection_failed() -> None:
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise httpx.ConnectError("refused", request=request)
+        return httpx.Response(200, json={"id": "p"})
+
+    api = make_api(handler, make_log())
+    with patch("bot.notion.api.asyncio.sleep", new=AsyncMock()):
+        assert await api.request("POST", "/pages", {}, "ctx") == {"id": "p"}
+
+
+async def test_a_reply_without_json_is_a_notion_error() -> None:
+    api = make_api(lambda r: httpx.Response(200, content=b"<html>"), make_log())
+    with pytest.raises(NotionWriteError):
+        await api.request("GET", "/pages/x", None, "ctx")
 
 
 async def test_three_failures_raise_and_post_once() -> None:

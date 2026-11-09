@@ -45,7 +45,7 @@ CASES = [
     ("empty_old_holder_frees", {}, lock(X, 600), [("free", 0, X, ())]),
     ("empty_holder_119s_kept", {}, lock(X, 119), []),
     ("empty_holder_120s_kept", {}, lock(X, 120), []),
-    ("empty_holder_121s_frees", {}, lock(X, 121), [("free", 0, X, ())]),
+    ("empty_holder_301s_frees", {}, lock(X, 301), [("free", 0, X, ())]),
     ("empty_holder_booked_at_none_frees", {}, lock(X, None), [("free", 0, X, ())]),
     ("dj_no_holder_adopts", dj("dj-x", X), None, [("adopt", 0, X, ())]),
     ("dj_lock_row_without_holder_adopts", dj("dj-x", X), lock(None), [("adopt", 0, X, ())]),

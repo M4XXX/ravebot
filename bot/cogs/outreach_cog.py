@@ -8,14 +8,12 @@ Full outreach implementation (FR25-30) in Story 5.x.
 """
 import logging
 
-import asyncpg
 from disnake.ext import commands, tasks
 
+from bot.cogs.loop_support import first_guild_id, guard_db, prepare_loop, run_cycle
 from bot.context import BotContext
 from bot.services import activation
 from bot.services.outreach import outreach_enabled
-from bot.timezone import load_stored_timezone_for_bot
-from bot.ui.embeds import ErrorCode
 
 logger = logging.getLogger(__name__)
 
@@ -35,48 +33,17 @@ class OutreachCog(commands.Cog):
         self._outreach_check.cancel()
 
     async def _guard_db(self, operation: str) -> bool:
-        """Return True if DB is available; post ERR_DB_UNAVAILABLE and return False if not.
-
-        Call at the start of every scheduled task that requires DB access.
-        On False: caller must return immediately — loop will retry next cycle.
-
-        [Source: epics.md#Story 1.5 AC1]
-        [Source: architecture.md#Error Routing: Centralized AdminLogService]
-        """
-        if self.ctx.db is None:
-            logger.warning("DB pool not available during %s — skipping cycle", operation)
-            if self.ctx.log_service is not None:
-                await self.ctx.log_service.post_error(
-                    error_code=ErrorCode.ERR_DB_UNAVAILABLE,
-                    trigger="The bot cannot reach its database.",
-                    action_taken="It skips this run and tries again on the next one.",
-                )
-            return False
-        try:
-            await self.ctx.db.fetchval("SELECT 1")
-            return True
-        except (asyncpg.PostgresConnectionError, OSError) as exc:
-            logger.warning("DB unavailable during %s: %s", operation, exc)
-            if self.ctx.log_service is not None:
-                await self.ctx.log_service.post_error(
-                    error_code=ErrorCode.ERR_DB_UNAVAILABLE,
-                    trigger="The bot lost its connection to the database.",
-                    action_taken="It skips this run and tries again on the next one.",
-                )
-            return False
+        """True if the DB answers (see loop_support.guard_db)."""
+        return await guard_db(self.ctx, operation)
 
     def _get_guild_id(self) -> int | None:
-        """Return the first guild's ID, or None if the bot has no guilds yet.
-
-        [Source: bot/cogs/events.py#_get_guild_id — mirrors this exact pattern]
-        """
-        if not self.bot.guilds:
-            logger.warning("OutreachCog._get_guild_id: bot has no guilds — skipping cycle")
-            return None
-        return self.bot.guilds[0].id
+        return first_guild_id(self.bot)
 
     @tasks.loop(minutes=30)
     async def _outreach_check(self) -> None:
+        await run_cycle("outreach check", self._outreach_cycle)
+
+    async def _outreach_cycle(self) -> None:
         """Outreach gap detection — find events with open slots, manage sequences.
 
         Story 5.1: gap detection + sequence lifecycle (upsert, complete, cooldown).
@@ -142,5 +109,4 @@ class OutreachCog(commands.Cog):
 
     @_outreach_check.before_loop
     async def _before_outreach_check(self) -> None:
-        await self.bot.wait_until_ready()
-        await load_stored_timezone_for_bot(self.bot, self.ctx.db)
+        await prepare_loop(self.bot, self.ctx.db)

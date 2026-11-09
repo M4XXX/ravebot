@@ -123,7 +123,7 @@ async def _replenish(db, notion_client, guild_id: int, events: list[EventInfo]) 
     if missing <= 0:
         return 0
 
-    interval_days = _to_int(await get_value(db, guild_id, "event_interval_days"), 7)
+    interval_days = max(1, _to_int(await get_value(db, guild_id, "event_interval_days"), 7))
     raw_first = await get_value(db, guild_id, FIRST_DATE_KEY)
     first = _parse_first_date(raw_first, today)
     if any(e.date >= today for e in scheduled):

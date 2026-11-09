@@ -56,6 +56,16 @@ class SessionManager:
         self._secret = secret if secret is not None else secrets.token_bytes(32)
         self._lifetime = lifetime
         self._clock = clock
+        # csrf -> expiry of sessions ended by logout; a copied cookie stops working too
+        self._revoked: dict[str, float] = {}
+
+    def revoke(self, token: str | None) -> None:
+        session = self.verify(token)
+        if session is None:
+            return
+        now = self._clock()
+        self._revoked = {c: e for c, e in self._revoked.items() if e > now}
+        self._revoked[session.csrf] = session.expires
 
     def _sign(self, payload_b64: str) -> bytes:
         return hmac.new(self._secret, payload_b64.encode("ascii"), hashlib.sha256).digest()
@@ -91,6 +101,8 @@ class SessionManager:
             return None
         expires = float(expires_text)
         if not self._clock() < expires:
+            return None
+        if csrf in self._revoked:
             return None
         return Session(csrf=csrf, expires=expires)
 

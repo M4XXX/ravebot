@@ -79,6 +79,10 @@ class AdminBookingService:
             logger.exception("%s: ensure_dj_page failed for %s", what, dj_id)
             return None
 
+    def _display_name(self, user_id: int) -> str:
+        user = self.bot.get_user(user_id) if user_id > 0 else None
+        return getattr(user, "display_name", None) or str(user_id)
+
     async def _dm_dj(self, dj_id: int, text: str, dj_name: str, what: str) -> None:
         """Send a DM to the DJ; a failed DM is non-fatal but reported to the log channel."""
         if await dm_user(self.bot, dj_id, text):
@@ -140,6 +144,8 @@ class AdminBookingService:
         if event is None:
             return False, f"Event '{event_name}' not found in Notion."
 
+        if not 1 <= slot_num <= event.slot_count:
+            return False, f"'{event.event_id}' has slots 1 to {event.slot_count}."
         event_id = event.page_id
         slot_index = slot_num - 1  # convert to 0-based
 
@@ -195,13 +201,20 @@ class AdminBookingService:
                     )
             return False, "Notion write failed after 3 attempts. Please try again in a moment."
 
-        # Step 5: DM the DJ (non-fatal)
+        # Step 5: DM the DJ (non-fatal), and the DJ who lost the slot to this booking
         await self._dm_dj(
             dj_id,
             texts.dm_booked(event, slot_index),
             dj_name,
             "booking",
         )
+        if previous_holder is not None and previous_holder != dj_id:
+            await self._dm_dj(
+                previous_holder,
+                texts.dm_cancelled(event, slot_index),
+                self._display_name(previous_holder),
+                "cancellation",
+            )
 
         # Step 6: log override to admin channel
         if self.log_service is not None:
@@ -251,6 +264,8 @@ class AdminBookingService:
         if event is None:
             return False, f"Event '{event_name}' not found in Notion."
 
+        if not 1 <= slot_num <= event.slot_count:
+            return False, f"'{event.event_id}' has slots 1 to {event.slot_count}."
         event_id = event.page_id
         slot_index = slot_num - 1
 
@@ -287,9 +302,11 @@ class AdminBookingService:
                 logger.exception("admin cancel: unexpected error in clear_slot")
                 notion_error = True
 
-        # Step 5: always release slot lock even if Notion write failed
+        # Step 5: always release slot lock even if Notion write failed. The release only
+        # frees the slot if this DJ still holds it (one statement, no race with a rebooking).
         try:
-            await release_slot_lock(self.db, event_id, slot_index, expected_holder=dj_id)
+            if not await release_slot_lock(self.db, event_id, slot_index, expected_holder=dj_id):
+                logger.info("admin cancel: %s no longer held the slot when it was freed", dj_id)
         except Exception:
             logger.exception("admin cancel: release_slot_lock failed")
 

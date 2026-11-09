@@ -219,6 +219,7 @@ def create_app(
         return resp
 
     async def post_logout(request: web.Request) -> web.Response:
+        sessions.revoke(request.cookies.get(COOKIE_NAME))
         resp = _redirect("/login")
         resp.del_cookie(COOKIE_NAME, path="/", httponly=True, samesite="Strict")
         return resp

@@ -17,7 +17,9 @@ from bot.notion.models import EventInfo, SlotInfo
 
 # A lock younger than this is a booking in flight: the bot may have taken the
 # Postgres lock but not yet written Notion, so an empty Notion row is not a removal.
-FREE_GRACE = datetime.timedelta(seconds=120)
+# Longer than the worst case of a booking's Notion calls with retries (about 4 calls of
+# up to 33 s each), so the sync never frees a slot while its booking is still saving.
+FREE_GRACE = datetime.timedelta(seconds=300)
 
 SyncKind = Literal[
     "adopt", "free", "revert", "create_slots", "trim_slots", "skip",

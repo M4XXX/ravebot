@@ -346,27 +346,33 @@ async def test_unsynced_logo_query_includes_djs_without_image() -> None:
 
 
 @pytest.mark.asyncio
-async def test_next_guest_id_counts_down_below_zero() -> None:
+async def test_next_guest_id_uses_the_sequence() -> None:
     from bot.db.djs import next_guest_id
 
     pool = MagicMock()
-    pool.fetchval = AsyncMock(return_value=None)
-    assert await next_guest_id(pool) == -1
-    pool.fetchval = AsyncMock(return_value=123456789012345678)  # only real users
-    assert await next_guest_id(pool) == -1
-    pool.fetchval = AsyncMock(return_value=-4)
-    assert await next_guest_id(pool) == -5
+    pool.fetchval = AsyncMock(return_value=-7)
+    assert await next_guest_id(pool) == -7
+    assert "nextval('guest_dj_id_seq')" in pool.fetchval.call_args.args[0]
 
 
 @pytest.mark.asyncio
-async def test_delete_dj_reports_whether_a_row_went() -> None:
+async def test_delete_dj_cleans_up_in_one_transaction() -> None:
     from bot.db.djs import delete_dj
+    from tests.db.test_bookings import _make_conn, _make_pool
 
-    pool = MagicMock()
-    pool.execute = AsyncMock(return_value="DELETE 1")
+    conn = _make_conn(None)
+    pool = _make_pool(conn)
+    conn.execute = AsyncMock(return_value="DELETE 1")
     assert await delete_dj(pool, -1) is True
-    pool.execute = AsyncMock(return_value="DELETE 0")
-    assert await delete_dj(pool, -1) is False
+    sql = [c.args[0] for c in conn.execute.await_args_list]
+    assert sql[0].startswith("UPDATE slot_locks SET discord_user_id = NULL")
+    assert any("reminders_sent" in q for q in sql)
+    assert any("outreach_contacts" in q for q in sql)
+    assert any("dj_conversations" in q for q in sql)
+    assert sql[-1] == "DELETE FROM djs WHERE discord_user_id = $1"
+    conn.transaction.assert_called_once()
+    conn.execute = AsyncMock(return_value="DELETE 0")
+    assert await delete_dj(_make_pool(conn), -1) is False
 
 
 @pytest.mark.asyncio

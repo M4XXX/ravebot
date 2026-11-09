@@ -461,7 +461,10 @@ class DjConversationService:
                     stream_url_backup=data.get("alt_link") or None,
                     logo_image=conv.logo_image,
                 )
-            except asyncpg.UniqueViolationError:
+            except asyncpg.UniqueViolationError as exc:
+                if getattr(exc, "constraint_name", None) == "ux_djs_dj_name_norm":
+                    await self._back_to(db, conv, "name")
+                    return _error(conv, texts.name_taken(name))
                 await self._drop(db, user_id)
                 return Reply(texts.ALREADY_DJ, "info")
         # Saved: every remaining step is best effort and must not undo the success.
@@ -490,7 +493,10 @@ class DjConversationService:
             async with self._name_lock:
                 if await dj_name_exists(db, value, exclude_user_id=user_id):
                     return _error(conv, texts.name_taken(value))
-                updated = await update_dj_fields(db, user_id, dj_name=value)
+                try:
+                    updated = await update_dj_fields(db, user_id, dj_name=value)
+                except asyncpg.UniqueViolationError:
+                    return _error(conv, texts.name_taken(value))
         else:
             updated = await update_dj_fields(db, user_id, **{_COLUMNS[field]: value})
         if not updated:
