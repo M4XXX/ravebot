@@ -19,6 +19,15 @@ def _fixed_today():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _manual():
+    """Manual page ids as the repository returns them (none by default)."""
+    with patch(
+        "bot.services.event_replenish.get_manual_page_ids", new=AsyncMock(return_value=set())
+    ) as mocked:
+        yield mocked
+
+
 async def _rep(cog, events) -> int:
     return await replenish_events(cog.ctx.db, cog.ctx.notion_client, 99999, events)
 
@@ -58,14 +67,21 @@ def _cfg(
     slots: str | None,
     start: str | None = None,
     minutes: str | None = None,
+    schedule: str | None = None,
+    first: str | None = None,
 ):
-    """Config values by key, for the cog and for the event-defaults helper."""
+    """Config values by key, for the cog and for the event-defaults helper.
+
+    Yields the mock that replaces `set_value` in the replenish module.
+    """
     values = {
         "event_lookahead_count": lookahead,
         "event_interval_days": interval,
         "slots_per_event": slots,
         "default_start_time": start,
         "slot_duration_minutes": minutes,
+        "event_schedule_enabled": schedule,
+        "first_event_date": first,
     }
 
     async def fake_get_value(pool, guild_id, key):
@@ -73,8 +89,9 @@ def _cfg(
 
     getter = AsyncMock(side_effect=fake_get_value)
     with patch("bot.services.event_replenish.get_value", new=getter), \
-         patch("bot.services.event_defaults.get_value", new=getter):
-        yield
+         patch("bot.services.event_defaults.get_value", new=getter), \
+         patch("bot.services.event_replenish.set_value", new=AsyncMock()) as setter:
+        yield setter
 
 
 @pytest.mark.asyncio
@@ -429,3 +446,147 @@ async def test_replenish_without_events_loads_them_inside_the_lock() -> None:
         results = await asyncio.gather(poll, wizard)
     assert results == [6, 0]
     assert len(created) == 6
+
+
+# ---------------------------------------------------------------------------
+# Event scheduling: schedule switch, first event date, manual events
+# ---------------------------------------------------------------------------
+
+
+def _created_dates(cog) -> list[datetime.date]:
+    return [c.args[1] for c in cog.ctx.notion_client.create_event.await_args_list]
+
+
+@pytest.mark.asyncio
+async def test_schedule_off_creates_nothing() -> None:
+    cog = _make_cog_with_bot()
+    _wire_client(cog)
+    with _cfg("3", "14", "6", schedule="false"):
+        assert await _rep(cog, []) == 0
+    cog.ctx.notion_client.create_event.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_first_date_used_for_first_event_then_interval() -> None:
+    cog = _make_cog_with_bot()
+    _wire_client(cog)
+    with _cfg("3", "14", "6", first="2026-06-06"), \
+         patch("bot.services.event_replenish.init_event_slots", new=AsyncMock()):
+        await _rep(cog, [])
+    assert _created_dates(cog) == [
+        datetime.date(2026, 6, 6), datetime.date(2026, 6, 20), datetime.date(2026, 7, 4)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_first_date_cleared_after_creation() -> None:
+    cog = _make_cog_with_bot()
+    _wire_client(cog)
+    with _cfg("1", "14", "6", first="2026-06-06") as setter, \
+         patch("bot.services.event_replenish.init_event_slots", new=AsyncMock()):
+        await _rep(cog, [])
+    setter.assert_awaited_once_with(cog.ctx.db, 99999, "first_event_date", "")
+
+
+@pytest.mark.asyncio
+async def test_first_date_ignored_when_scheduled_events_ahead() -> None:
+    cog = _make_cog_with_bot()
+    _wire_client(cog)
+    with _cfg("3", "14", "6", first="2026-06-06") as setter, \
+         patch("bot.services.event_replenish.init_event_slots", new=AsyncMock()):
+        await _rep(cog, [_make_event_with_date("a", "2026-06-10")])
+    assert _created_dates(cog) == [datetime.date(2026, 6, 24), datetime.date(2026, 7, 8)]
+    setter.assert_awaited_once_with(cog.ctx.db, 99999, "first_event_date", "")
+
+
+@pytest.mark.asyncio
+async def test_past_first_date_ignored_and_cleared() -> None:
+    cog = _make_cog_with_bot()
+    _wire_client(cog)
+    with _cfg("2", "14", "6", first="2026-05-20") as setter, \
+         patch("bot.services.event_replenish.init_event_slots", new=AsyncMock()):
+        await _rep(cog, [])
+    assert _created_dates(cog) == [datetime.date(2026, 6, 15), datetime.date(2026, 6, 29)]
+    setter.assert_awaited_once_with(cog.ctx.db, 99999, "first_event_date", "")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first", [None, "", "garbage"])
+async def test_empty_or_invalid_first_date_keeps_todays_rule(first) -> None:
+    cog = _make_cog_with_bot()
+    _wire_client(cog)
+    with _cfg("2", "14", "6", first=first) as setter, \
+         patch("bot.services.event_replenish.init_event_slots", new=AsyncMock()):
+        await _rep(cog, [])
+    assert _created_dates(cog) == [datetime.date(2026, 6, 15), datetime.date(2026, 6, 29)]
+    if first:
+        setter.assert_awaited_once()
+    else:
+        setter.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_manual_events_not_counted_and_do_not_shift_base(_manual) -> None:
+    _manual.return_value = {"m1", "m2"}
+    cog = _make_cog_with_bot()
+    _wire_client(cog)
+    events = [
+        _make_event_with_date("m1", "2026-06-03"),
+        _make_event_with_date("m2", "2026-06-30"),
+    ]
+    with _cfg("3", "14", "6"), \
+         patch("bot.services.event_replenish.init_event_slots", new=AsyncMock()):
+        created = await _rep(cog, events)
+    assert created == 3
+    assert _created_dates(cog) == [
+        datetime.date(2026, 6, 15), datetime.date(2026, 6, 29), datetime.date(2026, 7, 13)
+    ]
+    _manual.assert_awaited_once_with(cog.ctx.db, ["m1", "m2"])
+
+
+@pytest.mark.asyncio
+async def test_manual_event_on_scheduled_date_is_skipped_without_duplicate(_manual) -> None:
+    _manual.return_value = {"m1"}
+    cog = _make_cog_with_bot()
+
+    async def exists(event_id: str) -> bool:
+        return event_id == "2026-06-15 Rave Night"
+
+    _wire_client(cog, exists=AsyncMock(side_effect=exists))
+    with _cfg("3", "14", "6"), \
+         patch("bot.services.event_replenish.init_event_slots", new=AsyncMock()):
+        created = await _rep(cog, [_make_event_with_date("m1", "2026-06-15")])
+    assert created == 3
+    assert datetime.date(2026, 6, 15) not in _created_dates(cog)
+    assert _created_dates(cog) == [
+        datetime.date(2026, 6, 29), datetime.date(2026, 7, 13), datetime.date(2026, 7, 27)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_write_failures_stop_after_missing_attempts() -> None:
+    from bot.notion import client as nc
+
+    cog = _make_cog_with_bot()
+    create = AsyncMock(side_effect=nc.NotionWriteError("write failed"))
+    _wire_client(cog, create=create)
+    with _cfg("4", "7", "6"), \
+         patch("bot.services.event_replenish.init_event_slots", new=AsyncMock()):
+        assert await _rep(cog, []) == 0
+    assert create.await_count == 4
+
+
+@pytest.mark.asyncio
+async def test_many_manual_dates_stop_at_candidate_cap(_manual) -> None:
+    start = datetime.date(2026, 6, 8)
+    events = [
+        make_event(page_id=f"m{k}", event_id=f"m{k}", date=start + datetime.timedelta(days=7 * k))
+        for k in range(60)
+    ]
+    _manual.return_value = {e.page_id for e in events}
+    cog = _make_cog_with_bot()
+    _wire_client(cog, exists=AsyncMock(return_value=True))
+    with _cfg("2", "7", "6"):
+        assert await _rep(cog, events) == 0
+    assert cog.ctx.notion_client.event_id_exists.await_count == 2 + 52
+    cog.ctx.notion_client.create_event.assert_not_awaited()
