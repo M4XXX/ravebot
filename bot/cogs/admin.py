@@ -79,6 +79,13 @@ class AdminCog(commands.Cog):
             # Private message: the same answer for everyone (no information leak)
             await inter.response.send_message(texts.ADMIN_SERVER_ONLY, ephemeral=True)
             return False
+        admins = getattr(self.ctx, "admins", None)
+        if admins is not None and not admins.is_admin(inter.author.id):
+            # The added admins may not be loaded yet (database hiccup at start)
+            try:
+                await admins.ensure_loaded()
+            except Exception:
+                logger.warning("Loading the admin list failed", exc_info=True)
         if not self.ctx.is_admin(inter.author.id):
             return False
         command = inter.application_command
@@ -687,13 +694,27 @@ class AdminCog(commands.Cog):
             )
             for dj in djs
         ]
-        embed = disnake.Embed(
-            title="📋 Registered DJs",
-            description="\n".join(lines),
-            color=EmbedColors.NEBULA_WHITE,
-        )
-        embed.set_footer(text=f"{len(djs)} DJ(s) registered")
-        await inter.response.send_message(embed=embed, ephemeral=True)
+        # An embed holds at most 4096 characters and a message at most 10 embeds
+        pages: list[list[str]] = [[]]
+        for line in lines:
+            line = line[:500]
+            if sum(len(x) + 1 for x in pages[-1]) + len(line) > 4000:
+                pages.append([])
+            pages[-1].append(line)
+        embeds = [
+            disnake.Embed(
+                title="📋 Registered DJs" if i == 0 else None,
+                description="\n".join(page),
+                color=EmbedColors.NEBULA_WHITE,
+            )
+            for i, page in enumerate(pages)
+        ]
+        shown = embeds[:10]
+        footer = f"{len(djs)} DJ(s) registered"
+        if len(embeds) > 10:
+            footer += " (list cut, too long for one message)"
+        shown[-1].set_footer(text=footer)
+        await inter.response.send_message(embeds=shown, ephemeral=True)
 
 
     # ------------------------------------------------------------------ /dj

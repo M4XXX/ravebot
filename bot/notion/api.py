@@ -31,6 +31,10 @@ class NotionWriteError(Exception):
         self.status_code = status_code
 
 
+class _BadReply(Exception):
+    """A 2xx reply that is not JSON (handled inside NotionApi.request)."""
+
+
 class NotionApi:
     """Async httpx wrapper for the Notion API."""
 
@@ -77,6 +81,10 @@ class NotionApi:
         """
         failure = "unknown error"
         last_status: int | None = None
+        # A create (POST that is not a query) may have been saved even though the reply
+        # was lost; sending it again would create a duplicate page. It is only retried
+        # when Notion surely did not take it: no connection, or 429 (rate limited).
+        idempotent = method != "POST" or path.endswith("/query")
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             delay = _RETRY_DELAYS[min(attempt - 1, len(_RETRY_DELAYS) - 1)]
             retryable = True
@@ -87,7 +95,13 @@ class NotionApi:
                     response = await self._client.request(method, path, json=payload)
                 status = response.status_code
                 if status < 400:
-                    return response.json()
+                    try:
+                        return response.json()
+                    except ValueError:
+                        failure = f"HTTP {status} without a JSON body"
+                        last_status = status
+                        retryable = False
+                        raise _BadReply() from None
                 failure = f"HTTP {status}"
                 last_status = status
                 if status in tolerate:
@@ -101,11 +115,17 @@ class NotionApi:
                     except ValueError:
                         retry_after = 0.0
                     delay = max(delay, retry_after)
-                elif status < 500:
+                elif status < 500 or not idempotent:
                     retryable = False
+            except _BadReply:
+                pass
             except httpx.RequestError as exc:
                 failure = type(exc).__name__
                 last_status = None
+                if not idempotent and not isinstance(
+                    exc, (httpx.ConnectError, httpx.ConnectTimeout)
+                ):
+                    retryable = False
             logger.warning(
                 "Notion %s %s attempt %d/%d failed (%s) for %r",
                 method, path, attempt, _MAX_ATTEMPTS, failure, context,

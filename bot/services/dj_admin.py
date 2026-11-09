@@ -78,11 +78,15 @@ def parse_discord_id(raw: str | None) -> int | None:
 
 
 def check_link(raw: str, label: str) -> tuple[str | None, str | None]:
-    """(clean link, None) or (None, error). Only http(s) links with a host."""
+    """(clean link, None) or (None, error).
+
+    The same links a DJ can save in the DM conversation ("Use as is"): any scheme
+    such as https:// or rtmp://, followed by a host, no spaces.
+    """
     link = normalize_link(raw)
     scheme, _, rest = link.partition("://")
-    if scheme.lower() not in ("http", "https") or not rest.strip("/"):
-        return None, f"The {label} must be a web link (https://...)."
+    if not scheme.isalpha() or not rest.strip("/") or any(c.isspace() for c in link):
+        return None, f"The {label} must be a link (for example https://...)."
     if len(link) > MAX_LINK_LENGTH:
         return None, f"The {label} is too long."
     return link, None

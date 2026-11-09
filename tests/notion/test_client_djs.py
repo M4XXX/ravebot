@@ -277,3 +277,25 @@ async def test_booking_page_lookup_survives_failing_logo_upload(env):
     setp.assert_awaited_once()
     setl.assert_awaited_once()
     assert setl.await_args.args[1:] == (123, False)
+
+
+async def test_parallel_upserts_for_one_dj_run_one_after_the_other() -> None:
+    import asyncio
+    from unittest.mock import MagicMock
+
+    from bot.notion.client import NotionClient
+
+    client = NotionClient(MagicMock(), MagicMock())
+    running = {"now": 0, "max": 0}
+
+    async def fake(*args, **kwargs):
+        running["now"] += 1
+        running["max"] = max(running["max"], running["now"])
+        await asyncio.sleep(0)
+        running["now"] -= 1
+        return "page"
+
+    client._upsert_dj = fake
+    await asyncio.gather(*(client.upsert_dj(1, "DJ", "d", vrchat_name=None, logo_url=None,
+                                            link=None, alt_link=None) for _ in range(3)))
+    assert running["max"] == 1

@@ -63,7 +63,8 @@ def test_helpers() -> None:
     assert parse_discord_id(" 123456789012345678 ") == 123456789012345678
     assert parse_discord_id("12") is None and parse_discord_id("abc") is None
     assert check_link("twitch.tv/x", "link") == ("https://twitch.tv/x", None)
-    assert check_link("ftp://x.y", "stream link")[1] == "The stream link must be a web link (https://...)."
+    assert check_link("rtmp://my.server/live", "link") == ("rtmp://my.server/live", None)
+    assert "must be a link" in check_link("not a link", "stream link")[1]
     assert check_link("https://", "link")[0] is None
 
 
@@ -101,8 +102,8 @@ async def test_add_discord_dj_is_active_and_keeps_the_id() -> None:
     [
         ({"name": "  ", "link": "https://a.b"}, "name is required"),
         ({"name": "x" * 81, "link": "https://a.b"}, "too long"),
-        ({"name": "A", "link": "ftp://a"}, "web link"),
-        ({"name": "A", "link": "https://a.b", "alt_link": "ftp://x"}, "backup link"),
+        ({"name": "A", "link": "two words"}, "must be a link"),
+        ({"name": "A", "link": "https://a.b", "alt_link": "1://"}, "backup link"),
         ({"name": "A", "link": "https://a.b", "vrchat": "v" * 81}, "VRChat name is too long"),
         ({"name": "A", "link": "https://a.b", "logo": b"not an image"}, "logo"),
     ],

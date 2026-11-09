@@ -211,6 +211,13 @@ NO_EVENTS = "There are no upcoming events yet."
 CANCEL_WHICH = "Which booking do you want to cancel?"
 
 
+def cancel_more(total: int) -> str:
+    return (
+        f"You have {total} bookings; your next 4 are shown. "
+        "Cancel one of them to see the others, or ask an organizer."
+    )
+
+
 def cancel_confirm(event: EventInfo, slot_index: int) -> str:
     return (
         f"Cancel slot {slot_index + 1} ({fmt_time(event, slot_index)}) at {event.event_id}?"

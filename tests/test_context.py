@@ -1,5 +1,4 @@
 """Tests for bot/context.py — BotContext dataclass."""
-import asyncio
 
 import pytest
 

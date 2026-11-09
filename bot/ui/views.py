@@ -284,8 +284,11 @@ class FallbackMenuView(GatedView):
 
         bookings.sort(key=lambda b: b["slot_unix"])
         view = CancellationView(self.ctx, bookings, lock, user_id)
+        prompt = texts.CANCEL_WHICH
+        if len(bookings) > 4:
+            prompt += "\n" + texts.cancel_more(len(bookings))
         try:
-            await inter.followup.send(texts.CANCEL_WHICH, view=view, ephemeral=True)
+            await inter.followup.send(prompt, view=view, ephemeral=True)
         except Exception:
             logger.exception("cancel_slot: sending the booking list failed")
             view._release_flow()

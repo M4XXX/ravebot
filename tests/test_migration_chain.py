@@ -21,9 +21,8 @@ def test_single_head_and_every_file_is_in_the_chain() -> None:
 
 
 def test_0016_creates_guest_sequence_and_name_index() -> None:
-    from unittest.mock import patch
-
     import importlib
+    from unittest.mock import patch
 
     module = importlib.import_module("migrations.versions.0016_guest_ids_and_constraints")
     with patch.object(module, "op") as op:

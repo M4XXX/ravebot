@@ -7,6 +7,7 @@ import disnake
 from bot.db.djs import (
     get_dj_by_discord_id,
     list_unsynced_logo_user_ids,
+    mark_logo_synced_if_unchanged,
     set_logo_synced,
     set_notion_dj_page_id,
 )
@@ -51,7 +52,7 @@ async def sync_dj(ctx: "BotContext", discord_user_id: int, discord_name: str) ->
             upload_logo=not row["logo_synced"],
         )
         await set_notion_dj_page_id(db, discord_user_id, page_id)
-        await set_logo_synced(db, discord_user_id, True)
+        await mark_logo_synced_if_unchanged(db, discord_user_id, row["logo_image"])
         return True
     except DjLogoUploadError as exc:
         logger.warning("Logo of DJ %s not synced; the row was written", discord_user_id)

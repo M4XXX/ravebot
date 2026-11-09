@@ -331,3 +331,18 @@ async def delete_dj(pool: asyncpg.Pool, user_id: int) -> bool:
             await conn.execute(f"DELETE FROM {table} WHERE discord_user_id = $1", user_id)  # noqa: S608
         result = await conn.execute("DELETE FROM djs WHERE discord_user_id = $1", user_id)
     return result == "DELETE 1"
+
+
+async def mark_logo_synced_if_unchanged(
+    pool: asyncpg.Pool, user_id: int, image: bytes | None
+) -> None:
+    """Set logo_synced = true unless the logo changed since `image` was read.
+
+    A logo saved during a running sync stays unsynced and is uploaded on the next one.
+    """
+    await pool.execute(
+        "UPDATE djs SET logo_synced = true"
+        " WHERE discord_user_id = $1 AND logo_image IS NOT DISTINCT FROM $2",
+        user_id,
+        image,
+    )

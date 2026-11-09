@@ -1,6 +1,7 @@
 """Tests for the DJ pages of the admin page (routes, forms, uploads, limits)."""
 
 import aiohttp
+import pytest
 
 from bot.services.dj_admin import DjResult
 from bot.web.auth import SessionManager
@@ -212,3 +213,37 @@ async def test_big_bodies_are_only_allowed_on_the_upload_routes() -> None:
             data=_form(csrf, name="A", link="https://a.b", logo=("l.png", b"x" * 7_000_000)),
         )
         assert huge.status == 413
+
+
+async def test_logout_ends_the_session_for_a_copied_cookie_too() -> None:
+    sessions = SessionManager(secret=b"k" * 32)
+    headers, csrf = _auth(sessions)
+    async with make_client(_service(), sessions) as client:
+        await client.post("/logout", headers=headers, data={"csrf": csrf}, allow_redirects=False)
+        resp = await client.get("/djs", headers=headers, allow_redirects=False)
+    assert resp.status == 303 and resp.headers["Location"] == "/login"
+
+
+@pytest.mark.parametrize(
+    "method,path",
+    [("GET", "/djs"), ("GET", "/djs/edit?id=-1"), ("GET", "/djs/delete?id=-1"),
+     ("POST", "/djs/add"), ("POST", "/djs/edit"), ("POST", "/djs/delete")],
+)
+async def test_every_dj_route_needs_login(method, path) -> None:
+    service = _service()
+    async with make_client(service) as client:
+        resp = await client.request(method, path, data={"id": "-1", "csrf": "x"},
+                                    allow_redirects=False)
+    assert resp.status == 303 and resp.headers["Location"] == "/login"
+    assert service.djs.calls == []
+
+
+@pytest.mark.parametrize("path", ["/djs/add", "/djs/edit", "/djs/delete"])
+async def test_every_dj_post_needs_csrf(path) -> None:
+    sessions = SessionManager(secret=b"k" * 32)
+    headers, _ = _auth(sessions)
+    service = _service()
+    async with make_client(service, sessions) as client:
+        resp = await client.post(path, headers=headers, data={"id": "-1", "csrf": "wrong"})
+    assert resp.status == 403
+    assert service.djs.calls == []
