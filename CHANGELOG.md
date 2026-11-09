@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-09
+
 ### Fixed
 
 - Booking and cancelling: buttons of one DJ can no longer reach another DJ's menu, an old menu can no longer free or continue a newer booking, and a menu that is closed or ignored no longer blocks the DJ until a restart (it ends by itself after 15 minutes). Slow Notion answers no longer make Discord show "This interaction failed" while the booking went through.
