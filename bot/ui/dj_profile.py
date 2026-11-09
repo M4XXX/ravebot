@@ -141,6 +141,18 @@ async def respond(
     await send_reply(ctx, inter, inter.author.id, reply)
 
 
+async def start_onboarding_dm(
+    ctx: "BotContext", user: disnake.abc.Messageable, user_id: int, guild_id: int
+) -> None:
+    """Start the onboarding conversation and send its first question to the user's DM."""
+    service = _service(ctx)
+    if service is None:
+        reply = Reply(texts.GENERIC_ERROR, "error")
+    else:
+        reply = await service.start_onboarding(user_id, guild_id)
+    await send_reply(ctx, user, user_id, reply)
+
+
 class OnboardingIntroView(GatedView):
     """Welcome DM buttons: join the DJ pool (starts the conversation) or not now."""
 

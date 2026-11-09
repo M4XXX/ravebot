@@ -2390,6 +2390,161 @@ async def test_post_button_not_onboarded_dm_blocked_logs_and_no_lock() -> None:
     assert not ctx.get_user_lock(77).locked()
 
 
+def _dj_role_setup(user_id: int = 77):
+    """(guild, member, role): the member holds the configured DJ role."""
+    role = MagicMock(spec=disnake.Role)
+    member = MagicMock(spec=disnake.Member)
+    member.id = user_id
+    member.display_name = "Alice"
+    member.send = AsyncMock()
+    member.roles = [role]
+    guild = MagicMock(spec=disnake.Guild)
+    guild.id = 99999
+    guild.get_member.return_value = member
+    return guild, member, role
+
+
+def _onboarding_ctx(events=None):
+    from bot.services.dj_conversation import Reply
+
+    ctx = _ctx_with_events(events if events is not None else [_make_event()])
+    service = MagicMock()
+    service.start_onboarding = AsyncMock(
+        return_value=Reply(texts.Q_NAME, "question", step="name")
+    )
+    service.record_message_id = AsyncMock()
+    ctx.dj_conversations = service
+    return ctx
+
+
+@pytest.mark.asyncio
+async def test_post_button_dj_role_without_profile_starts_onboarding_in_dm() -> None:
+    from bot.ui import texts
+    from bot.ui.views import LineupPostView
+
+    ctx = _onboarding_ctx()
+    guild, member, role = _dj_role_setup()
+    inter = _post_inter()
+    inter.author, inter.guild = member, guild
+    with patch("bot.ui.views.get_dj_by_discord_id", new=AsyncMock(return_value=None)), \
+         patch("bot.ui.views.get_dj_role", new=AsyncMock(return_value=role)):
+        await LineupPostView(ctx).book_slot.callback(inter)
+
+    sent = [c.args[0] for c in member.send.await_args_list]
+    assert sent == [texts.ONBOARD_BEFORE_BOOKING, texts.Q_NAME]
+    ctx.dj_conversations.start_onboarding.assert_awaited_once_with(77, 99999)
+    inter.followup.send.assert_awaited_once_with(texts.POST_DM_SENT, ephemeral=True)
+    ctx.notion_client.list_events.assert_not_awaited()
+    assert not ctx.get_user_lock(77).locked()
+
+
+@pytest.mark.asyncio
+async def test_post_button_onboarding_not_started_when_dms_are_closed() -> None:
+    from bot.ui import texts
+    from bot.ui.views import LineupPostView
+
+    ctx = _onboarding_ctx()
+    guild, member, role = _dj_role_setup()
+    member.send = AsyncMock(side_effect=disnake.Forbidden(MagicMock(status=403, reason="x"), "no"))
+    inter = _post_inter()
+    inter.author, inter.guild = member, guild
+    with patch("bot.ui.views.get_dj_by_discord_id", new=AsyncMock(return_value=None)), \
+         patch("bot.ui.views.get_dj_role", new=AsyncMock(return_value=role)):
+        await LineupPostView(ctx).book_slot.callback(inter)
+
+    ctx.dj_conversations.start_onboarding.assert_not_awaited()
+    inter.followup.send.assert_awaited_once_with(texts.POST_DM_BLOCKED, ephemeral=True)
+
+
+@pytest.mark.asyncio
+async def test_post_button_without_dj_role_and_profile_gets_no_profile() -> None:
+    from bot.ui import texts
+    from bot.ui.views import LineupPostView
+
+    ctx = _onboarding_ctx()
+    guild, member, role = _dj_role_setup()
+    member.roles = []  # does not hold the DJ role
+    inter = _post_inter()
+    inter.author, inter.guild = member, guild
+    with patch("bot.ui.views.get_dj_by_discord_id", new=AsyncMock(return_value=None)), \
+         patch("bot.ui.views.get_dj_role", new=AsyncMock(return_value=role)):
+        await LineupPostView(ctx).book_slot.callback(inter)
+
+    member.send.assert_awaited_once_with(texts.NO_PROFILE)
+    ctx.dj_conversations.start_onboarding.assert_not_awaited()
+
+
+def _dm_book_inter(member, guild):
+    inter = _menu_inter(member.id, guild)
+    inter.author = member
+    return inter
+
+
+@pytest.mark.asyncio
+async def test_dm_book_slot_dj_role_without_profile_starts_onboarding() -> None:
+    from bot.ui import texts
+    from bot.ui.views import FallbackMenuView
+
+    ctx = _onboarding_ctx()
+    guild, member, role = _dj_role_setup(88888)
+    inter = _dm_book_inter(member, guild)
+    with patch("bot.ui.views.get_dj_by_discord_id", new=AsyncMock(return_value=None)), \
+         patch("bot.ui.views.get_dj_role", new=AsyncMock(return_value=role)):
+        await FallbackMenuView(ctx).book_slot.callback(inter)
+
+    inter.response.defer.assert_awaited_once()
+    texts_sent = [c.args[0] for c in inter.followup.send.await_args_list]
+    assert texts_sent == [texts.ONBOARD_BEFORE_BOOKING, texts.Q_NAME]
+    ctx.dj_conversations.start_onboarding.assert_awaited_once_with(88888, 99999)
+    ctx.notion_client.list_events.assert_not_awaited()
+    assert not ctx.get_user_lock(88888).locked()
+
+
+@pytest.mark.asyncio
+async def test_dm_book_slot_without_dj_role_and_profile_gets_no_profile() -> None:
+    from bot.ui import texts
+    from bot.ui.views import FallbackMenuView
+
+    ctx = _onboarding_ctx()
+    guild, member, role = _dj_role_setup(88888)
+    member.roles = []
+    inter = _dm_book_inter(member, guild)
+    with patch("bot.ui.views.get_dj_by_discord_id", new=AsyncMock(return_value=None)), \
+         patch("bot.ui.views.get_dj_role", new=AsyncMock(return_value=role)):
+        await FallbackMenuView(ctx).book_slot.callback(inter)
+
+    assert inter.followup.send.call_args[0][0] == texts.NO_PROFILE
+    assert inter.followup.send.call_args.kwargs["ephemeral"] is True
+    ctx.dj_conversations.start_onboarding.assert_not_awaited()
+    ctx.notion_client.list_events.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_dm_book_slot_with_profile_books_as_before() -> None:
+    from bot.ui.views import FallbackMenuView
+
+    ctx = _onboarding_ctx()
+    guild, member, _ = _dj_role_setup(88888)
+    inter = _dm_book_inter(member, guild)
+    await FallbackMenuView(ctx).book_slot.callback(inter)  # profile exists (autouse fixture)
+    ctx.dj_conversations.start_onboarding.assert_not_awaited()
+    ctx.notion_client.list_events.assert_awaited_once()
+    inter.response.send_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_dm_book_slot_profile_lookup_failure_lets_booking_decide() -> None:
+    from bot.ui.views import FallbackMenuView
+
+    ctx = _onboarding_ctx()
+    guild, member, _ = _dj_role_setup(88888)
+    inter = _dm_book_inter(member, guild)
+    with patch("bot.ui.views.get_dj_by_discord_id", new=AsyncMock(side_effect=RuntimeError("db"))):
+        await FallbackMenuView(ctx).book_slot.callback(inter)
+    ctx.dj_conversations.start_onboarding.assert_not_awaited()
+    ctx.notion_client.list_events.assert_awaited_once()
+
+
 def test_open_slot_indices_uses_lowest_page_id_row() -> None:
     from bot.ui.views import _open_slot_indices
 

@@ -384,6 +384,7 @@ The old commands `/config set`, `/add-event`, `/lineup post`, `/admin book`, `/a
 - Post format: the title is the event name and date, for example `🎶 Rave Night · Saturday 14.11.2026`. The text starts with how many slots are booked (`4 of 6 slots booked · 2 open`), then one line per slot, for example `**20:00**  🎧 DJ Felix` or `**21:00**  ▫️ *open slot*`. Times are local time (CET or CEST).
 - **Show lineup** in a DM shows the upcoming event. With more than one upcoming event, date buttons sit under the lineup; pressing one switches the same message to that event and keeps the buttons.
 - Every post has a `Book a slot` button. A DJ who presses it gets the booking flow in DMs. If DMs are blocked, the bot says so privately.
+- A member who has the DJ role but no DJ profile yet (the onboarding was never finished) cannot book. When they press `Book a slot` on the post, or `Book a slot` in the DMs, the bot starts the onboarding conversation in their DMs instead, and they press `Book a slot` again once the profile is saved. Members without the DJ role are told to ask an organizer for it.
 - `/post lineup update` posts the upcoming event again. `/post lineup update event:<event id>` posts any future event.
 - Automatic invites can be turned off in `/setup` (Automatic invites step). That stops only the proactive invite DMs. Booking menus, reminders and all other DMs keep working.
 
