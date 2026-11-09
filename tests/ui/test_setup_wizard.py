@@ -16,6 +16,8 @@ REAL_IS_ACTIVE = _activation.is_active  # captured before the autouse conftest p
 GUILD = 10
 ADMIN = 1
 FULL = {"dj_channel": 100, "log_channel": 200, "dj_role_id": 300, "invites_role_id": 400}
+SUMMARY = len(sw.STEPS) - 1
+INVITES = sw.STEPS.index("invites")
 
 
 class Store:
@@ -151,6 +153,9 @@ def make_inter(guild, user=ADMIN, message_id=55, values=None):
     return inter
 
 
+STEP = {key: index for index, key in enumerate(sw.STEPS)}
+
+
 def seed(store, step=0, data=None, message_id=55):
     store.drafts[GUILD] = SetupDraft(GUILD, message_id, 7, step, data or {})
 
@@ -183,7 +188,8 @@ async def test_every_control_refuses_non_admin(store):
     registered = {c.custom_id for v in sw.registered_views(ctx) for c in v.children}
     assert registered == {
         sw.ID_BACK, sw.ID_NEXT, sw.ID_DJ_CHANNEL, sw.ID_LOG_CHANNEL, sw.ID_DJ_ROLE,
-        sw.ID_INVITES_ROLE, sw.ID_CREATE_ROLE, sw.ID_EVENTS_CHANGE, sw.ID_ZONE,
+        sw.ID_INVITES_ROLE, sw.ID_CREATE_ROLE, sw.ID_VALUE, sw.ID_OTHER,
+        sw.ID_SCHEDULE_TOGGLE,
         sw.ID_INVITES_TOGGLE, sw.ID_INVITES_CHANGE, sw.ID_ACTIVATE, sw.ID_SAVE, sw.ID_CHANGE,
     }
     assert all(v.timeout is None for v in sw.registered_views(ctx))
@@ -269,9 +275,9 @@ async def test_navigation_back_next_and_summary(store):
     await view._navigate(inter, 1)
     assert store.drafts[GUILD].step == 1
     assert disabled_next(last_view(inter))  # no channel yet
-    assert "Step 2 of 6" in last_content(inter)
+    assert f"Step 2 of {sw.total_steps()}" in last_content(inter)
     store.drafts[GUILD].data.update(FULL)
-    for expected in (2, 3, 4, 5, 6):
+    for expected in range(2, SUMMARY + 1):
         store.drafts[GUILD].step = expected - 1
         inter = make_inter(guild)
         await view._navigate(inter, 1)
@@ -280,13 +286,17 @@ async def test_navigation_back_next_and_summary(store):
     assert "<#100>" in last_content(inter) and "<#200>" in last_content(inter)
     inter = make_inter(guild)
     await view._navigate(inter, -1)
-    assert store.drafts[GUILD].step == 5
+    assert store.drafts[GUILD].step == SUMMARY - 1
     assert store.writes == []
 
 
 def test_total_steps_follows_step_list():
-    assert sw.total_steps() == len(sw.STEPS) - 1
+    assert sw.total_steps() == len(sw.STEPS) - 1 == 13
     assert sw.STEPS[-1] == "summary"
+    assert sw.STEPS == [
+        "welcome", "dj_channel", "log_channel", "roles", "slots", "start_time", "slot_length",
+        "schedule", "interval", "first_date", "lookahead", "timezone", "invites", "summary",
+    ]
 
 
 # ---------- activation ----------
@@ -298,7 +308,7 @@ def _event(date):
 @pytest.mark.asyncio
 async def test_activate_writes_keys_flag_and_runs_effects_once_on_double_press(store):
     ctx = make_ctx(events=[_event("e")])
-    seed(store, 6, FULL)
+    seed(store, SUMMARY, FULL)
     store.config[(GUILD, "slots_per_event")] = "4"
     i1, i2 = make_inter(make_guild()), make_inter(make_guild())
     async def slow(*a, **k):
@@ -334,7 +344,7 @@ async def test_activate_writes_keys_flag_and_runs_effects_once_on_double_press(s
 @pytest.mark.asyncio
 async def test_activate_button_callback_defers_and_activates(store):
     ctx = make_ctx()
-    seed(store, 6, FULL)
+    seed(store, SUMMARY, FULL)
     inter = make_inter(make_guild())
     view = sw.SetupWizardView(ctx)
     with patch("bot.ui.setup_wizard.replenish_events", AsyncMock(return_value=0)):
@@ -346,7 +356,7 @@ async def test_activate_button_callback_defers_and_activates(store):
 @pytest.mark.asyncio
 async def test_activate_with_missing_channel_writes_nothing(store):
     ctx = make_ctx()
-    seed(store, 6, {"dj_channel": 100})
+    seed(store, SUMMARY, {"dj_channel": 100})
     inter = make_inter(make_guild())
     await inter.response.defer()
     await sw.activate_from_draft(ctx, inter)
@@ -358,7 +368,7 @@ async def test_activate_with_missing_channel_writes_nothing(store):
 @pytest.mark.asyncio
 async def test_activate_failure_keeps_draft_for_retry(store):
     ctx = make_ctx()
-    seed(store, 6, FULL)
+    seed(store, SUMMARY, FULL)
     inter = make_inter(make_guild())
     await inter.response.defer()
     with patch("bot.ui.setup_wizard.replenish_events", AsyncMock(side_effect=RuntimeError("x"))):
@@ -370,7 +380,7 @@ async def test_activate_failure_keeps_draft_for_retry(store):
 @pytest.mark.asyncio
 async def test_activate_on_foreign_message_is_refused(store):
     ctx = make_ctx()
-    seed(store, 6, FULL, message_id=55)
+    seed(store, SUMMARY, FULL, message_id=55)
     inter = make_inter(make_guild(), message_id=99)
     await sw.activate_from_draft(ctx, inter)
     assert store.writes == []
@@ -441,7 +451,7 @@ async def test_save_writes_all_keys_applies_zone_and_runs_no_effects(store):
 
     ctx = make_ctx()
     guild = make_guild()
-    seed(store, 6, {"rerun": True, **FULL, "timezone": "Europe/London", "slots_per_event": 3,
+    seed(store, SUMMARY, {"rerun": True, **FULL, "timezone": "Europe/London", "slots_per_event": 3,
                     "outreach_enabled": False})
     inter = make_inter(guild)
     await inter.response.defer()
@@ -454,7 +464,7 @@ async def test_save_writes_all_keys_applies_zone_and_runs_no_effects(store):
         "dj_channel", "log_channel", "dj_role_id", "invites_role_id", "slots_per_event",
         "default_start_time", "slot_duration_minutes", "event_interval_days",
         "event_lookahead_count", "timezone", "outreach_enabled", "outreach_days_before",
-        "outreach_cooldown_hours",
+        "outreach_cooldown_hours", "event_schedule_enabled", "first_event_date",
     }
     assert c["slots_per_event"] == "3" and c["outreach_enabled"] == "false"
     assert timezone.get_timezone().key == "Europe/London"
@@ -468,7 +478,7 @@ async def test_activate_applies_zone_and_writes_roles(store):
     from bot import timezone
 
     ctx = make_ctx()
-    seed(store, 6, {**FULL, "timezone": "Europe/London"})
+    seed(store, SUMMARY, {**FULL, "timezone": "Europe/London"})
     inter = make_inter(make_guild())
     await inter.response.defer()
     with patch("bot.ui.setup_wizard.replenish_events", AsyncMock(return_value=0)):
@@ -481,7 +491,7 @@ async def test_activate_applies_zone_and_writes_roles(store):
 @pytest.mark.asyncio
 async def test_activate_requires_roles(store):
     ctx = make_ctx()
-    seed(store, 6, {"dj_channel": 100, "log_channel": 200})
+    seed(store, SUMMARY, {"dj_channel": 100, "log_channel": 200})
     inter = make_inter(make_guild())
     await inter.response.defer()
     await sw.activate_from_draft(ctx, inter)
@@ -505,7 +515,7 @@ async def test_role_selects_store_in_draft_only_and_check_blocks_next(store):
     assert "I can manage these roles" in last_content(inter)
     assert store.drafts[GUILD].data == {"dj_role_id": 300, "invites_role_id": 400}
     assert store.writes == []
-    assert "Step 4 of 6" in last_content(inter)
+    assert f"Step 4 of {sw.total_steps()}" in last_content(inter)
 
 
 @pytest.mark.asyncio
@@ -581,46 +591,102 @@ def _modal_inter(fields):
     return inter
 
 
-GOOD_EVENTS = {"slots": "5", "start": "9:30", "length": "45", "interval": "10", "ahead": "4"}
+VALUE_STEPS = [
+    ("slots", "slots_per_event", "7", 7),
+    ("start_time", "default_start_time", "22:00", "22:00"),
+    ("slot_length", "slot_duration_minutes", "90", 90),
+    ("interval", "event_interval_days", "21", 21),
+    ("first_date", "event_first_date_placeholder", "", ""),
+    ("lookahead", "event_lookahead_count", "8", 8),
+    ("timezone", "timezone", "Europe/London", "Europe/London"),
+]
+VALUE_STEPS[4] = ("first_date", "first_event_date", "2099-01-01", "2099-01-01")
+
+
+def _select(view):
+    return next(c for c in view.children if c.custom_id == sw.ID_VALUE)
 
 
 @pytest.mark.asyncio
-async def test_events_popup_stores_valid_values_in_draft_only(store):
+async def test_slots_step_renders_dropdown_with_current_selected(store):
     ctx = make_ctx()
-    modal = await _open_modal(store, ctx, 4, "on_events_change")
-    assert len(modal.components) == 5
-    inter = _modal_inter(GOOD_EVENTS)
-    await modal.callback(inter)
-    d = store.drafts[GUILD].data
-    assert (d["slots_per_event"], d["default_start_time"]) == (5, "09:30")
-    assert (d["slot_duration_minutes"], d["event_interval_days"]) == (45, 10)
-    assert d["event_lookahead_count"] == 4
+    seed(store, STEP["slots"], {"slots_per_event": 4})
+    step = await sw.render_step(ctx, make_guild(), store.drafts[GUILD])
+    assert step.visible == [sw.ID_VALUE, sw.ID_OTHER, sw.ID_BACK, sw.ID_NEXT]
+    assert f"Step {STEP['slots'] + 1} of {sw.total_steps()}" in step.content
+    assert "Slots per event" in step.content and "4" in step.content
+    select = _select(sw.SetupWizardView(ctx, step))
+    chosen = [o.value for o in select.options if o.default]
+    assert chosen == ["4"] and len(select.options) <= 25
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("step_key", "key", "raw", "expected"), VALUE_STEPS)
+async def test_value_select_stores_in_draft_only_and_rerenders(
+    store, step_key, key, raw, expected
+):
+    ctx = make_ctx()
+    seed(store, STEP[step_key], {})
+    inter = make_inter(make_guild(), values=[raw])
+    await sw.SetupWizardView(ctx).on_value_select(inter)
+    assert store.drafts[GUILD].data[key] == expected
+    assert store.drafts[GUILD].step == STEP[step_key]
     assert store.writes == []
-    assert "Slots per event: 5" in last_content(inter)
-    assert "local time in Europe/Berlin" in last_content(inter)
-    assert "Step 5 of 6" in last_content(inter)
+    assert ids(last_view(inter)) == {sw.ID_VALUE, sw.ID_OTHER, sw.ID_BACK, sw.ID_NEXT}
+
+
+@pytest.mark.asyncio
+async def test_value_select_with_no_values_is_a_no_op(store):
+    ctx = make_ctx()
+    seed(store, STEP["slots"], {})
+    inter = make_inter(make_guild(), values=[])
+    await sw.SetupWizardView(ctx).on_value_select(inter)
+    inter.edit_original_message.assert_not_awaited()
+    assert store.drafts[GUILD].data == {}
+
+
+@pytest.mark.asyncio
+async def test_stored_out_of_range_value_stays_selected_and_survives_next(store):
+    ctx = make_ctx()
+    seed(store, STEP["interval"], {"event_interval_days": 10})
+    step = await sw.render_step(ctx, make_guild(), store.drafts[GUILD])
+    select = _select(sw.SetupWizardView(ctx, step))
+    assert [o.value for o in select.options if o.default] == ["10"]
+    await sw.SetupWizardView(ctx)._navigate(make_inter(make_guild()), 1)
+    assert store.drafts[GUILD].data.get("event_interval_days", 10) == 10
+    assert store.drafts[GUILD].step == STEP["interval"] + 1
+
+
+@pytest.mark.asyncio
+async def test_other_opens_one_field_popup_with_current_value(store):
+    ctx = make_ctx()
+    modal = await _open_modal(store, ctx, STEP["interval"], "on_other", {"event_interval_days": 10})
+    assert len(modal.components) == 1
+    field = modal.components[0].children[0] if hasattr(modal.components[0], "children") \
+        else modal.components[0]
+    assert field.value == "10"
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("field", "bad", "name"),
+    ("step_key", "bad", "name"),
     [
         ("slots", "0", "Slots per event"),
         ("slots", "101", "Slots per event"),
-        ("slots", "x", "Slots per event"),
-        ("start", "24:00", "Start time"),
-        ("start", "9:75", "Start time"),
-        ("start", "noon", "Start time"),
-        ("length", "0", "Slot length"),
-        ("interval", "0", "One event every"),
-        ("ahead", "0", "Future events kept ready"),
-        ("ahead", "-3", "Future events kept ready"),
+        ("start_time", "24:00", "Start time"),
+        ("start_time", "noon", "Start time"),
+        ("slot_length", "1441", "Slot length"),
+        ("interval", "366", "One event every"),
+        ("first_date", "2020-01-01", "First event date"),
+        ("first_date", "14.11.2026", "First event date"),
+        ("lookahead", "53", "Future events kept ready"),
+        ("timezone", "Mars/Base", "Time zone"),
     ],
 )
-async def test_events_popup_rejects_invalid_field_by_name(store, field, bad, name):
+async def test_other_popup_rejects_invalid_naming_field(store, step_key, bad, name):
     ctx = make_ctx()
-    modal = await _open_modal(store, ctx, 4, "on_events_change")
-    inter = _modal_inter({**GOOD_EVENTS, field: bad})
+    modal = await _open_modal(store, ctx, STEP[step_key], "on_other")
+    inter = _modal_inter({"v": bad})
     await modal.callback(inter)
     text = inter.response.send_message.await_args.args[0]
     assert name in text
@@ -629,34 +695,55 @@ async def test_events_popup_rejects_invalid_field_by_name(store, field, bad, nam
 
 
 @pytest.mark.asyncio
-async def test_zone_popup_valid_and_invalid(store):
+async def test_other_popup_trims_and_normalizes(store):
     ctx = make_ctx()
-    modal = await _open_modal(store, ctx, 4, "on_zone")
-    bad = _modal_inter({"zone": "Mars/Base"})
-    await modal.callback(bad)
-    assert "Time zone" in bad.response.send_message.await_args.args[0]
-    assert store.drafts[GUILD].data == {}
-    good = _modal_inter({"zone": "Europe/London"})
-    await modal.callback(good)
-    assert store.drafts[GUILD].data["timezone"] == "Europe/London"
+    modal = await _open_modal(store, ctx, STEP["start_time"], "on_other")
+    inter = _modal_inter({"v": " 9:30 "})
+    await modal.callback(inter)
+    assert store.drafts[GUILD].data["default_start_time"] == "09:30"
     assert store.writes == []
+    assert "09:30" in last_content(inter)
+
+
+@pytest.mark.asyncio
+async def test_timezone_choice_is_applied_only_on_activate_or_save(store):
     from bot import timezone
 
-    assert timezone.get_timezone().key != "Europe/London"  # applied only on Activate/Save
+    ctx = make_ctx()
+    modal = await _open_modal(store, ctx, STEP["timezone"], "on_other")
+    await modal.callback(_modal_inter({"v": "Europe/London"}))
+    assert store.drafts[GUILD].data["timezone"] == "Europe/London"
+    assert timezone.get_timezone().key != "Europe/London"
 
+
+@pytest.mark.asyncio
+async def test_value_controls_refuse_non_admin(store):
+    ctx = make_ctx()
+    view = sw.SetupWizardView(ctx)
+    for _ in (sw.ID_VALUE, sw.ID_OTHER):
+        inter = make_inter(make_guild(), user=999)
+        assert await view.interaction_check(inter) is False
+
+
+@pytest.mark.asyncio
+async def test_old_step_index_beyond_range_is_clamped(store):
+    ctx = make_ctx()
+    seed(store, 99, {"rerun": True, **FULL})
+    step = await sw.render_step(ctx, make_guild(), store.drafts[GUILD])
+    assert step.visible == [sw.ID_BACK, sw.ID_SAVE]
 
 @pytest.mark.asyncio
 async def test_invites_toggle_and_popup(store):
     ctx = make_ctx()
-    seed(store, 5, {})
+    seed(store, INVITES, {})
     inter = make_inter(make_guild())
     await sw.SetupWizardView(ctx).on_toggle(inter)
     assert store.drafts[GUILD].data["outreach_enabled"] is False
     assert "Automatic invites: off" in last_content(inter)
-    assert "Step 6 of 6" in last_content(inter)
+    assert f"Step {INVITES + 1} of {sw.total_steps()}" in last_content(inter)
     toggle = next(c for c in last_view(inter).children if c.custom_id == sw.ID_INVITES_TOGGLE)
     assert toggle.label == "Turn on"
-    modal = await _open_modal(store, ctx, 5, "on_invites_change")
+    modal = await _open_modal(store, ctx, INVITES, "on_invites_change")
     for fields, name in (({"days": "0", "hours": "5"}, "Days before"),
                          ({"days": "5", "hours": "x"}, "Hours between")):
         bad = _modal_inter(fields)
@@ -672,8 +759,8 @@ async def test_invites_toggle_and_popup(store):
 @pytest.mark.asyncio
 async def test_modal_refuses_non_admin(store):
     ctx = make_ctx()
-    modal = await _open_modal(store, ctx, 4, "on_zone")
-    inter = _modal_inter({"zone": "Europe/London"})
+    modal = await _open_modal(store, ctx, STEP["timezone"], "on_other")
+    inter = _modal_inter({"v": "Europe/London"})
     inter.author.id = 999
     await modal.callback(inter)
     inter.response.send_message.assert_awaited_once_with(
@@ -705,8 +792,8 @@ async def test_interaction_check_accepts_an_added_admin(store):
 @pytest.mark.asyncio
 async def test_modal_accepts_an_added_admin(store):
     ctx = await _added_admin_ctx(777)
-    modal = await _open_modal(store, ctx, 4, "on_zone")
-    inter = _modal_inter({"zone": "Europe/London"})
+    modal = await _open_modal(store, ctx, STEP["timezone"], "on_other")
+    inter = _modal_inter({"v": "Europe/London"})
     inter.author.id = 777
     await modal.callback(inter)
     assert store.drafts[GUILD].data != {}
@@ -717,7 +804,7 @@ async def test_modal_accepts_an_added_admin(store):
 @pytest.mark.asyncio
 async def test_summary_shows_values_and_warns_on_changed_zone_and_role(store):
     ctx = make_ctx()
-    seed(store, 6, {"rerun": True, **FULL, "timezone": "Europe/London",
+    seed(store, SUMMARY, {"rerun": True, **FULL, "timezone": "Europe/London",
                     "orig_timezone": "Europe/Berlin", "orig_invites_role_id": 999})
     view = await sw.render_step(ctx, make_guild(), store.drafts[GUILD])
     assert "the real times of existing events change" in view.content
@@ -726,14 +813,14 @@ async def test_summary_shows_values_and_warns_on_changed_zone_and_role(store):
     assert f"Events: 6 slots, 20:00 {abbr}, 60 min, every 7 days, 6 ahead" in view.content
     assert "DJ role: @role300" in view.content
     assert "Automatic invites: on, 14 days before, 12 h wait" in view.content
-    assert "Step 6 of 6" in view.content
+    assert f"Step {sw.total_steps()} of {sw.total_steps()}" in view.content
     assert ids(sw.SetupWizardView(ctx, view)) == {sw.ID_BACK, sw.ID_SAVE}
 
 
 @pytest.mark.asyncio
 async def test_summary_has_no_warnings_when_unchanged(store):
     ctx = make_ctx()
-    seed(store, 6, {"rerun": True, **FULL, "orig_timezone": "Europe/Berlin",
+    seed(store, SUMMARY, {"rerun": True, **FULL, "orig_timezone": "Europe/Berlin",
                     "orig_invites_role_id": 400})
     view = await sw.render_step(ctx, make_guild(), store.drafts[GUILD])
     assert "Warning" not in view.content
@@ -742,7 +829,7 @@ async def test_summary_has_no_warnings_when_unchanged(store):
 @pytest.mark.asyncio
 async def test_activate_refuses_rerun_draft(store):
     ctx = make_ctx()
-    seed(store, 6, {"rerun": True, **FULL})
+    seed(store, SUMMARY, {"rerun": True, **FULL})
     await sw.activate_from_draft(ctx, make_inter(make_guild()))
     assert store.writes == []
 
@@ -758,7 +845,7 @@ def test_wizard_texts_have_no_utc_or_em_dash():
         texts.setup_channel_missing("x", ["Send Messages"]),
         texts.setup_summary(["a"], False),
         texts.setup_roles_step(4, 6, "@a", None, texts.SETUP_ROLES_OK),
-        texts.setup_events_step(5, 6, {**sw.values({}), "zone_abbr": "CET"}),
+        texts.setup_value_step(5, 13, "Slots per event", "How many?", "6", "note"),
         texts.setup_invites_step(6, 6, sw.values({})),
         texts.SETUP_ZONE_CHANGED_WARNING,
         texts.SETUP_INVITES_ROLE_WARNING,
@@ -784,7 +871,7 @@ async def test_empty_select_values_is_a_no_op(store):
 @pytest.mark.asyncio
 async def test_save_refuses_first_run_draft(store):
     ctx = make_ctx()
-    seed(store, 6, FULL)
+    seed(store, SUMMARY, FULL)
     inter = make_inter(make_guild())
     await inter.response.defer()
     await sw.save_from_draft(ctx, inter)
@@ -806,7 +893,7 @@ def test_active_text_only_claims_what_happened():
 async def test_activate_text_reflects_refresh_result(store):
     ctx = make_ctx()
     ctx.lineup_service.refresh = AsyncMock(return_value=False)
-    seed(store, 6, FULL)
+    seed(store, SUMMARY, FULL)
     inter = make_inter(make_guild())
     await inter.response.defer()
     with patch("bot.ui.setup_wizard.replenish_events", AsyncMock(return_value=2)):
@@ -844,14 +931,14 @@ async def test_replaced_draft_says_outdated(store):
 @pytest.mark.parametrize(
     ("handler", "fields"),
     [
-        ("on_events_change", GOOD_EVENTS),
-        ("on_zone", {"zone": "Europe/London"}),
+        ("on_other", {"v": "5"}),
         ("on_invites_change", {"days": "3", "hours": "8"}),
     ],
 )
 async def test_popup_submit_defers_without_message_and_edits_wizard(store, handler, fields):
     ctx = make_ctx()
-    modal = await _open_modal(store, ctx, 4, handler)
+    step = STEP["slots"] if handler == "on_other" else INVITES
+    modal = await _open_modal(store, ctx, step, handler)
     inter = _modal_inter(fields)
     await modal.callback(inter)
     inter.response.defer.assert_awaited_once_with(with_message=False)
@@ -869,7 +956,7 @@ async def test_legacy_server_zone_change_warns_without_stored_zone(store):
     guild = make_guild()
     data = await sw.prefilled_data(ctx.db, GUILD, guild)
     assert data["orig_timezone"] == "Europe/Berlin"
-    seed(store, 6, {**data, **FULL, "timezone": "Europe/London"})
+    seed(store, SUMMARY, {**data, **FULL, "timezone": "Europe/London"})
     view = await sw.render_step(ctx, guild, store.drafts[GUILD])
     assert "the real times of existing events change" in view.content
 
@@ -883,7 +970,7 @@ async def test_legacy_server_role_change_and_no_change(store):
     with patch("bot.services.roles.get_value", AsyncMock(return_value=None)):
         data = await sw.prefilled_data(ctx.db, GUILD, guild)
     assert data["orig_invites_role_id"] == 400 and data["invites_role_id"] == 400
-    seed(store, 6, {**data, "dj_channel": 100, "log_channel": 200, "dj_role_id": 300})
+    seed(store, SUMMARY, {**data, "dj_channel": 100, "log_channel": 200, "dj_role_id": 300})
     same = await sw.render_step(ctx, guild, store.drafts[GUILD])
     assert "Warning" not in same.content
     store.drafts[GUILD].data["invites_role_id"] = 555
@@ -894,7 +981,7 @@ async def test_legacy_server_role_change_and_no_change(store):
 @pytest.mark.asyncio
 async def test_save_failure_keeps_draft_and_reports(store):
     ctx = make_ctx()
-    seed(store, 6, {"rerun": True, **FULL})
+    seed(store, SUMMARY, {"rerun": True, **FULL})
     inter = make_inter(make_guild())
     await inter.response.defer()
     with patch("bot.ui.setup_wizard._write_all", AsyncMock(side_effect=RuntimeError("db"))):
@@ -975,7 +1062,7 @@ def test_parse_hhmm():
 @pytest.mark.asyncio
 async def test_failed_activation_after_channels_leaves_guild_idle(store):
     ctx = make_ctx()
-    seed(store, 6, FULL)
+    seed(store, SUMMARY, FULL)
     inter = make_inter(make_guild())
     await inter.response.defer()
     real_set = store.set_value
@@ -998,7 +1085,7 @@ async def test_failed_activation_after_channels_leaves_guild_idle(store):
 @pytest.mark.asyncio
 async def test_activation_writes_false_flag_before_any_other_key(store):
     ctx = make_ctx()
-    seed(store, 6, FULL)
+    seed(store, SUMMARY, FULL)
     inter = make_inter(make_guild())
     await inter.response.defer()
     with patch("bot.ui.setup_wizard.replenish_events", AsyncMock(return_value=0)):
@@ -1010,7 +1097,7 @@ async def test_activation_writes_false_flag_before_any_other_key(store):
 @pytest.mark.asyncio
 async def test_activate_loads_events_inside_replenish_not_before(store):
     ctx = make_ctx()
-    seed(store, 6, FULL)
+    seed(store, SUMMARY, FULL)
     inter = make_inter(make_guild())
     await inter.response.defer()
     with patch("bot.ui.setup_wizard.replenish_events", AsyncMock(return_value=2)) as rep:
@@ -1018,25 +1105,6 @@ async def test_activate_loads_events_inside_replenish_not_before(store):
     assert rep.await_args.args == (ctx.db, ctx.notion_client, GUILD)  # no stale list passed
     # the lineup refresh uses a list loaded after replenishing
     ctx.lineup_service.refresh.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("field", "bad", "name", "limit"),
-    [
-        ("length", "1441", "Slot length", "1440"),
-        ("interval", "366", "One event every", "365"),
-        ("ahead", "53", "Future events kept ready", "52"),
-        ("slots", "101", "Slots per event", "100"),
-    ],
-)
-async def test_events_caps_name_field_and_range(store, field, bad, name, limit):
-    out, errors = sw.parse_events_fields({**GOOD_EVENTS, field: bad})
-    assert len(errors) == 1 and name in errors[0] and f"1 to {limit}" in errors[0]
-    ok, none = sw.parse_events_fields(
-        {**GOOD_EVENTS, "length": "1440", "interval": "365", "ahead": "52"}
-    )
-    assert none == [] and ok["slot_duration_minutes"] == 1440
 
 
 def test_invites_caps_name_field_and_range():
@@ -1081,10 +1149,8 @@ def test_zone_abbr_and_labels_follow_the_zone():
 
 
 @pytest.mark.asyncio
-async def test_events_step_and_popup_use_zone_abbreviation(store):
+async def test_start_time_step_uses_zone_abbreviation(store):
     ctx = make_ctx()
-    seed(store, 4, {"timezone": "Asia/Tokyo"})
+    seed(store, STEP["start_time"], {"timezone": "Asia/Tokyo"})
     step = await sw.render_step(ctx, make_guild(), store.drafts[GUILD])
-    assert "Start time (JST): 20:00" in step.content and "CET" not in step.content
-    modal = await _open_modal(store, ctx, 4, "on_events_change", {"timezone": "Asia/Tokyo"})
-    assert modal.components[1].children[0].label == "Start time (JST, HH:MM)"
+    assert "JST" in step.content and "CET" not in step.content

@@ -25,7 +25,7 @@ from bot.services.event_replenish import replenish_events
 from bot.services.outreach import parse_outreach_enabled
 from bot.timezone import DEFAULT_TIMEZONE, is_valid_timezone, set_timezone
 from bot.ui import texts
-from bot.ui.setup_options import parse_hhmm
+from bot.ui.setup_options import FIELD_LABELS, dropdown_options, parse_choice, parse_hhmm
 
 if TYPE_CHECKING:
     from bot.context import BotContext
@@ -39,10 +39,28 @@ STEPS: list[str] = [
     "dj_channel",
     "log_channel",
     "roles",
-    "events",
+    "slots",
+    "start_time",
+    "slot_length",
+    "schedule",
+    "interval",
+    "first_date",
+    "lookahead",
+    "timezone",
     "invites",
     "summary",
 ]
+
+# Value steps: step key -> config key. Each shows a dropdown and an "Other" popup.
+VALUE_STEPS: dict[str, str] = {
+    "slots": "slots_per_event",
+    "start_time": "default_start_time",
+    "slot_length": "slot_duration_minutes",
+    "interval": "event_interval_days",
+    "first_date": "first_event_date",
+    "lookahead": "event_lookahead_count",
+    "timezone": "timezone",
+}
 
 # Values a draft starts with (first run); a re-run starts from the stored values.
 DEFAULT_VALUES: dict[str, Any] = {
@@ -51,6 +69,8 @@ DEFAULT_VALUES: dict[str, Any] = {
     "slot_duration_minutes": 60,
     "event_interval_days": 7,
     "event_lookahead_count": 6,
+    "event_schedule_enabled": True,
+    "first_event_date": "",
     "timezone": DEFAULT_TIMEZONE,
     "outreach_enabled": True,
     "outreach_days_before": 14,
@@ -64,9 +84,6 @@ _INT_VALUE_KEYS = (
     "outreach_days_before",
     "outreach_cooldown_hours",
 )
-MAX_SLOT_MINUTES = 1440
-MAX_INTERVAL_DAYS = 365
-MAX_EVENTS_AHEAD = 52
 MAX_INVITE_DAYS = 365
 MAX_INVITE_HOURS = 720
 CHANNEL_KEYS = ("dj_channel", "log_channel")
@@ -81,8 +98,9 @@ ID_LOG_CHANNEL = "setup:log_channel"
 ID_DJ_ROLE = "setup:dj_role"
 ID_INVITES_ROLE = "setup:invites_role"
 ID_CREATE_ROLE = "setup:create_role"
-ID_EVENTS_CHANGE = "setup:events_change"
-ID_ZONE = "setup:zone"
+ID_VALUE = "setup:value"
+ID_OTHER = "setup:other"
+ID_SCHEDULE_TOGGLE = "setup:schedule_toggle"
 ID_INVITES_TOGGLE = "setup:invites_toggle"
 ID_INVITES_CHANGE = "setup:invites_change"
 ID_ACTIVATE = "setup:activate"
@@ -141,38 +159,7 @@ def values(data: dict[str, Any]) -> dict[str, Any]:
     return merged
 
 
-# --- validation of the popup fields ---
-
-def parse_events_fields(raw: dict[str, str]) -> tuple[dict[str, Any], list[str]]:
-    """Validate the five event fields; errors name the field."""
-    out: dict[str, Any] = {}
-    errors: list[str] = []
-
-    def number(field: str, label: str, key: str, maximum: int) -> None:
-        rule = f"enter a whole number from 1 to {maximum}."
-        try:
-            value = int((raw.get(field) or "").strip())
-        except ValueError:
-            errors.append(texts.setup_invalid(label, rule))
-            return
-        if value < 1 or value > maximum:
-            errors.append(texts.setup_invalid(label, rule))
-            return
-        out[key] = value
-
-    number("slots", "Slots per event", "slots_per_event", MAX_SLOTS)
-    number("length", "Slot length", "slot_duration_minutes", MAX_SLOT_MINUTES)
-    number("interval", "One event every (days)", "event_interval_days", MAX_INTERVAL_DAYS)
-    number("ahead", "Future events kept ready", "event_lookahead_count", MAX_EVENTS_AHEAD)
-    start = parse_hhmm(raw.get("start") or "")
-    if start is not None:
-        out["default_start_time"] = start
-    else:
-        errors.append(
-            texts.setup_invalid("Start time (HH:MM)", "enter a time from 00:00 to 23:59.")
-        )
-    return out, errors
-
+# --- validation of the invites popup ---
 
 def parse_invites_fields(raw: dict[str, str]) -> tuple[dict[str, Any], list[str]]:
     out: dict[str, Any] = {}
@@ -194,15 +181,6 @@ def parse_invites_fields(raw: dict[str, str]) -> tuple[dict[str, Any], list[str]
     return out, errors
 
 
-def parse_zone_field(raw: dict[str, str]) -> tuple[dict[str, Any], list[str]]:
-    name = (raw.get("zone") or "").strip()
-    if not name or not is_valid_timezone(name):
-        return {}, [
-            texts.setup_invalid("Time zone", "enter a name like Europe/Berlin.")
-        ]
-    return {"timezone": name}, []
-
-
 # --- checks ---
 
 def missing_permissions(channel: Any, me: Any) -> list[str]:
@@ -220,6 +198,8 @@ class StepView:
     next_label: str = "Next"
     toggle_label: str = "Turn off"
     defaults: dict[str, int] = field(default_factory=dict)  # select id -> stored choice
+    options: list[tuple[str, str]] = field(default_factory=list)  # value step dropdown
+    selected: str | None = None  # value of the option shown as chosen
 
 
 def _channel_check(guild: Any, channel_id: Any) -> tuple[bool, Any, str | None]:
@@ -322,6 +302,28 @@ async def summary_lines(ctx: "BotContext", guild: Any, data: dict[str, Any]) -> 
     return lines
 
 
+def _today_in(zone_name: str) -> datetime.date:
+    """Today's date in the draft's time zone (UTC date if the zone is unknown)."""
+    try:
+        return datetime.datetime.now(zoneinfo.ZoneInfo(zone_name)).date()
+    except (zoneinfo.ZoneInfoNotFoundError, ValueError, OSError):
+        return datetime.datetime.now(datetime.UTC).date()
+
+
+def _value_label(config_key: str, v: dict[str, Any]) -> str:
+    """The current value of a value step as shown in its text."""
+    value = v[config_key]
+    if config_key == "default_start_time":
+        return f"{value} ({zone_abbr(v['timezone'])})"
+    if config_key == "slot_duration_minutes":
+        return f"{value} minutes"
+    if config_key == "event_interval_days":
+        return f"{value} days"
+    if config_key == "first_event_date":
+        return str(value) if value else "as soon as the interval allows"
+    return str(value)
+
+
 async def render_step(ctx: "BotContext", guild: Any, draft: SetupDraft) -> StepView:
     key = step_key(draft.step)
     total = total_steps()
@@ -372,14 +374,32 @@ async def render_step(ctx: "BotContext", guild: Any, draft: SetupDraft) -> StepV
             next_disabled=not ok,
             defaults=defaults,
         )
-    if key == "events":
+    if key in VALUE_STEPS:
+        config_key = VALUE_STEPS[key]
+        v = values(data)
+        current = v[config_key]
+        title, question = texts.setup_value_texts[config_key]
+        note = None
+        if key == "timezone":
+            abbr = zone_abbr(v["timezone"])
+            note = (
+                f"Start times are local time in {v['timezone']} (currently {abbr}): "
+                f"{v['default_start_time']} stays {v['default_start_time']} all year."
+            )
         return StepView(
-            texts.setup_events_step(
-                step_number(key),
-                total,
-                {**values(data), "zone_abbr": zone_abbr(values(data)["timezone"])},
+            texts.setup_value_step(
+                step_number(key), total, title, question, _value_label(config_key, v), note
             ),
-            [ID_EVENTS_CHANGE, ID_ZONE, ID_BACK, ID_NEXT],
+            [ID_VALUE, ID_OTHER, ID_BACK, ID_NEXT],
+            options=dropdown_options(config_key, current, _today_in(v["timezone"])),
+            selected=str(current),
+        )
+    if key == "schedule":
+        enabled = values(data)["event_schedule_enabled"]
+        return StepView(
+            texts.setup_schedule_step(step_number(key), total, enabled),
+            [ID_SCHEDULE_TOGGLE, ID_BACK, ID_NEXT],
+            toggle_label="Turn off" if enabled else "Turn on",
         )
     if key == "invites":
         on = values(data)["outreach_enabled"]
@@ -420,8 +440,12 @@ class SetupWizardView(disnake.ui.View):
                 disnake.ButtonStyle.secondary,
                 self.on_create_role,
             ),
-            ID_EVENTS_CHANGE: ("Change", disnake.ButtonStyle.secondary, self.on_events_change),
-            ID_ZONE: ("Time zone", disnake.ButtonStyle.secondary, self.on_zone),
+            ID_OTHER: ("Other", disnake.ButtonStyle.secondary, self.on_other),
+            ID_SCHEDULE_TOGGLE: (
+                step.toggle_label,
+                disnake.ButtonStyle.secondary,
+                self.on_schedule_toggle,
+            ),
             ID_INVITES_TOGGLE: (step.toggle_label, disnake.ButtonStyle.secondary, self.on_toggle),
             ID_INVITES_CHANGE: ("Change", disnake.ButtonStyle.secondary, self.on_invites_change),
             ID_ACTIVATE: ("Activate", disnake.ButtonStyle.success, self.on_activate),
@@ -434,6 +458,18 @@ class SetupWizardView(disnake.ui.View):
             if cid == ID_NEXT:
                 item.disabled = step.next_disabled  # type: ignore[attr-defined]
             item.callback = handler  # type: ignore[method-assign,assignment]
+            return item
+        if cid == ID_VALUE:
+            item = disnake.ui.StringSelect(
+                custom_id=cid,
+                placeholder="Pick a value",
+                options=[
+                    disnake.SelectOption(label=label, value=value, default=value == step.selected)
+                    for label, value in step.options
+                ]
+                or [disnake.SelectOption(label="-", value="-")],
+            )
+            item.callback = self.on_value_select  # type: ignore[method-assign,assignment]
             return item
         default = step.defaults.get(cid)
         defaults = [disnake.Object(id=default)] if default else None
@@ -569,44 +605,48 @@ class SetupWizardView(disnake.ui.View):
         draft.data["invites_role_id"] = role.id
         await self._show(inter, draft)
 
-    async def on_events_change(self, inter: Any) -> None:
+    async def on_value_select(self, inter: Any) -> None:
+        await inter.response.defer()
+        chosen = inter.values
+        if not chosen:
+            return
+        async with guild_lock(inter.guild_id):
+            draft = await self._draft(inter)
+            if draft is None:
+                return
+            config_key = VALUE_STEPS.get(step_key(draft.step))
+            if config_key is None:
+                await self._show(inter, draft)  # not a value step any more: show the current one
+                return
+            zone = values(draft.data)["timezone"]
+            parsed, errors = parse_choice(config_key, chosen[0], _today_in(zone))
+            if errors:
+                await _private(inter, "\n".join(errors))
+                return
+            draft.data.update(parsed)
+            await self._show(inter, draft)
+
+    async def on_other(self, inter: Any) -> None:
         draft = await self._draft(inter)
         if draft is None:
+            return
+        config_key = VALUE_STEPS.get(step_key(draft.step))
+        if config_key is None:
             return
         v = values(draft.data)
-        await inter.response.send_modal(
-            ValuesModal(
-                self,
-                inter.message.id,
-                "Event defaults",
-                f"setup_events:{inter.message.id}",
-                [
-                    ("slots", "Slots per event", str(v["slots_per_event"])),
-                    (
-                        "start",
-                        f"Start time ({zone_abbr(v['timezone'])}, HH:MM)",
-                        v["default_start_time"],
-                    ),
-                    ("length", "Slot length (minutes)", str(v["slot_duration_minutes"])),
-                    ("interval", "One event every (days)", str(v["event_interval_days"])),
-                    ("ahead", "Future events kept ready", str(v["event_lookahead_count"])),
-                ],
-                parse_events_fields,
-            )
-        )
+        today = _today_in(v["timezone"])
 
-    async def on_zone(self, inter: Any) -> None:
-        draft = await self._draft(inter)
-        if draft is None:
-            return
+        def parser(raw: dict[str, str]) -> tuple[dict[str, Any], list[str]]:
+            return parse_choice(config_key, raw.get("v", ""), today)
+
         await inter.response.send_modal(
             ValuesModal(
                 self,
                 inter.message.id,
-                "Time zone",
-                f"setup_zone:{inter.message.id}",
-                [("zone", "Time zone (e.g. Europe/Berlin)", values(draft.data)["timezone"])],
-                parse_zone_field,
+                texts.setup_value_texts[config_key][0],
+                f"setup_value:{inter.message.id}",
+                [("v", FIELD_LABELS[config_key], str(v[config_key]))],
+                parser,
             )
         )
 
@@ -636,6 +676,16 @@ class SetupWizardView(disnake.ui.View):
             if draft is None:
                 return
             draft.data["outreach_enabled"] = not values(draft.data)["outreach_enabled"]
+            await self._show(inter, draft)
+
+    async def on_schedule_toggle(self, inter: Any) -> None:
+        await inter.response.defer()
+        async with guild_lock(inter.guild_id):
+            draft = await self._draft(inter)
+            if draft is None:
+                return
+            enabled = values(draft.data)["event_schedule_enabled"]
+            draft.data["event_schedule_enabled"] = not enabled
             await self._show(inter, draft)
 
     async def on_activate(self, inter: Any) -> None:
@@ -732,10 +782,12 @@ def _layout(draft: SetupDraft) -> StepView:
         "dj_channel": [ID_DJ_CHANNEL, ID_BACK, ID_NEXT],
         "log_channel": [ID_LOG_CHANNEL, ID_BACK, ID_NEXT],
         "roles": [ID_DJ_ROLE, ID_INVITES_ROLE, ID_CREATE_ROLE, ID_BACK, ID_NEXT],
-        "events": [ID_EVENTS_CHANGE, ID_ZONE, ID_BACK, ID_NEXT],
+        "schedule": [ID_SCHEDULE_TOGGLE, ID_BACK, ID_NEXT],
         "invites": [ID_INVITES_TOGGLE, ID_INVITES_CHANGE, ID_BACK, ID_NEXT],
         "summary": [ID_BACK, ID_SAVE if draft.data.get("rerun") else ID_ACTIVATE],
     }
+    if key in VALUE_STEPS:
+        return StepView("", [ID_VALUE, ID_OTHER, ID_BACK, ID_NEXT])
     return StepView("", layouts[key])
 
 
