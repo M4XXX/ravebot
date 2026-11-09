@@ -173,9 +173,20 @@ async def test_missing_database_creates_fresh_set_of_all_three(
     else:
         fake.mark_trashed(first.djs_ds)
 
+    # Without an admin's approval the bot stops and touches nothing
+    from bot.notion.schema import NotionDatabasesMissing
+
+    with pytest.raises(NotionDatabasesMissing) as exc_info:
+        await _run(api)
+    assert first.djs_ds in exc_info.value.detail
+    assert len(fake.databases) == 3
+    clear_ids.assert_not_awaited()
+
+    store[(GUILD, "notion_recreate_approved")] = "1"
     with caplog.at_level(logging.WARNING):
         second = await _run(api)
 
+    assert store[(GUILD, "notion_recreate_approved")] == "0"  # one approval, one new set
     assert len(fake.databases) == 6
     assert {second.events_ds, second.slots_ds, second.djs_ds}.isdisjoint(
         {first.events_ds, first.slots_ds, first.djs_ds}
@@ -344,6 +355,7 @@ async def test_fresh_set_lets_ensure_views_recreate_views(
         first = await _run(api)
         await ensure_views(api, object(), GUILD, first)  # type: ignore[arg-type]
         fake.trash_data_source(first.events_ds)
+        store[(GUILD, "notion_recreate_approved")] = "1"
         second = await _run(api)
         await ensure_views(api, object(), GUILD, second)  # type: ignore[arg-type]
     names = {

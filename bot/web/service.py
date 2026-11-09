@@ -78,6 +78,27 @@ class AdminPageService:
         self._clock = clock
         self._cache: dict[int, tuple[float, UserInfo]] = {}
 
+    def notion_problem(self) -> str | None:
+        """Why the Notion databases are unusable, or None when they are fine."""
+        return self._ctx.notion_problem
+
+    async def recreate_notion(self) -> ActionResult:
+        recover = self._ctx.notion_recover
+        if self._ctx.notion_problem is None or recover is None:
+            return ActionResult(False, "The Notion databases are fine. Nothing was changed.")
+        error = await recover()
+        if error is not None:
+            return ActionResult(
+                False,
+                "Creating the new databases failed. Check that the Notion page is shared "
+                f"with the integration, then try again. ({error[:200]})",
+            )
+        return ActionResult(
+            True,
+            "New Notion databases were created. Booking and the lineup work again. The old "
+            "data stays in the old databases.",
+        )
+
     @property
     def djs(self) -> Any:
         """The DJ list service (add, edit, delete)."""

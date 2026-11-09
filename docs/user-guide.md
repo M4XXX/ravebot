@@ -136,7 +136,10 @@ Notion is the source of truth for who plays which slot. The bot picks up hand ed
 
 ### 2.7 If Databases Were Deleted
 
-If one of the bot's databases is deleted or moved to the trash, the bot creates a fresh set of all three databases and their views under the parent page on its next start and logs a warning. Data in the old databases stays where it is; the bot does not copy it over. DJ rows are created again in the new DJs database when DJs book.
+If one of the bot's databases is deleted or moved to the trash, or the integration lost access to it, the bot does **not** replace it on its own. It keeps running with booking and the lineup paused, and posts "Notion databases not found" to the admin log channel. Then:
+
+- If the integration only lost access: share the Notion page with it again and restart the bot.
+- If the databases were deleted on purpose: open the [admin page](#77-the-admin-page) and press **Create new databases**. After a confirmation the bot creates a fresh set of all three databases and their views right away, no restart needed. Data in the old databases stays where it is; the bot does not copy it over. DJ rows are created again in the new DJs database when DJs book.
 
 ### 2.8 Time Zone
 
@@ -426,6 +429,7 @@ A small web page to manage the admin list and the DJ list. It is off until you s
 What the page shows: the server name, the owners from `ADMIN_USER_IDS` (they cannot be removed) and the added admins with their Discord name when it can be found.
 
 What you can do:
+- When the bot cannot find its Notion databases, the page shows a red card with **Create new databases** (see 2.7). This is the only way the bot replaces its databases.
 - Open **Manage DJs** to add, edit and delete DJs, with an optional logo upload. The same works with the `/dj` commands.
 - Add an admin by Discord user ID (17 to 19 digits). The ID does not have to be a server member. An added admin can use every admin command, including `/setup`. While the bot is active, adding an admin writes an entry to the admin log channel; removals do not.
 - Remove an added admin.

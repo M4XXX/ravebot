@@ -53,9 +53,12 @@ class _Startup:
         self.start_page = AsyncMock(side_effect=self._start_page)
         self.stop_page = AsyncMock(side_effect=self._stop_page)
         self._schema_error = schema_error
+        self.while_running = None  # async callback run while main() is running
 
     async def _start(self, token: str) -> None:
         self.calls.append("start")
+        if self.while_running is not None:
+            await self.while_running()
 
     async def _start_page(self, ctx, bot):  # noqa: ANN001, ANN202
         self.calls.append("page_start")
@@ -348,3 +351,56 @@ async def test_admin_page_stops_even_when_the_bot_fails() -> None:
         await s.run()
     s.stop_page.assert_awaited_once_with(s.runner)
     s.pool.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_missing_databases_keep_the_bot_running_until_an_admin_decides() -> None:
+    from bot.notion.schema import NotionDatabasesMissing
+
+    s = _Startup(schema_error=NotionDatabasesMissing("DJs data source x returned 404"))
+    stored: dict = {}
+    seen: dict = {}
+
+    async def put(db, guild_id, key, value):  # noqa: ANN001, ANN202
+        stored[key] = value
+
+    async def admin_approves() -> None:
+        ctx = s.ctx
+        seen["client"] = ctx.notion_client
+        seen["problem"] = ctx.notion_problem
+        s._schema_error = None
+        seen["error"] = await ctx.notion_recover()
+
+    s.while_running = admin_approves
+    with patch("bot.main.set_value", new=put):
+        await s.run()
+    ctx = s.ctx
+    assert seen == {"client": None, "problem": "DJs data source x returned 404", "error": None}
+    assert stored["notion_recreate_approved"] == "1"
+    assert ctx.notion_problem is None
+    assert ctx.notion_client is s.client
+    assert ctx.outreach_service.notion_client is s.client
+    assert ctx.lineup_service.notion_client is s.client
+
+
+@pytest.mark.asyncio
+async def test_failed_recovery_withdraws_the_approval() -> None:
+    from bot.notion.schema import NotionDatabasesMissing
+
+    s = _Startup(schema_error=NotionDatabasesMissing("gone"))
+    stored: dict = {}
+    seen: dict = {}
+
+    async def put(db, guild_id, key, value):  # noqa: ANN001, ANN202
+        stored[key] = value
+
+    async def admin_approves() -> None:
+        s._schema_error = NotionWriteError("parent page not shared", status_code=404)
+        seen["error"] = await s.ctx.notion_recover()
+
+    s.while_running = admin_approves
+    with patch("bot.main.set_value", new=put):
+        await s.run()
+    assert "parent page not shared" in seen["error"]
+    assert stored["notion_recreate_approved"] == "0"
+    assert s.ctx.notion_problem == "gone"

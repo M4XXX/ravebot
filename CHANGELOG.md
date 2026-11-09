@@ -23,6 +23,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- The bot no longer replaces its Notion databases by itself when one is missing (a lost share also looks like that). It keeps running with booking and the lineup paused, posts a note to the admin log, and the admin page offers **Create new databases** after a confirmation.
 - Database: DJ names are unique in the database (migration 0016, created only when there are no duplicates yet), status values are checked, and migrations wait for each other and give up on a blocked table after 30 seconds.
 - `Book a slot` under a Lineup Update post now opens the slot picker of that event directly, instead of asking for the event first. If that event is fully booked, the DJ is told so. The button in the DM menu still asks for the event.
 - Event picker: an overview embed with one block per event (name, date, open slots, start time). The buttons show only the date, in the same style as Show lineup.

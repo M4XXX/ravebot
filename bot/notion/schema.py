@@ -46,12 +46,27 @@ _KEYS = {
 
 
 _COMPLETE_KEY = "notion_schema_complete"
+# "1": an admin approved replacing missing databases with a new set (used up once done)
+RECREATE_APPROVED_KEY = "notion_recreate_approved"
 # Set by bot.notion.views.ensure_views once all views exist; cleared for a fresh set.
 VIEWS_MARKER_KEY = "notion_views_created"
 
 
 class NotionSchemaError(Exception):
     """A Notion database does not match the expected schema."""
+
+
+class NotionDatabasesMissing(NotionSchemaError):
+    """Stored databases are gone, and creating a new set was not approved.
+
+    A 404 can also mean the integration lost access to the page for a moment, so the
+    bot never replaces the databases on its own: an admin approves it on the admin
+    page (RECREATE_APPROVED_KEY), which runs ensure_schema again.
+    """
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(detail)
+        self.detail = detail
 
 
 @dataclass(frozen=True)
@@ -274,6 +289,10 @@ async def ensure_schema(
         problems.append("a stored database id is missing from the config")
     if problems:
         detail = "; ".join(problems)
+        if await get_value(db, guild_id, RECREATE_APPROVED_KEY) != "1":
+            logger.error("Notion schema: %s; waiting for an admin to approve new databases", detail)
+            raise NotionDatabasesMissing(detail)
+        await set_value(db, guild_id, RECREATE_APPROVED_KEY, "0")  # one approval, one new set
         logger.warning("Notion schema: %s; creating a fresh set of databases", detail)
         await api.log.log_attention(
             texts.LOG_NEW_DATABASES_TITLE,

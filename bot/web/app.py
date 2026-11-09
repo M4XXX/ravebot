@@ -30,6 +30,7 @@ from bot.web.auth import (
 )
 from bot.web.pages import (
     render_confirm_delete_dj,
+    render_confirm_recreate,
     render_confirm_remove,
     render_dashboard,
     render_djs,
@@ -131,6 +132,12 @@ def _field(form: MultiDictProxy[Any], name: str) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def _notion_problem(service: Any) -> str | None:
+    """The Notion problem of the service (test fakes may not have the method)."""
+    getter = getattr(service, "notion_problem", None)
+    return getter() if callable(getter) else None
+
+
 def _logo_bytes(form: MultiDictProxy[Any]) -> bytes | None:
     """The uploaded logo file, or None when no file was chosen."""
     value = form.get("logo")
@@ -178,7 +185,10 @@ def create_app(
         request: web.Request, message: ActionResult | None = None, status: int = 200
     ) -> web.Response:
         rows = await service.list_admins()
-        page = render_dashboard(service.server_info(), rows, request["session"].csrf, message)
+        problem = _notion_problem(service)
+        page = render_dashboard(
+            service.server_info(), rows, request["session"].csrf, message, problem
+        )
         return _html(page, status)
 
     async def get_login(request: web.Request) -> web.Response:
@@ -342,6 +352,18 @@ def create_app(
             request, ActionResult(result.ok, result.message), 200 if result.ok else 400
         )
 
+    # --- Notion databases ---
+
+    async def get_notion_recreate(request: web.Request) -> web.Response:
+        problem = _notion_problem(service)
+        if not problem:
+            return _redirect("/")
+        return _html(render_confirm_recreate(problem, request["session"].csrf))
+
+    async def post_notion_recreate(request: web.Request) -> web.Response:
+        result = await service.recreate_notion()
+        return await dashboard(request, result, 200 if result.ok else 400)
+
     app = web.Application(
         middlewares=[security_middleware, session_middleware], client_max_size=MAX_UPLOAD
     )
@@ -352,6 +374,8 @@ def create_app(
     app.router.add_get("/admins/remove", get_remove)
     app.router.add_post("/admins/remove", post_remove)
     app.router.add_post("/admins/add", post_add)
+    app.router.add_get("/notion/recreate", get_notion_recreate)
+    app.router.add_post("/notion/recreate", post_notion_recreate)
     app.router.add_get("/djs", get_djs)
     app.router.add_post("/djs/add", post_dj_add)
     app.router.add_get("/djs/edit", get_dj_edit)
