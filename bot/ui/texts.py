@@ -184,12 +184,7 @@ def slot_button(event: EventInfo, slot_index: int) -> str:
     return f"Slot {slot_index + 1} · {fmt_time(event, slot_index)}"
 
 
-PICK_EVENT = "**Which event do you want to play?**"
-
-
-def event_line(index: int, event: EventInfo, open_count: int) -> str:
-    open_text = "1 slot open" if open_count == 1 else f"{open_count} slots open"
-    return f"{index}. {event.event_id} · {fmt_date(event)} · {open_text}"
+PICK_EVENT = "Which event do you want to play?"
 
 
 CONFIRM_TITLE = "Confirm your booking"

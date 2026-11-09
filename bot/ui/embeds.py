@@ -157,6 +157,25 @@ class LineupUpdateEmbed(disnake.Embed):
         self.set_footer(text=event.event_id)
 
 
+class BookingEventPickEmbed(disnake.Embed):
+    """Event picker overview: one block per event with its date and open slots."""
+
+    def __init__(self, events: list[EventInfo], open_counts: list[int]) -> None:
+        blocks = []
+        for event, open_count in zip(events, open_counts, strict=True):
+            noun = "slot" if event.slot_count == 1 else "slots"
+            blocks.append(
+                f"**{_event_name(event)} \u00b7 {texts.fmt_date(event)}**\n"
+                f"{_BOOKED_ICON} {open_count} of {event.slot_count} {noun} open"
+                f" \u00b7 starts {texts.fmt_time(event, 0)}"
+            )
+        super().__init__(
+            title=texts.PICK_EVENT,
+            description="\n\n".join(blocks),
+            colour=EmbedColors.MISSION_GOLD,
+        )
+
+
 _CUT_NOTE = "\n(cut)"
 
 

@@ -702,8 +702,9 @@ async def test_book_slot_open_slots_shows_event_selection_view() -> None:
     call_kwargs = call_args.kwargs
     assert "view" in call_kwargs
     assert isinstance(call_kwargs["view"], EventSelectionView)
-    content = call_args[0][0] if call_args[0] else call_kwargs.get("content", "")
-    assert "1. Test Rave · " in content and "4 slots open" in content
+    embed = call_kwargs["embed"]
+    assert embed.title == "Which event do you want to play?"
+    assert "Test Rave" in embed.description and "4 of 6 slots open" in embed.description
     # Lock is held (passed to EventSelectionView)
     assert ctx.get_user_lock(66666).locked()
 
@@ -1524,7 +1525,7 @@ async def test_event_selection_button_uses_event_id_and_page_id() -> None:
     await lock.acquire()
     view = EventSelectionView(ctx, [_gap_event()], lock, 40003)
     first = view.children[0]
-    assert first.label == "Gap Rave"
+    assert first.label == _gap_event().date.strftime("%d.%m.%Y")
     assert first.custom_id == "event_select:evt-gap"
 
 
@@ -1543,8 +1544,9 @@ async def test_book_slot_lists_event_name_and_start_timestamp() -> None:
 
     await view.book_slot.callback(inter)
 
-    content = inter.response.send_message.call_args[0][0]
-    assert content.splitlines()[1].startswith("1. Gap Rave · ")
+    description = inter.response.send_message.call_args.kwargs["embed"].description
+    assert description.startswith("**Gap Rave · ")
+    assert "starts " in description
 
 
 @pytest.mark.asyncio
@@ -2166,7 +2168,9 @@ async def test_prepare_booking_open_events_returns_text_and_view() -> None:
     start = await prepare_booking(ctx, 1)
     assert start.error is None
     assert isinstance(start.view, EventSelectionView)
-    assert start.content == "\n".join([texts.PICK_EVENT, texts.event_line(1, event, 4)])
+    assert start.content == ""
+    assert start.embed.title == texts.PICK_EVENT
+    assert "4 of 6 slots open" in start.embed.description
     assert ctx.get_user_lock(1).locked()
 
 
@@ -2225,6 +2229,7 @@ def _post_inter(user_id: int = 77, name: str = "Alice") -> MagicMock:
     inter.author.send = AsyncMock()
     inter.response.defer = AsyncMock()
     inter.followup.send = AsyncMock()
+    inter.message = None
     return inter
 
 
@@ -2253,7 +2258,7 @@ async def test_post_button_sends_dm_and_private_reply() -> None:
     inter.response.defer.assert_awaited_once_with(ephemeral=True)
     inter.author.send.assert_awaited_once()
     assert isinstance(inter.author.send.call_args.kwargs["view"], EventSelectionView)
-    assert texts.PICK_EVENT in inter.author.send.call_args.args[0]
+    assert inter.author.send.call_args.kwargs["embed"].title == texts.PICK_EVENT
     inter.followup.send.assert_awaited_once_with(texts.POST_DM_SENT, ephemeral=True)
     assert ctx.get_user_lock(77).locked()
 
@@ -2797,3 +2802,58 @@ async def test_fallback_go_active_deleted_stored_role_is_handled() -> None:
             await view.go_active.callback(inter)
     member.add_roles.assert_not_awaited()
     inter.response.send_message.assert_awaited_once()
+
+
+def _post_message(event_id: str | None) -> MagicMock:
+    message = MagicMock()
+    message.embeds = [] if event_id is None else [disnake.Embed().set_footer(text=event_id)]
+    return message
+
+
+@pytest.mark.asyncio
+async def test_post_button_opens_slot_picker_of_that_event() -> None:
+    from bot.ui.views import LineupPostView, SlotSelectionView
+
+    first = _make_event(event_id="p1", name="First Rave", slots=4, djs_booked=1)
+    second = _make_event(event_id="p2", name="Second Rave", slots=4, djs_booked=2)
+    ctx = _ctx_with_events([first, second])
+    inter = _post_inter()
+    inter.message = _post_message("Second Rave")
+    await LineupPostView(ctx).book_slot.callback(inter)
+
+    kwargs = inter.author.send.call_args.kwargs
+    assert isinstance(kwargs["view"], SlotSelectionView)
+    assert kwargs["view"]._event.page_id == "p2"
+    assert _slot_button_indices(kwargs["view"]) == [2, 3]
+    assert kwargs["embed"].footer.text == "Second Rave"
+    assert ctx.get_user_lock(77).locked()
+
+
+@pytest.mark.asyncio
+async def test_post_button_full_event_reports_all_booked() -> None:
+    from bot.ui import texts
+    from bot.ui.views import LineupPostView
+
+    full = _make_event(event_id="p1", name="Full Rave", slots=2, djs_booked=2)
+    other = _make_event(event_id="p2", name="Open Rave", slots=2, djs_booked=0)
+    ctx = _ctx_with_events([full, other])
+    inter = _post_inter()
+    inter.message = _post_message("Full Rave")
+    await LineupPostView(ctx).book_slot.callback(inter)
+
+    inter.followup.send.assert_awaited_once_with(texts.ALL_BOOKED, ephemeral=True)
+    inter.author.send.assert_not_awaited()
+    assert not ctx.get_user_lock(77).locked()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("footer", [None, "Unknown Rave"])
+async def test_post_button_without_matching_event_shows_event_picker(footer) -> None:
+    from bot.ui.views import EventSelectionView, LineupPostView
+
+    ctx = _ctx_with_events([_make_event()])
+    inter = _post_inter()
+    inter.message = _post_message(footer)
+    await LineupPostView(ctx).book_slot.callback(inter)
+
+    assert isinstance(inter.author.send.call_args.kwargs["view"], EventSelectionView)

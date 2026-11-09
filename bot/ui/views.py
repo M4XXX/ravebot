@@ -100,8 +100,9 @@ class FallbackMenuView(GatedView):
             await inter.response.send_message(start.error, ephemeral=True)
             return
 
-        content = start.content
-        await inter.response.send_message(content, view=start.view, ephemeral=True)
+        await inter.response.send_message(
+            start.content or None, embed=start.embed, view=start.view, ephemeral=True
+        )
 
     async def _onboard_before_booking(self, inter: disnake.MessageInteraction) -> None:
         """A DJ role holder without a profile starts the onboarding instead of booking.
@@ -546,11 +547,17 @@ class BookingStart:
 
     error: str | None
     content: str
-    view: "EventSelectionView | None"
+    view: "EventSelectionView | SlotSelectionView | None"
+    embed: disnake.Embed | None = None
 
 
-async def prepare_booking(ctx: "BotContext", user_id: int) -> BookingStart:
+async def prepare_booking(
+    ctx: "BotContext", user_id: int, event_id: str | None = None
+) -> BookingStart:
     """Start the booking flow for a user.
+
+    With an `event_id` that matches an upcoming event, the event picker is skipped and
+    the slot picker of that event opens. An unknown ID falls back to the event picker.
 
     On error: returns the error text and holds no lock (a lock held by an already
     open flow is left untouched). On success the per-user lock is held and handed
@@ -571,18 +578,37 @@ async def prepare_booking(ctx: "BotContext", user_id: int) -> BookingStart:
         if not with_open:
             lock.release()
             return BookingStart(texts.ALL_BOOKED, "", None)
-        # Cap to 5 events (Discord limit: 5 buttons per row)
-        with_open = with_open[:5]
-        lines = [texts.PICK_EVENT]
-        for i, event in enumerate(with_open, 1):
-            lines.append(texts.event_line(i, event, len(_open_slot_indices(event))))
+        from bot.ui.embeds import BookingEventPickEmbed, LineupUpdateEmbed
+
+        chosen = next((e for e in events if event_id and e.event_id == event_id), None)
+        if chosen is not None:
+            open_slots = _open_slot_indices(chosen)
+            if not open_slots:
+                lock.release()
+                return BookingStart(texts.ALL_BOOKED, "", None)
+            slot_view = SlotSelectionView(ctx, chosen, open_slots, lock, user_id)
+            return BookingStart(
+                None, _pick_slot_content(open_slots), slot_view, LineupUpdateEmbed(chosen)
+            )
+        # Cap to 5 events (one row of buttons)
+        with_open = with_open[:MAX_PICK_BUTTONS]
+        counts = [len(_open_slot_indices(event)) for event in with_open]
+        embed = BookingEventPickEmbed(with_open, counts)
         view = EventSelectionView(ctx, with_open, lock, user_id)
     except Exception:
         logger.exception("prepare_booking failed")
         if lock.locked():
             lock.release()
         return BookingStart(texts.GENERIC_ERROR, "", None)
-    return BookingStart(None, "\n".join(lines), view)
+    return BookingStart(None, "", view, embed)
+
+
+def _post_event_id(message: disnake.Message | None) -> str | None:
+    """The event ID in the footer of a Lineup Update post, if there is one."""
+    if message is None or not message.embeds:
+        return None
+    footer = message.embeds[0].footer
+    return footer.text if footer and footer.text else None
 
 
 class LineupPostView(GatedView):
@@ -610,11 +636,13 @@ class LineupPostView(GatedView):
         if not await _has_dj_profile(self.ctx, user.id):
             await self._onboard_before_booking(inter)
             return
-        start = await prepare_booking(self.ctx, user.id)
+        start = await prepare_booking(self.ctx, user.id, _post_event_id(inter.message))
         if start.error is not None:
             await inter.followup.send(start.error, ephemeral=True)
             return
-        await self._dm_or_report(inter, start.content, start.view, release_lock=True)
+        await self._dm_or_report(
+            inter, start.content, start.view, release_lock=True, embed=start.embed
+        )
 
     async def _onboard_before_booking(self, inter: disnake.MessageInteraction) -> None:
         """A DJ role holder without a profile gets the onboarding in a DM instead of booking.
@@ -639,15 +667,18 @@ class LineupPostView(GatedView):
         view: disnake.ui.View | None,
         *,
         release_lock: bool,
+        embed: disnake.Embed | None = None,
     ) -> bool:
         """DM the user, then reply privately; blocked or failed DMs are reported.
 
         Returns True when the DM was sent.
         """
         user = inter.author
-        kwargs = {"view": view} if view is not None else {}
+        kwargs: dict[str, object] = {"view": view} if view is not None else {}
+        if embed is not None:
+            kwargs["embed"] = embed
         try:
-            await user.send(content, **kwargs)
+            await user.send(content or None, **kwargs)
         except disnake.Forbidden:
             if release_lock:
                 self.ctx.get_user_lock(user.id).release()
@@ -705,12 +736,12 @@ class EventSelectionView(GatedView):
         self._lock = lock
         self._user_id = user_id
 
-        for i, event in enumerate(events):
+        for event in events:
             btn = disnake.ui.Button(
-                label=event.event_id[:80],
+                label=_pick_label(event, events),
                 style=disnake.ButtonStyle.secondary,
                 custom_id=f"event_select:{event.page_id}",
-                row=min(i, 3),
+                row=0,
             )
 
             async def _cb(
@@ -726,7 +757,7 @@ class EventSelectionView(GatedView):
             label=texts.BTN_NEVER_MIND,
             style=disnake.ButtonStyle.secondary,
             custom_id="event_select:cancel",
-            row=4,
+            row=1,
         )
         never_mind.callback = self._handle_cancel
         self.add_item(never_mind)

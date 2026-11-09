@@ -76,9 +76,11 @@ async def test_prepare_booking_event_list_and_errors() -> None:
     ctx.notion_client = MagicMock()
     ctx.notion_client.list_events = AsyncMock(return_value=[_event(booked=1)])
     start = await prepare_booking(ctx, 5)
-    assert start.content == (
-        "**Which event do you want to play?**\n"
-        "1. Rave One · Saturday 14.11.2026 · 3 slots open"
+    assert start.content == ""
+    assert start.embed.title == "Which event do you want to play?"
+    assert start.embed.description == (
+        "**Rave One · Saturday 14.11.2026**\n"
+        "🎧 3 of 4 slots open · starts 20:00"
     )
     assert _labels(start.view)[-1] == "Never mind"
     # flow already open
