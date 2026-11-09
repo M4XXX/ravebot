@@ -194,6 +194,12 @@ async def test_run_gap_detection_skips_exhausted_sequence():
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _nobody_waiting():
+    with patch("bot.services.outreach.get_waiting_discord_ids", new=AsyncMock(return_value=[])):
+        yield
+
+
 def _make_dj(discord_user_id=101, dj_name="DJ Test"):
     return {"discord_user_id": discord_user_id, "dj_name": dj_name, "last_contacted_at": None}
 
@@ -436,3 +442,36 @@ async def test_handle_exhaustion_open_slots_from_slot_rows():
     trigger = svc.log_service.post_error.call_args.kwargs["trigger"]
     assert "2 slots are still open" in trigger
     assert "Rave" in trigger
+
+
+@pytest.mark.asyncio
+async def test_contact_next_dj_skips_dj_with_unanswered_invite():
+    event = _make_event(days_ahead=5, slots=6, djs_booked=2)
+    svc = _make_service()
+    user = MagicMock(send=AsyncMock())
+    svc.bot.get_user = MagicMock(return_value=user)
+    djs = [_make_dj(101, "Busy"), _make_dj(102, "Free")]
+    with patch("bot.services.outreach.get_active_booking_djs", new=AsyncMock(return_value=djs)), \
+         patch("bot.services.outreach.get_contacted_discord_ids", new=AsyncMock(return_value=[])), \
+         patch("bot.services.outreach.get_waiting_discord_ids", new=AsyncMock(return_value=[101])), \
+         patch("bot.services.outreach.record_outreach_contact", new=AsyncMock()) as record, \
+         patch("bot.services.outreach.update_last_contact_at", new=AsyncMock()), \
+         patch("bot.services.outreach.update_dj_last_contacted_at", new=AsyncMock()):
+        assert await svc.contact_next_dj(event, guild_id=1, ctx=MagicMock()) is True
+    record.assert_awaited_once_with(svc.db, event.page_id, 102)
+
+
+@pytest.mark.asyncio
+async def test_contact_next_dj_waits_when_only_waiting_djs_remain():
+    event = _make_event(days_ahead=5, slots=6, djs_booked=2)
+    svc = _make_service()
+    user = MagicMock(send=AsyncMock())
+    svc.bot.get_user = MagicMock(return_value=user)
+    with patch("bot.services.outreach.get_active_booking_djs", new=AsyncMock(return_value=[_make_dj(101)])), \
+         patch("bot.services.outreach.get_contacted_discord_ids", new=AsyncMock(return_value=[])), \
+         patch("bot.services.outreach.get_waiting_discord_ids", new=AsyncMock(return_value=[101])), \
+         patch("bot.services.outreach.record_outreach_contact", new=AsyncMock()) as record:
+        # True: not exhausted, the next cycle tries again
+        assert await svc.contact_next_dj(event, guild_id=1, ctx=MagicMock()) is True
+    record.assert_not_awaited()
+    user.send.assert_not_awaited()

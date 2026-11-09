@@ -19,6 +19,7 @@ from bot.db.djs import get_active_booking_djs
 from bot.db.djs import update_last_contacted_at as update_dj_last_contacted_at
 from bot.db.outreach import (
     get_contacted_discord_ids,
+    get_waiting_discord_ids,
     get_sequence,
     mark_sequence_complete,
     mark_sequence_exhausted,
@@ -38,6 +39,7 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_OUTREACH_DAYS = 14
 _DEFAULT_COOLDOWN_HOURS = 12
+_INVITE_LIFETIME_HOURS = 12  # matches the OutreachView timeout
 
 OUTREACH_ENABLED_KEY = "outreach_enabled"
 
@@ -238,9 +240,13 @@ class OutreachService:
     async def contact_next_dj(self, event: EventInfo, guild_id: int, ctx: "Any") -> bool:
         """Select next eligible DJ and send proactive outreach DM.
 
-        Returns True if a DJ was selected (regardless of DM success/failure).
+        Returns True if a DJ was selected (regardless of DM success/failure), or if
+        the remaining DJs are all waiting on another invite (retried next cycle).
         Returns False if no eligible DJs remain (all active DJs contacted in
         this sequence) — caller should check exhaustion for Story 5.3.
+
+        A DJ gets one invite at a time: while an invite to any event is unanswered
+        (status 'sent', younger than the button lifetime), they are skipped.
 
         DJ selection: active_booking=true, not yet in outreach_contacts for
         this event, ordered by last_contacted_at ASC NULLS FIRST (cross-sequence
@@ -262,17 +268,26 @@ class OutreachService:
         try:
             all_active = await get_active_booking_djs(self.db)
             already_contacted = set(await get_contacted_discord_ids(self.db, event_id))
+            waiting = set(await get_waiting_discord_ids(self.db, _INVITE_LIFETIME_HOURS))
         except Exception as exc:
             logger.warning("OutreachService.contact_next_dj: DB error: %s", exc)
             return False
 
-        eligible = [dj for dj in all_active if dj["discord_user_id"] not in already_contacted]
-        if not eligible:
+        not_yet_asked = [dj for dj in all_active if dj["discord_user_id"] not in already_contacted]
+        if not not_yet_asked:
             logger.info(
                 "OutreachService.contact_next_dj: no eligible DJs for event %s — all contacted",
                 event_id,
             )
             return False
+        eligible = [dj for dj in not_yet_asked if dj["discord_user_id"] not in waiting]
+        if not eligible:
+            logger.info(
+                "OutreachService.contact_next_dj: event %s waits, the remaining DJs have an"
+                " unanswered invite",
+                event_id,
+            )
+            return True
 
         dj = eligible[0]
         discord_user_id = dj["discord_user_id"]
