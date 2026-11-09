@@ -141,11 +141,39 @@ def render_login(error: str | None = None) -> str:
     )
 
 
+def _notion_card(problem: str | None) -> str:
+    if not problem:
+        return ""
+    return (
+        '<section class="card"><h3>Notion databases not found</h3>'
+        f'<p class="msg err">{_e(problem)}</p>'
+        "<p>Booking and the lineup are paused. If the integration only lost access, share "
+        "the Notion page with it again and restart the bot. If the databases were deleted "
+        "on purpose, create a new set.</p>"
+        '<a class="btn red" href="/notion/recreate">Create new databases</a></section>'
+    )
+
+
+def render_confirm_recreate(problem: str, csrf: str) -> str:
+    return _page(
+        f"{_TOP}"
+        '<section class="card"><h3>Create new Notion databases</h3>'
+        f'<p class="muted">{_e(problem)}</p>'
+        "<p>The bot creates a new set of Events, Slots and DJs databases on the Notion "
+        "page. Nothing is copied: bookings and DJs in the old databases stay there, and "
+        "the bookings the bot remembers point to the old events.</p>"
+        '<div class="actions"><form method="post" action="/notion/recreate">'
+        f'{_csrf_field(csrf)}<button class="btn red" type="submit">Create new databases'
+        '</button></form><a class="btn g" href="/">Cancel</a></div></section>'
+    )
+
+
 def render_dashboard(
     server: ServerInfo | None,
     rows: list[AdminRow],
     csrf: str,
     message: ActionResult | None = None,
+    notion_problem: str | None = None,
 ) -> str:
     if server is None:
         server_html = '<p class="muted">The bot is not on a server yet.</p>'
@@ -163,6 +191,7 @@ def render_dashboard(
         f'<form method="post" action="/logout">{_csrf_field(csrf)}'
         '<button class="btn g" type="submit">Log out</button></form></div>'
         f"{_message(message)}"
+        f"{_notion_card(notion_problem)}"
         f'<section class="card"><h3>Server</h3>{server_html}</section>'
         '<section class="card"><h3>Add an admin</h3>'
         f'<form method="post" action="/admins/add">{_csrf_field(csrf)}'

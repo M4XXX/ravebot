@@ -247,3 +247,52 @@ async def test_every_dj_post_needs_csrf(path) -> None:
         resp = await client.post(path, headers=headers, data={"id": "-1", "csrf": "wrong"})
     assert resp.status == 403
     assert service.djs.calls == []
+
+
+class _NotionService(FakeService):
+    def __init__(self, problem):
+        super().__init__()
+        self.djs = FakeDjs()
+        self.problem = problem
+        self.recreated = 0
+
+    def notion_problem(self):
+        return self.problem
+
+    async def recreate_notion(self):
+        from bot.web.service import ActionResult
+
+        self.recreated += 1
+        self.problem = None
+        return ActionResult(True, "New Notion databases were created.")
+
+
+async def test_notion_card_only_when_databases_are_missing() -> None:
+    sessions = SessionManager(secret=b"k" * 32)
+    headers, _ = _auth(sessions)
+    async with make_client(_NotionService(None), sessions) as client:
+        text = await (await client.get("/", headers=headers)).text()
+        assert "Create new databases" not in text
+        resp = await client.get("/notion/recreate", headers=headers, allow_redirects=False)
+        assert resp.status == 303
+    async with make_client(_NotionService("Events data source returned 404"), sessions) as c:
+        text = await (await c.get("/", headers=headers)).text()
+        assert "Notion databases not found" in text and "returned 404" in text
+        assert 'href="/notion/recreate"' in text
+
+
+async def test_recreate_needs_confirmation_csrf_and_login() -> None:
+    sessions = SessionManager(secret=b"k" * 32)
+    headers, csrf = _auth(sessions)
+    service = _NotionService("gone")
+    async with make_client(service, sessions) as client:
+        confirm = await (await client.get("/notion/recreate", headers=headers)).text()
+        assert "Nothing is copied" in confirm and 'action="/notion/recreate"' in confirm
+        bad = await client.post("/notion/recreate", headers=headers, data={"csrf": "x"})
+        assert bad.status == 403
+        anon = await client.post("/notion/recreate", data={"csrf": csrf}, allow_redirects=False)
+        assert anon.status == 303
+        assert service.recreated == 0
+        ok = await client.post("/notion/recreate", headers=headers, data={"csrf": csrf})
+        assert ok.status == 200 and "New Notion databases were created" in await ok.text()
+    assert service.recreated == 1

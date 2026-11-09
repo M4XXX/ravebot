@@ -27,14 +27,21 @@ from dotenv import load_dotenv
 
 from bot.config import Config
 from bot.context import BotContext
+from bot.db.config import set_value
 from bot.db.pool import create_pool, run_migrations
 from bot.notion.api import NotionApi, NotionWriteError
 from bot.notion.client import NotionClient
-from bot.notion.schema import NotionSchemaError, ensure_schema
+from bot.notion.schema import (
+    RECREATE_APPROVED_KEY,
+    NotionDatabasesMissing,
+    NotionSchemaError,
+    ensure_schema,
+)
 from bot.notion.views import ensure_views
 from bot.services import activation
 from bot.services.dj_sync import retry_unsynced_logos
 from bot.timezone import load_stored_timezone
+from bot.ui import texts
 from bot.ui.gates import STARTUP_ADMIN_DM
 from bot.web import start_admin_page, stop_admin_page
 
@@ -134,17 +141,41 @@ async def main() -> None:
 
     # Notion: ensure databases and views exist before Discord connects (Ruling 29)
     notion_api = NotionApi(config.notion_api_key, ctx.log_service)
-    try:
+
+    async def setup_notion() -> NotionClient:
         ids = await ensure_schema(
             notion_api, db, NOTION_CONFIG_GUILD_ID, config.notion_parent_page_id
         )
         await ensure_views(notion_api, db, NOTION_CONFIG_GUILD_ID, ids)
+        return NotionClient(notion_api, ids)
+
+    async def recover_notion() -> str | None:
+        """Admin page: create a new set of databases now. Returns an error text or None."""
+        await set_value(db, NOTION_CONFIG_GUILD_ID, RECREATE_APPROVED_KEY, "1")
+        try:
+            client = await setup_notion()
+        except (NotionSchemaError, NotionWriteError) as exc:
+            logger.error("Creating new Notion databases failed: %s", exc)
+            await set_value(db, NOTION_CONFIG_GUILD_ID, RECREATE_APPROVED_KEY, "0")
+            return str(exc)
+        ctx.attach_notion(client)
+        ctx.notion_problem = None
+        logger.info("New Notion databases created after an admin approved it")
+        return None
+
+    try:
+        ctx.notion_client = await setup_notion()
+    except NotionDatabasesMissing as exc:
+        # Do not replace the databases on our own (a 404 can be a lost share): keep
+        # running without Notion and let an admin decide on the admin page.
+        logger.error("Notion databases missing, waiting for an admin: %s", exc.detail)
+        ctx.notion_problem = exc.detail
     except (NotionSchemaError, NotionWriteError) as exc:
         logger.error("Notion setup failed: %s", exc)
         await db.close()
         await notion_api.close()
         sys.exit(f"{NOTION_SETUP_FAILED} (Cause: {exc})")
-    ctx.notion_client = NotionClient(notion_api, ids)
+    ctx.notion_recover = recover_notion
 
     # Story 3.2: init LineupService after DB and log_service are ready
     from bot.services.lineup import LineupService
@@ -249,6 +280,15 @@ async def main() -> None:
                 logger.warning("Could not load the added admins", exc_info=True)
             await notify_admins_if_idle(bot, ctx.db, ctx.admin_ids())
             await _retry_logos_if_active(bot, ctx)
+            if ctx.notion_problem and ctx.log_service is not None:
+                try:
+                    await ctx.log_service.log_attention(
+                        texts.LOG_NOTION_MISSING_TITLE,
+                        texts.log_notion_missing_text(ctx.notion_problem),
+                        texts.LOG_NOTION_MISSING_TODO,
+                    )
+                except Exception:
+                    logger.warning("Could not post the missing Notion databases", exc_info=True)
 
     runner = await start_admin_page(ctx, bot)
     try:

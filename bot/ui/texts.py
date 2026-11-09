@@ -303,6 +303,12 @@ LOG_DJ_LIST_TITLE = "DJ list changed"
 LOG_TODO_FIELD = "What to do"
 LOG_NO_MANUAL_ACTION = "No manual action required."
 LOG_FAILED_TITLE = "Something failed"
+LOG_NOTION_MISSING_TITLE = "Notion databases not found"
+LOG_NOTION_MISSING_TODO = (
+    "If the integration lost access, share the Notion page with it again and restart the "
+    "bot. If the databases were deleted on purpose, open the admin page and press "
+    "Create new databases."
+)
 LOG_NEW_DATABASES_TITLE = "New Notion databases created"
 NOTION_RETRY_TODO = "Check the Slots rows in Notion. The next sync retries."
 DJ_CHANNEL_TODO = "Run /setup again to set the DJ channel."
@@ -364,6 +370,13 @@ def log_admin_added_text(name: str, user_id: int) -> str:
 
 def log_dj_list_text(admin: str, action: str, dj_name: str) -> str:
     return f"{admin} {action} the DJ {dj_name}."
+
+
+def log_notion_missing_text(detail: str) -> str:
+    return (
+        "The bot cannot find its Notion databases, so booking and the lineup are paused. "
+        f"Details: {detail[:500]}"
+    )
 
 
 def log_message_title(display_name: str, dj_name: str | None) -> str:

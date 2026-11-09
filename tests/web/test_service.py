@@ -361,3 +361,18 @@ async def test_admin_row_never_raises() -> None:
     assert ctx.admins is not None
     ctx.admins.ensure_loaded = AsyncMock(side_effect=RuntimeError("db"))
     assert await _svc(ctx=ctx).admin_row(str(UID)) is None
+
+
+async def test_recreate_notion_runs_the_recovery_once_needed() -> None:
+    svc = _svc()
+    ctx = svc._ctx
+    ctx.notion_problem = None
+    ctx.notion_recover = AsyncMock(return_value=None)
+    result = await svc.recreate_notion()
+    assert not result.ok
+    ctx.notion_recover.assert_not_awaited()
+    ctx.notion_problem = "gone"
+    assert (await svc.recreate_notion()).ok
+    ctx.notion_recover = AsyncMock(return_value="not shared")
+    result = await svc.recreate_notion()
+    assert not result.ok and "not shared" in result.message

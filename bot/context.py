@@ -108,9 +108,23 @@ class BotContext:
     admin_booking_service: "Any | None" = None
     notion_sync_service: "Any | None" = None
     dj_admin_service: "Any | None" = None
+    # Set while the stored Notion databases are gone and no new set was approved yet:
+    # the reason, and the coroutine function the admin page calls to create a new set.
+    notion_problem: str | None = None
+    notion_recover: "Any | None" = None
     dj_conversations: "Any | None" = None
     admins: "Any | None" = None
     user_locks: dict[int, FlowLock] = field(default_factory=dict)
+
+    def attach_notion(self, client: "Any") -> None:
+        """Use a (new) Notion client everywhere, also in the services built without one."""
+        self.notion_client = client
+        for service in (
+            self.lineup_service, self.notion_sync_service, self.outreach_service,
+            self.reminders_service, self.admin_booking_service,
+        ):
+            if service is not None and hasattr(service, "notion_client"):
+                service.notion_client = client
 
     def is_admin(self, user_id: int) -> bool:
         """Registry (owners plus added admins) if set, else the env admin ids."""
