@@ -10,7 +10,6 @@ To add a step, insert its key into STEPS (before "summary"), add a renderer bran
 import asyncio
 import datetime
 import logging
-import re
 import zoneinfo
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -26,6 +25,7 @@ from bot.services.event_replenish import replenish_events
 from bot.services.outreach import parse_outreach_enabled
 from bot.timezone import DEFAULT_TIMEZONE, is_valid_timezone, set_timezone
 from bot.ui import texts
+from bot.ui.setup_options import parse_hhmm
 
 if TYPE_CHECKING:
     from bot.context import BotContext
@@ -89,8 +89,6 @@ ID_ACTIVATE = "setup:activate"
 ID_SAVE = "setup:save"
 ID_CHANGE = "setup:change"
 
-_HHMM_RE = re.compile(r"^(\d{1,2}):(\d{2})$")
-
 # One lock per guild: the activation effects run once even on concurrent presses.
 _guild_locks: dict[int, asyncio.Lock] = {}
 
@@ -144,14 +142,6 @@ def values(data: dict[str, Any]) -> dict[str, Any]:
 
 
 # --- validation of the popup fields ---
-
-def parse_hhmm(text: str) -> str | None:
-    """`H:MM` or `HH:MM` from 00:00 to 23:59 as zero-padded `HH:MM`, else None."""
-    match = _HHMM_RE.match((text or "").strip())
-    if match and int(match.group(1)) <= 23 and int(match.group(2)) <= 59:
-        return f"{int(match.group(1)):02d}:{match.group(2)}"
-    return None
-
 
 def parse_events_fields(raw: dict[str, str]) -> tuple[dict[str, Any], list[str]]:
     """Validate the five event fields; errors name the field."""
