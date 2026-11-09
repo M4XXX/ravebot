@@ -381,7 +381,8 @@ The old commands `/config set`, `/add-event`, `/lineup post`, `/admin book`, `/a
 ### 7.4 Lineup posts and booking button
 
 - Whenever the lineup of the upcoming event changes, the bot posts a new `Lineup Update` message in the DJ channel. Upcoming event means the earliest event whose local date is today or later and whose status is not Done or Canceled. Older posts stay as they are. The first post comes when you press Activate; later ones follow lineup changes. Run `/post lineup update` to post it immediately.
-- Post format: line 1 is `Event Saturday 14.11.2026`, followed by one line per slot, for example `Slot 1  20:00  DJ Felix` or `Slot 2  21:00  OPEN SLOT`. Times are local time (CET or CEST).
+- Post format: the title is the event name and date, for example `🎶 Rave Night · Saturday 14.11.2026`. The text starts with how many slots are booked (`4 of 6 slots booked · 2 open`), then one line per slot, for example `**20:00**  🎧 DJ Felix` or `**21:00**  ▫️ *open slot*`. Times are local time (CET or CEST).
+- **Show lineup** in a DM shows the upcoming event. With more than one upcoming event, date buttons sit under the lineup; pressing one switches the same message to that event and keeps the buttons.
 - Every post has a `Book a slot` button. A DJ who presses it gets the booking flow in DMs. If DMs are blocked, the bot says so privately.
 - `/post lineup update` posts the upcoming event again. `/post lineup update event:<event id>` posts any future event.
 - Automatic invites can be turned off in `/setup` (Automatic invites step). That stops only the proactive invite DMs. Booking menus, reminders and all other DMs keep working.

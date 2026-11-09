@@ -123,11 +123,22 @@ class TestLineupUpdateEmbed:
             [make_slot(1), make_slot(2, dj_page_id="d1", dj_name="Nova")]
         )
         assert lineup_text(event) == (
-            "Event Saturday 14.11.2026\n"
-            "Slot 1  18:00  OPEN SLOT\n"
-            "Slot 2  19:00  Nova\n"
-            "Slot 3  20:00  OPEN SLOT"
+            "1 of 3 slots booked \u00b7 2 open\n"
+            "\n"
+            "**18:00**  \u25ab\ufe0f *open slot*\n"
+            "**19:00**  \U0001f3a7 Nova\n"
+            "**20:00**  \u25ab\ufe0f *open slot*"
         )
+
+    def test_summary_when_fully_booked_and_when_empty_single_slot(self) -> None:
+        from bot.ui.embeds import lineup_text
+
+        full = self._event(
+            [make_slot(i, dj_page_id=f"d{i}", dj_name=f"DJ{i}") for i in (1, 2, 3)]
+        )
+        assert lineup_text(full).splitlines()[0] == "All 3 slots booked"
+        single = self._event([], slot_count=1)
+        assert lineup_text(single).splitlines()[0] == "0 of 1 slot booked \u00b7 1 open"
 
     def test_name_escaped(self) -> None:
         from bot.ui.embeds import lineup_text
@@ -159,7 +170,7 @@ class TestLineupUpdateEmbed:
         assert embed.description is not None
         assert len(embed.description) <= 4096
         lines = embed.description.splitlines()
-        shown = len(lines) - 2  # event line and note
+        shown = len(lines) - 3  # summary line, blank line and note
         assert lines[-1] == f"{100 - shown} slots not shown"
 
     def test_no_note_when_nothing_is_cut(self) -> None:
@@ -190,16 +201,33 @@ class TestLineupUpdateEmbed:
             ],
             slot_count=1,
         )
-        assert lineup_text(event).splitlines()[1] == "Slot 1  18:00  OPEN SLOT"
+        assert lineup_text(event).splitlines()[2] == "**18:00**  \u25ab\ufe0f *open slot*"
 
     def test_embed_title_footer_color(self) -> None:
         from bot.ui.embeds import LineupUpdateEmbed
 
         embed = LineupUpdateEmbed(self._event([]))
-        assert embed.title == "Lineup Update"
+        assert embed.title == "\U0001f3b6 EV-1 \u00b7 Saturday 14.11.2026"
         assert embed.footer.text == "EV-1"
         assert embed.colour is not None
         assert embed.colour.value == EmbedColors.MISSION_GOLD
+
+
+class TestLineupTitle:
+    def test_dated_event_id_shows_only_the_name(self) -> None:
+        from bot.ui.embeds import LineupUpdateEmbed
+
+        event = make_event(
+            event_id="2026-11-14 Rave Night", date=datetime.date(2026, 11, 14), slot_count=1
+        )
+        assert LineupUpdateEmbed(event).title == "\U0001f3b6 Rave Night \u00b7 Saturday 14.11.2026"
+
+    def test_long_name_keeps_title_within_discord_limit(self) -> None:
+        from bot.ui.embeds import LineupUpdateEmbed
+
+        event = make_event(event_id="x" * 500, date=datetime.date(2026, 11, 14), slot_count=1)
+        title = LineupUpdateEmbed(event).title
+        assert title is not None and len(title) <= 256 and title.endswith("Saturday 14.11.2026")
 
 
 class TestLogEntryEmbed:

@@ -168,6 +168,10 @@ async def main() -> None:
     for dj_view in dj_profile.registered_views(ctx):  # persistent: old DM buttons keep working
         bot.add_view(dj_view)
     bot.add_view(FallbackMenuView(ctx, all_buttons=True))  # persistent: menus after restarts
+    from bot.ui.views import LineupEventPickView
+
+    # persistent: the event buttons under a lineup work after restarts
+    bot.add_view(LineupEventPickView([], ctx, all_buttons=True))
     ctx.lineup_service = LineupService(
         bot=bot,
         view=post_view,

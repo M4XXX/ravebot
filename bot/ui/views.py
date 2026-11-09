@@ -402,29 +402,73 @@ async def _guild_with_dj_role(
     return None
 
 
-class LineupEventPickView(GatedView):
-    """One button per future event (max 5); each replies privately with that lineup."""
+MAX_PICK_BUTTONS = 5
 
-    def __init__(self, events: list["EventInfo"], ctx: "BotContext") -> None:
+
+def _pick_label(event: "EventInfo", shown: list["EventInfo"]) -> str:
+    """The event's date; the event ID when another shown event has the same date."""
+    same_date = sum(1 for other in shown if other.date == event.date)
+    return (event.event_id if same_date > 1 else event.date.strftime("%d.%m.%Y"))[:80]
+
+
+class LineupEventPickView(GatedView):
+    """One button per upcoming event (max 5) under a lineup; the shown event is highlighted.
+
+    A button edits the message it sits on: the lineup changes and the buttons stay. The
+    custom ids are positions (`lineup_pick:0` to `lineup_pick:4`), not event ids, so one
+    registered view (`all_buttons=True`) serves every message after a restart; a press
+    reloads the events and takes the one at that position.
+    """
+
+    def __init__(
+        self,
+        events: list["EventInfo"],
+        ctx: "BotContext",
+        selected: int = 0,
+        all_buttons: bool = False,
+    ) -> None:
         super().__init__(timeout=None)
         self.ctx = ctx
-        for i, event in enumerate(events[:5]):
+        shown = events[:MAX_PICK_BUTTONS]
+        for index in range(MAX_PICK_BUTTONS if all_buttons else len(shown)):
+            highlighted = index == selected and not all_buttons
             btn = disnake.ui.Button(
-                label=event.event_id[:80],
-                style=disnake.ButtonStyle.secondary,
-                custom_id=f"lineup_pick:{event.page_id}",
+                label=_pick_label(shown[index], shown) if index < len(shown) else "-",
+                style=(
+                    disnake.ButtonStyle.primary if highlighted else disnake.ButtonStyle.secondary
+                ),
+                custom_id=f"lineup_pick:{index}",
                 row=0,
             )
 
-            async def _cb(
-                inter: disnake.MessageInteraction, e: "EventInfo" = event
-            ) -> None:
-                from bot.ui.embeds import LineupUpdateEmbed
-
-                await inter.response.send_message(embed=LineupUpdateEmbed(e), ephemeral=True)
+            async def _cb(inter: disnake.MessageInteraction, position: int = index) -> None:
+                await self._show_event(inter, position)
 
             btn.callback = _cb
             self.add_item(btn)
+
+    async def _show_event(self, inter: disnake.MessageInteraction, position: int) -> None:
+        """Edit the pressed message to the lineup of the event at `position`."""
+        from bot.services.lineup import _today, future_events
+        from bot.ui.embeds import LineupUpdateEmbed
+
+        try:
+            if self.ctx.notion_client is None:
+                raise RuntimeError("no Notion client")
+            events = await self.ctx.notion_client.list_events()
+        except Exception:
+            logger.exception("lineup_pick: list_events() failed")
+            await inter.response.send_message(texts.GENERIC_ERROR, ephemeral=True)
+            return
+        upcoming = future_events(events, _today())[:MAX_PICK_BUTTONS]
+        if not upcoming:
+            await inter.response.edit_message(content=texts.NO_LINEUP, embed=None, view=None)
+            return
+        index = position if position < len(upcoming) else 0
+        view = None
+        if len(upcoming) > 1:
+            view = LineupEventPickView(upcoming, self.ctx, selected=index)
+        await inter.response.edit_message(embed=LineupUpdateEmbed(upcoming[index]), view=view)
 
 
 # ---------------------------------------------------------------------------
