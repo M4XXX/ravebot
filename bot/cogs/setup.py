@@ -13,6 +13,7 @@ from bot.ui.setup_wizard import (
     SetupWizardView,
     entry_view,
     guild_lock,
+    migrate_legacy_draft,
     prefilled_data,
     render_step,
 )
@@ -75,6 +76,7 @@ class SetupCog(commands.Cog):
         async with guild_lock(guild_id):
             draft = await get_draft(db, guild_id)
             if draft is not None:
+                migrate_legacy_draft(draft)
                 message = await self._open_message(inter, draft)
                 if message is not None:
                     await inter.response.send_message(

@@ -14,6 +14,7 @@ Command tree (disnake nesting, spaces are levels):
 """
 import logging
 from datetime import date
+from datetime import time as time_of_day
 
 import disnake
 from disnake.ext import commands
@@ -22,9 +23,11 @@ from bot.context import BotContext
 from bot.db import config as db_config
 from bot.db.bookings import init_event_slots
 from bot.db.djs import get_all_djs
+from bot.db.manual_events import mark_manual
 from bot.notion.client import DuplicateEventError, NotionWriteError
 from bot.services import activation
 from bot.services.event_defaults import default_event_shape
+from bot.services.event_replenish import replenish_guard
 from bot.services.lineup import future_events, upcoming_event
 from bot.services.outreach import parse_outreach_enabled
 from bot.services.roles import DJ_ROLE_KEY, INVITES_ROLE_KEY
@@ -32,6 +35,7 @@ from bot.timezone import DEFAULT_TIMEZONE, local_today
 from bot.ui import texts
 from bot.ui.embeds import EmbedColors
 from bot.ui.gates import ADMIN_IDLE_REPLY
+from bot.ui.setup_options import FIELD_LABELS, LIMITS, parse_hhmm
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +44,11 @@ SERVER_ONLY = disnake.InteractionContextTypes(guild=True)
 
 # Commands that work while the bot is idle (identified by qualified name)
 IDLE_EXEMPT_COMMANDS = frozenset({"setup", "config show"})
+
+
+def _schedule_on(raw: str | None) -> bool:
+    """Missing or anything other than "false" means on."""
+    return raw is None or raw.strip().lower() != "false"
 
 
 def _today() -> date:
@@ -175,7 +184,10 @@ class AdminCog(commands.Cog):
             f"Slots per event: {shown(await stored('slots_per_event'), '6')}",
             f"Start time (local): {shown(await stored('default_start_time'), '20:00')}",
             f"Slot length (minutes): {shown(await stored('slot_duration_minutes'), '60')}",
+            "Scheduled events: "
+            f"{'on' if _schedule_on(await stored('event_schedule_enabled')) else 'off'}",
             f"One event every (days): {shown(await stored('event_interval_days'), '7')}",
+            f"First event date: {await stored('first_event_date') or 'not set'}",
             f"Future events kept ready: {shown(await stored('event_lookahead_count'), '6')}",
             f"Automatic invites: {'on' if parse_outreach_enabled(raw_enabled) else 'off'}",
             "Start asking (days before an event): "
@@ -205,12 +217,28 @@ class AdminCog(commands.Cog):
         date_str: str = commands.Param(
             name="date", description="Event date in YYYY-MM-DD format"
         ),
+        slots: int | None = commands.Param(
+            None,
+            description="Number of slots (default from setup)",
+            ge=1,
+            le=LIMITS["slots_per_event"],
+        ),
+        start: str | None = commands.Param(
+            None, description="Start time HH:MM (default from setup)"
+        ),
+        slot_minutes: int | None = commands.Param(
+            None,
+            description="Slot length in minutes (default from setup)",
+            ge=1,
+            le=LIMITS["slot_duration_minutes"],
+        ),
     ) -> None:
         """Create a new event page in Notion on the specified future date.
 
         Validates date format and that it is strictly in the future.
         Event ID is auto-generated: "YYYY-MM-DD Rave Night"; start, slot length and
-        slot count come from default_event_shape() (config).
+        slot count come from the optional options, else from default_event_shape()
+        (config). The event is recorded as manual: the event scheduler ignores it.
         Protected by cog_slash_command_check — admin-only.
 
         [Source: epics.md#Story 7.1 AC5, AC6, AC7 — FR40]
@@ -237,42 +265,76 @@ class AdminCog(commands.Cog):
             )
             return
 
+        errors = []
+        start_time = None
+        if start is not None:
+            normalized = parse_hhmm(start)
+            if normalized is None:
+                label = FIELD_LABELS["default_start_time"]
+                errors.append(f"Invalid {label}: use a time like 21:30.")
+            else:
+                start_time = time_of_day.fromisoformat(normalized)
+        for value, key in ((slots, "slots_per_event"), (slot_minutes, "slot_duration_minutes")):
+            if value is not None and not 1 <= value <= LIMITS[key]:
+                rule = f"use a whole number from 1 to {LIMITS[key]}."
+                errors.append(f"Invalid {FIELD_LABELS[key]}: {rule}")
+        if errors:
+            await inter.response.send_message("\n".join(errors), ephemeral=True)
+            return
+
         event_name = "Rave Night"
         event_id = f"{event_date.isoformat()} {event_name}"
         assert inter.guild_id is not None
         # Creating the event and its slot rows can exceed Discord's 3 s deadline.
         await inter.response.defer(ephemeral=True)
         shape = await default_event_shape(self.ctx.db, inter.guild_id)
-        try:
-            event = await self.ctx.notion_client.create_event(
-                event_id, event_date, shape.start, shape.slot_count, shape.slot_minutes
-            )
-        except DuplicateEventError:
-            await inter.followup.send(
-                "An event with that ID already exists.", ephemeral=True
-            )
-            return
-        except NotionWriteError:
-            logger.exception("create_event: create_event() failed for %s", event_date)
-            await inter.followup.send(
-                "Could not create the event in Notion. Please try again in a moment.",
-                ephemeral=True,
-            )
-            return
+        # Hold the replenish lock until the event is marked manual: a poll in between would
+        # count the new event as scheduled.
+        async with replenish_guard():
+            event_start = start_time if start_time is not None else shape.start
+            slot_count = slots if slots is not None else shape.slot_count
+            slot_length = slot_minutes if slot_minutes is not None else shape.slot_minutes
+            try:
+                event = await self.ctx.notion_client.create_event(
+                    event_id, event_date, event_start, slot_count, slot_length
+                )
+            except DuplicateEventError:
+                await inter.followup.send(
+                    "An event with that ID already exists.", ephemeral=True
+                )
+                return
+            except NotionWriteError:
+                logger.exception("create_event: create_event() failed for %s", event_date)
+                await inter.followup.send(
+                    "Could not create the event in Notion. Please try again in a moment.",
+                    ephemeral=True,
+                )
+                return
 
-        # Pre-initialize slot_locks rows, as the auto-create path does (Story 7.3 AC2)
-        try:
-            await init_event_slots(self.ctx.db, event.page_id, shape.slot_count)
-        except Exception as exc:
-            logger.warning(
-                "create_event: init_event_slots failed for %r: %s"
-                " — slots will be lazily created on booking",
-                event_id,
-                exc,
-            )
+            # Pre-initialize slot_locks rows, as the auto-create path does (Story 7.3 AC2)
+            try:
+                await init_event_slots(self.ctx.db, event.page_id, slot_count)
+            except Exception as exc:
+                logger.warning(
+                    "create_event: init_event_slots failed for %r: %s"
+                    " — slots will be lazily created on booking",
+                    event_id,
+                    exc,
+                )
+            # Manual events are ignored by the event scheduler
+            marked = True
+            try:
+                await mark_manual(self.ctx.db, event.page_id)
+            except Exception:
+                marked = False
+                logger.warning(
+                    "create_event: could not record %r as manual", event_id, exc_info=True
+                )
 
+        note = "" if marked else texts.CREATE_EVENT_NOT_MARKED
         await inter.followup.send(
-            f"Event created in Notion for {texts.fmt_slot_when(event, 0)}.", ephemeral=True
+            f"Event created in Notion for {texts.fmt_slot_when(event, 0)}.{note}",
+            ephemeral=True
         )
 
     @commands.slash_command(

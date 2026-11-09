@@ -487,24 +487,57 @@ def setup_role_too_high(role_name: str) -> str:
     )
 
 
-def setup_events_step(number: int, total: int, v: dict) -> str:
-    return "\n".join(
-        [
-            f"**Step {number} of {total}: Events**",
-            "New events are created automatically with these settings:",
-            f"Slots per event: {v['slots_per_event']}",
-            f"Start time ({v['zone_abbr']}): {v['default_start_time']}",
-            f"Slot length: {v['slot_duration_minutes']} minutes",
-            f"One event every: {v['event_interval_days']} days",
-            f"Future events kept ready: {v['event_lookahead_count']}",
-            f"Time zone: {v['timezone']}",
-            "",
-            f"Start times are local time in {v['timezone']} (currently {v['zone_abbr']}): "
-            f"{v['default_start_time']} stays {v['default_start_time']} all year. "
-            "When an event is done or canceled, I create the next one so the number "
-            f"stays at {v['event_lookahead_count']}.",
-        ]
-    )
+# Title and question of each value step, keyed by config key.
+setup_value_texts: dict[str, tuple[str, str]] = {
+    "slots_per_event": ("Slots per event", "How many DJ slots should each event have?"),
+    "default_start_time": ("Start time", "When should an event start?"),
+    "slot_duration_minutes": ("Slot length", "How long is one DJ slot?"),
+    "event_interval_days": (
+        "Event interval",
+        "How many days should be between two scheduled events?",
+    ),
+    "first_event_date": ("First event", "When should the first scheduled event take place?"),
+    "event_lookahead_count": (
+        "Events kept ready",
+        "How many future events should always be ready?",
+    ),
+    "timezone": ("Time zone", "Which time zone do start times use?"),
+}
+
+
+CREATE_EVENT_NOT_MARKED = (
+    " I could not record it as a manual event, so the schedule may count it as a scheduled one."
+)
+
+
+def setup_value_step(
+    number: int, total: int, title: str, question: str, current: str, note: str | None = None
+) -> str:
+    lines = [
+        f"**Step {number} of {total}: {title}**",
+        question,
+        f"Current: {current}",
+        "Pick a value, or press Other to type your own.",
+    ]
+    if note:
+        lines += ["", note]
+    return "\n".join(lines)
+
+
+def setup_schedule_step(number: int, total: int, enabled: bool) -> str:
+    lines = [
+        f"**Step {number} of {total}: Scheduled events**",
+        "I can create events on a schedule, so new ones are always ready.",
+        f"Scheduled events: {'on' if enabled else 'off'}",
+    ]
+    if enabled:
+        lines.append("The next steps set the interval, the first date and how many stay ready.")
+    else:
+        lines.append(
+            "Off: I create no events by myself. Create them with /create event. "
+            "Slots, start time, slot length and time zone still apply to those events."
+        )
+    return "\n".join(lines)
 
 
 def setup_invites_step(number: int, total: int, v: dict) -> str:
