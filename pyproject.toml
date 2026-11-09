@@ -42,3 +42,6 @@ venv = ".venv"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 pythonpath = ["."]
+markers = [
+    "pg: real-SQL tests, need RAVEBOT_TEST_POSTGRES_URL (tests/pg)",
+]
