@@ -35,6 +35,9 @@ def _inter() -> MagicMock:
     inter.author.id = 1
     inter.author.display_name = "DJ"
     inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    # answers after a defer go through the followup; tests read both the same way
+    inter.followup.send = inter.response.send_message
     return inter
 
 
@@ -86,7 +89,8 @@ async def test_prepare_booking_event_list_and_errors() -> None:
     # flow already open
     again = await prepare_booking(ctx, 5)
     assert again.error == texts.FLOW_OPEN == (
-        "You already have a booking open. Finish or dismiss it first."
+        "You already have a booking open. Finish it or press Never mind. "
+        "It closes by itself after 15 minutes."
     )
     # no events / all booked / error
     ctx2 = make_real_ctx(db=MagicMock())
@@ -258,9 +262,7 @@ async def test_book_slot_flow_open_text() -> None:
     await _locked(ctx, 1)
     inter = _inter()
     await FallbackMenuView(ctx).book_slot.callback(inter)
-    assert "You already have a booking open. Finish or dismiss it first." in str(
-        inter.response.send_message.call_args
-    )
+    assert texts.FLOW_OPEN in str(inter.response.send_message.call_args)
 
 
 async def test_cancellation_view_never_mind_and_prompt() -> None:

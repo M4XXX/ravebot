@@ -5,7 +5,8 @@ Every multi-step DM flow acquires the user's lock on entry via get_user_lock().
 [Source: architecture.md#Inter-Component Communication: Direct Calls via Shared BotContext]
 [Source: architecture.md#Per-User Flow Lock: asyncio.Lock per user_id]
 """
-import asyncio
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -14,6 +15,65 @@ if TYPE_CHECKING:
 
     from bot.config import Config
     from bot.log import AdminLogService
+
+
+# An ephemeral Discord view stops working after 15 minutes (disnake forces this timeout),
+# so a flow that has not finished by then was abandoned and its lock is free again.
+FLOW_TTL_SECONDS = 15 * 60
+
+
+class FlowLock:
+    """Per-user lock for one multi-step DM flow (booking, cancelling, outreach accept).
+
+    Same calls as asyncio.Lock (locked / acquire / release), plus:
+    - every acquire starts a new flow with its own token; views keep the token and use
+      release_if / owns, so a button of an old flow can never free or drive a newer one;
+    - a flow older than FLOW_TTL_SECONDS counts as abandoned: locked() is False again.
+      A dismissed message, a lost interaction or a crash in a view can therefore never
+      block a user until the next restart.
+    acquire never waits: callers check locked() first (no await in between).
+    """
+
+    def __init__(
+        self, ttl: float = FLOW_TTL_SECONDS, clock: Callable[[], float] = time.monotonic
+    ) -> None:
+        self._ttl = ttl
+        self._clock = clock
+        self._token = 0  # 0 = free
+        self._issued = 0
+        self._since = 0.0
+
+    def locked(self) -> bool:
+        if self._token and self._clock() - self._since > self._ttl:
+            self._token = 0  # abandoned flow
+        return self._token != 0
+
+    async def acquire(self) -> bool:
+        if self.locked():
+            raise RuntimeError("flow lock is already held")
+        self._issued += 1
+        self._token = self._issued
+        self._since = self._clock()
+        return True
+
+    def release(self) -> None:
+        """Free the lock, whoever holds it."""
+        self._token = 0
+
+    @property
+    def token(self) -> int:
+        """The current flow's token (0 when free)."""
+        return self._token if self.locked() else 0
+
+    def owns(self, token: int) -> bool:
+        return token != 0 and self.locked() and self._token == token
+
+    def release_if(self, token: int) -> bool:
+        """Free the lock only if `token` is the current flow. True if it was freed."""
+        if token != 0 and self._token == token:
+            self._token = 0
+            return True
+        return False
 
 
 @dataclass
@@ -50,7 +110,7 @@ class BotContext:
     dj_admin_service: "Any | None" = None
     dj_conversations: "Any | None" = None
     admins: "Any | None" = None
-    user_locks: dict[int, asyncio.Lock] = field(default_factory=dict)
+    user_locks: dict[int, FlowLock] = field(default_factory=dict)
 
     def is_admin(self, user_id: int) -> bool:
         """Registry (owners plus added admins) if set, else the env admin ids."""
@@ -63,8 +123,8 @@ class BotContext:
             return self.admins.all_ids()
         return sorted(self.config.admin_user_ids)
 
-    def get_user_lock(self, user_id: int) -> asyncio.Lock:
-        """Get or create the asyncio.Lock for this user.
+    def get_user_lock(self, user_id: int) -> FlowLock:
+        """Get or create the FlowLock for this user.
 
         Called at the entry point of every multi-step DM flow (onboarding,
         booking, cancellation). If the lock is already held, the flow handler
@@ -73,6 +133,14 @@ class BotContext:
         The lock must be released on: completion, abandonment, timeout, or error.
         [Source: architecture.md#Per-User Flow Lock: asyncio.Lock per user_id]
         """
-        if user_id not in self.user_locks:
-            self.user_locks[user_id] = asyncio.Lock()
-        return self.user_locks[user_id]
+        lock = self.user_locks.get(user_id)
+        if lock is None:
+            if len(self.user_locks) > 1000:
+                self._drop_free_locks()
+            lock = self.user_locks[user_id] = FlowLock()
+        return lock
+
+    def _drop_free_locks(self) -> None:
+        """Forget locks nobody holds, so the dict does not grow without bound."""
+        for uid in [uid for uid, lock in self.user_locks.items() if not lock.locked()]:
+            del self.user_locks[uid]
