@@ -27,6 +27,7 @@ from bot.db.manual_events import mark_manual
 from bot.notion.client import DuplicateEventError, NotionWriteError
 from bot.services import activation
 from bot.services.event_defaults import default_event_shape
+from bot.services.event_replenish import replenish_guard
 from bot.services.lineup import future_events, upcoming_event
 from bot.services.outreach import parse_outreach_enabled
 from bot.services.roles import DJ_ROLE_KEY, INVITES_ROLE_KEY
@@ -287,46 +288,53 @@ class AdminCog(commands.Cog):
         # Creating the event and its slot rows can exceed Discord's 3 s deadline.
         await inter.response.defer(ephemeral=True)
         shape = await default_event_shape(self.ctx.db, inter.guild_id)
-        event_start = start_time if start_time is not None else shape.start
-        slot_count = slots if slots is not None else shape.slot_count
-        slot_length = slot_minutes if slot_minutes is not None else shape.slot_minutes
-        try:
-            event = await self.ctx.notion_client.create_event(
-                event_id, event_date, event_start, slot_count, slot_length
-            )
-        except DuplicateEventError:
-            await inter.followup.send(
-                "An event with that ID already exists.", ephemeral=True
-            )
-            return
-        except NotionWriteError:
-            logger.exception("create_event: create_event() failed for %s", event_date)
-            await inter.followup.send(
-                "Could not create the event in Notion. Please try again in a moment.",
-                ephemeral=True,
-            )
-            return
+        # Hold the replenish lock until the event is marked manual: a poll in between would
+        # count the new event as scheduled.
+        async with replenish_guard():
+            event_start = start_time if start_time is not None else shape.start
+            slot_count = slots if slots is not None else shape.slot_count
+            slot_length = slot_minutes if slot_minutes is not None else shape.slot_minutes
+            try:
+                event = await self.ctx.notion_client.create_event(
+                    event_id, event_date, event_start, slot_count, slot_length
+                )
+            except DuplicateEventError:
+                await inter.followup.send(
+                    "An event with that ID already exists.", ephemeral=True
+                )
+                return
+            except NotionWriteError:
+                logger.exception("create_event: create_event() failed for %s", event_date)
+                await inter.followup.send(
+                    "Could not create the event in Notion. Please try again in a moment.",
+                    ephemeral=True,
+                )
+                return
 
-        # Pre-initialize slot_locks rows, as the auto-create path does (Story 7.3 AC2)
-        try:
-            await init_event_slots(self.ctx.db, event.page_id, slot_count)
-        except Exception as exc:
-            logger.warning(
-                "create_event: init_event_slots failed for %r: %s"
-                " — slots will be lazily created on booking",
-                event_id,
-                exc,
-            )
-        # Manual events are ignored by the event scheduler
-        try:
-            await mark_manual(self.ctx.db, event.page_id)
-        except Exception:
-            logger.warning(
-                "create_event: could not record %r as manual", event_id, exc_info=True
-            )
+            # Pre-initialize slot_locks rows, as the auto-create path does (Story 7.3 AC2)
+            try:
+                await init_event_slots(self.ctx.db, event.page_id, slot_count)
+            except Exception as exc:
+                logger.warning(
+                    "create_event: init_event_slots failed for %r: %s"
+                    " — slots will be lazily created on booking",
+                    event_id,
+                    exc,
+                )
+            # Manual events are ignored by the event scheduler
+            marked = True
+            try:
+                await mark_manual(self.ctx.db, event.page_id)
+            except Exception:
+                marked = False
+                logger.warning(
+                    "create_event: could not record %r as manual", event_id, exc_info=True
+                )
 
+        note = "" if marked else texts.CREATE_EVENT_NOT_MARKED
         await inter.followup.send(
-            f"Event created in Notion for {texts.fmt_slot_when(event, 0)}.", ephemeral=True
+            f"Event created in Notion for {texts.fmt_slot_when(event, 0)}.{note}",
+            ephemeral=True
         )
 
     @commands.slash_command(

@@ -25,7 +25,13 @@ from bot.services.event_replenish import replenish_events
 from bot.services.outreach import parse_outreach_enabled
 from bot.timezone import DEFAULT_TIMEZONE, is_valid_timezone, set_timezone
 from bot.ui import texts
-from bot.ui.setup_options import FIELD_LABELS, dropdown_options, parse_choice, parse_hhmm
+from bot.ui.setup_options import (
+    ASAP_VALUE,
+    FIELD_LABELS,
+    dropdown_options,
+    parse_choice,
+    parse_hhmm,
+)
 
 if TYPE_CHECKING:
     from bot.context import BotContext
@@ -101,6 +107,9 @@ ID_CREATE_ROLE = "setup:create_role"
 ID_VALUE = "setup:value"
 ID_OTHER = "setup:other"
 ID_SCHEDULE_TOGGLE = "setup:schedule_toggle"
+# Controls of wizard messages posted before the Events popup was split into steps
+ID_LEGACY_EVENTS = "setup:events_change"
+ID_LEGACY_ZONE = "setup:zone"
 ID_INVITES_TOGGLE = "setup:invites_toggle"
 ID_INVITES_CHANGE = "setup:invites_change"
 ID_ACTIVATE = "setup:activate"
@@ -334,12 +343,48 @@ async def summary_lines(ctx: "BotContext", guild: Any, data: dict[str, Any]) -> 
     return lines
 
 
+# Steps of the wizard before the Events popup was split: the old key order was
+# welcome, dj_channel, log_channel, roles, events, invites, summary.
+_LEGACY_STEP_KEYS = {4: "slots", 5: "invites", 6: "summary"}
+
+
+DRAFT_MARKER = "wizard_v2"  # set in the data of every draft made by the step-per-setting wizard
+
+
+def migrate_legacy_draft(draft: SetupDraft) -> None:
+    """Map a draft saved by the old wizard to the current steps (in place).
+
+    Only drafts without DRAFT_MARKER are old: every current draft carries it.
+    """
+    if draft.data.get(DRAFT_MARKER):
+        return
+    if draft.step in _LEGACY_STEP_KEYS:
+        draft.step = STEPS.index(_LEGACY_STEP_KEYS[draft.step])
+    draft.data[DRAFT_MARKER] = True
+    draft.data.setdefault("event_schedule_enabled", True)
+    draft.data.setdefault("first_event_date", "")
+
+
+async def _load_draft(db: Any, guild_id: int) -> SetupDraft | None:
+    draft = await get_draft(db, guild_id)
+    if draft is not None:
+        migrate_legacy_draft(draft)
+    return draft
+
+
 def _today_in(zone_name: str) -> datetime.date:
     """Today's date in the draft's time zone (UTC date if the zone is unknown)."""
     try:
         return datetime.datetime.now(zoneinfo.ZoneInfo(zone_name)).date()
     except (zoneinfo.ZoneInfoNotFoundError, ValueError, OSError):
         return datetime.datetime.now(datetime.UTC).date()
+
+
+def _selected_value(config_key: str, current: Any) -> str:
+    """The dropdown value that shows the current setting as chosen."""
+    if config_key == "first_event_date" and not current:
+        return ASAP_VALUE
+    return str(current)
 
 
 def _value_label(config_key: str, v: dict[str, Any]) -> str:
@@ -412,6 +457,11 @@ async def render_step(ctx: "BotContext", guild: Any, draft: SetupDraft) -> StepV
         current = v[config_key]
         title, question = texts.setup_value_texts[config_key]
         note = None
+        if key == "first_date":
+            note = (
+                "Used only while no scheduled event is ahead. Otherwise the schedule "
+                "continues from the latest scheduled event."
+            )
         if key == "timezone":
             abbr = zone_abbr(v["timezone"])
             note = (
@@ -424,7 +474,7 @@ async def render_step(ctx: "BotContext", guild: Any, draft: SetupDraft) -> StepV
             ),
             [ID_VALUE, ID_OTHER, ID_BACK, ID_NEXT],
             options=dropdown_options(config_key, current, _today_in(v["timezone"])),
-            selected=str(current),
+            selected=_selected_value(config_key, current),
         )
     if key == "schedule":
         enabled = values(data)["event_schedule_enabled"]
@@ -473,6 +523,8 @@ class SetupWizardView(disnake.ui.View):
                 self.on_create_role,
             ),
             ID_OTHER: ("Other", disnake.ButtonStyle.secondary, self.on_other),
+            ID_LEGACY_EVENTS: ("Change", disnake.ButtonStyle.secondary, self.on_legacy),
+            ID_LEGACY_ZONE: ("Time zone", disnake.ButtonStyle.secondary, self.on_legacy),
             ID_SCHEDULE_TOGGLE: (
                 step.toggle_label,
                 disnake.ButtonStyle.secondary,
@@ -543,7 +595,7 @@ class SetupWizardView(disnake.ui.View):
 
     async def _draft(self, inter: Any) -> SetupDraft | None:
         """The open draft of this message; otherwise the refusal is sent and None returned."""
-        draft = await get_draft(_db(self.ctx), inter.guild_id)
+        draft = await _load_draft(_db(self.ctx), inter.guild_id)
         refusal = _refusal(draft, inter.message.id)
         if refusal is not None:
             await _private(inter, refusal)
@@ -710,6 +762,14 @@ class SetupWizardView(disnake.ui.View):
             draft.data["outreach_enabled"] = not values(draft.data)["outreach_enabled"]
             await self._show(inter, draft)
 
+    async def on_legacy(self, inter: Any) -> None:
+        """A control of an old wizard message: show the draft's current step instead."""
+        await inter.response.defer()
+        async with guild_lock(inter.guild_id):
+            draft = await self._draft(inter)
+            if draft is not None:
+                await self._show(inter, draft)
+
     async def on_schedule_toggle(self, inter: Any) -> None:
         await inter.response.defer()
         async with guild_lock(inter.guild_id):
@@ -731,7 +791,7 @@ class SetupWizardView(disnake.ui.View):
     async def on_change(self, inter: Any) -> None:
         await inter.response.defer()
         async with guild_lock(inter.guild_id):
-            existing = await get_draft(_db(self.ctx), inter.guild_id)
+            existing = await _load_draft(_db(self.ctx), inter.guild_id)
             if existing is not None and existing.message_id != inter.message.id:
                 await _private(
                     inter, texts.SETUP_ALREADY_OPEN.format(url=_jump_url(inter, existing))
@@ -786,7 +846,7 @@ class ValuesModal(disnake.ui.Modal):
         await inter.response.defer(with_message=False)
         guild_id: Any = inter.guild_id
         async with guild_lock(guild_id):
-            draft = await get_draft(_db(ctx), guild_id)
+            draft = await _load_draft(_db(ctx), guild_id)
             refusal = _refusal(draft, self._message_id)
             if refusal is not None or draft is None:
                 await _private(inter, refusal or texts.SETUP_ALREADY_DONE)
@@ -803,6 +863,7 @@ def registered_views(ctx: "BotContext") -> list[SetupWizardView]:
         probe = SetupDraft(0, 0, 0, step, {"rerun": step == len(STEPS) - 1})
         views.append(SetupWizardView(ctx, _layout(probe)))
     views.append(SetupWizardView(ctx, _layout(SetupDraft(0, 0, 0, len(STEPS) - 1, {}))))
+    views.append(SetupWizardView(ctx, StepView("", [ID_LEGACY_EVENTS, ID_LEGACY_ZONE])))
     return views
 
 
@@ -856,7 +917,7 @@ async def prefilled_data(
     db: Any, guild_id: int, guild: Any = None, rerun: bool = True
 ) -> dict[str, Any]:
     """Draft data from every stored value (default where missing or invalid)."""
-    data: dict[str, Any] = {"rerun": rerun}
+    data: dict[str, Any] = {"rerun": rerun, DRAFT_MARKER: True}
     for key in (*CHANNEL_KEYS, *ROLE_KEYS):
         raw = await db_config.get_value(db, guild_id, key)
         if raw is not None:
@@ -922,7 +983,7 @@ async def activate_from_draft(ctx: "BotContext", inter: Any) -> None:
     guild_id = inter.guild_id
     db = _db(ctx)
     async with guild_lock(guild_id):
-        draft = await get_draft(db, guild_id)
+        draft = await _load_draft(db, guild_id)
         refusal = _refusal(draft, inter.message.id)
         if refusal is None and draft is not None and draft.data.get("rerun"):
             refusal = texts.SETUP_ALREADY_DONE
@@ -973,7 +1034,7 @@ async def save_from_draft(ctx: "BotContext", inter: Any) -> None:
     """Re-run: store the changed values; no events are created and nothing is reposted."""
     guild_id = inter.guild_id
     async with guild_lock(guild_id):
-        draft = await get_draft(_db(ctx), guild_id)
+        draft = await _load_draft(_db(ctx), guild_id)
         refusal = _refusal(draft, inter.message.id)
         if refusal is None and draft is not None and not draft.data.get("rerun"):
             refusal = texts.SETUP_NOT_A_RERUN

@@ -34,6 +34,11 @@ def _replenish_lock() -> asyncio.Lock:
         lock = _replenish_locks[loop] = asyncio.Lock()
     return lock
 
+def replenish_guard() -> asyncio.Lock:
+    """The lock that serializes event creation: hold it while creating an event by hand."""
+    return _replenish_lock()
+
+
 _FINISHED_STATUSES = {"Done", "Canceled"}
 FIRST_DATE_KEY = "first_event_date"
 # Extra dates tried beyond `missing` when some dates already hold an event.

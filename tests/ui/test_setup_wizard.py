@@ -27,15 +27,22 @@ class Store:
         self.drafts: dict[int, SetupDraft] = {}
         self.config: dict[tuple[int, str], str] = {}
         self.writes: list[tuple[str, str]] = []
+        self.legacy: set[int] = set()  # guilds whose draft was saved by the old wizard
 
     async def get_draft(self, db, guild_id):
         d = self.drafts.get(guild_id)
         if d is None:
             return None
-        return SetupDraft(d.guild_id, d.message_id, d.channel_id, d.step, dict(d.data))
+        data = dict(d.data)
+        if guild_id not in self.legacy:
+            data.setdefault(sw.DRAFT_MARKER, True)  # every current draft carries the marker
+        return SetupDraft(d.guild_id, d.message_id, d.channel_id, d.step, data)
 
     async def save_draft(self, db, guild_id, message_id, channel_id, step, data):
-        self.drafts[guild_id] = SetupDraft(guild_id, message_id, channel_id, step, dict(data))
+        data = dict(data)
+        if guild_id not in self.legacy:
+            data.pop(sw.DRAFT_MARKER, None)  # keeps the tests' data comparisons readable
+        self.drafts[guild_id] = SetupDraft(guild_id, message_id, channel_id, step, data)
 
     async def delete_draft(self, db, guild_id):
         self.drafts.pop(guild_id, None)
@@ -156,7 +163,9 @@ def make_inter(guild, user=ADMIN, message_id=55, values=None):
 STEP = {key: index for index, key in enumerate(sw.STEPS)}
 
 
-def seed(store, step=0, data=None, message_id=55):
+def seed(store, step=0, data=None, message_id=55, legacy=False):
+    if legacy:
+        store.legacy.add(GUILD)
     store.drafts[GUILD] = SetupDraft(GUILD, message_id, 7, step, data or {})
 
 
@@ -189,7 +198,7 @@ async def test_every_control_refuses_non_admin(store):
     assert registered == {
         sw.ID_BACK, sw.ID_NEXT, sw.ID_DJ_CHANNEL, sw.ID_LOG_CHANNEL, sw.ID_DJ_ROLE,
         sw.ID_INVITES_ROLE, sw.ID_CREATE_ROLE, sw.ID_VALUE, sw.ID_OTHER,
-        sw.ID_SCHEDULE_TOGGLE,
+        sw.ID_SCHEDULE_TOGGLE, sw.ID_LEGACY_EVENTS, sw.ID_LEGACY_ZONE,
         sw.ID_INVITES_TOGGLE, sw.ID_INVITES_CHANGE, sw.ID_ACTIVATE, sw.ID_SAVE, sw.ID_CHANGE,
     }
     assert all(v.timeout is None for v in sw.registered_views(ctx))
@@ -1285,3 +1294,79 @@ async def test_activate_with_schedule_off_creates_no_events_and_posts_lineup(sto
     ctx.notion_client.create_event.assert_not_awaited()
     ctx.lineup_service.refresh.assert_awaited_once()
     assert store.config[(GUILD, "bot_active")] == "true"
+
+
+# ---------- after the update: old messages and drafts ----------
+
+def _select_values(view):
+    return [o.value for o in _select(view).options]
+
+
+@pytest.mark.asyncio
+async def test_first_date_step_marks_asap_selected_with_non_empty_value(store):
+    ctx = make_ctx()
+    seed(store, STEP["first_date"], {})
+    step = await sw.render_step(ctx, make_guild(), store.drafts[GUILD])
+    select = _select(sw.SetupWizardView(ctx, step))
+    assert [o.value for o in select.options if o.default] == ["asap"]
+    assert all(o.value for o in select.options)
+    assert "no scheduled event is ahead" in step.content
+
+
+@pytest.mark.asyncio
+async def test_asap_choice_clears_the_first_date(store):
+    ctx = make_ctx()
+    seed(store, STEP["first_date"], {"first_event_date": "2099-01-01"})
+    inter = make_inter(make_guild(), values=["asap"])
+    await sw.SetupWizardView(ctx).on_value_select(inter)
+    assert store.drafts[GUILD].data["first_event_date"] == ""
+
+
+def test_legacy_draft_steps_are_remapped():
+    old_invites = SetupDraft(1, 2, 3, 5, {"dj_channel": 1})
+    old_summary = SetupDraft(1, 2, 3, 6, {"rerun": True})
+    old_events = SetupDraft(1, 2, 3, 4, {})
+    new_start = SetupDraft(1, 2, 3, 5, {sw.DRAFT_MARKER: True})
+    for draft in (old_invites, old_summary, old_events, new_start):
+        sw.migrate_legacy_draft(draft)
+    assert old_invites.step == STEP["invites"] and old_summary.step == STEP["summary"]
+    assert old_events.step == STEP["slots"]
+    assert new_start.step == STEP["start_time"]
+    assert old_invites.data["event_schedule_enabled"] is True
+    assert old_invites.data["first_event_date"] == "" and old_invites.data["dj_channel"] == 1
+
+
+@pytest.mark.asyncio
+async def test_old_invites_draft_goes_next_to_summary_and_back_to_invites(store):
+    ctx = make_ctx()
+    guild = make_guild()
+    seed(store, 5, dict(FULL), legacy=True)  # old wizard: step 5 was Invites
+    view = sw.SetupWizardView(ctx)
+    await view._navigate(make_inter(guild), 1)
+    assert store.drafts[GUILD].step == SUMMARY
+    await view._navigate(make_inter(guild), -1)
+    assert store.drafts[GUILD].step == INVITES
+
+
+@pytest.mark.asyncio
+async def test_old_summary_draft_still_activates(store):
+    ctx = make_ctx()
+    seed(store, 6, dict(FULL), legacy=True)
+    inter = make_inter(make_guild())
+    await inter.response.defer()
+    with patch("bot.ui.setup_wizard.replenish_events", AsyncMock(return_value=0)):
+        await sw.activate_from_draft(ctx, inter)
+    assert store.config[(GUILD, "bot_active")] == "true"
+    assert store.config[(GUILD, "event_schedule_enabled")] == "true"
+
+
+@pytest.mark.asyncio
+async def test_legacy_buttons_redraw_the_current_step_without_changes(store):
+    ctx = make_ctx()
+    seed(store, STEP["slots"], {"slots_per_event": 4})
+    for legacy in (sw.ID_LEGACY_EVENTS, sw.ID_LEGACY_ZONE):
+        inter = make_inter(make_guild())
+        await sw.SetupWizardView(ctx).on_legacy(inter)
+        assert "Slots per event" in last_content(inter)
+        assert store.drafts[GUILD].data["slots_per_event"] == 4
+        assert store.writes == [], legacy

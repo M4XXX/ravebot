@@ -1382,3 +1382,57 @@ async def test_config_show_lists_schedule_keys(monkeypatch: pytest.MonkeyPatch) 
     )
     assert "Scheduled events: off" in off
     assert "First event date: 2026-11-14" in off
+
+
+@pytest.mark.asyncio
+async def test_create_event_holds_replenish_lock_while_creating_and_marking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import datetime
+
+    import bot.cogs.admin as admin
+    from bot.cogs.admin import AdminCog
+    from bot.services.event_replenish import _replenish_lock
+    from tests.notion.factories import make_event
+
+    seen: dict[str, bool] = {}
+    day = datetime.date.today() + datetime.timedelta(days=2)
+
+    async def create(*args, **kwargs):
+        seen["create"] = _replenish_lock().locked()
+        return make_event(page_id="p", event_id="x", date=day)
+
+    async def mark(*args, **kwargs):
+        seen["mark"] = _replenish_lock().locked()
+
+    ctx = make_mock_ctx(frozenset({1}))
+    ctx.notion_client = MagicMock()
+    ctx.notion_client.create_event = AsyncMock(side_effect=create)
+    _add_event_patches(monkeypatch)
+    monkeypatch.setattr(admin, "mark_manual", AsyncMock(side_effect=mark))
+    cog = AdminCog(ctx)
+    await cog.create_event.callback(
+        cog, make_mock_inter(user_id=1, guild_id=111), day.isoformat(), None, None, None
+    )
+    assert seen == {"create": True, "mark": True}
+    assert not _replenish_lock().locked()
+
+
+@pytest.mark.asyncio
+async def test_create_event_tells_organizer_when_marker_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import datetime
+
+    import bot.cogs.admin as admin
+    from bot.cogs.admin import AdminCog
+
+    ctx, _, _, _ = await _create(monkeypatch)
+    admin.mark_manual.side_effect = RuntimeError("db down")
+    cog = AdminCog(ctx)
+    inter = make_mock_inter(user_id=1, guild_id=111)
+    day = (datetime.date.today() + datetime.timedelta(days=4)).isoformat()
+    await cog.create_event.callback(cog, inter, day, None, None, None)
+    reply, _ = assert_deferred_reply(inter)
+    assert reply.startswith("Event created in Notion")
+    assert "scheduled" in reply and "could not" in reply.lower()

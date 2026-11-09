@@ -505,6 +505,11 @@ setup_value_texts: dict[str, tuple[str, str]] = {
 }
 
 
+CREATE_EVENT_NOT_MARKED = (
+    " I could not record it as a manual event, so the schedule may count it as a scheduled one."
+)
+
+
 def setup_value_step(
     number: int, total: int, title: str, question: str, current: str, note: str | None = None
 ) -> str:

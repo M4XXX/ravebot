@@ -44,7 +44,7 @@ def test_stored_value_is_added_even_when_list_is_full():
 
 def test_first_date_options():
     options = so.dropdown_options("first_event_date", "", TODAY)
-    assert options[0] == ("As soon as the interval allows", "")
+    assert options[0] == ("As soon as the interval allows", "asap")
     assert options[1] == ("Mon 09 Nov", "2026-11-09")
     assert len(options) == 25
     assert ("Sat 14 Nov", "2026-11-14") in options
@@ -120,3 +120,30 @@ def test_limits():
         "event_interval_days": 365,
         "event_lookahead_count": 52,
     }
+
+
+@pytest.mark.parametrize(
+    "key,current",
+    [
+        ("slots_per_event", 6),
+        ("default_start_time", "20:00"),
+        ("slot_duration_minutes", 60),
+        ("event_interval_days", 14),
+        ("first_event_date", ""),
+        ("first_event_date", "2026-12-24"),
+        ("event_lookahead_count", 6),
+        ("timezone", "Europe/Berlin"),
+    ],
+)
+def test_option_values_fit_discord_limits(key, current):
+    options = so.dropdown_options(key, current, TODAY)
+    assert all(1 <= len(value) <= 100 and 1 <= len(label) <= 100 for label, value in options)
+
+
+def test_asap_option_has_a_non_empty_value_and_parses_to_empty_date():
+    label, value = so.dropdown_options("first_event_date", "", TODAY)[0]
+    assert label == so.ASAP_LABEL and value == so.ASAP_VALUE != ""
+    assert so.parse_choice("first_event_date", so.ASAP_VALUE, TODAY) == (
+        {"first_event_date": ""},
+        [],
+    )

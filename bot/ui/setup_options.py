@@ -30,6 +30,7 @@ FIELD_LABELS: dict[str, str] = {
 
 MAX_OPTIONS = 25
 ASAP_LABEL = "As soon as the interval allows"
+ASAP_VALUE = "asap"  # Discord rejects an empty option value
 
 _HHMM_RE = re.compile(r"^(\d{1,2}):(\d{2})$")
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -91,7 +92,7 @@ def dropdown_options(
         shown = (str(current), str(current)) if current else None
     else:  # first_event_date
         first = today or local_today()
-        options = [(ASAP_LABEL, "")]
+        options = [(ASAP_LABEL, ASAP_VALUE)]
         for offset in range(MAX_OPTIONS - 1):
             day = first + datetime.timedelta(days=offset)
             options.append((_date_label(day), day.isoformat()))
@@ -137,7 +138,7 @@ def parse_choice(
         if not text or not is_valid_timezone(text):
             return {}, [texts.setup_invalid(label, "enter a name like Europe/Berlin.")]
         return {key: text}, []
-    if text == "":
+    if text in ("", ASAP_VALUE):
         return {key: ""}, []
     rule = "enter today or a later date like 2026-11-14."
     try:
