@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- A member with the DJ role but no DJ profile no longer goes through the whole booking flow to fail at the end. Pressing `Book a slot` (on the Lineup Update post or in the DMs) now starts the DJ onboarding first; the DJ presses `Book a slot` again when the profile is saved.
+
 ### Changed
 
 - Lineup Update design: the title shows the event name and date, a summary line shows how many slots are booked, and each slot is one line with a bold time (`**20:00**  🎧 DJ name` or `**21:00**  ▫️ *open slot*`).

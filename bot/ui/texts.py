@@ -33,6 +33,10 @@ FLOW_OPEN = "You already have a booking open. Finish or dismiss it first."
 NO_PROFILE = (
     "You haven't set up your DJ profile yet. Ask an organizer to give you the DJ role again."
 )
+ONBOARD_BEFORE_BOOKING = (
+    "You need a DJ profile before you can book a slot. Let's set it up now. "
+    "When it is saved, press **Book a slot** again."
+)
 WELCOME = (
     "**Welcome to the DJ team**\n"
     "I'm RaveBot and I handle DJ bookings on this server.\n\n"

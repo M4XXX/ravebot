@@ -19,7 +19,7 @@ import disnake
 from bot.db.djs import get_dj_by_discord_id, update_active_booking
 from bot.services.roles import get_dj_role, get_invites_role
 from bot.ui import texts
-from bot.ui.dj_profile import respond
+from bot.ui.dj_profile import respond, start_onboarding_dm
 from bot.ui.embeds import ErrorCode
 from bot.ui.gates import GatedView
 
@@ -92,6 +92,9 @@ class FallbackMenuView(GatedView):
         [Source: epics.md#Story 4.1 AC1, AC3, AC4, AC6]
         [Source: architecture.md#Per-User Flow Lock: asyncio.Lock per user_id]
         """
+        if not await _has_dj_profile(self.ctx, inter.author.id):
+            await self._onboard_before_booking(inter)
+            return
         start = await prepare_booking(self.ctx, inter.author.id)
         if start.error is not None:
             await inter.response.send_message(start.error, ephemeral=True)
@@ -99,6 +102,27 @@ class FallbackMenuView(GatedView):
 
         content = start.content
         await inter.response.send_message(content, view=start.view, ephemeral=True)
+
+    async def _onboard_before_booking(self, inter: disnake.MessageInteraction) -> None:
+        """A DJ role holder without a profile starts the onboarding instead of booking.
+
+        Anyone else is told to ask an organizer for the DJ role. Several awaits follow, so
+        the press is acknowledged first and answered through the followup.
+        """
+        try:
+            await inter.response.defer()
+        except disnake.HTTPException:
+            logger.warning("Could not acknowledge the button of %s", inter.author.id, exc_info=True)
+            return
+        guild = await _guild_with_dj_role(self.ctx.db, inter)
+        if guild is None:
+            await inter.followup.send(texts.NO_PROFILE, ephemeral=True)
+            return
+        user_id, guild_id = inter.author.id, guild.id
+        await inter.followup.send(texts.ONBOARD_BEFORE_BOOKING)
+        await respond(
+            self.ctx, inter, lambda s: s.start_onboarding(user_id, guild_id), defer=False
+        )
 
     @disnake.ui.button(
         label=texts.BTN_CANCEL,
@@ -385,21 +409,37 @@ class FallbackMenuView(GatedView):
         await respond(self.ctx, inter, lambda s: s.show_overview(user_id), defer=False)
 
 
+async def _has_dj_role(db: object, guild: disnake.Guild, user_id: int) -> bool:
+    """True when the user is a member of the guild and holds its configured DJ role."""
+    try:
+        member = guild.get_member(user_id)
+        if member is None:
+            return False
+        role = await get_dj_role(db, guild)
+        return role is not None and role in member.roles
+    except Exception:
+        logger.warning("DJ role check failed for %s", user_id, exc_info=True)
+        return False
+
+
 async def _guild_with_dj_role(
     db: object, inter: disnake.MessageInteraction
 ) -> disnake.Guild | None:
     """First guild where the user is a member and has the configured DJ role."""
     for guild in inter.client.guilds:
-        try:
-            member = guild.get_member(inter.author.id)
-            if member is None:
-                continue
-            role = await get_dj_role(db, guild)
-            if role is not None and role in member.roles:
-                return guild
-        except Exception:
-            logger.warning("DJ role check failed for %s", inter.author.id, exc_info=True)
+        if await _has_dj_role(db, guild, inter.author.id):
+            return guild
     return None
+
+
+async def _has_dj_profile(ctx: "BotContext", user_id: int) -> bool:
+    """True when a DJ record exists. A lookup failure counts as a profile, so the booking
+    flow's own checks decide."""
+    try:
+        return await get_dj_by_discord_id(ctx.db, user_id) is not None
+    except Exception:
+        logger.exception("DJ profile lookup failed for %s", user_id)
+        return True
 
 
 MAX_PICK_BUTTONS = 5
@@ -567,8 +607,8 @@ class LineupPostView(GatedView):
     ) -> None:
         await inter.response.defer(ephemeral=True)
         user = inter.author
-        if not await self._is_onboarded(user.id):
-            await self._dm_or_report(inter, texts.NO_PROFILE, None, release_lock=False)
+        if not await _has_dj_profile(self.ctx, user.id):
+            await self._onboard_before_booking(inter)
             return
         start = await prepare_booking(self.ctx, user.id)
         if start.error is not None:
@@ -576,14 +616,21 @@ class LineupPostView(GatedView):
             return
         await self._dm_or_report(inter, start.content, start.view, release_lock=True)
 
-    async def _is_onboarded(self, user_id: int) -> bool:
-        """True when a DJ record exists. A lookup failure counts as onboarded so the
-        booking flow's own checks decide."""
-        try:
-            return await get_dj_by_discord_id(self.ctx.db, user_id) is not None
-        except Exception:
-            logger.exception("LineupPostView: DJ lookup failed for %s", user_id)
-            return True
+    async def _onboard_before_booking(self, inter: disnake.MessageInteraction) -> None:
+        """A DJ role holder without a profile gets the onboarding in a DM instead of booking.
+
+        The explanation goes first, so closed DMs are reported before a conversation is
+        stored. Anyone else is told to ask an organizer for the DJ role.
+        """
+        user = inter.author
+        guild = inter.guild
+        if guild is None or not await _has_dj_role(self.ctx.db, guild, user.id):
+            await self._dm_or_report(inter, texts.NO_PROFILE, None, release_lock=False)
+            return
+        if await self._dm_or_report(
+            inter, texts.ONBOARD_BEFORE_BOOKING, None, release_lock=False
+        ):
+            await start_onboarding_dm(self.ctx, user, user.id, guild.id)
 
     async def _dm_or_report(
         self,
@@ -592,8 +639,11 @@ class LineupPostView(GatedView):
         view: disnake.ui.View | None,
         *,
         release_lock: bool,
-    ) -> None:
-        """DM the user, then reply privately; blocked or failed DMs are reported."""
+    ) -> bool:
+        """DM the user, then reply privately; blocked or failed DMs are reported.
+
+        Returns True when the DM was sent.
+        """
         user = inter.author
         kwargs = {"view": view} if view is not None else {}
         try:
@@ -611,14 +661,15 @@ class LineupPostView(GatedView):
                     action_taken="They were told privately to allow DMs.",
                     manual_action=texts.dm_failed_todo(user.display_name),
                 )
-            return
+            return False
         except Exception:
             logger.exception("LineupPostView: DM to %s failed", user.id)
             if release_lock:
                 self.ctx.get_user_lock(user.id).release()
             await inter.followup.send(texts.GENERIC_ERROR, ephemeral=True)
-            return
+            return False
         await inter.followup.send(texts.POST_DM_SENT, ephemeral=True)
+        return True
 
 
 # ---------------------------------------------------------------------------
