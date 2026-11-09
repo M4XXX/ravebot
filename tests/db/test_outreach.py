@@ -199,3 +199,15 @@ async def test_reactivate_sequence_calls_execute():
     assert "outreach_sequences" in sql
     assert "active" in sql
     assert pool.execute.call_args[0][1] == "evt-001"
+
+
+@pytest.mark.asyncio
+async def test_get_waiting_discord_ids_queries_sent_invites_of_any_event():
+    from bot.db.outreach import get_waiting_discord_ids
+
+    pool = MagicMock()
+    pool.fetch = AsyncMock(return_value=[{"discord_user_id": 7}])
+    assert await get_waiting_discord_ids(pool, 12) == [7]
+    sql, hours = pool.fetch.call_args[0]
+    assert "status = 'sent'" in sql and "event_id" not in sql
+    assert hours == 12

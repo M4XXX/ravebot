@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- A DJ now gets one invite at a time. While an invite for any event is unanswered (up to 12 hours, until they accept, decline or it times out), the bot does not invite them to another event. Before, two open events meant two invite DMs to the same DJ in the same round.
 - A member with the DJ role but no DJ profile no longer goes through the whole booking flow to fail at the end. Pressing `Book a slot` (on the Lineup Update post or in the DMs) now starts the DJ onboarding first; the DJ presses `Book a slot` again when the profile is saved.
 
 ### Changed

@@ -135,6 +135,21 @@ async def get_contacted_discord_ids(pool: asyncpg.Pool, event_id: str) -> list[i
     return [row["discord_user_id"] for row in rows]
 
 
+async def get_waiting_discord_ids(pool: asyncpg.Pool, hours: int) -> list[int]:
+    """Return discord_user_ids with an invite (any event) still unanswered.
+
+    An invite is unanswered while its contact row has status 'sent' and is younger
+    than `hours` (the lifetime of the invite buttons). After that it counts as no
+    answer, so a restart that lost the timeout never blocks a DJ for good.
+    """
+    rows = await pool.fetch(
+        "SELECT DISTINCT discord_user_id FROM outreach_contacts"
+        " WHERE status = 'sent' AND contacted_at > NOW() - make_interval(hours => $1)",
+        hours,
+    )
+    return [row["discord_user_id"] for row in rows]
+
+
 async def record_outreach_contact(
     pool: asyncpg.Pool, event_id: str, discord_user_id: int
 ) -> None:

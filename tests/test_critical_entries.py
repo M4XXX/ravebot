@@ -104,6 +104,7 @@ async def invite_blocked(log: Recorder) -> None:
     dj = {"discord_user_id": 123456789, "dj_name": "DJ Anna"}
     with patch("bot.services.outreach.get_active_booking_djs", new=AsyncMock(return_value=[dj])), \
          patch("bot.services.outreach.get_contacted_discord_ids", new=AsyncMock(return_value=[])), \
+         patch("bot.services.outreach.get_waiting_discord_ids", new=AsyncMock(return_value=[])), \
          patch("bot.services.outreach.record_outreach_contact", new=AsyncMock()), \
          patch("bot.services.outreach.update_outreach_contact_status", new=AsyncMock()):
         await svc.contact_next_dj(EVENT, guild_id=1, ctx=MagicMock())
