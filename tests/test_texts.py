@@ -37,8 +37,6 @@ def _catalog_values() -> list[str]:
     values += [
         texts.invite_opener("EV"),
         texts.slot_button(event, 0),
-        texts.event_line(1, event, 1),
-        texts.event_line(2, event, 3),
         texts.booking_body(event, 0),
         texts.cancel_confirm(event, 0),
         texts.reminder(event, 0),
@@ -65,8 +63,6 @@ def test_formatted_texts() -> None:
         event_id="EV", date=datetime.date(2026, 11, 14), start=datetime.time(18, 0)
     )
     assert texts.slot_button(event, 0) == "Slot 1 · 18:00"
-    assert texts.event_line(1, event, 1) == "1. EV · Saturday 14.11.2026 · 1 slot open"
-    assert texts.event_line(2, event, 3).endswith("3 slots open")
     assert texts.booking_body(event, 0) == "EV\nSaturday 14.11.2026, slot 1 at 18:00"
     assert texts.cancel_confirm(event, 0) == "Cancel slot 1 (18:00) at EV?"
     assert texts.dm_booked(event, 0) == "An organizer booked you: EV, slot 1 at 18:00."

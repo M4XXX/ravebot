@@ -12,6 +12,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `Book a slot` under a Lineup Update post now opens the slot picker of that event directly, instead of asking for the event first. If that event is fully booked, the DJ is told so. The button in the DM menu still asks for the event.
+- Event picker: an overview embed with one block per event (name, date, open slots, start time). The buttons show only the date, in the same style as Show lineup.
 - Lineup Update design: the title shows the event name and date, a summary line shows how many slots are booked, and each slot is one line with a bold time (`**20:00**  🎧 DJ name` or `**21:00**  ▫️ *open slot*`).
 - Show lineup in a DM: pressing another event's button now switches the same message to that event and keeps the buttons, instead of sending a new message without them. The buttons are labelled with the date and keep working after a restart.
 
