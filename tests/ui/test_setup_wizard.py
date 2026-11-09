@@ -440,6 +440,7 @@ async def test_change_settings_prefills_all_stored_values(store):
         "timezone": "Europe/London", "outreach_enabled": False,
         "outreach_days_before": 10, "outreach_cooldown_hours": 24,
         "orig_timezone": "Europe/London", "orig_invites_role_id": 400,
+        "event_schedule_enabled": True, "first_event_date": "",
     }
     assert draft.message_id == 55 and draft.step == 0
     assert store.writes == []
@@ -810,7 +811,8 @@ async def test_summary_shows_values_and_warns_on_changed_zone_and_role(store):
     assert "the real times of existing events change" in view.content
     assert "members are not moved to the new role" in view.content
     abbr = sw.zone_abbr("Europe/London")
-    assert f"Events: 6 slots, 20:00 {abbr}, 60 min, every 7 days, 6 ahead" in view.content
+    assert f"Events: 6 slots, 20:00 {abbr}, 60 min" in view.content
+    assert "Scheduled events: every 7 days, 6 ahead" in view.content
     assert "DJ role: @role300" in view.content
     assert "Automatic invites: on, 14 days before, 12 h wait" in view.content
     assert f"Step {sw.total_steps()} of {sw.total_steps()}" in view.content
@@ -1154,3 +1156,132 @@ async def test_start_time_step_uses_zone_abbreviation(store):
     seed(store, STEP["start_time"], {"timezone": "Asia/Tokyo"})
     step = await sw.render_step(ctx, make_guild(), store.drafts[GUILD])
     assert "JST" in step.content and "CET" not in step.content
+
+
+# ---------- schedule switch ----------
+
+OFF = {"event_schedule_enabled": False}
+HIDDEN = ("interval", "first_date", "lookahead")
+
+
+@pytest.mark.asyncio
+async def test_schedule_step_toggle_flips_draft_value(store):
+    ctx = make_ctx()
+    seed(store, STEP["schedule"], {})
+    inter = make_inter(make_guild())
+    await sw.SetupWizardView(ctx).on_schedule_toggle(inter)
+    assert store.drafts[GUILD].data["event_schedule_enabled"] is False
+    assert "Scheduled events: off" in last_content(inter)
+    toggle = next(c for c in last_view(inter).children if c.custom_id == sw.ID_SCHEDULE_TOGGLE)
+    assert toggle.label == "Turn on"
+    inter = make_inter(make_guild())
+    await sw.SetupWizardView(ctx).on_schedule_toggle(inter)
+    assert store.drafts[GUILD].data["event_schedule_enabled"] is True
+    assert store.writes == []
+
+
+@pytest.mark.asyncio
+async def test_schedule_toggle_refuses_non_admin(store):
+    view = sw.SetupWizardView(make_ctx())
+    assert await view.interaction_check(make_inter(make_guild(), user=999)) is False
+
+
+@pytest.mark.asyncio
+async def test_next_skips_scheduled_steps_when_off_and_back_in_reverse(store):
+    ctx = make_ctx()
+    guild = make_guild()
+    seed(store, STEP["schedule"], {**FULL, **OFF})
+    view = sw.SetupWizardView(ctx)
+    await view._navigate(make_inter(guild), 1)
+    assert store.drafts[GUILD].step == STEP["timezone"]
+    await view._navigate(make_inter(guild), -1)
+    assert store.drafts[GUILD].step == STEP["schedule"]
+    await view._navigate(make_inter(guild), -1)
+    assert store.drafts[GUILD].step == STEP["slot_length"]
+
+
+@pytest.mark.asyncio
+async def test_next_visits_scheduled_steps_when_on(store):
+    ctx = make_ctx()
+    guild = make_guild()
+    seed(store, STEP["schedule"], {**FULL})
+    view = sw.SetupWizardView(ctx)
+    visited = []
+    for _ in range(4):
+        await view._navigate(make_inter(guild), 1)
+        visited.append(sw.STEPS[store.drafts[GUILD].step])
+    assert visited == ["interval", "first_date", "lookahead", "timezone"]
+
+
+def test_next_step_clamps_at_both_ends():
+    assert sw.next_step({}, 0, -1) == 0
+    assert sw.next_step({}, len(sw.STEPS) - 1, 1) == len(sw.STEPS) - 1
+    assert sw.scheduled_step_keys() == HIDDEN
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("data", "total"), [({}, 13), (OFF, 10)])
+async def test_step_numbers_are_consecutive(store, data, total):
+    ctx = make_ctx()
+    guild = make_guild()
+    numbers = []
+    for key in sw.STEPS:
+        if key in HIDDEN and data == OFF:
+            continue
+        seed(store, STEP[key], {**FULL, **data})
+        step = await sw.render_step(ctx, guild, store.drafts[GUILD])
+        found = re.search(r"Step (\d+) of (\d+)", step.content)
+        assert found and int(found.group(2)) == total, key
+        numbers.append(int(found.group(1)))
+    # the summary page belongs to the last numbered step
+    assert numbers == [*range(1, total + 1), total]
+
+
+@pytest.mark.asyncio
+async def test_summary_shows_scheduled_off(store):
+    ctx = make_ctx()
+    seed(store, SUMMARY, {**FULL, **OFF})
+    view = await sw.render_step(ctx, make_guild(), store.drafts[GUILD])
+    assert "Scheduled events: off" in view.content
+    assert "every" not in view.content.split("Scheduled events")[1].splitlines()[0]
+
+
+@pytest.mark.asyncio
+async def test_summary_shows_first_date_when_set(store):
+    ctx = make_ctx()
+    seed(store, SUMMARY, {**FULL, "event_interval_days": 14, "first_event_date": "2099-01-02"})
+    view = await sw.render_step(ctx, make_guild(), store.drafts[GUILD])
+    assert "Scheduled events: every 14 days from 2099-01-02, 6 ahead" in view.content
+
+
+@pytest.mark.asyncio
+async def test_prefill_defaults_schedule_on_and_drops_past_first_date(store):
+    ctx = make_ctx()
+    data = await sw.prefilled_data(ctx.db, GUILD)
+    assert data["event_schedule_enabled"] is True and data["first_event_date"] == ""
+    store.config[(GUILD, "event_schedule_enabled")] = "false"
+    store.config[(GUILD, "first_event_date")] = "2099-01-02"
+    data = await sw.prefilled_data(ctx.db, GUILD)
+    assert data["event_schedule_enabled"] is False and data["first_event_date"] == "2099-01-02"
+    store.config[(GUILD, "first_event_date")] = "2001-01-02"
+    assert (await sw.prefilled_data(ctx.db, GUILD))["first_event_date"] == ""
+    store.config[(GUILD, "first_event_date")] = "garbage"
+    assert (await sw.prefilled_data(ctx.db, GUILD))["first_event_date"] == ""
+
+
+@pytest.mark.asyncio
+async def test_activate_with_schedule_off_creates_no_events_and_posts_lineup(store):
+    ctx = make_ctx()
+    ctx.notion_client.create_event = AsyncMock()
+    seed(store, SUMMARY, {**FULL, **OFF, "first_event_date": "2099-01-02"})
+    inter = make_inter(make_guild())
+    await inter.response.defer()
+    with patch("bot.services.event_replenish.get_value", store.get_value), patch(
+        "bot.services.event_replenish.get_manual_page_ids", AsyncMock(return_value=set())
+    ):
+        await sw.activate_from_draft(ctx, inter)
+    assert store.config[(GUILD, "event_schedule_enabled")] == "false"
+    assert store.config[(GUILD, "first_event_date")] == "2099-01-02"
+    ctx.notion_client.create_event.assert_not_awaited()
+    ctx.lineup_service.refresh.assert_awaited_once()
+    assert store.config[(GUILD, "bot_active")] == "true"

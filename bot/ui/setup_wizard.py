@@ -131,17 +131,39 @@ def guild_lock(guild_id: int) -> asyncio.Lock:
     return lock
 
 
-def total_steps() -> int:
+def scheduled_step_keys() -> tuple[str, ...]:
+    """Steps that only apply while scheduled events are on."""
+    return ("interval", "first_date", "lookahead")
+
+
+def visible_steps(data: dict[str, Any] | None = None) -> list[str]:
+    """Step keys in order, without the scheduled steps while scheduling is off."""
+    if values(data or {})["event_schedule_enabled"]:
+        return list(STEPS)
+    hidden = scheduled_step_keys()
+    return [key for key in STEPS if key not in hidden]
+
+
+def total_steps(data: dict[str, Any] | None = None) -> int:
     """Number of numbered steps (the summary page is not numbered)."""
-    return len(STEPS) - 1
+    return len(visible_steps(data)) - 1
 
 
 def step_key(step: int) -> str:
     return STEPS[max(0, min(step, len(STEPS) - 1))]
 
 
-def step_number(key: str) -> int:
-    return STEPS.index(key) + 1
+def step_number(key: str, data: dict[str, Any] | None = None) -> int:
+    return visible_steps(data).index(key) + 1
+
+
+def next_step(data: dict[str, Any], step: int, delta: int) -> int:
+    """Index of the step `delta` (+1 or -1) away, skipping hidden steps; clamped to the list."""
+    hidden = set(STEPS) - set(visible_steps(data))
+    index = step + delta
+    while 0 <= index < len(STEPS) and STEPS[index] in hidden:
+        index += delta
+    return max(0, min(index, len(STEPS) - 1))
 
 
 def zone_abbr(name: str) -> str:
@@ -268,6 +290,16 @@ async def _welcome_checks(ctx: "BotContext") -> list[tuple[bool, str]]:
     ]
 
 
+def _schedule_summary(v: dict[str, Any]) -> str:
+    if not v["event_schedule_enabled"]:
+        return "Scheduled events: off"
+    start = f" from {v['first_event_date']}" if v["first_event_date"] else ""
+    return (
+        f"Scheduled events: every {v['event_interval_days']} days{start}, "
+        f"{v['event_lookahead_count']} ahead"
+    )
+
+
 async def summary_lines(ctx: "BotContext", guild: Any, data: dict[str, Any]) -> list[str]:
     def chan(key: str) -> str:
         value = data.get(key)
@@ -287,8 +319,8 @@ async def summary_lines(ctx: "BotContext", guild: Any, data: dict[str, Any]) -> 
         f"DJ role: {dj} \u00b7 Invites role: {inv}",
         f"Events: {v['slots_per_event']} slots, "
         f"{v['default_start_time']} {zone_abbr(v['timezone'])}, "
-        f"{v['slot_duration_minutes']} min, every {v['event_interval_days']} days, "
-        f"{v['event_lookahead_count']} ahead",
+        f"{v['slot_duration_minutes']} min",
+        _schedule_summary(v),
         f"Time zone: {v['timezone']}",
         f"Automatic invites: {invites}",
     ]
@@ -326,8 +358,8 @@ def _value_label(config_key: str, v: dict[str, Any]) -> str:
 
 async def render_step(ctx: "BotContext", guild: Any, draft: SetupDraft) -> StepView:
     key = step_key(draft.step)
-    total = total_steps()
     data = draft.data
+    total = total_steps(data)
     if key == "welcome":
         checks = await _welcome_checks(ctx)
         return StepView(
@@ -340,7 +372,7 @@ async def render_step(ctx: "BotContext", guild: Any, draft: SetupDraft) -> StepV
         ok, channel, check = _channel_check(guild, data.get(key))
         is_dj = key == "dj_channel"
         content = texts.setup_channel_step(
-            step_number(key),
+            step_number(key, data),
             total,
             "DJ channel" if is_dj else "Log channel",
             texts.SETUP_DJ_CHANNEL_QUESTION if is_dj else texts.SETUP_LOG_CHANNEL_QUESTION,
@@ -357,7 +389,7 @@ async def render_step(ctx: "BotContext", guild: Any, draft: SetupDraft) -> StepV
     if key == "roles":
         ok, check = _role_check(guild, data)
         content = texts.setup_roles_step(
-            step_number(key),
+            step_number(key, data),
             total,
             _role_name(guild, data.get("dj_role_id")),
             _role_name(guild, data.get("invites_role_id")),
@@ -388,7 +420,7 @@ async def render_step(ctx: "BotContext", guild: Any, draft: SetupDraft) -> StepV
             )
         return StepView(
             texts.setup_value_step(
-                step_number(key), total, title, question, _value_label(config_key, v), note
+                step_number(key, data), total, title, question, _value_label(config_key, v), note
             ),
             [ID_VALUE, ID_OTHER, ID_BACK, ID_NEXT],
             options=dropdown_options(config_key, current, _today_in(v["timezone"])),
@@ -397,14 +429,14 @@ async def render_step(ctx: "BotContext", guild: Any, draft: SetupDraft) -> StepV
     if key == "schedule":
         enabled = values(data)["event_schedule_enabled"]
         return StepView(
-            texts.setup_schedule_step(step_number(key), total, enabled),
+            texts.setup_schedule_step(step_number(key, data), total, enabled),
             [ID_SCHEDULE_TOGGLE, ID_BACK, ID_NEXT],
             toggle_label="Turn off" if enabled else "Turn on",
         )
     if key == "invites":
         on = values(data)["outreach_enabled"]
         return StepView(
-            texts.setup_invites_step(step_number(key), total, values(data)),
+            texts.setup_invites_step(step_number(key, data), total, values(data)),
             [ID_INVITES_TOGGLE, ID_INVITES_CHANGE, ID_BACK, ID_NEXT],
             toggle_label="Turn off" if on else "Turn on",
         )
@@ -547,7 +579,7 @@ class SetupWizardView(disnake.ui.View):
             if view.next_disabled:
                 await self._show(inter, draft)  # refresh the checks, stay on this step
                 return
-        draft.step = max(0, min(draft.step + delta, len(STEPS) - 1))
+        draft.step = next_step(draft.data, draft.step, delta)
         await self._show(inter, draft)
 
     async def _choose(self, inter: Any, key: str) -> None:
@@ -858,6 +890,15 @@ async def prefilled_data(
     data["outreach_enabled"] = parse_outreach_enabled(
         await db_config.get_value(db, guild_id, "outreach_enabled")
     )
+    data["event_schedule_enabled"] = parse_outreach_enabled(
+        await db_config.get_value(db, guild_id, "event_schedule_enabled")
+    )
+    first_date, _ = parse_choice(
+        "first_event_date",
+        await db_config.get_value(db, guild_id, "first_event_date") or "",
+        _today_in(data["timezone"]),
+    )
+    data["first_event_date"] = first_date.get("first_event_date", "")
     return data
 
 
