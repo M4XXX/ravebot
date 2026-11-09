@@ -157,7 +157,7 @@ Registered by `AdminCog` (`bot/cogs/admin.py`) and `SetupCog` (`bot/cogs/setup.p
 ```
 /setup
 /config show
-/create event date:<YYYY-MM-DD>
+/create event date:<YYYY-MM-DD> [slots] [start] [slot_minutes]
 /post lineup update [event]
 /book dj slot dj event slot
 /cancel dj slot dj event slot
@@ -185,14 +185,14 @@ An event's `Start` is a local wall-clock `HH:MM`; `EventInfo` in `bot/notion/mod
 
 ### Replenishing events
 
-`replenish_events(db, notion_client, guild_id, events)` in `bot/services/event_replenish.py` creates events until the number of active events equals `event_lookahead_count` (default 6). Active means `date >= local_today()` and status not `Done` or `Canceled`. New dates start at `max(latest date of all events, today) + interval * i` (`event_interval_days`, default 7), named `YYYY-MM-DD Rave Night`, with the shape from `default_event_shape()`. An existing event ID is skipped. A module lock serializes the poll loop (`EventsCog`) and the wizard. Because Done and Canceled events do not count, marking an event Done or Canceled in Notion makes the next poll create a replacement.
+`replenish_events(db, notion_client, guild_id, events)` in `bot/services/event_replenish.py` creates scheduled events until the number of active scheduled events equals `event_lookahead_count` (default 6). It returns 0 when `event_schedule_enabled` is `"false"` (missing means on). Manual events (table `manual_events`, written by `/create event`; helpers in `bot/db/manual_events.py`) are removed from the list first: they neither count nor move the base date. Everything else, including events added directly in Notion, counts as scheduled. Active means `date >= local_today()` and status not `Done` or `Canceled`. With a valid `first_event_date` (`YYYY-MM-DD`, today or later) and no scheduled event dated today or later, the first new event gets that date and the next ones follow at `+ event_interval_days` (default 7); otherwise new dates are `max(latest scheduled date, today) + interval * i`. The key is cleared once used or found unusable. Events are named `YYYY-MM-DD Rave Night`, with the shape from `default_event_shape()`. A date held by a known manual event is skipped and the next date is used (at most `missing + 52` dates are tried); any other existing event ID uses up its date without a creation, which keeps a stale event list from over-creating. A module lock serializes the poll loop (`EventsCog`) and the wizard. Because Done and Canceled events do not count, marking an event Done or Canceled in Notion makes the next poll create a replacement.
 
 ### Setup wizard
 
-- `/setup` (`SetupCog`) posts one message with `SetupWizardView`. Steps (`STEPS` in `bot/ui/setup_wizard.py`): `welcome`, `dj_channel`, `log_channel`, `roles`, `events`, `invites`, `summary`. To add a step, insert its key before `summary`, add a branch in `render_step` and its controls to the view.
+- `/setup` (`SetupCog`) posts one message with `SetupWizardView`. Steps (`STEPS` in `bot/ui/setup_wizard.py`): `welcome`, `dj_channel`, `log_channel`, `roles`, `slots`, `start_time`, `slot_length`, `schedule`, `interval`, `first_date`, `lookahead`, `timezone`, `invites`, `summary`. `VALUE_STEPS` maps each value step to its config key; all of them share one dropdown (`setup:value`) and one "Other" button (`setup:other`) with the options and parsing in `bot/ui/setup_options.py` (`dropdown_options`, `parse_choice`). While `event_schedule_enabled` is false, `scheduled_step_keys()` (`interval`, `first_date`, `lookahead`) are skipped by `next_step` and not counted. To add a step, insert its key before `summary`, add a branch in `render_step` and its controls to the view.
 - The message carries no state. The view is persistent (registered in `main.py` through `registered_views()`), and every press reads the draft row found by the message id.
 - Table `setup_drafts` (migration `0011`): `guild_id` (primary key, so one wizard per guild), `message_id`, `channel_id`, `step`, `data` (JSONB with the chosen values), `updated_at`. Access in `bot/db/setup_drafts.py` (`get_draft`, `save_draft`, `delete_draft`). Nothing reaches the `config` table until the last step.
-- Activate (`activate_from_draft`): under a per-guild lock it requires both channels and both roles, writes all settings (`dj_channel`, `log_channel`, `dj_role_id`, `invites_role_id`, `slots_per_event`, `default_start_time`, `slot_duration_minutes`, `event_interval_days`, `event_lookahead_count`, `timezone`, `outreach_enabled`, `outreach_days_before`, `outreach_cooldown_hours`), sets `bot_active`, runs `replenish_events` and `LineupService.refresh()` exactly once, then deletes the draft. Save (`save_from_draft`, used on a re-run, `data["rerun"]`) only writes the settings.
+- Activate (`activate_from_draft`): under a per-guild lock it requires both channels and both roles, writes all settings (`dj_channel`, `log_channel`, `dj_role_id`, `invites_role_id`, `slots_per_event`, `default_start_time`, `slot_duration_minutes`, `event_interval_days`, `event_lookahead_count`, `event_schedule_enabled`, `first_event_date`, `timezone`, `outreach_enabled`, `outreach_days_before`, `outreach_cooldown_hours`), sets `bot_active`, runs `replenish_events` and `LineupService.refresh()` exactly once, then deletes the draft. Save (`save_from_draft`, used on a re-run, `data["rerun"]`) only writes the settings.
 - Re-run: with an active bot `/setup` shows a `Change settings` button; the draft is prefilled from the stored values (`prefilled_data`). If the wizard message was deleted, `/setup` posts it again at the saved step.
 - Roles: `bot/services/roles.py` `get_dj_role()` and `get_invites_role()` read `dj_role_id` and `invites_role_id`. Only when a key is missing they fall back to the role names `DJ` and `Active Booking`; a stored id whose role is gone returns `None`.
 
@@ -296,6 +296,7 @@ Tables (created by Alembic migrations):
 | `fully_booked_events` | `0009` | `event_id` (Notion page id, primary key), `announced_at` | Events already announced as fully booked. Restart safe. |
 | `log_replies` | `0010` | `message_id` (primary key), `user_id`, `created_at` | Maps a `Message from` entry to the user the Reply button answers. |
 | `setup_drafts` | `0011` | `guild_id` (primary key), `message_id`, `channel_id`, `step`, `data` (JSONB), `updated_at` | The open `/setup` wizard of a guild. Deleted on Activate or Save. |
+| `manual_events` | `0015` | `page_id` (Notion page id, primary key), `created_at` | Events created with `/create event`. The event scheduler ignores them. |
 
 Migration `0012` drops the `interventions` table. The intervention flow (`/intervene`, `bot/services/intervention.py`) no longer exists: an organizer who wants to talk to a DJ uses the `Reply` button on a `Message from` entry or writes to the DJ directly.
 

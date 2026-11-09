@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `/setup`: the Events popup is split into one step per setting (slots, start time, slot length, interval, first event date, events kept ready, time zone). Each step has a dropdown with common values and an **Other** button for your own value.
+- `/setup`: the first scheduled event can start on a chosen date (setting `first_event_date`), for example next Saturday and then every 14 days. Without a date the schedule starts one interval after the day of setup, as before.
+- `/setup`: scheduled events can be turned off (setting `event_schedule_enabled`). The bot is then fully set up and creates no events by itself.
+- `/create event` takes the optional options `slots`, `start` and `slot_minutes`, so each manual event can have its own shape. Manual events are recorded in the new table `manual_events` (migration `0015`) and are ignored by the event scheduler: they neither count toward the events kept ready nor move the schedule.
+- `/config show` lists `Scheduled events` and `First event date`.
+
 ## [1.1.0] - 2026-11-07
 
 ### Added

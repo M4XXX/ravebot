@@ -111,7 +111,7 @@ The bot never recreates what already exists. On every start it checks the databa
 
 ### 2.5 Adding an Event by Hand
 
-The bot keeps the configured number of future events itself (the number is set in `/setup`, step Events). To add one by hand, create a row in **Events** (or run `/create event`) and fill in:
+The bot keeps the configured number of future events itself (the number is set in `/setup`, step Events kept ready; scheduling can be turned off there). To add one by hand, create a row in **Events** (or run `/create event`) and fill in:
 
 - `ID` - `YYYY-MM-DD <name>`, e.g. `2026-12-31 New Year Rave`. Must be unique.
 - `Date`
@@ -140,7 +140,7 @@ If one of the bot's databases is deleted or moved to the trash, the bot creates 
 
 ### 2.8 Time Zone
 
-All start times are local wall-clock times, not UTC. The default zone is `Europe/Berlin`: an event at `21:00` starts at 21:00 CET in winter and 21:00 CEST in summer, so 21:00 stays 21:00 all year. The `Start` column, the slot times in the lineup post, the reminders and the day an event counts as "today" all use this zone. Discord timestamps are not used. The zone is stored in the setting `timezone` and is changed in `/setup` (Events step, button for the time zone; enter a name such as `Europe/Berlin`). Changing it moves the real start of existing events, because their `Start` text is kept as it is.
+All start times are local wall-clock times, not UTC. The default zone is `Europe/Berlin`: an event at `21:00` starts at 21:00 CET in winter and 21:00 CEST in summer, so 21:00 stays 21:00 all year. The `Start` column, the slot times in the lineup post, the reminders and the day an event counts as "today" all use this zone. Discord timestamps are not used. The zone is stored in the setting `timezone` and is changed in `/setup` (Time zone step: pick a zone or press **Other** and enter a name such as `Europe/Berlin`). Changing it moves the real start of existing events, because their `Start` text is kept as it is.
 
 ---
 
@@ -343,11 +343,17 @@ Run `/setup` in the channel where you want to set up (admins only). The bot post
 2. **DJ channel.** Pick the channel for the Lineup Update and the `Book a slot` button. The bot checks it can send messages and embeds there.
 3. **Log channel.** Pick the channel for bookings, new DJs, problems and DJ messages. Only organizers should see it. The same permission check runs.
 4. **Roles.** Pick the DJ role (the welcome DM goes to members who get it) and the invites role (the bot gives it to DJs who want automatic invites). The two roles must differ, `@everyone` and integration roles are refused, and the bot's own role must be above both. A button can create the invites role (default name `Active Booking`). Any role selection needs the Manage Roles permission: the bot refuses roles it cannot manage.
-5. **Events.** Slots per event, start time (local, `HH:MM`), slot length in minutes, one event every N days, number of future events kept ready. A second button sets the time zone (default `Europe/Berlin`).
+5. **Event settings, one step each.** Every step has a dropdown with common values and an **Other** button for your own value.
+   - **Slots per event** (1 to 100), **Start time** (local, `HH:MM`) and **Slot length** (minutes, 1 to 1440). They are the defaults for every event the bot creates, scheduled or by hand.
+   - **Scheduled events** (On or Off). Turn it off if you only create events by hand with `/create event`. The bot is then fully set up and creates no events by itself, and the next three steps are skipped.
+   - **Event interval** (days between two scheduled events, 1 to 365).
+   - **First event.** Pick the date of the first scheduled event, for example next Saturday; the next ones follow every interval days. Choose "As soon as the interval allows" to start one interval after the day of setup. The date must be today or later.
+   - **Events kept ready** (future scheduled events the bot keeps, 1 to 52).
+   - **Time zone** (default `Europe/Berlin`).
 6. **Automatic invites.** Turn invites on or off, how many days before an event the bot starts asking, and the hours it waits between two invites to the same DJ.
 7. **Summary.** Lists everything. **Activate** writes the settings, switches the bot on, creates the missing future events and posts the first Lineup Update (it reports how many events it created and whether it posted). The channels and roles must be chosen first.
 
-Nothing is stored until Activate. Defaults: 6 slots, 20:00, 60 minutes, every 7 days, 6 events ahead, invites on, 14 days before, 12 hours wait.
+Nothing is stored until Activate. Defaults: 6 slots, 20:00, 60 minutes, scheduling on, every 7 days, first event as soon as the interval allows, 6 events ahead, invites on, 14 days before, 12 hours wait.
 
 **Changing settings later.** Run `/setup` again. An active bot answers with a **Change settings** button. The wizard then starts from the stored values and ends with **Save** instead of Activate. Save only stores the values: it creates no events and posts nothing. Two warnings can appear in the summary: a changed time zone moves the real times of existing events, and a changed invites role does not move members to the new role.
 
@@ -363,7 +369,7 @@ All commands are for admins: the user IDs in `ADMIN_USER_IDS` plus the admins ad
 |---|---|
 | `/setup` | Guided setup; re-run it with **Change settings** to edit settings. Works while idle. |
 | `/config show` | Shows every setting (stored value or default) and the bot status. Works while idle. |
-| `/create event date:<YYYY-MM-DD>` | Creates an event by hand using the default start, slot length and slot count. |
+| `/create event date:<YYYY-MM-DD> [slots] [start] [slot_minutes]` | Creates an event by hand. `slots`, `start` (`HH:MM`) and `slot_minutes` are optional and default to the setup values, so each event can differ. Works with scheduling on or off; scheduled events ignore it: it neither counts toward the events kept ready nor moves the schedule. |
 | `/post lineup update [event:<event id>]` | Posts the lineup of the upcoming event, or of a chosen future event, in the DJ channel. |
 | `/book dj slot dj:<member> event:<event> slot:<number>` | Books a DJ into a slot without asking for confirmation. |
 | `/cancel dj slot dj:<member> event:<event> slot:<number>` | Frees a DJ's slot. |
@@ -382,7 +388,7 @@ The old commands `/config set`, `/add-event`, `/lineup post`, `/admin book`, `/a
 
 ### 7.5 Done and canceled events are replaced
 
-The bot keeps the configured number of future, open events. An event counts as open when its local date is today or later and its status is not Done or Canceled. When you set an event to Done or Canceled in Notion, the next poll (within five minutes) creates a new event so the count is met again. New events start one interval after the latest event date or today, whichever is later, and use the default start, slot length and slot count. Past events and events with Done or Canceled status never count.
+The bot keeps the configured number of future, open events. An event counts as open when its local date is today or later and its status is not Done or Canceled. When you set an event to Done or Canceled in Notion, the next poll (within five minutes) creates a new event so the count is met again. New events follow the schedule: with a first event date set and no scheduled event ahead, the first one gets that date and the next ones follow every interval days; otherwise they start one interval after the latest scheduled event date or today, whichever is later. They use the default start, slot length and slot count. Events created by hand with `/create event` are not scheduled events: they never count toward the number and never move the schedule. A date that already has a manual event is skipped. With scheduling off in `/setup` the bot creates no events. Past events and events with Done or Canceled status never count.
 
 ### 7.6 Joining the Active DJ Booking Group
 
