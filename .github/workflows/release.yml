@@ -62,6 +62,10 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ steps.name.outputs.image }}
+          # latest comes from the raw rule below only; metadata-action v6 would add it a
+          # second time on its own, and the duplicate tag made the GHCR push fail
+          flavor: |
+            latest=false
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}},enable=${{ !contains(github.ref_name, '-') }}
