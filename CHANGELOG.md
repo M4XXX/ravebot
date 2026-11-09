@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Lineup Update design: the title shows the event name and date, a summary line shows how many slots are booked, and each slot is one line with a bold time (`**20:00**  🎧 DJ name` or `**21:00**  ▫️ *open slot*`).
+- Show lineup in a DM: pressing another event's button now switches the same message to that event and keeps the buttons, instead of sending a new message without them. The buttons are labelled with the date and keep working after a restart.
+
 ### Added
 
 - `/setup`: the Events popup is split into one step per setting (slots, start time, slot length, interval, first event date, events kept ready, time zone). Each step has a dropdown with common values and an **Other** button for your own value.

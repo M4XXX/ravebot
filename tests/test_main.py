@@ -145,6 +145,16 @@ async def test_startup_registers_log_reply_view() -> None:
 
 
 @pytest.mark.asyncio
+async def test_startup_registers_lineup_pick_view() -> None:
+    from bot.ui.views import LineupEventPickView
+
+    s = _Startup()
+    await s.run()
+    added = [c.args[0] for c in s.bot.add_view.call_args_list]
+    assert any(isinstance(v, LineupEventPickView) for v in added)
+
+
+@pytest.mark.asyncio
 async def test_startup_registers_setup_wizard_view_and_cog() -> None:
     from bot.cogs.setup import SetupCog
     from bot.ui.setup_wizard import SetupWizardView

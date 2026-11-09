@@ -383,14 +383,19 @@ async def test_show_lineup_single_event_has_no_pick_view() -> None:
     assert kw.get("view") is None
 
 
+def _pick_ctx(events):
+    ctx = make_real_ctx(db=MagicMock())
+    ctx.notion_client = MagicMock()
+    ctx.notion_client.list_events = AsyncMock(return_value=events)
+    return ctx
+
+
 @pytest.mark.asyncio
 async def test_show_lineup_multi_event_offers_picker_capped_at_five() -> None:
     from bot.ui.views import FallbackMenuView, LineupEventPickView
 
     events = [_lineup_event(f"E{i}", i + 1) for i in range(7)]
-    ctx = make_real_ctx(db=MagicMock())
-    ctx.notion_client = MagicMock()
-    ctx.notion_client.list_events = AsyncMock(return_value=events)
+    ctx = _pick_ctx(events)
     view = FallbackMenuView(ctx)
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.response.send_message = AsyncMock()
@@ -400,16 +405,100 @@ async def test_show_lineup_multi_event_offers_picker_capped_at_five() -> None:
     kw = inter.response.send_message.call_args.kwargs
     pick = kw["view"]
     assert isinstance(pick, LineupEventPickView)
-    assert [c.label for c in pick.children] == ["E0", "E1", "E2", "E3", "E4"]
+    assert [c.label for c in pick.children] == [e.date.strftime("%d.%m.%Y") for e in events[:5]]
+    assert [c.custom_id for c in pick.children] == [f"lineup_pick:{i}" for i in range(5)]
+    assert [c.style for c in pick.children] == [
+        disnake.ButtonStyle.primary, *[disnake.ButtonStyle.secondary] * 4
+    ]
     assert kw["embed"].footer.text == "E0"
 
-    # tapping a button replies privately with that event's lineup
-    inter2 = MagicMock(spec=disnake.MessageInteraction)
-    inter2.response.send_message = AsyncMock()
-    await pick.children[2].callback(inter2)
-    kw2 = inter2.response.send_message.call_args.kwargs
-    assert kw2["embed"].footer.text == "E2"
-    assert kw2["ephemeral"] is True
+
+@pytest.mark.asyncio
+async def test_tapping_an_event_edits_the_same_message_and_keeps_the_buttons() -> None:
+    from bot.ui.views import LineupEventPickView
+
+    events = [_lineup_event(f"E{i}", i + 1) for i in range(3)]
+    ctx = _pick_ctx(events)
+    pick = LineupEventPickView(events, ctx)
+    inter = MagicMock(spec=disnake.MessageInteraction)
+    inter.response.edit_message = AsyncMock()
+    inter.response.send_message = AsyncMock()
+
+    await pick.children[2].callback(inter)
+
+    inter.response.send_message.assert_not_awaited()
+    kw = inter.response.edit_message.call_args.kwargs
+    assert kw["embed"].footer.text == "E2"
+    new_view = kw["view"]
+    assert isinstance(new_view, LineupEventPickView)
+    assert [c.style for c in new_view.children] == [
+        disnake.ButtonStyle.secondary, disnake.ButtonStyle.secondary, disnake.ButtonStyle.primary
+    ]
+
+
+@pytest.mark.asyncio
+async def test_pick_buttons_work_after_a_restart_by_position() -> None:
+    from bot.ui.views import LineupEventPickView
+
+    events = [_lineup_event(f"E{i}", i + 1) for i in range(3)]
+    ctx = _pick_ctx(events)
+    registered = LineupEventPickView([], ctx, all_buttons=True)
+    assert [c.custom_id for c in registered.children] == [f"lineup_pick:{i}" for i in range(5)]
+    assert registered.timeout is None
+    inter = MagicMock(spec=disnake.MessageInteraction)
+    inter.response.edit_message = AsyncMock()
+    await registered.children[1].callback(inter)
+    assert inter.response.edit_message.call_args.kwargs["embed"].footer.text == "E1"
+
+
+@pytest.mark.asyncio
+async def test_pick_beyond_the_current_events_shows_the_first_one() -> None:
+    from bot.ui.views import LineupEventPickView
+
+    events = [_lineup_event(f"E{i}", i + 1) for i in range(2)]
+    ctx = _pick_ctx(events)
+    inter = MagicMock(spec=disnake.MessageInteraction)
+    inter.response.edit_message = AsyncMock()
+    await LineupEventPickView([], ctx, all_buttons=True).children[4].callback(inter)
+    assert inter.response.edit_message.call_args.kwargs["embed"].footer.text == "E0"
+
+
+@pytest.mark.asyncio
+async def test_pick_with_no_upcoming_events_says_so_and_removes_the_buttons() -> None:
+    from bot.ui import texts
+    from bot.ui.views import LineupEventPickView
+
+    ctx = _pick_ctx([])
+    inter = MagicMock(spec=disnake.MessageInteraction)
+    inter.response.edit_message = AsyncMock()
+    await LineupEventPickView([], ctx, all_buttons=True).children[0].callback(inter)
+    kw = inter.response.edit_message.call_args.kwargs
+    assert kw == {"content": texts.NO_LINEUP, "embed": None, "view": None}
+
+
+@pytest.mark.asyncio
+async def test_pick_when_notion_fails_replies_privately_and_keeps_the_message() -> None:
+    from bot.ui import texts
+    from bot.ui.views import LineupEventPickView
+
+    ctx = _pick_ctx([])
+    ctx.notion_client.list_events = AsyncMock(side_effect=RuntimeError("down"))
+    inter = MagicMock(spec=disnake.MessageInteraction)
+    inter.response.edit_message = AsyncMock()
+    inter.response.send_message = AsyncMock()
+    await LineupEventPickView([], ctx, all_buttons=True).children[0].callback(inter)
+    inter.response.edit_message.assert_not_awaited()
+    inter.response.send_message.assert_awaited_once_with(texts.GENERIC_ERROR, ephemeral=True)
+
+
+@pytest.mark.asyncio
+async def test_pick_labels_show_the_event_id_when_two_events_share_a_date() -> None:
+    from bot.ui.views import LineupEventPickView
+
+    a = _lineup_event("Rave A", 3)
+    b = _lineup_event("Rave B", 3)
+    view = LineupEventPickView([a, b], make_real_ctx(db=MagicMock()))
+    assert [c.label for c in view.children] == ["Rave A", "Rave B"]
 
 
 @pytest.mark.asyncio
@@ -1821,7 +1910,7 @@ async def test_outreach_pick_slot_sends_lineup_and_open_slot_buttons() -> None:
     assert kwargs["content"] == texts.PICK_SLOT
     assert isinstance(kwargs["embed"], LineupUpdateEmbed)
     assert "Booked Bob" in kwargs["embed"].description
-    assert "OPEN SLOT" in kwargs["embed"].description
+    assert "open slot" in kwargs["embed"].description
     labels = [c.label for c in kwargs["view"].children]
     assert labels == [
         texts.slot_button(event, 0),

@@ -11,6 +11,7 @@ Classes:
     LineupUpdateEmbed      — "Lineup Update" post for the DJ channel (one per change)
 """
 import enum
+import re
 
 import disnake
 
@@ -87,29 +88,61 @@ class BookedEmbed(disnake.Embed):
 _MAX_DESCRIPTION = 4096
 
 
+_TITLE_ICON = "\U0001f3b6"
+_BOOKED_ICON = "\U0001f3a7"
+_OPEN_ICON = "\u25ab\ufe0f"
+_MAX_TITLE = 256
+_DATED_ID = re.compile(r"^\d{4}-\d{2}-\d{2}\s+(?P<name>.+)$")
+
+
+def _event_name(event: EventInfo) -> str:
+    """The event ID without its leading date (`2026-11-14 Rave Night` becomes `Rave Night`)."""
+    match = _DATED_ID.match(event.event_id)
+    return match.group("name") if match else event.event_id
+
+
+def lineup_title(event: EventInfo) -> str:
+    """`Rave Night \u00b7 Saturday 14.11.2026` with an icon; the name is cut to fit 256 chars."""
+    suffix = f" \u00b7 {texts.fmt_date(event)}"
+    prefix = f"{_TITLE_ICON} "
+    room = _MAX_TITLE - len(prefix) - len(suffix)
+    name = _event_name(event)
+    if len(name) > room:
+        name = name[: room - 1] + "\u2026"
+    return f"{prefix}{name}{suffix}"
+
+
+def _lineup_summary(booked: int, total: int) -> str:
+    if total > 0 and booked == total:
+        return f"All {total} slot booked" if total == 1 else f"All {total} slots booked"
+    noun = "slot" if total == 1 else "slots"
+    return f"{booked} of {total} {noun} booked \u00b7 {total - booked} open"
+
+
 def lineup_text(event: EventInfo) -> str:
-    """Lineup body: event line plus one line per slot; whole lines, capped at 4096 chars."""
+    """Lineup body: a summary line, then one line per slot; whole lines, capped at 4096 chars."""
     by_number = event.resolved_slots()
-    lines = [f"Event {texts.fmt_date(event)}"]
+    slot_lines: list[str] = []
+    booked = 0
     for index in range(event.slot_count):
         slot = by_number.get(index + 1)
-        holder = (
-            _safe_dj_name(slot.dj_name)
-            if slot is not None and slot.dj_page_id is not None
-            else "OPEN SLOT"
-        )
-        lines.append(f"Slot {index + 1}  {texts.fmt_time(event, index)}  {holder}")
-    text = "\n".join(lines)
+        time = f"**{texts.fmt_time(event, index)}**"
+        if slot is not None and slot.dj_page_id is not None:
+            booked += 1
+            slot_lines.append(f"{time}  {_BOOKED_ICON} {_safe_dj_name(slot.dj_name)}")
+        else:
+            slot_lines.append(f"{time}  {_OPEN_ICON} *open slot*")
+    head = [_lineup_summary(booked, event.slot_count), ""]
+    text = "\n".join([*head, *slot_lines])
     if len(text) <= _MAX_DESCRIPTION:
         return text
-    slot_lines = lines[1:]
     for keep in range(len(slot_lines), -1, -1):
         hidden = len(slot_lines) - keep
         note = f"{hidden} slot not shown" if hidden == 1 else f"{hidden} slots not shown"
-        candidate = "\n".join([lines[0], *slot_lines[:keep], note])
+        candidate = "\n".join([*head, *slot_lines[:keep], note])
         if len(candidate) <= _MAX_DESCRIPTION:
             return candidate
-    return lines[0]
+    return head[0]
 
 
 class LineupUpdateEmbed(disnake.Embed):
@@ -117,7 +150,7 @@ class LineupUpdateEmbed(disnake.Embed):
 
     def __init__(self, event: EventInfo) -> None:
         super().__init__(
-            title="Lineup Update",
+            title=lineup_title(event),
             description=lineup_text(event),
             colour=EmbedColors.MISSION_GOLD,
         )
