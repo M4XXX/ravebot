@@ -27,6 +27,11 @@ PROP_DJ_DISCORD_ID = "Discord ID"
 
 _START_RE = re.compile(r"^(\d{1,2}):(\d{2})$")
 
+# Event statuses the bot acts on (the full option list is in bot/notion/schema.py)
+STATUS_CANCELED = "Canceled"
+# Events with one of these statuses are over: no booking, lineup, outreach or reminders.
+FINISHED_STATUSES: frozenset[str] = frozenset({"Done", STATUS_CANCELED})
+
 # Upper bound for an event's slot count (Notion's Slots number is free text).
 MAX_SLOTS = 100
 

@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 import disnake
 
 from bot.db.config import get_value, set_value
-from bot.notion.models import EventInfo
+from bot.notion.models import FINISHED_STATUSES, EventInfo
 from bot.services import activation
 from bot.timezone import local_today
 from bot.ui import texts
@@ -26,7 +26,6 @@ logger = logging.getLogger(__name__)
 
 LINEUP_DEBOUNCE_SECONDS = 45
 SNAPSHOT_KEY = "lineup_post_snapshot"
-_EXCLUDED_STATUSES = {"Done", "Canceled"}
 
 _SENT = "sent"
 _NO_CONFIG = "no_config"
@@ -40,7 +39,7 @@ def _today() -> datetime.date:
 def future_events(events: list[EventInfo], today: datetime.date) -> list[EventInfo]:
     """Events dated today or later, not Done/Canceled, sorted by date and start."""
     eligible = [
-        e for e in events if e.date >= today and e.status not in _EXCLUDED_STATUSES
+        e for e in events if e.date >= today and e.status not in FINISHED_STATUSES
     ]
     return sorted(eligible, key=lambda e: (e.date, e.start))
 

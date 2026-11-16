@@ -275,3 +275,22 @@ async def test_slot_count_above_100_raises_before_any_request(env):
     with pytest.raises(ValueError):
         await client.create_event("E1", FUTURE, datetime.time(18, 0), 101, 60)
     assert len(fake.requests) == n
+
+
+@pytest.mark.asyncio
+async def test_set_event_status_patches_the_status_select(env):
+    fake, client, _nids = env
+    event = await client.create_event("2099-01-10 Rave Night", FUTURE, datetime.time(20, 0), 2, 60)
+    await client.set_event_status(event, "Canceled")
+    patches = fake.requests_to("PATCH", f"/pages/{event.page_id}")
+    assert len(patches) == 1
+    assert patches[0][2] == {"properties": {"Status": {"select": {"name": "Canceled"}}}}
+    listed = await client.list_events()
+    assert [e.status for e in listed] == ["Canceled"]
+
+
+def test_finished_statuses_are_shared():
+    from bot.notion.models import FINISHED_STATUSES, STATUS_CANCELED
+
+    assert STATUS_CANCELED == "Canceled"
+    assert FINISHED_STATUSES == frozenset({"Done", "Canceled"})

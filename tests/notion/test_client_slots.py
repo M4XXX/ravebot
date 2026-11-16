@@ -320,3 +320,26 @@ async def test_duplicate_slot_number_uses_lowest_page_id(env, call):
         await client.keep_first_dj(event, 0)
     touched = {path for _, path, _ in fake.requests if path in (f"/pages/{high}", f"/pages/{low}")}
     assert touched == {f"/pages/{low}"}
+
+
+@pytest.mark.asyncio
+async def test_empty_slot_writes_an_empty_relation(env):
+    fake, client = env
+    event = await make_event(client)
+    set_dj(fake, event.slots[1].page_id, "dj-1", "dj-extra")
+    await client.empty_slot(event, 1)
+    assert dj_of(fake, event.slots[1].page_id) == []
+    method, path, body = patches(fake)[-1]
+    assert path == f"/pages/{event.slots[1].page_id}"
+    assert body == {"properties": {"DJ": {"relation": []}}}
+
+
+@pytest.mark.asyncio
+async def test_empty_slot_without_a_row_raises(env):
+    import dataclasses
+
+    _fake, client = env
+    event = await make_event(client)
+    without_row_3 = dataclasses.replace(event, slots=event.slots[:2])
+    with pytest.raises(SlotRowMissingError):
+        await client.empty_slot(without_row_3, 2)

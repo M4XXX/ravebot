@@ -497,6 +497,27 @@ class NotionClient:
         )
         return True
 
+    async def empty_slot(self, event: EventInfo, slot_index: int) -> None:
+        """Remove every DJ from the slot row (also DJs added by hand).
+
+        Raises SlotRowMissingError if the event has no row for the slot,
+        NotionWriteError after failed retries.
+        """
+        number = slot_index + 1
+        row = self._slot_row(event, number)
+        await self._write_slot_djs(
+            row.page_id, [], f"empty slot {number} of {event.event_id}"
+        )
+
+    async def set_event_status(self, event: EventInfo, status: str) -> None:
+        """Write the event's Status. Raises NotionWriteError after failed retries."""
+        await self._api.request(
+            "PATCH",
+            f"/pages/{event.page_id}",
+            {"properties": {PROP_EVENT_STATUS: {"select": {"name": status}}}},
+            f"set status of {event.event_id} to {status}",
+        )
+
     async def force_assign_slot(
         self, event: EventInfo, slot_index: int, dj_page_id: str
     ) -> None:
