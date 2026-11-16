@@ -13,7 +13,7 @@ Never raises — errors in the log service must not crash the bot.
 [Source: epics.md#FR47, NFR11]
 """
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Literal
 
 import asyncpg
@@ -177,6 +177,18 @@ class AdminLogService:
             lambda: LogEntryEmbed(
                 texts.LOG_CANCELLED_TITLE,
                 texts.log_cancelled_text(_safe_dj_name(dj_name), event, slot_index),
+                EmbedColors.MISSION_GOLD,
+            )
+        )
+
+    async def log_event_canceled(
+        self, admin_name: str, event: EventInfo, dj_lines: Sequence[str]
+    ) -> None:
+        """An organizer canceled an event; dj_lines come from texts.dj_line()."""
+        await self._post_built(
+            lambda: LogEntryEmbed(
+                texts.LOG_EVENT_CANCELED_TITLE,
+                texts.log_event_canceled_text(_safe_dj_name(admin_name), event, dj_lines),
                 EmbedColors.MISSION_GOLD,
             )
         )

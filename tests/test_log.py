@@ -315,3 +315,18 @@ async def test_building_failure_does_not_raise(caplog) -> None:
     await service.log_cancelled("Nova", broken_event, 0)  # type: ignore[arg-type]
     await service.log_fully_booked(broken_event)  # type: ignore[arg-type]
     channel.send.assert_not_awaited()
+
+
+async def test_log_event_canceled_posts_one_gold_entry() -> None:
+    from bot.ui import texts
+
+    service, channel = _service()
+    event = _ev()
+    line = texts.dj_line("Nova", event, [0, 1])
+    await service.log_event_canceled("Max *x*", event, [line])
+    embed = _sent(channel)
+    assert embed.title == "Event canceled"
+    assert embed.description == (
+        "Max \\*x\\* canceled **EV-1**.\nBooked DJs:\n- Nova, slot 1 at 18:00, slot 2 at 19:00"
+    )
+    assert embed.color.value == GOLD

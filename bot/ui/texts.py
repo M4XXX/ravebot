@@ -1,4 +1,6 @@
 """Central catalog of user-facing strings and small formatters (no em dash allowed)."""
+from collections.abc import Sequence
+
 import disnake
 
 from bot.notion.models import EventInfo
@@ -615,3 +617,127 @@ def setup_active_message(created: int, posted: bool, channel: str | None) -> str
     return "\n".join(lines)
 
 SETUP_NOT_IN_GUILD = "Please use this command in a server channel."
+
+
+# --- /cancel event (the event is "canceled", as the Notion status spells it) ---
+
+LOG_EVENT_CANCELED_TITLE = "Event canceled"
+EVENT_CANCELED_ANYWAY = "The event was canceled anyway."
+EVENT_CANCEL_CLEANUP_TODO = "Remove the DJs from these Slots rows in Notion."
+EVENT_CANCEL_POST_FAILED = "The cancel notice could not be posted in the DJ channel."
+EVENT_CANCEL_KEPT = "Nothing was canceled."
+EVENT_NOT_CANCELABLE = (
+    "That event was not found, is in the past, or is already done or canceled."
+)
+EVENT_CANCEL_NOTION_FAILED = (
+    "Notion could not be updated. The event was not canceled and nobody was told."
+)
+EVENT_WAS_CANCELED = "This event was canceled. Open the menu again to pick another event."
+
+# Lines shown in the /cancel event confirm message before "and N more"
+_CONFIRM_MAX_LINES = 15
+# Discord allows 2000 characters per message
+_CONFIRM_MAX_CHARS = 1900
+
+
+def _slots_phrase(event: EventInfo, slot_indexes: Sequence[int]) -> str:
+    return ", ".join(slot_phrase(event, index) for index in slot_indexes)
+
+
+def dm_event_canceled(event: EventInfo, slot_indexes: Sequence[int]) -> str:
+    return (
+        f"The event {escape_text(event.event_id)} was canceled by an organizer. "
+        f"Your booking ({_slots_phrase(event, slot_indexes)}) is canceled too."
+    )
+
+
+def dj_line(name: str, event: EventInfo, slot_indexes: Sequence[int]) -> str:
+    """One list line for a booked DJ; the name is escaped."""
+    return f"- {escape_text(name)}, {_slots_phrase(event, slot_indexes)}"
+
+
+def log_event_canceled_text(admin: str, event: EventInfo, dj_lines: Sequence[str]) -> str:
+    """dj_lines come from dj_line(); admin is already escaped by the log service."""
+    head = f"{admin} canceled {_ev(event)}."
+    if not dj_lines:
+        return f"{head}\nNo DJ was booked."
+    return f"{head}\nBooked DJs:\n" + "\n".join(dj_lines)
+
+
+def dj_channel_event_canceled(event: EventInfo) -> str:
+    return f"{_ev(event)} on {fmt_date(event)} is canceled."
+
+
+def event_canceled_dm_failed(name: str, event: EventInfo) -> str:
+    return (
+        f"The notice that {_ev(event)} was canceled could not be delivered to "
+        f"{escape_text(name)} because their DMs are closed or the bot cannot reach them."
+    )
+
+
+def event_canceled_no_discord(name: str, event: EventInfo) -> str:
+    return (
+        f"{escape_text(name)} has no Discord account, so the bot could not tell them "
+        f"that {_ev(event)} was canceled."
+    )
+
+
+def tell_canceled_todo(name: str) -> str:
+    return f"Tell {escape_text(name)} yourself that the event is canceled."
+
+
+def event_cancel_cleanup_failed(event: EventInfo, slot_indexes: Sequence[int]) -> str:
+    numbers = ", ".join(str(index + 1) for index in slot_indexes)
+    return (
+        f"{_ev(event)} was canceled, but these slots could not be emptied in Notion: {numbers}."
+    )
+
+
+def _capped(items: Sequence[str]) -> list[str]:
+    """At most _CONFIRM_MAX_LINES items, then "and N more"."""
+    shown = list(items[:_CONFIRM_MAX_LINES])
+    if len(items) > _CONFIRM_MAX_LINES:
+        shown.append(f"and {len(items) - _CONFIRM_MAX_LINES} more")
+    return shown
+
+
+def cancel_event_confirm(
+    event: EventInfo, dj_lines: Sequence[str], by_hand: Sequence[str]
+) -> str:
+    """The question of the /cancel event confirm step.
+
+    dj_lines (from dj_line()) are the DJs told by DM; by_hand are raw names of DJs
+    without a Discord account.
+    """
+    parts = [f"Cancel the event {_ev(event)}?"]
+    if not dj_lines and not by_hand:
+        parts.append("No DJ is booked.")
+    if dj_lines:
+        parts.append("These DJs are booked and will be told by DM:")
+        parts.extend(_capped(dj_lines))
+    if by_hand:
+        names = ", ".join(_capped([escape_text(name) for name in by_hand]))
+        parts.append(f"Without a Discord account, tell them yourself: {names}")
+    text = "\n".join(parts)
+    if len(text) > _CONFIRM_MAX_CHARS:
+        text = text[:_CONFIRM_MAX_CHARS] + "\n..."
+    return text
+
+
+def event_cancel_done(
+    event: EventInfo,
+    notified: Sequence[str],
+    by_hand: Sequence[str],
+    failed_slots: Sequence[int],
+) -> str:
+    """The answer to the admin after /cancel event ran."""
+    text = f"Canceled {escape_text(event.event_id)}."
+    if notified:
+        count = len(notified)
+        text += f" {count} DJ{'s' if count != 1 else ''} told by DM."
+    if by_hand:
+        names = ", ".join(_capped([escape_text(name) for name in by_hand]))
+        text += f" Tell these DJs yourself: {names}."
+    if failed_slots:
+        text += " Some slots could not be emptied in Notion, see the log channel."
+    return text
