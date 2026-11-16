@@ -307,3 +307,28 @@ async def test_send_reminders_skips_guest_djs_without_a_log_entry():
     record.assert_not_awaited()
     svc.bot.get_user.assert_not_called()
     svc.log_service.post_error.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_send_reminders_skips_a_canceled_event():
+    """A canceled event in the window sends nothing, even if a slot lock is left over."""
+    import dataclasses
+
+    event = dataclasses.replace(
+        _make_event(page_id="evt-001", event_date="2026-05-22"), status="Canceled"
+    )
+    svc = _make_service(list_events_result=[event])
+    user_mock = MagicMock()
+    user_mock.send = AsyncMock()
+    svc.bot.get_user = MagicMock(return_value=user_mock)
+    booked_dj = {"discord_user_id": 123, "dj_name": "DJ Test", "slot_index": 0,
+                 "event_id": "evt-001"}
+    with patch(
+        "bot.services.reminders.get_booked_djs_for_event",
+        new=AsyncMock(return_value=[booked_dj]),
+    ), patch(
+        "bot.services.reminders.has_reminder_been_sent", new=AsyncMock(return_value=False)
+    ), patch("bot.services.reminders.record_reminder_sent", new=AsyncMock()) as mock_record:
+        await svc.send_reminders(guild_id=1, ctx=MagicMock(), _now=FIXED_NOW)
+    user_mock.send.assert_not_awaited()
+    mock_record.assert_not_awaited()

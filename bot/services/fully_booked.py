@@ -11,7 +11,7 @@ import asyncpg
 
 from bot.db import fully_booked as fb_db
 from bot.log import AdminLogService
-from bot.notion.models import EventInfo
+from bot.notion.models import FINISHED_STATUSES, EventInfo
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +45,8 @@ async def check_fully_booked(
     try:
         announced = await fb_db.get_announced(db, [e.page_id for e in events])
         for event in events:
+            if event.status in FINISHED_STATUSES:
+                continue  # done or canceled: nothing to announce, nothing to reopen
             full = is_fully_booked(event)
             if full and event.page_id not in announced:
                 if await fb_db.mark_announced(db, event.page_id) and log_service is not None:

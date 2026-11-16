@@ -502,3 +502,39 @@ def test_open_slots_ignores_duplicate_rows_and_rows_above_the_count():
         make_slot(3, dj_page_id="d", page_id="c"),
     ])
     assert OutreachService._open_slots(event) == 2
+
+
+async def _run_with_status(status: str, seq):
+    import dataclasses
+
+    event = dataclasses.replace(_make_event(days_ahead=5, slots=6, djs_booked=0), status=status)
+    svc = _make_service(list_events_result=[event])
+    with patch("bot.services.outreach.get_value", new=AsyncMock(return_value=None)), \
+         patch("bot.services.outreach.upsert_sequence", new=AsyncMock()) as upsert, \
+         patch("bot.services.outreach.get_sequence", new=AsyncMock(return_value=seq)), \
+         patch("bot.services.outreach.mark_sequence_complete", new=AsyncMock()) as complete:
+        result = await svc.run_gap_detection(guild_id=1)
+    return svc, result, upsert, complete
+
+
+@pytest.mark.asyncio
+async def test_run_gap_detection_skips_a_canceled_event():
+    _svc, result, upsert, complete = await _run_with_status("Canceled", None)
+    assert result == []
+    upsert.assert_not_awaited()
+    complete.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_run_gap_detection_completes_the_active_sequence_of_a_canceled_event():
+    svc, result, upsert, complete = await _run_with_status("Canceled", _active_seq())
+    assert result == []
+    upsert.assert_not_awaited()
+    complete.assert_awaited_once_with(svc.db, "evt-001")
+
+
+@pytest.mark.asyncio
+async def test_run_gap_detection_skips_a_done_event():
+    _svc, result, upsert, _complete = await _run_with_status("Done", None)
+    assert result == []
+    upsert.assert_not_awaited()

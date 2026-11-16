@@ -29,7 +29,7 @@ from bot.db.outreach import (
     update_outreach_contact_status,
     upsert_sequence,
 )
-from bot.notion.models import EventInfo
+from bot.notion.models import FINISHED_STATUSES, EventInfo
 from bot.ui import texts
 
 if TYPE_CHECKING:
@@ -136,6 +136,18 @@ class OutreachService:
         for event in events:
             event_id = event.page_id
             if not event_id:
+                continue
+
+            # A done or canceled event needs no DJs: stop its outreach, start none
+            if event.status in FINISHED_STATUSES:
+                try:
+                    seq = await get_sequence(self.db, event_id)
+                    if seq is not None and seq["status"] == "active":
+                        await mark_sequence_complete(self.db, event_id)
+                except Exception as exc:
+                    logger.warning(
+                        "OutreachService: error closing the sequence of %s: %s", event_id, exc
+                    )
                 continue
 
             # Event time = start of the first slot — skip if outside window (AC1)

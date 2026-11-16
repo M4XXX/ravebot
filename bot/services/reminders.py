@@ -19,7 +19,7 @@ from bot.db.reminders import (
     has_reminder_been_sent,
     record_reminder_sent,
 )
-from bot.notion.models import EventInfo
+from bot.notion.models import FINISHED_STATUSES, EventInfo
 from bot.ui import texts
 from bot.ui.embeds import ErrorCode
 
@@ -107,7 +107,11 @@ class RemindersService:
 
         # Step 2: filter to 20-28h window (compute 'now' once for the whole cycle)
         now = _now if _now is not None else datetime.datetime.now(UTC)
-        upcoming = [e for e in events if self._is_in_reminder_window(e, now)]
+        upcoming = [
+            e
+            for e in events
+            if e.status not in FINISHED_STATUSES and self._is_in_reminder_window(e, now)
+        ]
         if not upcoming:
             return
 
