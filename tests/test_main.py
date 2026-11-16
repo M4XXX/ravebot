@@ -404,3 +404,14 @@ async def test_failed_recovery_withdraws_the_approval() -> None:
     assert "parent page not shared" in seen["error"]
     assert stored["notion_recreate_approved"] == "0"
     assert s.ctx.notion_problem == "gone"
+
+
+@pytest.mark.asyncio
+async def test_startup_builds_the_event_cancel_service() -> None:
+    from bot.services.event_cancel import EventCancelService
+
+    s = _Startup()
+    await s.run()
+
+    assert s.ctx is not None
+    assert isinstance(s.ctx.event_cancel_service, EventCancelService)

@@ -503,3 +503,17 @@ async def test_delivered_notion_dm_posts_no_error_entry(monkeypatch):
     env = Env(monkeypatch, [event_with(dj_row(1, X), make_slot(2))])
     await env.svc.run_cycle(1)
     env.log.post_error.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_run_cycle_ignores_canceled_events(monkeypatch):
+    """A leftover DJ in a canceled event's Notion row is not booked back or told."""
+    import dataclasses
+
+    canceled = dataclasses.replace(event_with(dj_row(1, X)), status="Canceled")
+    env = Env(monkeypatch, [canceled], {(PAGE, 0): lock(None), (PAGE, 1): lock(None)})
+    actions = await env.svc.run_cycle(1)
+    assert actions == []
+    env.acquire.assert_not_awaited()
+    env.user.send.assert_not_awaited()
+    env.get_locks.assert_awaited_once_with(env.db, [])

@@ -198,3 +198,23 @@ async def test_recheck_records_time_before_listing_events(store, log) -> None:
     await recheck_fully_booked(MagicMock(), log, notion)
     (event_id, cutoff), = store.clear_calls
     assert before <= cutoff <= datetime.datetime.now(datetime.UTC)
+
+
+@pytest.mark.asyncio
+async def test_check_fully_booked_ignores_a_canceled_full_event(store, log) -> None:
+    import dataclasses
+
+    event = dataclasses.replace(_event(3), status="Canceled")
+    await check_fully_booked(MagicMock(), log, [event])
+    log.log_fully_booked.assert_not_awaited()
+    assert store.rows == set()
+
+
+@pytest.mark.asyncio
+async def test_check_fully_booked_keeps_the_flag_of_a_canceled_event(store, log) -> None:
+    import dataclasses
+
+    store.rows.add("ev-1")
+    event = dataclasses.replace(_event(0), status="Canceled")
+    await check_fully_booked(MagicMock(), log, [event])
+    assert store.clear_calls == []

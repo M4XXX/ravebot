@@ -91,7 +91,7 @@ All checks should pass before opening a PR or building a release image.
 output/ravebot/
 ├── bot/
 │   ├── cogs/               # Slash command handlers
-│   │   ├── admin.py        # /config show, /create event, /post lineup update, /book dj slot, /cancel dj slot, /dj add|edit|remove, /list all djs, /automatic dj booking
+│   │   ├── admin.py        # /config show, /create event, /post lineup update, /book dj slot, /cancel dj slot, /cancel event, /dj add|edit|remove, /list all djs, /automatic dj booking
 │   │   ├── booking.py      # DJ self-service booking (thin shell - logic in views.py)
 │   │   ├── events.py       # Lineup post auto-update, event auto-creation
 │   │   ├── onboarding.py   # DJ role detection, welcome DM, DM routing
@@ -110,6 +110,7 @@ output/ravebot/
 │   │   ├── admin_booking.py
 │   │   ├── fully_booked.py # check_fully_booked(): once-per-fill announcements
 │   │   ├── dj_pages.py     # ensure_dj_page(): a DJ's row in the DJs database
+│   │   ├── event_cancel.py # EventCancelService: /cancel event (status, bookings, notices)
 │   │   ├── event_defaults.py # default start, slot length, slots per event (config)
 │   │   ├── event_replenish.py # replenish_events(): keeps future open events ready
 │   │   ├── lineup.py       # LineupService: posts, snapshot dedupe, upcoming_event
@@ -168,6 +169,7 @@ Registered by `AdminCog` (`bot/cogs/admin.py`) and `SetupCog` (`bot/cogs/setup.p
 /post lineup update [event]
 /book dj slot event slot [dj | guest]
 /cancel dj slot event slot [dj | guest]
+/cancel event event
 /dj add name link [backup_link] [vrchat_name] [logo] [discord_user]
 /dj edit dj [name] [link] [backup_link] [vrchat_name] [logo]
 /dj remove dj

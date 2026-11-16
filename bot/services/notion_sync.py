@@ -35,6 +35,7 @@ from bot.db.bookings import (
 )
 from bot.db.event_shapes import get_event_shapes, upsert_event_shape
 from bot.notion.client import NotionWriteError
+from bot.notion.models import STATUS_CANCELED
 from bot.services.dj_pages import ensure_dj_page
 from bot.services.dm import dm_user
 from bot.services.notion_sync_plan import SyncAction, plan_sync
@@ -73,7 +74,10 @@ class NotionSyncService:
 
         Raises only if the Notion read or the lock/shape queries fail.
         """
-        events = await self.notion_client.list_events()
+        # A canceled event is not reconciled: a DJ left in its Notion rows stays unbooked
+        events = [
+            e for e in await self.notion_client.list_events() if e.status != STATUS_CANCELED
+        ]
         page_ids = [e.page_id for e in events]
         locks = await get_slot_locks_for_events(self.db, page_ids)
         shapes = await get_event_shapes(self.db, page_ids)

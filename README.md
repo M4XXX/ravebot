@@ -223,6 +223,7 @@ All admin commands work on the server only (not in DMs).
 | `/post lineup update` | Admin | Post the lineup of the next (or a chosen future) event |
 | `/book dj slot` | Admin | Book a slot for any DJ, also a guest |
 | `/cancel dj slot` | Admin | Free any booking |
+| `/cancel event` | Admin | Cancel an upcoming event and tell its booked DJs |
 | `/dj add`, `/dj edit`, `/dj remove` | Admin | Add, change or delete a DJ, also guests without Discord |
 | `/list all djs` | Admin | List all DJs and who gets automatic invites |
 | `/automatic dj booking` | Admin | Put a DJ into or out of the automatic invites |

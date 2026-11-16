@@ -108,6 +108,7 @@ class BotContext:
     admin_booking_service: "Any | None" = None
     notion_sync_service: "Any | None" = None
     dj_admin_service: "Any | None" = None
+    event_cancel_service: "Any | None" = None
     # Set while the stored Notion databases are gone and no new set was approved yet:
     # the reason, and the coroutine function the admin page calls to create a new set.
     notion_problem: str | None = None

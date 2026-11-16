@@ -14,7 +14,7 @@ from bot.db.bookings import init_event_slots
 from bot.db.config import get_value, set_value
 from bot.db.manual_events import get_manual_page_ids
 from bot.notion.client import DuplicateEventError, NotionWriteError
-from bot.notion.models import EventInfo
+from bot.notion.models import FINISHED_STATUSES, EventInfo
 from bot.services.event_defaults import default_event_shape
 from bot.timezone import local_today
 
@@ -39,7 +39,6 @@ def replenish_guard() -> asyncio.Lock:
     return _replenish_lock()
 
 
-_FINISHED_STATUSES = {"Done", "Canceled"}
 FIRST_DATE_KEY = "first_event_date"
 # Extra dates tried beyond `missing` when some dates already hold an event.
 _SKIP_ALLOWANCE = 52
@@ -118,7 +117,7 @@ async def _replenish(db, notion_client, guild_id: int, events: list[EventInfo]) 
     today = local_today()
     manual = await get_manual_page_ids(db, [e.page_id for e in events])
     scheduled = [e for e in events if e.page_id not in manual]
-    active = [e for e in scheduled if e.date >= today and e.status not in _FINISHED_STATUSES]
+    active = [e for e in scheduled if e.date >= today and e.status not in FINISHED_STATUSES]
     missing = lookahead - len(active)
     if missing <= 0:
         return 0
