@@ -6,6 +6,7 @@ Command tree (disnake nesting, spaces are levels):
   /post lineup update
   /book dj slot
   /cancel dj slot
+  /cancel event
   /dj add, /dj edit, /dj remove
   /list all djs
   /automatic dj booking
@@ -467,7 +468,7 @@ class AdminCog(commands.Cog):
         pass
 
     @commands.slash_command(
-        name="cancel", description="Cancel bookings (admin only)", contexts=SERVER_ONLY
+        name="cancel", description="Cancel bookings or events (admin only)", contexts=SERVER_ONLY
     )
     async def cancel_base(self, inter: disnake.ApplicationCommandInteraction) -> None:
         pass
@@ -595,6 +596,48 @@ class AdminCog(commands.Cog):
 
     @cancel_dj_slot.autocomplete("event")
     async def cancel_event_autocomplete(
+        self, inter: disnake.ApplicationCommandInteraction, user_input: str
+    ) -> list[str]:
+        return await self.future_event_autocomplete(inter, user_input)
+
+    @cancel_base.sub_command(
+        name="event", description="Cancel an upcoming event and tell its DJs"
+    )
+    async def cancel_event(
+        self,
+        inter: disnake.ApplicationCommandInteraction,
+        event: str = commands.Param(description="The event to cancel (pick one from the list)"),
+    ) -> None:
+        """Ask for confirmation, then cancel the event through EventCancelService.
+
+        Nothing is changed or sent before the admin presses "Cancel event".
+        """
+        service = self.ctx.event_cancel_service
+        if service is None:
+            await inter.response.send_message(
+                "The bot is not ready yet. Please try again in a moment.", ephemeral=True
+            )
+            return
+        await inter.response.defer(ephemeral=True)
+        preview = await service.preview(event)
+        if preview is None:
+            await inter.followup.send(texts.EVENT_NOT_CANCELABLE, ephemeral=True)
+            return
+        told = [
+            texts.dj_line(dj.name, preview.event, dj.slot_indexes)
+            for dj in preview.djs
+            if dj.reachable
+        ]
+        by_hand = [dj.name for dj in preview.djs if not dj.reachable]
+        view = _ConfirmCancelEvent(
+            self.ctx, service, preview.event.event_id, inter.author.id, inter
+        )
+        await inter.followup.send(
+            texts.cancel_event_confirm(preview.event, told, by_hand), view=view, ephemeral=True
+        )
+
+    @cancel_event.autocomplete("event")
+    async def cancel_whole_event_autocomplete(
         self, inter: disnake.ApplicationCommandInteraction, user_input: str
     ) -> list[str]:
         return await self.future_event_autocomplete(inter, user_input)
@@ -949,3 +992,55 @@ class _ConfirmDelete(disnake.ui.View):
     async def keep(self, button: disnake.ui.Button, inter: disnake.MessageInteraction) -> None:
         self.stop()
         await inter.response.edit_message(content="Nothing was deleted.", view=None)
+
+
+class _ConfirmCancelEvent(disnake.ui.View):
+    """Cancel event / Keep event buttons for /cancel event.
+
+    Only the admin who ran the command; expires after two minutes without a change.
+    """
+
+    def __init__(
+        self,
+        ctx: BotContext,
+        service,
+        event_name: str,
+        admin_id: int,
+        inter: disnake.ApplicationCommandInteraction,
+    ) -> None:
+        super().__init__(timeout=120)
+        self._ctx = ctx
+        self._service = service
+        self._event_name = event_name
+        self._admin_id = admin_id
+        self._inter = inter  # the command interaction, to edit the question on timeout
+
+    async def interaction_check(self, inter: disnake.MessageInteraction) -> bool:
+        return inter.author.id == self._admin_id and self._ctx.is_admin(inter.author.id)
+
+    async def on_timeout(self) -> None:
+        try:
+            await self._inter.edit_original_message(content=texts.EVENT_CANCEL_KEPT, view=None)
+        except Exception:
+            logger.debug("cancel event: could not edit the expired question", exc_info=True)
+
+    @disnake.ui.button(label="Cancel event", style=disnake.ButtonStyle.danger)
+    async def confirm(
+        self, button: disnake.ui.Button, inter: disnake.MessageInteraction
+    ) -> None:
+        self.stop()
+        await inter.response.defer()
+        try:
+            result = await self._service.cancel_event(
+                admin_name=inter.author.name, event_name=self._event_name
+            )
+            text = result.message
+        except Exception:
+            logger.exception("cancel event: the service raised")
+            text = texts.GENERIC_ERROR
+        await inter.edit_original_message(content=text, view=None)
+
+    @disnake.ui.button(label="Keep event", style=disnake.ButtonStyle.secondary)
+    async def keep(self, button: disnake.ui.Button, inter: disnake.MessageInteraction) -> None:
+        self.stop()
+        await inter.response.edit_message(content=texts.EVENT_CANCEL_KEPT, view=None)

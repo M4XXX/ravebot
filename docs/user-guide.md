@@ -376,6 +376,7 @@ All commands are for admins: the user IDs in `ADMIN_USER_IDS` plus the admins ad
 | `/post lineup update [event:<event id>]` | Posts the lineup of the upcoming event, or of a chosen future event, in the DJ channel. |
 | `/book dj slot event:<event> slot:<number> dj:<member>` or `guest:<name>` | Books a DJ into a slot without asking for confirmation. Use `dj` for a server member, or `guest` to pick a DJ from the DJ list by name (also DJs without Discord). |
 | `/cancel dj slot event:<event> slot:<number> dj:<member>` or `guest:<name>` | Frees a DJ's slot. |
+| `/cancel event event:<event>` | Cancels an upcoming event after you confirm. The event gets the status `Canceled` in Notion and its bookings are removed. Booked DJs are told by DM; DJs the bot cannot reach (closed DMs, guests without Discord) are listed in the log channel so you can tell them yourself. If at least one DJ was booked, the DJ channel gets a notice. With scheduling on, one new event is added at the end of the schedule; the canceled date stays empty. |
 | `/dj add name:<name> link:<stream link> [backup_link] [vrchat_name] [logo] [discord_user]` | Adds a DJ to the DJ list. Leave `discord_user` empty for a guest who has no Discord account. `logo` is an optional PNG or JPEG up to 5 MB. |
 | `/dj edit dj:<name> [name] [link] [backup_link] [vrchat_name] [logo]` | Changes the given fields of a DJ. Send `-` for `backup_link` or `vrchat_name` to remove it. Changes are synced to Notion. |
 | `/dj remove dj:<name>` | Deletes a DJ after you confirm. Their bookings in upcoming events are cancelled. Past bookings stay. |
@@ -497,6 +498,7 @@ Set it in `/setup` (step 3, Log channel); `/config show` shows the current chann
 | `Cancelled` | A DJ cancelled a slot by DM. |
 | `Changed by an organizer` | An organizer booked or removed a DJ with `/book dj slot` or `/cancel dj slot`. |
 | `Changed in Notion` | A DJ was removed from a slot by hand in Notion. |
+| `Event canceled` | An organizer canceled an event with `/cancel event`. Lists the DJs who were booked. |
 | `Event fully booked` | Every slot of an event has a DJ. Posted once per fill, and again if a slot opens and the event fills up once more. |
 | `New DJ` | A DJ joined the pool. |
 | `Message from <name>` | A user sent the bot a DM that is not part of a booking flow or a DJ profile conversation. |

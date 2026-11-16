@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `/cancel event`: cancel one upcoming event after a confirm step. The event gets the status
+  `Canceled` in Notion and its bookings are removed. Booked DJs are told by DM, the log
+  channel names DJs to tell by hand (closed DMs, guests without Discord), and the DJ channel
+  gets a notice when DJs were booked.
+
+### Fixed
+
+- Canceled events no longer get outreach invites, reminders or a fully-booked entry, and the
+  Notion sync no longer books DJs back into them.
+
 ## [1.2.0] - 2026-11-09
 
 ### Fixed

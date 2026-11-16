@@ -943,6 +943,7 @@ def test_command_tree_is_exactly_the_new_set() -> None:
         "post lineup update",
         "book dj slot",
         "cancel dj slot",
+        "cancel event",
         "dj add",
         "dj edit",
         "dj remove",
@@ -1599,3 +1600,193 @@ async def test_list_djs_splits_a_long_list_into_several_embeds() -> None:
     embeds = inter.response.send_message.call_args.kwargs["embeds"]
     assert len(embeds) > 1
     assert all(len(e.description) <= 4096 for e in embeds)
+
+
+# ---------------------------------------------------------------------------
+# /cancel event
+# ---------------------------------------------------------------------------
+
+
+def _cancel_event_cog(djs=(), preview=True):
+    import datetime
+
+    from bot.cogs.admin import AdminCog
+    from bot.services.event_cancel import BookedDj, CancelPreview, CancelResult
+    from tests.notion.factories import make_event
+
+    event = make_event(
+        event_id="2026-11-28 Rave Night",
+        date=datetime.date(2026, 11, 28),
+        start=datetime.time(22, 0),
+        slot_minutes=30,
+        slot_count=4,
+    )
+    booked = tuple(BookedDj(*dj) for dj in djs)
+    ctx = make_mock_ctx(frozenset({1}))
+    ctx.event_cancel_service = MagicMock()
+    ctx.event_cancel_service.preview = AsyncMock(
+        return_value=CancelPreview(event, booked) if preview else None
+    )
+    ctx.event_cancel_service.cancel_event = AsyncMock(
+        return_value=CancelResult(True, "Canceled it.")
+    )
+    return AdminCog(ctx), ctx, event
+
+
+def _click(user_id: int = 1) -> MagicMock:
+    click = MagicMock()
+    click.author.id = user_id
+    click.author.name = "Admin"
+    click.response.defer = AsyncMock()
+    click.response.edit_message = AsyncMock()
+    click.edit_original_message = AsyncMock()
+    return click
+
+
+@pytest.mark.asyncio
+async def test_cancel_event_not_ready_when_service_none() -> None:
+    cog, ctx, _ = _cancel_event_cog()
+    ctx.event_cancel_service = None
+    inter = make_mock_inter(user_id=1)
+    await cog.cancel_event.callback(cog, inter, "2026-11-28 Rave Night")
+    inter.response.send_message.assert_awaited_once()
+    assert "not ready" in inter.response.send_message.call_args[0][0].lower()
+    assert inter.response.send_message.call_args.kwargs["ephemeral"] is True
+    inter.response.defer.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cancel_event_unknown_event_replies_error() -> None:
+    from bot.ui import texts
+
+    cog, ctx, _ = _cancel_event_cog(preview=False)
+    inter = make_mock_inter(user_id=1)
+    await cog.cancel_event.callback(cog, inter, "nope")
+    reply, kwargs = assert_deferred_reply(inter)
+    assert reply == texts.EVENT_NOT_CANCELABLE
+    assert "view" not in kwargs
+    ctx.event_cancel_service.cancel_event.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cancel_event_shows_the_confirm_view_and_changes_nothing() -> None:
+    from bot.cogs.admin import _ConfirmCancelEvent
+    from bot.ui import texts
+
+    cog, ctx, event = _cancel_event_cog(djs=[(101, "DJ Alpha", (0, 2))])
+    inter = make_mock_inter(user_id=1)
+    await cog.cancel_event.callback(cog, inter, "2026-11-28 rave night")
+    ctx.event_cancel_service.preview.assert_awaited_once_with("2026-11-28 rave night")
+    reply, kwargs = assert_deferred_reply(inter)
+    assert reply == texts.cancel_event_confirm(
+        event, [texts.dj_line("DJ Alpha", event, (0, 2))], []
+    )
+    assert isinstance(kwargs["view"], _ConfirmCancelEvent)
+    ctx.event_cancel_service.cancel_event.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cancel_event_confirm_lists_a_guest_as_by_hand() -> None:
+    from bot.ui import texts
+
+    cog, _ctx, event = _cancel_event_cog(
+        djs=[(101, "DJ Alpha", (0,)), (-5, "Guesty", (1,)), (None, "Handmade", (2,))]
+    )
+    inter = make_mock_inter(user_id=1)
+    await cog.cancel_event.callback(cog, inter, "2026-11-28 Rave Night")
+    reply, _ = assert_deferred_reply(inter)
+    assert reply == texts.cancel_event_confirm(
+        event, [texts.dj_line("DJ Alpha", event, (0,))], ["Guesty", "Handmade"]
+    )
+
+
+async def _confirm_view(djs=()):
+    cog, ctx, event = _cancel_event_cog(djs=djs)
+    inter = make_mock_inter(user_id=1)
+    inter.edit_original_message = AsyncMock()
+    await cog.cancel_event.callback(cog, inter, "2026-11-28 rave night")
+    return inter.followup.send.call_args.kwargs["view"], ctx, inter, event
+
+
+@pytest.mark.asyncio
+async def test_confirm_button_runs_the_service_and_shows_the_result() -> None:
+    view, ctx, _inter, event = await _confirm_view()
+    click = _click()
+    await view.confirm.callback(click)
+    # the event's own ID is used, not what the admin typed
+    ctx.event_cancel_service.cancel_event.assert_awaited_once_with(
+        admin_name="Admin", event_name=event.event_id
+    )
+    click.edit_original_message.assert_awaited_once_with(content="Canceled it.", view=None)
+    assert view.is_finished()
+
+
+@pytest.mark.asyncio
+async def test_confirm_button_service_error_gives_the_generic_text() -> None:
+    from bot.ui import texts
+
+    view, ctx, _inter, _event = await _confirm_view()
+    ctx.event_cancel_service.cancel_event = AsyncMock(side_effect=RuntimeError("boom"))
+    click = _click()
+    await view.confirm.callback(click)
+    click.edit_original_message.assert_awaited_once_with(
+        content=texts.GENERIC_ERROR, view=None
+    )
+
+
+@pytest.mark.asyncio
+async def test_keep_button_changes_nothing() -> None:
+    from bot.ui import texts
+
+    view, ctx, _inter, _event = await _confirm_view()
+    click = _click()
+    await view.keep.callback(click)
+    click.response.edit_message.assert_awaited_once_with(
+        content=texts.EVENT_CANCEL_KEPT, view=None
+    )
+    ctx.event_cancel_service.cancel_event.assert_not_awaited()
+    assert view.is_finished()
+
+
+@pytest.mark.asyncio
+async def test_confirm_view_rejects_another_user() -> None:
+    view, _ctx, _inter, _event = await _confirm_view()
+    assert await view.interaction_check(_click(1)) is True
+    assert await view.interaction_check(_click(2)) is False
+
+
+@pytest.mark.asyncio
+async def test_confirm_view_times_out_after_two_minutes_and_edits_the_message() -> None:
+    from bot.ui import texts
+
+    view, ctx, inter, _event = await _confirm_view()
+    assert view.timeout == 120
+    await view.on_timeout()
+    inter.edit_original_message.assert_awaited_once_with(
+        content=texts.EVENT_CANCEL_KEPT, view=None
+    )
+    ctx.event_cancel_service.cancel_event.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_confirm_view_timeout_swallows_a_failed_edit() -> None:
+    view, _ctx, inter, _event = await _confirm_view()
+    inter.edit_original_message = AsyncMock(side_effect=RuntimeError("gone"))
+    await view.on_timeout()
+
+
+@pytest.mark.asyncio
+async def test_cancel_event_autocomplete_uses_future_events(monkeypatch) -> None:
+    cog, _ = _lineup_cog(
+        monkeypatch,
+        [_lineup_event("E1", 3), _lineup_event("E2", 5, status="Canceled")],
+    )
+    monkeypatch.setattr("bot.services.activation.is_active", AsyncMock(return_value=True))
+    assert await cog.cancel_whole_event_autocomplete(make_mock_inter(user_id=1), "") == ["E1"]
+    assert await cog.cancel_whole_event_autocomplete(make_mock_inter(user_id=999), "") == []
+
+
+def test_cancel_event_is_a_sub_command_of_cancel() -> None:
+    from bot.cogs.admin import AdminCog
+
+    assert AdminCog.cancel_event.qualified_name == "cancel event"
