@@ -250,6 +250,9 @@ async def main() -> None:
     from bot.services.dj_admin import DjAdminService
     ctx.dj_admin_service = DjAdminService(ctx, bot)
 
+    from bot.services.event_cancel import EventCancelService
+    ctx.event_cancel_service = EventCancelService(ctx, bot)
+
     _add_cog(bot, OnboardingCog(ctx))
     _add_cog(bot, BookingCog(ctx))
     _add_cog(bot, OutreachCog(ctx))
