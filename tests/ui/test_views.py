@@ -1194,7 +1194,7 @@ async def test_booking_confirm_slot_conflict_uses_fresh_notion_data() -> None:
     with patch("bot.db.bookings.acquire_slot_lock", new=AsyncMock(return_value=False)):
         await view._handle_confirm(inter)
 
-    ctx.notion_client.list_events.assert_awaited_once()
+    assert ctx.notion_client.list_events.await_count == 2  # status check, then the refresh
     call_kwargs = inter.response.send_message.call_args.kwargs
     presented_view = call_kwargs.get("view")
     assert isinstance(presented_view, SlotSelectionView)
@@ -1789,7 +1789,9 @@ async def test_booking_confirm_assigns_slot_with_dj_page_id() -> None:
     assert not lock.locked()
 
 
-async def _run_booking(ctx, user_id, *, ensure, assign=None, lock_ok=True):
+async def _run_booking(
+    ctx, user_id, *, ensure, assign=None, lock_ok=True, status="Planned", list_events=None
+):
     """Drive BookingConfirmView._handle_confirm; return (inter, lock, release mock)."""
     from bot.ui.views import BookingConfirmView
 
@@ -1798,11 +1800,11 @@ async def _run_booking(ctx, user_id, *, ensure, assign=None, lock_ok=True):
     ctx.notion_client = MagicMock()
     ctx.notion_client.assign_slot = assign or AsyncMock(return_value=True)
     fresh = make_event(
-        event_id="Gap Rave", page_id="evt-gap", slot_count=4,
+        event_id="Gap Rave", page_id="evt-gap", slot_count=4, status=status,
         slots=[make_slot(1, dj_page_id="dj-a"), make_slot(2, dj_page_id="dj-x"),
                make_slot(3, dj_page_id="dj-b")],
     )
-    ctx.notion_client.list_events = AsyncMock(return_value=[fresh])
+    ctx.notion_client.list_events = list_events or AsyncMock(return_value=[fresh])
     ctx.log_service = None
     ctx.lineup_service = None
     view = BookingConfirmView(
@@ -1814,10 +1816,13 @@ async def _run_booking(ctx, user_id, *, ensure, assign=None, lock_ok=True):
     inter.response.defer = AsyncMock()
     # answers after a defer go through the followup; tests read both the same way
     inter.followup.send = inter.response.send_message
-    with patch("bot.db.bookings.acquire_slot_lock", new=AsyncMock(return_value=lock_ok)), \
+    with patch(
+        "bot.db.bookings.acquire_slot_lock", new=AsyncMock(return_value=lock_ok)
+    ) as acquire, \
          patch("bot.db.bookings.release_slot_lock", new=AsyncMock()) as rel, \
          patch("bot.services.dj_pages.ensure_dj_page", new=ensure):
         await view._handle_confirm(inter)
+    inter.acquire_slot_lock = acquire
     return inter, lock, rel
 
 
@@ -3061,3 +3066,67 @@ async def test_post_button_without_matching_event_shows_event_picker(footer) -> 
     await LineupPostView(ctx).book_slot.callback(inter)
 
     assert isinstance(inter.author.send.call_args.kwargs["view"], EventSelectionView)
+
+
+# --- canceled events (/cancel event) ---------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["Canceled", "Done"])
+async def test_booking_confirm_refuses_a_canceled_event(status) -> None:
+    ctx = make_real_ctx(db=MagicMock())
+    inter, lock, rel = await _run_booking(
+        ctx, 40090, ensure=AsyncMock(return_value="dj-me"), status=status
+    )
+    inter.acquire_slot_lock.assert_not_awaited()
+    ctx.notion_client.assign_slot.assert_not_awaited()
+    rel.assert_not_awaited()
+    inter.response.send_message.assert_awaited_once()
+    assert inter.response.send_message.call_args[0][0] == texts.EVENT_WAS_CANCELED
+    assert inter.response.send_message.call_args.kwargs["ephemeral"] is True
+    assert not lock.locked()
+
+
+@pytest.mark.asyncio
+async def test_booking_confirm_continues_when_the_event_reload_fails() -> None:
+    ctx = make_real_ctx(db=MagicMock())
+    inter, _lock, _rel = await _run_booking(
+        ctx, 40091, ensure=AsyncMock(return_value="dj-me"),
+        list_events=AsyncMock(side_effect=RuntimeError("Notion down")),
+    )
+    inter.acquire_slot_lock.assert_awaited_once()
+    ctx.notion_client.assign_slot.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_booking_confirm_books_an_active_event() -> None:
+    ctx = make_real_ctx(db=MagicMock())
+    inter, _lock, _rel = await _run_booking(
+        ctx, 40092, ensure=AsyncMock(return_value="dj-me")
+    )
+    inter.acquire_slot_lock.assert_awaited_once()
+    ctx.notion_client.assign_slot.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_outreach_accept_refuses_a_canceled_event() -> None:
+    from bot.ui.views import OutreachView
+
+    ctx = make_real_ctx(db=None)
+    stale = make_event(page_id="evt-oc", slot_count=3)
+    canceled = make_event(page_id="evt-oc", slot_count=3, status="Canceled")
+    ctx.notion_client = MagicMock()
+    ctx.notion_client.list_events = AsyncMock(return_value=[canceled])
+    view = OutreachView(ctx=ctx, event=stale, discord_user_id=40093)
+    inter = MagicMock(spec=disnake.MessageInteraction)
+    inter.author.id = 40093
+    inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    inter.followup.send = inter.response.send_message
+
+    await view.accept.callback(inter)
+
+    inter.response.send_message.assert_awaited_once()
+    assert inter.response.send_message.call_args[0][0] == texts.EVENT_WAS_CANCELED
+    assert "view" not in inter.response.send_message.call_args.kwargs
+    assert not ctx.get_user_lock(40093).locked()

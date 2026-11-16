@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 import disnake
 
 from bot.db.djs import get_dj_by_discord_id, update_active_booking
+from bot.notion.models import FINISHED_STATUSES
 from bot.services.roles import get_dj_role, get_invites_role
 from bot.ui import texts
 from bot.ui.dj_profile import respond, start_onboarding_dm
@@ -1168,6 +1169,25 @@ class BookingConfirmView(FlowView):
             )
             return
 
+        # The event may have been canceled (or finished) since the menu was opened:
+        # check before any lock is taken. A failed read does not block the booking.
+        try:
+            current = next(
+                (
+                    e
+                    for e in await self._ctx.notion_client.list_events()
+                    if e.page_id == event_id
+                ),
+                None,
+            )
+        except Exception:
+            logger.warning("BookingConfirmView: could not re-read the event", exc_info=True)
+            current = None
+        if current is not None and current.status in FINISHED_STATUSES:
+            self._release_flow()
+            await inter.followup.send(texts.EVENT_WAS_CANCELED, ephemeral=True)
+            return
+
         # Acquire exclusive slot lock via SELECT...FOR UPDATE (AC2)
         # AC3: Wrap in try/except — asyncpg auto-rolls back the transaction on exception
         try:
@@ -1748,6 +1768,12 @@ class OutreachView(GatedView):
                     event = fresh
             except Exception as exc:
                 logger.warning("OutreachView.accept: list_events failed: %s", exc)
+
+        # The event was canceled (or finished) after the invite went out
+        if event.status in FINISHED_STATUSES:
+            lock.release()
+            await inter.followup.send(texts.EVENT_WAS_CANCELED, ephemeral=True)
+            return
 
         # Compute open slot indices
         open_slot_indices = _open_slot_indices(event)
