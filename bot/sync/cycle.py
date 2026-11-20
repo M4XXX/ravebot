@@ -122,9 +122,12 @@ async def _load_pg(db: asyncpg.Pool, entity: str) -> dict[str, dict[str, Any]]:
         )
         return {str(r["discord_user_id"]): dj_payload(r) for r in rows}
     if entity == "slot":
+        # A holder without a djs row (a deleted DJ keeps past bookings) has no DJ page:
+        # Notion shows the slot without a DJ, so it is compared as free (I3).
         rows = await db.fetch(
-            "SELECT s.event_id, s.slot_index, s.discord_user_id FROM slot_locks s"
+            "SELECT s.event_id, s.slot_index, d.discord_user_id FROM slot_locks s"
             " JOIN events e ON e.uid = s.event_id AND s.slot_index < e.slot_count"
+            " LEFT JOIN djs d ON d.discord_user_id = s.discord_user_id"
             " ORDER BY s.event_id, s.slot_index"
         )
         return {

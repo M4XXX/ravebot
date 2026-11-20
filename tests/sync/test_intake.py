@@ -63,7 +63,7 @@ class Store:
             SlotInfo(
                 page_id=f"{uid}:{n}", number=n,
                 dj_page_id=str(h) if (h := self.holders.get((uid, n - 1))) else None,
-                dj_name=self.djs[h]["dj_name"] if h else None, discord_id=h,
+                dj_name=self.djs[h]["dj_name"] if h in self.djs else None, discord_id=h,
             )
             for n in range(1, p["slot_count"] + 1)
         )
@@ -326,6 +326,18 @@ async def test_slot_set_books_and_dms(env) -> None:
     assert env.log.log_booked.await_args.args[0] == "DJ A"
     assert env.log.log_booked.await_args.args[2:] == (1, "Notion")
     assert env.store.synced[("slot", "u1:1")] == ("page-s", notion)
+
+
+async def test_slot_of_past_event_rejected(env) -> None:
+    """I3: slots of past events are never changed from Notion."""
+    env.store.add_event("u1", date="2026-11-01")
+    env.store.holders[("u1", 0)] = A  # DJ A was deleted; the past booking stays
+    change = Change("apply", "slot", "u1:0", slot(did=A), slot(), "page-s")
+    assert await env.intake.apply(change) == "rejected"
+    assert "past" in env.intake.last_reasons[0]
+    assert env.store.holders[("u1", 0)] == A
+    env.dm.assert_not_awaited()
+    assert ("slot", "u1:0") not in env.store.synced
 
 
 async def test_slot_cleared_frees_and_dms(env) -> None:

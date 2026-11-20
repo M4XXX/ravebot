@@ -310,6 +310,10 @@ class Intake:
             raise _Rejected(
                 f"{event.event_id} has slots 1 to {event.slot_count}, not {number}."
             )
+        if event.date < local_today():
+            raise _Rejected(
+                f"{event.event_id} is in the past; its slots are not changed from Notion."
+            )
         uid = event.page_id
         index = number - 1
         key = f"{uid}:{index}"

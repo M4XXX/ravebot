@@ -406,3 +406,21 @@ async def test_changed_is_noop_without_notion() -> None:
         await asyncio.sleep(0)
     enqueue.assert_not_called()
     assert worker_mod._pending == set()
+
+
+async def test_slot_of_deleted_dj_is_mirrored_as_notion_holds_it(store: Store) -> None:
+    """I3: a past booking of a deleted DJ (no djs row) is written and recorded as free.
+
+    Notion gets no DJ relation, so the recorded payload must say so too; otherwise
+    the next poll reads Notion as a hand edit that frees the booking.
+    """
+    store.events["u1"] = EVENT_ROW
+    store.holders[("u1", 0)] = DJ  # DJ deleted, the past booking stays
+    store.pages[("event", "u1")] = "page-ev-u1"
+    store.add("slot", "u1:0")
+    notion = FakeNotion()
+
+    assert await _worker(store, notion).drain_once() == 1
+
+    assert notion.calls == [("slot", "u1:0", "page-ev-u1", None, "RAVE-1")]
+    assert store.synced[("slot", "u1:0")] == {"event_uid": "u1", "number": 1, "discord_id": None}

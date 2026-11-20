@@ -57,6 +57,17 @@ async def test_load_pg_payloads(pool) -> None:
     }
 
 
+async def test_load_pg_slot_of_deleted_dj_is_free_for_notion(pool) -> None:
+    """I3: a booking whose DJ row is gone is compared as Notion holds it (no DJ)."""
+    await _seed(pool)
+    await pool.execute("DELETE FROM djs WHERE discord_user_id = $1", A)
+    assert (await _load_pg(pool, "slot"))["u1:1"] == {
+        "event_uid": "u1", "number": 2, "discord_id": None,
+    }
+    assert await bookings.get_slot_lock_holder(pool, "u1", 1) == A  # the booking stays
+
+
+
 async def test_resync_all_queues_every_record(pool) -> None:
     await _seed(pool)
     assert await SyncCycle(_ctx(pool), MagicMock()).resync_all() == 4

@@ -287,6 +287,10 @@ class MirrorWorker:
         if event_page is None:
             raise _NotReady(f"event {uid} has no Notion page")
         dj_page = None
+        if holder is not None and await djs.get_dj_by_discord_id(self.db, holder) is None:
+            # A deleted DJ keeps past bookings but has no page: Notion shows no DJ, and
+            # the recorded payload must say the same (else the poll frees the slot).
+            holder = None
         if holder is not None:
             dj_key = str(holder)
             dj_page = await self._page_id("dj", dj_key) or await self._sync_dj(dj_key)
