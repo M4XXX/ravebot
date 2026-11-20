@@ -13,7 +13,7 @@ def _script() -> ScriptDirectory:
 
 def test_single_head_and_every_file_is_in_the_chain() -> None:
     script = _script()
-    assert script.get_heads() == ["0016"]
+    assert script.get_heads() == ["0017"]
     chain = [rev.revision for rev in script.walk_revisions()]
     files = sorted(p.name[:4] for p in (ROOT / "migrations" / "versions").glob("[0-9]*.py"))
     assert sorted(chain) == files

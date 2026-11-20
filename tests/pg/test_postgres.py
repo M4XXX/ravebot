@@ -127,3 +127,28 @@ async def test_logo_marked_synced_only_when_unchanged(pool) -> None:
     assert await djs.list_unsynced_logo_user_ids(pool) == [A]
     await djs.mark_logo_synced_if_unchanged(pool, A, b"two")
     assert await djs.list_unsynced_logo_user_ids(pool) == []
+
+
+async def test_events_slot_count_check(pool) -> None:
+    sql = (
+        "INSERT INTO events (uid, event_id, date, start, slot_minutes, slot_count) "
+        "VALUES ($1, $1, '2026-12-01', '20:00', 60, $2)"
+    )
+    await pool.execute(sql, "ok", 100)
+    with pytest.raises(asyncpg.CheckViolationError):
+        await pool.execute(sql, "too-many", 101)
+    with pytest.raises(asyncpg.CheckViolationError):
+        await pool.execute(sql, "none", 0)
+
+
+async def test_one_open_conflict_per_entity(pool) -> None:
+    sql = (
+        "INSERT INTO sync_issues (kind, entity, entity_key, summary) "
+        "VALUES ($1, 'event', 'e1', 's')"
+    )
+    await pool.execute(sql, "conflict")
+    await pool.execute(sql, "warning")
+    with pytest.raises(asyncpg.UniqueViolationError):
+        await pool.execute(sql, "conflict")
+    await pool.execute("UPDATE sync_issues SET resolved_at = now() WHERE kind = 'conflict'")
+    await pool.execute(sql, "conflict")
