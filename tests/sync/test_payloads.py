@@ -28,3 +28,11 @@ def test_dj_payload_maps_stream_urls():
     assert dj_payload(row) == {
         "discord_id": 5, "dj_name": "A", "vrchat_name": None,
         "link": "https://a.test", "alt_link": None}
+
+
+def test_dj_payload_drops_non_http_links_like_the_notion_writer():
+    row = {"discord_user_id": 5, "dj_name": "A", "vrchat_name": None,
+           "stream_url_primary": "ftp://a.test", "stream_url_backup": " https://b.test "}
+    p = dj_payload(row)
+    assert p["link"] is None
+    assert p["alt_link"] == "https://b.test"

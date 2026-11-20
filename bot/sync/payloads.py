@@ -9,6 +9,7 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
+from bot.notion.client import _url_prop
 from bot.notion.models import (
     PROP_SLOT_DJ,
     PROP_SLOT_EVENT,
@@ -71,8 +72,8 @@ def dj_payload(row: Mapping[str, Any]) -> dict[str, Any]:
         "discord_id": row["discord_user_id"],
         "dj_name": row["dj_name"],
         "vrchat_name": row["vrchat_name"] or None,
-        "link": row["stream_url_primary"] or None,
-        "alt_link": row["stream_url_backup"] or None,
+        "link": _url_prop(row["stream_url_primary"])["url"],
+        "alt_link": _url_prop(row["stream_url_backup"])["url"],
     }
 
 
