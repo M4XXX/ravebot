@@ -1,8 +1,20 @@
 """Tests for bot/web/pages.py."""
+import datetime
 import html
 
-from bot.web.pages import render_confirm_remove, render_dashboard, render_login, render_notice
-from bot.web.service import ActionResult, AdminRow, ServerInfo, UserInfo
+from bot.db.issues import IssueRow
+from bot.db.outbox import OutboxStats
+from bot.web.pages import (
+    render_backup_import,
+    render_confirm_issue,
+    render_confirm_rebuild,
+    render_confirm_recreate,
+    render_confirm_remove,
+    render_dashboard,
+    render_login,
+    render_notice,
+)
+from bot.web.service import ActionResult, AdminRow, ServerInfo, SyncStatus, UserInfo
 
 XSS_SCRIPT = "<script>alert(1)</script>"
 XSS_IMG = '"><img src=x onerror=alert(1)>'
@@ -138,3 +150,113 @@ def test_confirm_page() -> None:
 def test_message_styles() -> None:
     assert 'class="msg ok"' in render_dashboard(SERVER, [], "t", ActionResult(True, "Added X."))
     assert 'class="msg err"' in render_dashboard(SERVER, [], "t", ActionResult(False, "No."))
+
+
+# --- data and backup, Notion sync (Task 17) ---
+
+NOW = datetime.datetime(2026, 11, 20, 12, 30, tzinfo=datetime.UTC)
+
+
+def _issue(issue_id=7, kind="conflict", summary="Moon changed", payload=None):
+    return IssueRow(
+        id=issue_id, kind=kind, entity="dj", entity_key="42", summary=summary,
+        pg_payload={"dj_name": "Moon"}, notion_payload=payload or {"dj_name": "Moon2"},
+        created_at=NOW, resolved_at=None, resolution=None,
+    )
+
+
+def _status(enabled=True, issues=(), **kw):
+    values = {
+        "enabled": enabled, "last_run": NOW, "last_error": None,
+        "outbox": OutboxStats(0, None, None), "issues": list(issues),
+        "problem": None, "maintenance": None,
+    }
+    values.update(kw)
+    return SyncStatus(**values)
+
+
+def test_backup_card_always_shown() -> None:
+    for sync in (None, _status(enabled=False), _status()):
+        page = render_dashboard(SERVER, [], "tok", sync=sync)
+        assert "Data and backup" in page
+        assert 'href="/backup/export"' in page and 'href="/backup/import"' in page
+
+
+def test_notion_card_hidden_when_disabled() -> None:
+    for sync in (None, _status(enabled=False, issues=[_issue()])):
+        page = render_dashboard(SERVER, [], "tok", sync=sync)
+        assert "Notion sync" not in page and "/sync/" not in page
+    page = render_dashboard(SERVER, [], "tok", sync=_status())
+    assert "Notion sync" in page and 'href="/sync/rebuild"' in page
+    assert 'href="/sync/resync"' in page
+
+
+def test_notion_card_status_and_issue_buttons() -> None:
+    sync = _status(
+        issues=[_issue(), _issue(8, "warning", "Deleted in Notion")],
+        outbox=OutboxStats(4, NOW, "rate limited"), last_error="read failed",
+    )
+    page = render_dashboard(SERVER, [], "tok", sync=sync)
+    assert "2026-11-20 12:30 UTC" in page
+    assert "rate limited" in page and "read failed" in page
+    assert 'href="/sync/issues/7?choice=postgres"' in page
+    assert 'href="/sync/issues/7?choice=notion"' in page
+    assert 'href="/sync/issues/8?choice=resynced"' in page
+    assert "/sync/issues/8?choice=notion" not in page
+    assert "Keep Postgres" in page and "Keep Notion" in page
+    assert "Resync Postgres to Notion" in page
+    assert "/sync/retry-import" not in page
+    assert "never" in render_dashboard(SERVER, [], "t", sync=_status(last_run=None))
+
+
+def test_notion_card_escapes_notion_text() -> None:
+    sync = _status(
+        issues=[_issue(summary=XSS_SCRIPT)], problem=XSS_IMG, last_error=XSS_SCRIPT,
+        outbox=OutboxStats(1, NOW, XSS_IMG), maintenance=XSS_IMG,
+    )
+    page = render_dashboard(SERVER, [], "tok", sync=sync)
+    _assert_escaped(page, XSS_SCRIPT)
+    _assert_escaped(page, XSS_IMG)
+    assert 'href="/sync/retry-import"' in page
+
+
+def test_maintenance_shown_without_notion() -> None:
+    page = render_dashboard(
+        SERVER, [], "tok", sync=_status(enabled=False, maintenance="A rebuild is running.")
+    )
+    assert "A rebuild is running." in page
+
+
+def test_confirm_issue_escapes_payloads() -> None:
+    issue = _issue(summary=XSS_SCRIPT, payload={"dj_name": XSS_IMG, XSS_SCRIPT: 1})
+    page = render_confirm_issue(issue, "notion", "tok")
+    _assert_escaped(page, XSS_SCRIPT)
+    _assert_escaped(page, XSS_IMG)
+    assert 'action="/sync/issues/7"' in page and 'name="choice" value="notion"' in page
+    assert 'name="csrf" value="tok"' in page
+
+
+def test_confirm_rebuild_and_import_forms() -> None:
+    page = render_confirm_rebuild("tok")
+    assert 'action="/sync/rebuild"' in page and "safety backup" in page
+    page = render_backup_import("tok")
+    assert 'action="/backup/import"' in page and 'enctype="multipart/form-data"' in page
+    assert 'type="file" name="backup"' in page and 'name="csrf" value="tok"' in page
+
+
+def test_recreate_confirm_warns_about_upgrade_import() -> None:
+    page = render_confirm_recreate("gone", "tok")
+    assert "marks the one-time import from Notion as done for good" in page
+
+
+def test_new_pages_have_no_em_dash_or_script() -> None:
+    sync = _status(issues=[_issue(), _issue(8, "warning")], problem="p", maintenance="m")
+    for page in (
+        render_dashboard(SERVER, [], "tok", sync=sync),
+        render_confirm_issue(_issue(), "postgres", "tok"),
+        render_confirm_issue(_issue(8, "warning"), "resynced", "tok"),
+        render_confirm_rebuild("tok"),
+        render_backup_import("tok"),
+    ):
+        assert chr(0x2014) not in page
+        assert "<script" not in page.lower()

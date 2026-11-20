@@ -1,4 +1,11 @@
-"""Data service for the admin page: describing people, adding and removing admins."""
+"""Data service for the admin page: admins, Notion recovery, backup, Notion sync.
+
+Backup import, rebuild and the upgrade import retry are serialised by bot/maintenance.py
+(R20); the functions they call refuse with an ActionResult while another one runs, so
+no lock is added here. Every database read uses short pool calls; no connection is held
+across a long operation.
+"""
+import datetime
 import logging
 import re
 import time
@@ -8,11 +15,27 @@ from typing import Any
 
 import disnake
 
+from bot import maintenance as maintenance_ops
+from bot.backup.export import export_database
+from bot.backup.restore import import_database
 from bot.context import BotContext
+from bot.db import config as config_db
+from bot.db import issues, outbox
+from bot.db.issues import IssueRow
+from bot.db.outbox import OutboxStats
 from bot.results import ActionResult as ActionResult  # re-export; lives in bot.results
 from bot.services.activation import bot_is_active
 from bot.services.admin_registry import AdminRegistry
 from bot.services.dj_admin import parse_discord_id
+from bot.sync.cycle import CONFIG_GUILD_ID, LAST_ERROR_KEY, LAST_RUN_KEY
+from bot.sync.notion_import import post_upgrade_result, run_upgrade_import_if_needed
+from bot.sync.rebuild import (
+    post_rebuild_result,
+    rebuild_from_notion,
+    run_startup_rebuild_if_needed,
+    run_startup_recovery,
+)
+from bot.ui import texts
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +45,22 @@ _MAX_NAME = 80
 _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f​-‏ -‮⁦-⁩]")
 SAVE_FAILED = "Could not save the change. Try again."
 FORMAT_MESSAGE = "Please enter a Discord user ID (17 to 20 digits)."
+ISSUE_CHOICES = ("postgres", "notion", "resynced")
+SYNC_OFF = "The Notion sync is not running, so nothing was changed."
+NO_ISSUE = "This conflict or warning is no longer open."
+RESYNC_NOTHING = "The Notion mirror is not running, so nothing was queued."
+IMPORT_FAILED = "The import failed. Nothing was changed. Check the bot log."
+REBUILD_ERROR = "The rebuild failed. Check the bot log and the admin channel."
+RETRY_NOTHING = "There is no failed import from Notion to retry."
+RETRY_NO_NOTION = "Notion is not set up, so there is nothing to import."
+RETRY_DONE = "The import from Notion worked. Booking and the Notion sync run again."
+RETRY_FAILED = "The import from Notion failed again: {problem}"
+RETRY_ERROR = "The import from Notion failed. Check the bot log."
+_OPERATIONS = {
+    "upgrade": "The import from Notion is running.",
+    "rebuild": "A rebuild from Notion is running.",
+    "import": "A backup import is running.",
+}
 
 
 @dataclass(frozen=True)
@@ -43,6 +82,40 @@ class ServerInfo:
 class AdminRow:
     info: UserInfo
     is_owner: bool
+
+
+@dataclass(frozen=True)
+class SyncStatus:
+    """What the admin page shows about data operations and the Notion sync.
+
+    ``enabled`` is True while a Notion client is attached (Notion configured and its
+    databases usable); without it the page hides the Notion card (decision 10).
+    ``maintenance`` names a running import or rebuild, or the pause text.
+    """
+
+    enabled: bool
+    last_run: datetime.datetime | None
+    last_error: str | None
+    outbox: OutboxStats
+    issues: list[IssueRow]
+    problem: str | None
+    maintenance: str | None
+
+
+def _parse_time(raw: str | None) -> datetime.datetime | None:
+    if not raw:
+        return None
+    try:
+        return datetime.datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+
+
+def _parse_issue_id(raw: str) -> int | None:
+    raw = raw.strip()
+    if not raw.isdigit() or len(raw) > 18:
+        return None
+    return int(raw)
 
 
 def _clean_name(name: str | None) -> str | None:
@@ -97,6 +170,112 @@ class AdminPageService:
             "New Notion databases were created. Booking and the lineup work again. The old "
             "data stays in the old databases.",
         )
+
+    # --- data and backup, Notion sync ---
+
+    def notion_enabled(self) -> bool:
+        return self._ctx.notion_client is not None
+
+    async def sync_status(self) -> SyncStatus:
+        ctx = self._ctx
+        running = maintenance_ops.running()
+        busy = _OPERATIONS.get(running, ctx.maintenance) if running else ctx.maintenance
+        if not self.notion_enabled() or ctx.db is None:
+            return SyncStatus(
+                False, None, None, OutboxStats(0, None, None), [], ctx.sync_problem, busy
+            )
+        db = ctx.db
+        last_run = await config_db.get_value(db, CONFIG_GUILD_ID, LAST_RUN_KEY)
+        last_error = await config_db.get_value(db, CONFIG_GUILD_ID, LAST_ERROR_KEY)
+        return SyncStatus(
+            enabled=True,
+            last_run=_parse_time(last_run),
+            last_error=last_error or None,  # "" means the last cycle had no error
+            outbox=await outbox.stats(db),
+            issues=await issues.list_open(db),
+            problem=ctx.sync_problem,
+            maintenance=busy,
+        )
+
+    async def export_backup(self) -> bytes:
+        """The gzip JSON export of the whole database (raises when it fails)."""
+        return await export_database(self._ctx.db)
+
+    async def import_backup(self, data: bytes) -> ActionResult:
+        try:
+            return await import_database(self._ctx, data)
+        except Exception:
+            logger.exception("The backup import from the admin page failed")
+            return ActionResult(False, IMPORT_FAILED)
+
+    async def rebuild_from_notion(self) -> ActionResult:
+        try:
+            return await rebuild_from_notion(self._ctx)
+        except Exception:
+            logger.exception("The rebuild from Notion from the admin page failed")
+            return ActionResult(False, REBUILD_ERROR)
+
+    async def open_issue(self, raw_id: str) -> IssueRow | None:
+        issue_id = _parse_issue_id(raw_id)
+        if issue_id is None or self._ctx.db is None:
+            return None
+        return next((i for i in await issues.list_open(self._ctx.db) if i.id == issue_id), None)
+
+    async def resolve_issue(self, raw_id: str, choice: str) -> ActionResult:
+        issue_id = _parse_issue_id(raw_id)
+        if issue_id is None:
+            return ActionResult(False, NO_ISSUE)
+        if choice not in ISSUE_CHOICES:
+            return ActionResult(False, texts.SYNC_WRONG_CHOICE)
+        cycle = self._ctx.sync_cycle
+        if cycle is None:
+            return ActionResult(False, SYNC_OFF)
+        return await cycle.resolve_issue(issue_id, choice)
+
+    async def resync_all(self) -> ActionResult:
+        ctx = self._ctx
+        if ctx.maintenance or maintenance_ops.running():
+            return ActionResult(False, texts.MAINTENANCE)
+        if ctx.sync_cycle is None:
+            return ActionResult(False, SYNC_OFF)
+        count = await ctx.sync_cycle.resync_all()
+        if count == 0:
+            return ActionResult(False, RESYNC_NOTHING)
+        return ActionResult(True, f"{count} records are queued and written to Notion again.")
+
+    async def retry_import(self) -> ActionResult:
+        """Run the startup import from Notion again after it failed; start the mirror.
+
+        Same order as startup and ``recover_notion`` (bot/main.py): an empty Postgres is
+        rebuilt (R19), else the upgrade import runs. When that ends the pause, the mirror
+        and the sync cycle start through ``ctx.notion_start_mirror``, then the startup
+        recovery checks run.
+        """
+        ctx = self._ctx
+        if ctx.notion_client is None or ctx.db is None:
+            return ActionResult(False, RETRY_NO_NOTION)
+        if not ctx.sync_problem:
+            return ActionResult(False, RETRY_NOTHING)
+        if maintenance_ops.running():
+            return ActionResult(False, texts.OPERATION_BUSY)
+        try:
+            if not await run_startup_rebuild_if_needed(ctx):
+                await run_upgrade_import_if_needed(ctx)
+            await post_upgrade_result(ctx)
+            if ctx.maintenance is None and ctx.sync_problem is None:
+                start = ctx.notion_start_mirror
+                if start is not None:
+                    await start()
+                await run_startup_recovery(ctx)
+            await post_rebuild_result(ctx)
+        except Exception:
+            logger.exception("Retrying the import from Notion failed")
+            return ActionResult(False, RETRY_ERROR)
+        if ctx.sync_problem:
+            return ActionResult(False, RETRY_FAILED.format(problem=ctx.sync_problem[:300]))
+        if ctx.maintenance:
+            return ActionResult(False, RETRY_ERROR)
+        return ActionResult(True, RETRY_DONE)
 
     @property
     def djs(self) -> Any:

@@ -6,11 +6,17 @@ Notes:
 - Sessions are stateless signed tokens, so logout clears the cookie in the browser only;
   a copied token stays valid until it expires.
 - The throttle key is ``request.remote`` only; ``X-Forwarded-For`` is never trusted.
+- The app accepts bodies up to ``MAX_BACKUP`` for the backup upload only; the security
+  middleware lowers every other request to ``MAX_UPLOAD`` (logo forms) or ``MAX_BODY``.
+- Backup import, rebuild and the import retry are awaited in the request (aiohttp keeps
+  serving other requests and the bot keeps running); the service holds no database
+  connection across them.
 """
 
 from __future__ import annotations
 
 import asyncio
+import datetime
 import logging
 import math
 from collections.abc import Awaitable, Callable
@@ -29,9 +35,15 @@ from bot.web.auth import (
     check_password,
 )
 from bot.web.pages import (
+    issue_choice_ok,
+    render_backup_import,
     render_confirm_delete_dj,
+    render_confirm_issue,
+    render_confirm_rebuild,
     render_confirm_recreate,
     render_confirm_remove,
+    render_confirm_resync,
+    render_confirm_retry_import,
     render_dashboard,
     render_djs,
     render_edit_dj,
@@ -44,7 +56,9 @@ logger = logging.getLogger(__name__)
 
 MAX_BODY = 4096
 MAX_UPLOAD = 6 * 1024 * 1024  # a DJ logo (up to 5 MB) plus the other form fields
-UPLOAD_PATHS = frozenset({"/djs/add", "/djs/edit"})
+MAX_BACKUP = 512 * 1024 * 1024  # a backup file for /backup/import
+BACKUP_PATH = "/backup/import"
+UPLOAD_PATHS = frozenset({"/djs/add", "/djs/edit", BACKUP_PATH})
 ADMIN_NAME = "The admin page"
 WRONG_PASSWORD = "Wrong password."
 OWNER_MESSAGE = "Owners can only be changed with ADMIN_USER_IDS."
@@ -52,6 +66,10 @@ NOT_ADDED_MESSAGE = "This person is not an added admin."
 NO_DJ_MESSAGE = "There is no DJ with this ID."
 BOOKINGS_FAILED = "Could not read the bookings. Try again."
 CSRF_MESSAGE = "This form has expired. Go back, reload the page and try again."
+NO_BACKUP_FILE = "Choose a backup file to restore."
+EXPORT_FAILED = "The backup could not be made. Try again or check the bot log."
+NO_ISSUE_MESSAGE = "This conflict or warning is no longer open."
+WRONG_CHOICE_MESSAGE = "This choice does not fit this entry."
 
 SECURITY_HEADERS = {
     "Cache-Control": "no-store",
@@ -98,15 +116,20 @@ def _from_http_exception(exc: web.HTTPException) -> web.Response:
 @web.middleware
 async def security_middleware(request: web.Request, handler: Handler) -> web.StreamResponse:
     try:
-        if (
-            request.method not in _SAFE_METHODS
-            and request.path not in UPLOAD_PATHS
-            and (
-                (request.content_length or 0) > MAX_BODY
+        if request.method not in _SAFE_METHODS:
+            length = request.content_length or 0
+            if request.path not in UPLOAD_PATHS and (
+                length > MAX_BODY
                 or "chunked" in request.headers.get("Transfer-Encoding", "").lower()
-            )
-        ):
-            raise web.HTTPRequestEntityTooLarge(max_size=MAX_BODY, actual_size=0)
+            ):
+                raise web.HTTPRequestEntityTooLarge(max_size=MAX_BODY, actual_size=length)
+            limit = MAX_BACKUP if request.path == BACKUP_PATH else MAX_UPLOAD
+            if length > limit:
+                raise web.HTTPRequestEntityTooLarge(max_size=limit, actual_size=length)
+            if limit != MAX_BACKUP:
+                # The app allows MAX_BACKUP for the backup upload; every other body
+                # (also a chunked logo upload) is read with the smaller limit.
+                request = request.clone(client_max_size=limit)
         resp = await handler(request)
     except web.HTTPException as exc:
         resp = _from_http_exception(exc)
@@ -136,6 +159,36 @@ def _notion_problem(service: Any) -> str | None:
     """The Notion problem of the service (test fakes may not have the method)."""
     getter = getattr(service, "notion_problem", None)
     return getter() if callable(getter) else None
+
+
+async def _sync_status(service: Any) -> Any:
+    """The sync status for the dashboard, or None (test fakes, failed read)."""
+    getter = getattr(service, "sync_status", None)
+    if not callable(getter):
+        return None
+    try:
+        return await getter()
+    except Exception:
+        logger.warning("Could not read the sync status for the admin page", exc_info=True)
+        return None
+
+
+def _backup_filename() -> str:
+    stamp = datetime.datetime.now(datetime.UTC).strftime("%Y%m%d-%H%M%S")
+    return f"ravebot-{stamp}.ravebot.json.gz"
+
+
+async def _upload_bytes(form: MultiDictProxy[Any], name: str) -> bytes | None:
+    """The uploaded file (aiohttp keeps it in a temporary file until read), or None."""
+    value = form.get(name)
+    file = getattr(value, "file", None)
+    if file is None or not getattr(value, "filename", ""):
+        return None
+    try:
+        data = await asyncio.to_thread(file.read)
+    finally:
+        await asyncio.to_thread(file.close)
+    return data or None
 
 
 def _maintenance(service: Any) -> ActionResult | None:
@@ -193,8 +246,9 @@ def create_app(
     ) -> web.Response:
         rows = await service.list_admins()
         problem = _notion_problem(service)
+        sync = await _sync_status(service)
         page = render_dashboard(
-            service.server_info(), rows, request["session"].csrf, message, problem
+            service.server_info(), rows, request["session"].csrf, message, problem, sync
         )
         return _html(page, status)
 
@@ -377,8 +431,85 @@ def create_app(
         result = await service.recreate_notion()
         return await dashboard(request, result, 200 if result.ok else 400)
 
+    # --- data and backup ---
+
+    async def get_backup_export(request: web.Request) -> web.StreamResponse:
+        try:
+            data = await service.export_backup()
+        except Exception:
+            logger.exception("The backup export for the admin page failed")
+            return await dashboard(request, ActionResult(False, EXPORT_FAILED), 500)
+        return web.Response(
+            body=data,
+            content_type="application/gzip",
+            headers={
+                "Content-Disposition": f'attachment; filename="{_backup_filename()}"'
+            },
+        )
+
+    async def get_backup_import(request: web.Request) -> web.Response:
+        return _html(render_backup_import(request["session"].csrf))
+
+    async def post_backup_import(request: web.Request) -> web.Response:
+        data = await _upload_bytes(await _read_form(request), "backup")
+        if data is None:
+            return await dashboard(request, ActionResult(False, NO_BACKUP_FILE), 400)
+        result = await service.import_backup(data)
+        del data
+        return await dashboard(request, result, 200 if result.ok else 400)
+
+    # --- Notion sync (hidden without Notion, decision 10) ---
+
+    async def _sync_enabled() -> bool:
+        sync = await _sync_status(service)
+        return sync is not None and sync.enabled
+
+    async def get_sync_rebuild(request: web.Request) -> web.Response:
+        if not await _sync_enabled():
+            return _redirect("/")
+        return _html(render_confirm_rebuild(request["session"].csrf))
+
+    async def post_sync_rebuild(request: web.Request) -> web.Response:
+        result = await service.rebuild_from_notion()
+        return await dashboard(request, result, 200 if result.ok else 400)
+
+    async def get_sync_resync(request: web.Request) -> web.Response:
+        if not await _sync_enabled():
+            return _redirect("/")
+        return _html(render_confirm_resync(request["session"].csrf))
+
+    async def post_sync_resync(request: web.Request) -> web.Response:
+        result = await service.resync_all()
+        return await dashboard(request, result, 200 if result.ok else 400)
+
+    async def get_sync_retry(request: web.Request) -> web.Response:
+        sync = await _sync_status(service)
+        if sync is None or not sync.enabled or not sync.problem:
+            return _redirect("/")
+        return _html(render_confirm_retry_import(sync.problem, request["session"].csrf))
+
+    async def post_sync_retry(request: web.Request) -> web.Response:
+        result = await service.retry_import()
+        return await dashboard(request, result, 200 if result.ok else 400)
+
+    async def get_sync_issue(request: web.Request) -> web.Response:
+        if not await _sync_enabled():
+            return _redirect("/")
+        issue = await service.open_issue(request.match_info["id"])
+        if issue is None:
+            return await dashboard(request, ActionResult(False, NO_ISSUE_MESSAGE), 404)
+        choice = request.query.get("choice", "")
+        if not issue_choice_ok(issue, choice):
+            return await dashboard(request, ActionResult(False, WRONG_CHOICE_MESSAGE), 400)
+        return _html(render_confirm_issue(issue, choice, request["session"].csrf))
+
+    async def post_sync_issue(request: web.Request) -> web.Response:
+        choice = _field(await _read_form(request), "choice") or ""
+        result = await service.resolve_issue(request.match_info["id"], choice)
+        return await dashboard(request, result, 200 if result.ok else 400)
+
     app = web.Application(
-        middlewares=[security_middleware, session_middleware], client_max_size=MAX_UPLOAD
+        middlewares=[security_middleware, session_middleware], client_max_size=MAX_BACKUP
     )
     app.router.add_get("/login", get_login)
     app.router.add_post("/login", post_login)
@@ -395,4 +526,15 @@ def create_app(
     app.router.add_post("/djs/edit", post_dj_edit)
     app.router.add_get("/djs/delete", get_dj_delete)
     app.router.add_post("/djs/delete", post_dj_delete)
+    app.router.add_get("/backup/export", get_backup_export)
+    app.router.add_get(BACKUP_PATH, get_backup_import)
+    app.router.add_post(BACKUP_PATH, post_backup_import)
+    app.router.add_get("/sync/rebuild", get_sync_rebuild)
+    app.router.add_post("/sync/rebuild", post_sync_rebuild)
+    app.router.add_get("/sync/resync", get_sync_resync)
+    app.router.add_post("/sync/resync", post_sync_resync)
+    app.router.add_get("/sync/retry-import", get_sync_retry)
+    app.router.add_post("/sync/retry-import", post_sync_retry)
+    app.router.add_get(r"/sync/issues/{id:\d{1,18}}", get_sync_issue)
+    app.router.add_post(r"/sync/issues/{id:\d{1,18}}", post_sync_issue)
     return app
