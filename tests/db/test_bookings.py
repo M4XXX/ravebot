@@ -48,8 +48,24 @@ async def test_acquire_slot_lock_first_caller_returns_true() -> None:
     result = await acquire_slot_lock(pool, "evt-001", 0, 12345)
 
     assert result is True
-    # INSERT ON CONFLICT called once, then SELECT FOR UPDATE, then UPDATE to claim
-    assert conn.execute.await_count >= 2
+    # SELECT ... FOR UPDATE on the existing row (no INSERT, I5), then UPDATE to claim
+    sql = conn.fetchrow.await_args.args[0]
+    assert "FOR UPDATE" in sql and "JOIN events" in sql
+    executed = [c.args[0] for c in conn.execute.await_args_list]
+    assert not any("INSERT" in q for q in executed)
+    assert len(executed) == 1 and "SET discord_user_id" in executed[0]
+
+
+@pytest.mark.asyncio
+async def test_acquire_slot_lock_missing_slot_returns_false() -> None:
+    """I5: no row for the slot (event gone, slot removed) -> False, nothing written."""
+    from bot.db.bookings import acquire_slot_lock
+
+    conn = _make_conn(fetchrow_result=None)
+    pool = _make_pool(conn)
+
+    assert await acquire_slot_lock(pool, "evt-gone", 0, 12345) is False
+    conn.execute.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -63,8 +79,7 @@ async def test_acquire_slot_lock_row_already_taken_returns_false() -> None:
     result = await acquire_slot_lock(pool, "evt-001", 0, 12345)
 
     assert result is False
-    # INSERT ON CONFLICT was called; SELECT FOR UPDATE was called; UPDATE to claim was NOT
-    # Verify execute was called only for INSERT (not the claim UPDATE)
+    # SELECT FOR UPDATE was called; the claim UPDATE was NOT
     execute_calls = [str(c) for c in conn.execute.call_args_list]
     update_claim_calls = [c for c in execute_calls if "SET discord_user_id" in c]
     assert len(update_claim_calls) == 0
