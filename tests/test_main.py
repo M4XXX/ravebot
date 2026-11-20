@@ -640,3 +640,34 @@ async def test_startup_rebuild_checked_after_recovered_notion() -> None:
         await s.run()
     assert s.calls.count("startup_rebuild") == 2
     assert s.calls.index("startup_rebuild") < s.calls.index("upgrade_import")
+
+
+
+@pytest.mark.asyncio
+async def test_rebuild_hook_starts_the_mirror_after_a_failed_upgrade() -> None:
+    from bot.sync.worker import MirrorWorker
+
+    s = _Startup()
+    s.import_fails = True
+    seen: dict = {}
+
+    async def admin_rebuilds() -> None:
+        ctx = s.ctx
+        seen["before"] = ctx.mirror
+        ctx.maintenance = None  # what a successful rebuild leaves
+        await ctx.notion_start_mirror()
+        seen["mirror"] = ctx.mirror
+        seen["cycle"] = ctx.sync_cycle
+
+    s.while_running = admin_rebuilds
+    await s.run()
+    assert seen["before"] is None
+    assert isinstance(seen["mirror"], MirrorWorker)
+    assert seen["cycle"] is not None
+
+
+@pytest.mark.asyncio
+async def test_no_rebuild_hook_without_notion() -> None:
+    s = _Startup(notion_enabled=False)
+    await s.run()
+    assert s.ctx.notion_start_mirror is None

@@ -47,6 +47,7 @@ def _ctx(*, notion: bool = True, cycle: bool = True, pool: MagicMock | None = No
         log_service=SimpleNamespace(log_notice=AsyncMock(), log_attention=AsyncMock()),
         rebuild_report=None,
         sync_problem=None,
+        notion_start_mirror=None,
     )
 
 
@@ -358,4 +359,58 @@ async def test_startup_case_failure_is_logged_not_raised(patched, monkeypatch) -
     ctx.notion_client.has_rows = AsyncMock(side_effect=RuntimeError("notion down"))
     await rebuild.run_startup_recovery(ctx)  # does not raise
     ctx.sync_cycle.resync_all.assert_not_awaited()
+    assert ctx.maintenance is None
+
+
+
+# ---- fix round 1 ----
+
+
+async def test_failed_rebuild_in_startup_recovery_pauses_the_bot(patched) -> None:  # noqa: ANN001
+    patched.imp.return_value = ImportResult(False, 0, 0, 0, ["Two events titled 'x'"])
+    ctx = _ctx(pool=_pool(pg_has_data=False))  # upgrade done, Postgres empty
+    await rebuild.run_startup_recovery(ctx)
+    patched.imp.assert_awaited_once()
+    assert ctx.maintenance == texts.MAINTENANCE
+    assert "Two events" in ctx.sync_problem
+
+
+async def test_successful_rebuild_starts_the_mirror_and_queues_a_resync(patched) -> None:  # noqa: ANN001
+    ctx = _ctx(cycle=False)
+    ctx.maintenance = texts.MAINTENANCE  # paused by a failed upgrade: no mirror yet
+    cycle = _FakeCycle()
+
+    async def start() -> None:
+        assert ctx.maintenance is None  # _start_mirror only starts outside maintenance
+        ctx.mirror = MagicMock()
+        ctx.sync_cycle = cycle
+
+    ctx.notion_start_mirror = AsyncMock(side_effect=start)
+    result = await rebuild.rebuild_from_notion(ctx)
+    assert result.ok, result.message
+    ctx.notion_start_mirror.assert_awaited_once()
+    cycle.resync_all.assert_awaited_once()
+
+
+async def test_rebuild_with_a_running_mirror_does_not_start_it_again(patched) -> None:  # noqa: ANN001
+    ctx = _ctx()
+    ctx.mirror = MagicMock()
+    ctx.notion_start_mirror = AsyncMock()
+    assert (await rebuild.rebuild_from_notion(ctx)).ok
+    ctx.notion_start_mirror.assert_not_awaited()
+    ctx.sync_cycle.resync_all.assert_not_awaited()
+
+
+async def test_failed_rebuild_does_not_start_the_mirror(patched) -> None:  # noqa: ANN001
+    patched.imp.return_value = ImportResult(False, 0, 0, 0, ["bad"])
+    ctx = _ctx(cycle=False)
+    ctx.notion_start_mirror = AsyncMock()
+    assert not (await rebuild.rebuild_from_notion(ctx)).ok
+    ctx.notion_start_mirror.assert_not_awaited()
+
+
+async def test_mirror_start_failure_keeps_the_rebuild_result(patched) -> None:  # noqa: ANN001
+    ctx = _ctx(cycle=False)
+    ctx.notion_start_mirror = AsyncMock(side_effect=RuntimeError("worker"))
+    assert (await rebuild.rebuild_from_notion(ctx)).ok
     assert ctx.maintenance is None

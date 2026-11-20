@@ -227,6 +227,13 @@ async def main() -> None:
         await _start_mirror(ctx, bot)
         await run_startup_recovery(ctx)  # never raises
 
+        async def start_mirror() -> None:
+            await _start_mirror(ctx, bot)
+
+        # A rebuild that ends a pause (failed upgrade or startup rebuild) starts the
+        # mirror and sync cycle through this hook (bot/sync/rebuild.py).
+        ctx.notion_start_mirror = start_mirror
+
     # Story 3.2: init LineupService after DB and log_service are ready
     from bot.services.lineup import LineupService
     from bot.ui.views import LineupPostView

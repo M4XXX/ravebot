@@ -102,6 +102,8 @@ async def rebuild_from_notion(ctx: Any, *, post_result: bool = True) -> ActionRe
             else:
                 ctx.maintenance = paused
     ctx.rebuild_report = report
+    if report.result.ok:
+        await _ensure_mirror(ctx)
     if post_result:
         await post_rebuild_result(ctx)
     result = report.result
@@ -113,6 +115,25 @@ async def rebuild_from_notion(ctx: Any, *, post_result: bool = True) -> ActionRe
             result.events, result.slots, result.djs, len(report.logo_failures)
         ),
     )
+
+
+async def _ensure_mirror(ctx: Any) -> None:
+    """After a rebuild that ended a pause: start the mirror and queue a full resync.
+
+    The mirror and the sync cycle never started while the bot was paused (failed
+    upgrade import or failed startup rebuild), so edits since then were not queued.
+    ``ctx.notion_start_mirror`` (set by main.py) starts them the way startup does.
+    """
+    start = getattr(ctx, "notion_start_mirror", None)
+    if ctx.mirror is not None or start is None:
+        return
+    try:
+        await start()
+        if ctx.sync_cycle is not None:
+            count = await ctx.sync_cycle.resync_all()
+            logger.info("Notion mirror started after the rebuild; %d records queued", count)
+    except Exception:
+        logger.exception("Starting the Notion mirror after the rebuild failed")
 
 
 async def _import_and_restore_logos(ctx: Any) -> RebuildReport:
@@ -239,6 +260,17 @@ async def run_startup_rebuild_if_needed(ctx: Any) -> bool:
     except Exception:
         logger.exception("The startup check for a rebuild from Notion failed")
         return False
+    await _startup_rebuild(ctx)
+    return True
+
+
+async def _startup_rebuild(ctx: Any) -> None:
+    """Rebuild at startup (Postgres empty, Notion holds events); pause when it fails.
+
+    A failed rebuild leaves an empty Postgres: the bot is paused like after a failed
+    upgrade import (maintenance, sync_problem), so the poll neither takes Notion rows in
+    one by one nor trashes the Bot data pages a later rebuild needs.
+    """
     logger.warning("The database is empty and Notion holds events: rebuilding from Notion")
     try:
         result = await rebuild_from_notion(ctx, post_result=False)
@@ -250,7 +282,6 @@ async def run_startup_rebuild_if_needed(ctx: Any) -> bool:
         problems = report.result.problems if report is not None else [result.message]
         ctx.maintenance = texts.MAINTENANCE
         ctx.sync_problem = "; ".join(problems[:10]) or result.message
-    return True
 
 
 async def run_startup_recovery(ctx: Any) -> None:
@@ -263,8 +294,7 @@ async def run_startup_recovery(ctx: Any) -> None:
             return  # the upgrade import has not finished
         if await _pg_empty(pool):
             if await client.has_rows("events"):
-                logger.warning("The database is empty and Notion holds events: rebuilding")
-                await rebuild_from_notion(ctx, post_result=False)
+                await _startup_rebuild(ctx)
             return
         if await client.has_rows("events") or await client.has_rows("djs"):
             return
