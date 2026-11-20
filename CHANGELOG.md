@@ -17,6 +17,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Canceled events no longer get outreach invites, reminders or a fully-booked entry, and the
   Notion sync no longer books DJs back into them.
+- Booking and cancel menus in DMs: when a menu expires, its buttons are disabled and an
+  untouched menu says that it has expired, instead of leaving buttons that end in "This
+  interaction failed".
 
 ## [1.2.0] - 2026-11-09
 

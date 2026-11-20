@@ -138,3 +138,111 @@ async def test_cancel_confirm_db_error_frees_the_flow(fail) -> None:
         await view._handle_confirm(inter)
     assert inter.followup.send.call_args.args[0] == texts.GENERIC_ERROR
     assert not lock.locked()
+
+
+# --- Expiry: disable the buttons and mark the message -------------------------
+
+
+def _sent_inter(age_seconds: float = 0.0) -> MagicMock:
+    import datetime
+
+    inter = _inter()
+    inter.created_at = disnake.utils.utcnow() - datetime.timedelta(seconds=age_seconds)
+    inter.edit_original_message = AsyncMock()
+    return inter
+
+
+async def test_expiry_disables_buttons_marks_message_and_frees_flow() -> None:
+    ctx = make_real_ctx(db=MagicMock())
+    lock, view = await _flow(ctx)
+    inter = _sent_inter()
+    view.track(inter, None, "Pick an event")
+    await view._expire()
+    assert not lock.locked()
+    assert view.is_finished()
+    assert all(item.disabled for item in view.children)
+    kwargs = inter.edit_original_message.await_args.kwargs
+    assert kwargs["view"] is view
+    assert kwargs["content"] == f"Pick an event\n\n{texts.FLOW_EXPIRED}"
+
+
+async def test_expiry_without_text_shows_only_the_note() -> None:
+    ctx = make_real_ctx(db=MagicMock())
+    lock, view = await _flow(ctx)
+    inter = _sent_inter()
+    view.track(inter, None, None)
+    await view._expire()
+    assert inter.edit_original_message.await_args.kwargs["content"] == texts.FLOW_EXPIRED
+
+
+async def test_expiry_of_a_used_view_keeps_the_flow_and_the_text() -> None:
+    ctx = make_real_ctx(db=MagicMock())
+    lock, view = await _flow(ctx)
+    inter = _sent_inter()
+    view.track(inter, None, "Pick an event")
+    await view._handle_event(_inter(), make_event(page_id="e1"))  # moves on to the slots
+    await view._expire()
+    assert lock.locked()  # the slot view still runs this flow
+    kwargs = inter.edit_original_message.await_args.kwargs
+    assert "content" not in kwargs
+    assert all(item.disabled for item in view.children)
+
+
+async def test_expiry_runs_once_and_survives_a_failed_edit() -> None:
+    ctx = make_real_ctx(db=MagicMock())
+    lock, view = await _flow(ctx)
+    inter = _sent_inter()
+    inter.edit_original_message.side_effect = disnake.HTTPException(MagicMock(), "gone")
+    view.track(inter, None, "x")
+    await view._expire()
+    await view.on_timeout()
+    assert inter.edit_original_message.await_count == 1
+
+
+async def test_expiry_fires_before_the_interaction_token_runs_out() -> None:
+    from bot.ui import views
+
+    ctx = make_real_ctx(db=MagicMock())
+    _, view = await _flow(ctx)
+    with patch.object(views.FlowView, "_expire_after", new=AsyncMock()) as after:
+        view.track(_sent_inter(age_seconds=600), None, "x")
+        await view._expiry_task
+    delay = after.await_args.args[0]
+    expected = views.INTERACTION_TOKEN_TTL - 600 - views.EXPIRY_EDIT_MARGIN
+    assert expected - 2 <= delay <= expected
+
+
+async def test_plain_dm_message_expires_after_the_full_time_and_is_edited_directly() -> None:
+    from bot.ui import views
+
+    ctx = make_real_ctx(db=MagicMock())
+    lock, view = await _flow(ctx)
+    sent = MagicMock(spec=disnake.Message)
+    sent.edit = AsyncMock()
+    inter = _sent_inter(age_seconds=600)
+    with patch.object(views.FlowView, "_expire_after", new=AsyncMock()) as after:
+        view.track(inter, sent, "Pick")
+        await view._expiry_task
+    assert after.await_args.args[0] == views.FLOW_VIEW_TIMEOUT
+    await view._expire()
+    sent.edit.assert_awaited_once()
+    inter.edit_original_message.assert_not_awaited()
+
+
+async def test_expiry_timer_fires_by_itself() -> None:
+    ctx = make_real_ctx(db=MagicMock())
+    lock, view = await _flow(ctx)
+    inter = _sent_inter(age_seconds=20 * 60)  # token already old: expire at once
+    view.track(inter, None, "x")
+    await view._expiry_task
+    assert not lock.locked()
+    inter.edit_original_message.assert_awaited_once()
+
+
+async def test_untracked_view_expires_without_an_edit() -> None:
+    ctx = make_real_ctx(db=MagicMock())
+    lock, view = await _flow(ctx)
+    view.track(_inter(), None, "x")  # a mock interaction: no created_at, no timer
+    assert view._expiry_task is None
+    await view.on_timeout()
+    assert not lock.locked()

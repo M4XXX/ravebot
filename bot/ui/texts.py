@@ -29,6 +29,14 @@ def slot_phrase(event: EventInfo, slot_index: int) -> str:
 
 FLOW_STALE = "This menu is out of date. Open the menu again to start over."
 FLOW_BUSY = "I'm already working on it. One moment, please."
+FLOW_EXPIRED = "This menu has expired. Open the menu again to start over."
+
+
+def flow_expired(content: str | None) -> str:
+    """The text of an expired flow message: its old text plus the expiry note."""
+    return f"{content}\n\n{FLOW_EXPIRED}" if content else FLOW_EXPIRED
+
+
 GENERIC_ERROR = (
     "Something went wrong. Please try again in a moment. "
     "If it keeps happening, tell an organizer."

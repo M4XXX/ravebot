@@ -10,10 +10,12 @@ RULE: Every View subclass MUST:
      (bot.context) and free it on completion, abandonment, error and timeout.
 """
 import asyncio
+import datetime
 import logging
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import disnake
 
@@ -32,6 +34,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 FLOW_VIEW_TIMEOUT = 15 * 60  # the same as the FlowLock time limit (bot.context)
+# Discord accepts edits of an interaction response (and of its followups) only for
+# 15 minutes after the interaction. The expiry edit must land before that.
+INTERACTION_TOKEN_TTL = 15 * 60
+EXPIRY_EDIT_MARGIN = 30
 
 
 class FlowView(GatedView):
@@ -42,6 +48,10 @@ class FlowView(GatedView):
     move the flow on. Its custom ids get a random suffix, because disnake keys views
     sent as interaction responses by custom id only: equal ids would let one user's
     click reach another user's view. Only the owner may press the buttons (GatedView).
+
+    Expiry: after sending, the caller passes the message to `track`. The view then
+    expires while its message can still be edited: the buttons are disabled and, when
+    nobody pressed one, the message says that the menu has expired.
     """
 
     def _bind_flow(self, lock: "asyncio.Lock", user_id: int) -> None:
@@ -50,11 +60,83 @@ class FlowView(GatedView):
         self._token = getattr(lock, "token", 0)
         self._nonce = uuid.uuid4().hex[:12]
         self._busy = False
+        self._used = False  # the user moved the flow on (or ended it) from this view
+        self._expired = False
+        # edits the message this view was sent with
+        self._edit: Callable[..., Awaitable[Any]] | None = None
+        self._content = ""
+        self._expiry_task: asyncio.Task | None = None
 
     def _cid(self, base: str) -> str:
         return f"{base}:{self._nonce}"
 
-    def _release_flow(self) -> None:
+    def track(
+        self,
+        inter: disnake.Interaction,
+        sent: object = None,
+        content: str | None = None,
+    ) -> None:
+        """Remember the message this view was just sent with and schedule its expiry.
+
+        `sent` is what the send call returned: a Message for a plain DM (editable at any
+        time), a WebhookMessage for a followup, None for an interaction response. The
+        last two can be edited only while `inter`'s token is valid, so the view expires
+        just before that. Never raises: a view that cannot be tracked keeps the plain
+        disnake timeout.
+        """
+        try:
+            self._content = content or ""
+            if isinstance(sent, disnake.Message):
+                self._edit = sent.edit
+            else:
+                self._edit = inter.edit_original_message
+            if isinstance(sent, disnake.Message) and not isinstance(
+                sent, disnake.WebhookMessage
+            ):
+                delay = float(FLOW_VIEW_TIMEOUT)
+            else:
+                created = getattr(inter, "created_at", None)
+                if not isinstance(created, datetime.datetime):
+                    return
+                age = (disnake.utils.utcnow() - created).total_seconds()
+                delay = min(FLOW_VIEW_TIMEOUT, INTERACTION_TOKEN_TTL - age - EXPIRY_EDIT_MARGIN)
+            self._expiry_task = asyncio.create_task(self._expire_after(max(delay, 0.0)))
+        except Exception:
+            logger.debug("FlowView.track failed", exc_info=True)
+
+    async def _expire_after(self, delay: float) -> None:
+        await asyncio.sleep(delay)
+        if not self.is_finished():
+            await self._expire()
+
+    async def _expire(self) -> None:
+        """Stop the view, free an untouched flow, disable the buttons, mark the message."""
+        if self._expired:
+            return
+        self._expired = True
+        self.stop()
+        task = self._expiry_task
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
+        if not self._used:
+            # A used view handed the flow on: a newer view of the same flow may hold it
+            self._release_flow(used=False)
+        if self._edit is None:
+            return
+        for item in self.children:
+            if isinstance(item, disnake.ui.Button):
+                item.disabled = True
+        try:
+            if self._used:
+                await self._edit(view=self)
+            else:
+                await self._edit(content=texts.flow_expired(self._content), view=self)
+        except Exception:
+            logger.debug("FlowView: could not edit the expired menu", exc_info=True)
+
+    def _release_flow(self, *, used: bool = True) -> None:
+        if used:
+            self._used = True
         release_if = getattr(self._lock, "release_if", None)
         if release_if is not None:
             release_if(self._token)
@@ -68,13 +150,15 @@ class FlowView(GatedView):
     async def _stale(self, inter: disnake.MessageInteraction) -> bool:
         """True (and the user is told) when this view's flow is over."""
         if self._flow_current() and not self._busy:
+            self._used = True
             return False
         text = texts.FLOW_BUSY if self._busy and self._flow_current() else texts.FLOW_STALE
         await inter.response.send_message(text, ephemeral=True)
         return True
 
     async def on_timeout(self) -> None:
-        self._release_flow()
+        """disnake's own timeout: a fallback for a view that `track` did not expire."""
+        await self._expire()
 
 
 class FallbackMenuView(GatedView):
@@ -149,9 +233,11 @@ class FallbackMenuView(GatedView):
             await inter.followup.send(start.error, ephemeral=True)
             return
         try:
-            await inter.followup.send(
+            sent = await inter.followup.send(
                 start.content or None, embed=start.embed, view=start.view, ephemeral=True
             )
+            if start.view is not None:
+                start.view.track(inter, sent, start.content)
         except Exception:
             logger.exception("book_slot: sending the event picker failed")
             if start.view is not None:
@@ -289,7 +375,8 @@ class FallbackMenuView(GatedView):
         if len(bookings) > 4:
             prompt += "\n" + texts.cancel_more(len(bookings))
         try:
-            await inter.followup.send(prompt, view=view, ephemeral=True)
+            sent = await inter.followup.send(prompt, view=view, ephemeral=True)
+            view.track(inter, sent, prompt)
         except Exception:
             logger.exception("cancel_slot: sending the booking list failed")
             view._release_flow()
@@ -744,7 +831,7 @@ class LineupPostView(GatedView):
         if embed is not None:
             kwargs["embed"] = embed
         try:
-            await user.send(content or None, **kwargs)
+            sent = await user.send(content or None, **kwargs)
         except disnake.Forbidden:
             if release_lock:
                 self.ctx.get_user_lock(user.id).release()
@@ -765,6 +852,8 @@ class LineupPostView(GatedView):
                 self.ctx.get_user_lock(user.id).release()
             await inter.followup.send(texts.GENERIC_ERROR, ephemeral=True)
             return False
+        if isinstance(view, FlowView):
+            view.track(inter, sent, content)
         await inter.followup.send(texts.POST_DM_SENT, ephemeral=True)
         return True
 
@@ -782,7 +871,7 @@ class EventSelectionView(FlowView):
 
     Buttons: one per event (secondary style, max 4 on rows 0–3) +
              [Never mind] (secondary, row 4).
-    timeout=None: DJ-facing views never expire (UX-DR16).
+    Expires after at most 15 minutes (FlowView.track).
 
     [Source: epics.md#Story 4.1 AC1]
     [Source: ux-design-specification.md#UX-DR13, UX-DR16]
@@ -856,13 +945,15 @@ class EventSelectionView(FlowView):
             self._lock,
             self._user_id,
         )
+        content = _pick_slot_content(open_slot_indices)
         try:
             await inter.response.send_message(
-                content=_pick_slot_content(open_slot_indices),
+                content=content,
                 embed=embed,
                 view=slot_view,
                 ephemeral=True,
             )
+            slot_view.track(inter, None, content)
         except Exception:
             logger.exception("_handle_event: send_message failed")
             self._release_flow()
@@ -881,7 +972,7 @@ class SlotSelectionView(FlowView):
 
     Buttons: one per open slot index (secondary style) + [Never mind]
              (secondary, row 4).
-    timeout=None: DJ-facing views never expire (UX-DR16).
+    Expires after at most 15 minutes (FlowView.track).
 
     Slot button callback implemented in Story 4.2 — presents BookingConfirmView.
 
@@ -968,6 +1059,7 @@ class SlotSelectionView(FlowView):
         )
         try:
             await inter.response.send_message(embed=embed, view=view, ephemeral=True)
+            view.track(inter, None, None)
         except Exception:
             logger.exception("_handle_slot: send_message failed")
             self._release_flow()
@@ -996,7 +1088,7 @@ class BookingConfirmView(FlowView):
       6. On NotionWriteError → release_slot_lock() to undo DB claim → error msg → release lock
       7. On success → BookedEmbed → trigger lineup post → admin log → release lock
 
-    timeout=None: DJ-facing views never expire (UX-DR16).
+    Expires after at most 15 minutes (FlowView.track).
 
     [Source: epics.md#Story 4.2 AC1–AC6]
     [Source: ux-design-specification.md#UX-DR4, UX-DR5, UX-DR16]
@@ -1122,11 +1214,12 @@ class BookingConfirmView(FlowView):
             self._ctx, event_for_refresh, remaining, self._lock, self._user_id
         )
         try:
-            await inter.followup.send(
+            sent = await inter.followup.send(
                 texts.SLOT_TAKEN,
                 view=refresh_view,
                 ephemeral=True,
             )
+            refresh_view.track(inter, sent, texts.SLOT_TAKEN)
         except Exception:
             logger.exception("BookingConfirmView: could not offer the remaining slots")
             self._release_flow()
@@ -1351,7 +1444,7 @@ class CancellationView(FlowView):
 
     Buttons: one per booking (secondary style, max 4 on rows 0–3) +
              [Never mind] (secondary, row 4).
-    timeout=None: DJ-facing views never expire (UX-DR16).
+    Expires after at most 15 minutes (FlowView.track).
 
     [Source: epics.md#Story 4.4 AC1]
     [Source: ux-design-specification.md#UX-DR6, UX-DR13, UX-DR16]
@@ -1429,12 +1522,10 @@ class CancellationView(FlowView):
             lock=self._lock,
             user_id=self._user_id,
         )
+        content = texts.cancel_confirm(event, slot_index)
         try:
-            await inter.response.send_message(
-                texts.cancel_confirm(event, slot_index),
-                view=view,
-                ephemeral=True,
-            )
+            await inter.response.send_message(content, view=view, ephemeral=True)
+            view.track(inter, None, content)
         except Exception:
             logger.exception("CancellationView: send_message failed")
             self._release_flow()
@@ -1454,7 +1545,7 @@ class CancelConfirmView(FlowView):
       [✅ Yes, Cancel It] (danger)    — removes booking from Notion + frees slot lock
       [✖ Keep It]         (secondary) — releases lock, warm dismissal
 
-    timeout=None: DJ-facing views never expire (UX-DR16).
+    Expires after at most 15 minutes (FlowView.track).
 
     [Source: epics.md#Story 4.4 AC3–AC5]
     [Source: ux-design-specification.md#UX-DR7, UX-DR13, UX-DR16]
@@ -1785,12 +1876,10 @@ class OutreachView(GatedView):
 
         embed = LineupUpdateEmbed(event)
         slot_view = SlotSelectionView(self._ctx, event, open_slot_indices, lock, inter.author.id)
+        content = _pick_slot_content(open_slot_indices)
         try:
-            await inter.followup.send(
-                content=_pick_slot_content(open_slot_indices),
-                embed=embed,
-                view=slot_view,
-            )
+            sent = await inter.followup.send(content=content, embed=embed, view=slot_view)
+            slot_view.track(inter, sent, content)
         except Exception:
             logger.exception("OutreachView.accept: send_message failed")
             slot_view._release_flow()
