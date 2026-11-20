@@ -7,6 +7,7 @@ import pytest
 from bot.ui import texts
 from tests.conftest import make_real_ctx
 from tests.notion.factories import make_event
+from tests.fake_events import fake_events
 
 
 def _inter(user_id: int = 1) -> MagicMock:
@@ -97,7 +98,7 @@ async def test_book_slot_send_failure_frees_the_flow() -> None:
 
     ctx = make_real_ctx(db=MagicMock())
     ctx.notion_client = MagicMock()
-    ctx.notion_client.list_events = AsyncMock(return_value=[make_event(page_id="e1")])
+    fake_events.list_events = AsyncMock(return_value=[make_event(page_id="e1")])
     inter = _inter(user_id=5)
     inter.followup.send = AsyncMock(side_effect=disnake.HTTPException(MagicMock(status=404), "x"))
     with patch("bot.ui.views.get_dj_by_discord_id", new=AsyncMock(return_value={"id": 1})):
@@ -111,7 +112,7 @@ async def test_cancel_slot_send_failure_frees_the_flow() -> None:
 
     ctx = make_real_ctx(db=MagicMock())
     ctx.notion_client = MagicMock()
-    ctx.notion_client.list_events = AsyncMock(return_value=[make_event(page_id="e1")])
+    fake_events.list_events = AsyncMock(return_value=[make_event(page_id="e1")])
     inter = _inter(user_id=6)
     inter.followup.send = AsyncMock(side_effect=disnake.HTTPException(MagicMock(status=404), "x"))
     rows = [{"event_id": "e1", "slot_index": 0}]
@@ -125,16 +126,13 @@ async def test_cancel_confirm_db_error_frees_the_flow(fail) -> None:
     from bot.ui.views import CancelConfirmView
 
     ctx = make_real_ctx(db=MagicMock())
-    ctx.notion_client = MagicMock()
-    ctx.notion_client.clear_slot = AsyncMock(return_value=True)
     ctx.lineup_service = None
     ctx.log_service = None
     lock = ctx.get_user_lock(9)
     await lock.acquire()
     view = CancelConfirmView(ctx, make_event(page_id="e1"), 0, 1, lock, 9)
     inter = _inter(user_id=9)
-    with patch("bot.services.dj_pages.ensure_dj_page", new=AsyncMock(return_value="p")), \
-         patch("bot.db.bookings.release_slot_lock", new=AsyncMock(side_effect=OSError("db"))):
+    with patch("bot.db.bookings.release_slot_lock", new=AsyncMock(side_effect=OSError("db"))):
         await view._handle_confirm(inter)
     assert inter.followup.send.call_args.args[0] == texts.GENERIC_ERROR
     assert not lock.locked()

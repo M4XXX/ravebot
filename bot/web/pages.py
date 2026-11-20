@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import datetime
+import json
 from html import escape
 
-from bot.web.service import ActionResult, AdminRow, ServerInfo
+from bot.db.issues import IssueRow
+from bot.web.service import ActionResult, AdminRow, ServerInfo, SyncStatus
 
 _CDN = "https://cdn.discordapp.com/"
 _BRAND = "Rave<span>Bot</span>&nbsp;Admin&nbsp;Page"
@@ -66,6 +69,7 @@ margin-right:auto}
 .msg.ok{background:#4cd9a01f;border-color:#4cd9a066}
 .msg.err{background:#c2415a26;border-color:#c2415a88}
 .actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.kv{margin:4px 0;padding-left:18px;overflow-wrap:anywhere}
 form{margin:0}
 """
 
@@ -141,15 +145,22 @@ def render_login(error: str | None = None) -> str:
     )
 
 
-def _notion_card(problem: str | None) -> str:
+def _notion_card(problem: str | None, paused: bool = False) -> str:
     if not problem:
         return ""
+    effect = (
+        "The one-time import from Notion has not run, so booking and edits are paused. "
+        "If the integration only lost access, share the Notion page with it again and "
+        "retry the import (Notion sync below) or restart the bot."
+        if paused
+        else "Booking and the lineup keep working; changes reach Notion again once the "
+        "databases are back. If the integration only lost access, share the Notion page "
+        "with it again and restart the bot."
+    )
     return (
         '<section class="card"><h3>Notion databases not found</h3>'
         f'<p class="msg err">{_e(problem)}</p>'
-        "<p>Booking and the lineup are paused. If the integration only lost access, share "
-        "the Notion page with it again and restart the bot. If the databases were deleted "
-        "on purpose, create a new set.</p>"
+        f"<p>{effect} If the databases were deleted on purpose, create a new set.</p>"
         '<a class="btn red" href="/notion/recreate">Create new databases</a></section>'
     )
 
@@ -162,9 +173,95 @@ def render_confirm_recreate(problem: str, csrf: str) -> str:
         "<p>The bot creates a new set of Events, Slots and DJs databases on the Notion "
         "page. Nothing is copied: bookings and DJs in the old databases stay there, and "
         "the bookings the bot remembers point to the old events.</p>"
+        "<p>If the one-time import from Notion after the update has not run yet, creating "
+        "the new, empty databases marks the one-time import from Notion as done for good: "
+        "the bot never imports the old databases later.</p>"
         '<div class="actions"><form method="post" action="/notion/recreate">'
         f'{_csrf_field(csrf)}<button class="btn red" type="submit">Create new databases'
         '</button></form><a class="btn g" href="/">Cancel</a></div></section>'
+    )
+
+
+def _time(value: datetime.datetime | None) -> str:
+    if value is None:
+        return "never"
+    return value.astimezone(datetime.UTC).strftime("%Y-%m-%d %H:%M UTC")
+
+
+def _data_card(sync: SyncStatus | None) -> str:
+    busy = sync.maintenance if sync is not None else None
+    busy_html = f'<p class="msg err">{_e(busy)}</p>' if busy else ""
+    return (
+        '<section class="card"><h3>Data and backup</h3>'
+        f"{busy_html}"
+        '<p class="muted">The backup file holds the whole database: events, slots, DJs with '
+        "logos, settings and the admins added here.</p>"
+        '<div class="actions"><a class="btn" href="/backup/export">Download a backup</a>'
+        '<a class="btn red" href="/backup/import">Restore a backup</a></div></section>'
+    )
+
+
+_ISSUE_LABELS = {
+    "postgres": "Keep Postgres",
+    "notion": "Keep Notion",
+    "resynced": "Resync Postgres to Notion",
+}
+
+
+def _issue_choices(issue: IssueRow) -> tuple[str, ...]:
+    return ("postgres", "notion") if issue.kind == "conflict" else ("resynced",)
+
+
+def _issue_row(issue: IssueRow) -> str:
+    kind = "Conflict" if issue.kind == "conflict" else "Warning"
+    where = " ".join(str(x) for x in (issue.entity, issue.entity_key) if x)
+    detail = f"{_e(where)} &middot; " if where else ""
+    buttons = "".join(
+        f'<a class="btn g" href="/sync/issues/{_e(issue.id)}?choice={choice}">'
+        f"{_ISSUE_LABELS[choice]}</a>"
+        for choice in _issue_choices(issue)
+    )
+    return (
+        f'<div class="row"><div class="who"><b>{_e(issue.summary)}</b>'
+        f"<small>{detail}since {_time(issue.created_at)}</small></div>"
+        f'<span class="tag g">{kind}</span>{buttons}</div>'
+    )
+
+
+def _sync_card(sync: SyncStatus | None) -> str:
+    if sync is None or not sync.enabled:
+        return ""
+    problem = ""
+    if sync.problem:
+        problem = (
+            f'<p class="msg err">{_e(sync.problem)}</p>'
+            '<p>Booking and the Notion sync are paused until the import from Notion '
+            "works. Fix the data in Notion, then retry, or rebuild from Notion.</p>"
+            '<a class="btn red" href="/sync/retry-import">Retry the import from Notion</a>'
+        )
+    box = sync.outbox
+    waiting = f"{box.count} waiting"
+    if box.oldest is not None:
+        waiting += f", oldest since {_time(box.oldest)}"
+    errors = ""
+    if sync.last_error:
+        errors += f'<p class="msg err">Last sync error: {_e(sync.last_error)}</p>'
+    if box.last_error:
+        errors += f'<p class="msg err">Last Notion write error: {_e(box.last_error)}</p>'
+    conflicts = [i for i in sync.issues if i.kind == "conflict"]
+    warnings = [i for i in sync.issues if i.kind != "conflict"]
+    issue_html = "".join(_issue_row(i) for i in conflicts + warnings)
+    if not issue_html:
+        issue_html = '<p class="muted">No open conflicts or warnings.</p>'
+    return (
+        '<section class="card"><h3>Notion sync</h3>'
+        f"{problem}"
+        f"<p>Last sync: {_time(sync.last_run)}<br>Changes for Notion: {_e(waiting)}</p>"
+        f"{errors}"
+        f"<p><b>Conflicts ({len(conflicts)}) and warnings ({len(warnings)})</b></p>"
+        f"{issue_html}"
+        '<div class="actions"><a class="btn g" href="/sync/resync">Resync all to Notion</a>'
+        '<a class="btn red" href="/sync/rebuild">Rebuild from Notion</a></div></section>'
     )
 
 
@@ -174,6 +271,8 @@ def render_dashboard(
     csrf: str,
     message: ActionResult | None = None,
     notion_problem: str | None = None,
+    sync: SyncStatus | None = None,
+    notion_paused: bool = False,
 ) -> str:
     if server is None:
         server_html = '<p class="muted">The bot is not on a server yet.</p>'
@@ -191,7 +290,7 @@ def render_dashboard(
         f'<form method="post" action="/logout">{_csrf_field(csrf)}'
         '<button class="btn g" type="submit">Log out</button></form></div>'
         f"{_message(message)}"
-        f"{_notion_card(notion_problem)}"
+        f"{_notion_card(notion_problem, notion_paused)}"
         f'<section class="card"><h3>Server</h3>{server_html}</section>'
         '<section class="card"><h3>Add an admin</h3>'
         f'<form method="post" action="/admins/add">{_csrf_field(csrf)}'
@@ -205,7 +304,109 @@ def render_dashboard(
         '<section class="card"><h3>DJs</h3>'
         '<p class="muted">Add, edit or delete DJs, including guests without a Discord account.</p>'
         '<a class="btn" href="/djs">Manage DJs</a></section>'
+        f"{_data_card(sync)}"
+        f"{_sync_card(sync)}"
     )
+
+
+def _confirm(title: str, body: str, action: str, button: str, csrf: str, extra: str = "") -> str:
+    return _page(
+        f"{_TOP}"
+        f'<section class="card"><h3>{_e(title)}</h3>{body}'
+        f'<div class="actions"><form method="post" action="{_e(action)}">'
+        f'{_csrf_field(csrf)}{extra}<button class="btn red" type="submit">{_e(button)}'
+        '</button></form><a class="btn g" href="/">Cancel</a></div></section>'
+    )
+
+
+def render_backup_import(csrf: str) -> str:
+    return _page(
+        f"{_TOP}"
+        '<section class="card"><h3>Restore a backup</h3>'
+        "<p>The backup replaces the whole database in one step: events, slots, DJs, "
+        "settings and the admins added here. Changes made since the backup are lost.</p>"
+        '<p class="muted">The bot first saves a safety backup of the current data. Bookings '
+        "and edits are refused while the restore runs. A file from a newer bot version is "
+        "refused. With Notion set up, everything is written to Notion again afterwards.</p>"
+        '<form method="post" action="/backup/import" enctype="multipart/form-data">'
+        f"{_csrf_field(csrf)}"
+        '<input class="in" type="file" name="backup" accept=".gz,application/gzip" '
+        'aria-label="Backup file" required>'
+        '<div class="actions"><button class="btn red" type="submit">Replace the database'
+        '</button><a class="btn g" href="/">Cancel</a></div></form></section>'
+    )
+
+
+def render_confirm_rebuild(csrf: str) -> str:
+    body = (
+        "<p>The bot saves a safety backup, then replaces events, slots, DJs with logos, "
+        "settings and the bot data with what Notion holds.</p>"
+        '<p class="muted">Bookings and edits are refused while it runs. Changes still '
+        "waiting for Notion and open conflicts are dropped. Admins added here are not in "
+        "Notion: the owners from ADMIN_USER_IDS keep working, the others come back only "
+        "from a backup file.</p>"
+    )
+    return _confirm("Rebuild from Notion", body, "/sync/rebuild", "Rebuild from Notion", csrf)
+
+
+def render_confirm_resync(csrf: str) -> str:
+    body = (
+        "<p>Every event, DJ and slot is written to Notion again.</p>"
+        '<p class="muted">Hand edits in Notion that the bot has not taken over are '
+        "overwritten with the bot's data.</p>"
+    )
+    return _confirm("Resync all to Notion", body, "/sync/resync", "Resync all", csrf)
+
+
+def render_confirm_retry_import(problem: str, csrf: str) -> str:
+    body = (
+        f'<p class="msg err">{_e(problem)}</p>'
+        "<p>The bot saves a safety backup and runs the import from Notion again. When it "
+        "works, booking and the Notion sync start again.</p>"
+        '<p class="muted">Fix the problems above in Notion first, or the import fails '
+        "again.</p>"
+    )
+    return _confirm(
+        "Retry the import from Notion", body, "/sync/retry-import", "Retry the import", csrf
+    )
+
+
+_CHOICE_TEXT = {
+    "postgres": "The bot's version is kept and written to Notion. The Notion edit is "
+    "overwritten.",
+    "notion": "Notion's version is applied to the bot after the same checks as a command. "
+    "If the checks fail, the conflict stays open.",
+    "resynced": "The bot's version is written to Notion again. The Notion edit is "
+    "overwritten.",
+}
+
+
+def _payload(title: str, payload: dict | None) -> str:
+    if not payload:
+        return ""
+    items = "".join(
+        f"<li>{_e(key)}: {_e(json.dumps(value, ensure_ascii=False, default=str))}</li>"
+        for key, value in sorted(payload.items(), key=lambda kv: str(kv[0]))
+    )
+    return f"<p><b>{_e(title)}</b></p><ul class=\"kv\">{items}</ul>"
+
+
+def render_confirm_issue(issue: IssueRow, choice: str, csrf: str) -> str:
+    where = " ".join(str(x) for x in (issue.entity, issue.entity_key) if x)
+    body = (
+        f"<p><b>{_e(issue.summary)}</b></p>"
+        f'<p class="muted">{_e(where)} &middot; since {_time(issue.created_at)}</p>'
+        f'{_payload("In the bot", issue.pg_payload)}'
+        f'{_payload("In Notion", issue.notion_payload)}'
+        f"<p>{_e(_CHOICE_TEXT[choice])}</p>"
+    )
+    extra = f'<input type="hidden" name="choice" value="{_e(choice)}">'
+    label = _ISSUE_LABELS[choice]
+    return _confirm(label, body, f"/sync/issues/{issue.id}", label, csrf, extra)
+
+
+def issue_choice_ok(issue: IssueRow, choice: str) -> bool:
+    return choice in _issue_choices(issue)
 
 
 def render_confirm_remove(row: AdminRow, csrf: str) -> str:

@@ -142,6 +142,7 @@ def client(member: MagicMock) -> MagicMock:
 def ctx() -> MagicMock:
     c = MagicMock()
     c.db = MagicMock(name="pool")
+    c.maintenance = None
     c.log_service = MagicMock()
     c.log_service.log_new_dj = AsyncMock()
     return c
@@ -501,8 +502,37 @@ async def test_confirm_inserts_assigns_role_logs_once_and_syncs(
     ctx.log_service.log_new_dj.assert_awaited_once_with("Neon Fox", "foxvr")
     member.add_roles.assert_awaited_once()
     assert member.add_roles.await_args.args[0] is role
-    sync.assert_awaited_once_with(ctx, A, "alice")
+    sync.assert_awaited_once_with(ctx, A)
     assert A not in fake.convs
+
+
+async def test_confirm_queues_the_new_dj_for_notion_without_calling_it(
+    service, fake, ctx, monkeypatch
+):
+    from bot.services import dj_sync
+
+    monkeypatch.setattr(svc_mod, "sync_dj", dj_sync.sync_dj)  # the real one
+    changed = MagicMock()
+    monkeypatch.setattr(dj_sync, "changed", changed)
+    await _to_summary(service)
+    assert (await service.confirm(A, 7)).kind == "done"
+    fake.insert_dj.assert_awaited_once()
+    changed.assert_called_once_with(ctx, "dj", str(A))
+    assert ctx.notion_client.method_calls == []
+
+
+async def test_edit_queues_the_dj_for_notion_without_calling_it(service, fake, ctx, monkeypatch):
+    from bot.services import dj_sync
+
+    monkeypatch.setattr(svc_mod, "sync_dj", dj_sync.sync_dj)  # the real one
+    changed = MagicMock()
+    monkeypatch.setattr(dj_sync, "changed", changed)
+    _dj(fake)
+    await service.start_edit(A, GUILD, "vrchat")
+    assert (await service.handle_message(msg(A, "newvr"))).kind == "overview"
+    assert fake.djs[A]["vrchat_name"] == "newvr"
+    changed.assert_called_once_with(ctx, "dj", str(A))
+    assert ctx.notion_client.method_calls == []
 
 
 async def test_confirm_with_logo_stores_bytes(service, fake, download):
@@ -628,7 +658,7 @@ async def test_edit_own_name_accepted(service, fake, sync, ctx):
     assert r.kind == "overview"
     assert texts.edit_saved(texts.FIELD_LABELS["name"]) in r.text
     assert fake.djs[A]["dj_name"] == "neon fox"
-    sync.assert_awaited_once_with(ctx, A, "alice")
+    sync.assert_awaited_once_with(ctx, A)
     assert A not in fake.convs
 
 
@@ -1049,3 +1079,23 @@ async def test_has_open_conversation_delete_failure_is_only_logged(service, fake
 async def test_has_open_conversation_without_db(ctx, client, fake, sync, roles):
     ctx.db = None
     assert await DjConversationService(ctx, client=client).has_open_conversation(A) is False
+
+
+async def test_edit_save_refused_in_maintenance(service, fake, ctx):
+    _dj(fake)
+    await service.start_edit(A, GUILD, "vrchat")
+    ctx.maintenance = texts.MAINTENANCE
+    r = await service.handle_message(msg(A, "newvr"))
+    assert r is not None and r.kind == "error" and r.text == texts.MAINTENANCE
+    assert fake.djs[A]["vrchat_name"] == "foxvr"
+    ctx.maintenance = None
+    r = await service.handle_message(msg(A, "newvr"))  # the question is still open
+    assert r.kind == "overview" and fake.djs[A]["vrchat_name"] == "newvr"
+
+
+async def test_onboarding_confirm_refused_in_maintenance(service, fake, ctx):
+    await _to_summary(service)
+    ctx.maintenance = texts.MAINTENANCE
+    r = await service.confirm(A, 7)
+    assert r.kind == "summary" and r.text.startswith(texts.MAINTENANCE)
+    assert A not in fake.djs

@@ -154,14 +154,13 @@ def test_event_cancel_done_counts() -> None:
     assert texts.event_cancel_done(event, ["A", "B"], ["Guesty", "C"], [1]) == (
         "Canceled 2026-11-28 Rave Night. 2 DJs told by DM. "
         "Tell these DJs yourself: Guesty, C. "
-        "Some slots could not be emptied in Notion, see the log channel."
+        "Some slots could not be emptied, see the log channel."
     )
 
 
 def test_event_cancel_cleanup_failed_uses_slot_numbers() -> None:
     assert texts.event_cancel_cleanup_failed(_rave(), [0, 2]) == (
-        "**2026-11-28 Rave Night** was canceled, but these slots could not be emptied "
-        "in Notion: 1, 3."
+        "**2026-11-28 Rave Night** was canceled, but these slots could not be emptied: 1, 3."
     )
 
 
@@ -198,7 +197,16 @@ def test_cancel_event_texts_have_no_em_dash() -> None:
     for name in (
         "LOG_EVENT_CANCELED_TITLE", "EVENT_CANCELED_ANYWAY", "EVENT_CANCEL_CLEANUP_TODO",
         "EVENT_CANCEL_POST_FAILED", "EVENT_CANCEL_KEPT", "EVENT_NOT_CANCELABLE",
-        "EVENT_CANCEL_NOTION_FAILED", "EVENT_WAS_CANCELED",
+        "EVENT_CANCEL_SAVE_FAILED", "EVENT_WAS_CANCELED",
     ):
         assert isinstance(getattr(texts, name), str) and getattr(texts, name)
     assert texts.LOG_EVENT_CANCELED_TITLE == "Event canceled"
+
+
+def test_log_notion_missing_text_says_paused_only_when_paused() -> None:
+    """M3: the log entry matches reality (paused only before the one-time import)."""
+    from bot.ui import texts as t
+
+    assert "paused" not in t.log_notion_missing_text("gone")
+    assert "keep working" in t.log_notion_missing_text("gone")
+    assert "paused" in t.log_notion_missing_text("gone", paused=True)

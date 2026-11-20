@@ -6,14 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- PostgreSQL is now the source of truth for events, slots, DJs and settings; this reverses the earlier decision to keep Notion as the source of truth. The bot reads and writes only PostgreSQL, and no Discord reply waits for Notion any more. Notion is an optional live mirror that the bot keeps up to date in the background.
+- Notion is optional: without `NOTION_API_KEY` and `NOTION_PARENT_PAGE_ID` the bot runs on PostgreSQL alone, with no Notion calls and no startup failure. Both variables are no longer required.
+- Hand edits in Notion (a changed value, a booking, a new DJ, a new event) are checked like the matching command, applied and logged as `Applied from Notion`. A risky edit (a deleted page, a changed key, a failed check, many records missing) is only reported as a warning. A conflict with an unsynced bot change waits for a choice, Keep Postgres or Keep Notion, on the admin page; after 24 hours the bot's version wins.
+- A new read-only Notion database, Bot data, mirrors the bot's own state (settings, invite and reminder history, drafts). Hand edits there are overwritten.
+- The first start after the update saves a safety backup and imports events, slots and DJs from Notion once. Booking and edits are paused until it works; a failed import can be retried on the admin page.
+- Database migration 0018 drops `djs.notion_dj_page_id` (the page ids live in `notion_mirror` since 0017) and the unused `event_shapes` table.
+
 ### Added
 
+- `BACKUP_DIR` (default `/data/backups`) for the safety backups. The image declares `/data/backups` as a volume and the Unraid template maps it to `/mnt/user/appdata/ravebot/backups`; map it in a plain `docker run` with `-v ravebot-backups:/data/backups`.
+- Admin page: download a backup of the whole database and restore it from a file (with a safety backup first), a Notion sync card (last sync, waiting changes, errors, conflicts and warnings with Keep Postgres, Keep Notion and resync choices), resync all to Notion, and rebuild PostgreSQL from Notion after a data loss.
 - `/cancel event`: cancel one upcoming event after a confirm step. The event gets the status
   `Canceled` in Notion and its bookings are removed. Booked DJs are told by DM, the log
   channel names DJs to tell by hand (closed DMs, guests without Discord), and the DJ channel
   gets a notice when DJs were booked.
 
 ### Fixed
+
+- A booking mirrored to Notion while the Notion poll was reading could be read as a hand edit and freed again; the mirror worker now waits while a poll compares its snapshot.
+- First start after the update with the Notion databases missing: the bot now stays paused until the one-time import ran, instead of working on an empty database. **Retry the import from Notion** reads the databases again first.
+- Past bookings of a deleted DJ are no longer freed by the Notion poll, and slots of past events are never changed from Notion.
+- After a backup restore, events, DJs and slots added in Notion after the backup are moved to the Notion trash with a warning on the first sync instead of being taken in (no re-created records, no DMs).
+- A booking for a slot that no longer exists (event deleted, slot count lowered) is refused with a message instead of being stored where nobody sees it.
+- The one-time import keeps a booking whose Notion DJ page cannot be read; without one it stops and lists the slot instead of importing it as free.
+- A hand-made slot page that names another DJ than the bot's booking is still overwritten, but now with a warning.
+- A backup file that unpacks to more than 1 GB is refused.
+- The missing-databases notice no longer claims that booking is paused when it is not.
 
 - Canceled events no longer get outreach invites, reminders or a fully-booked entry, and the
   Notion sync no longer books DJs back into them.

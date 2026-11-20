@@ -10,6 +10,7 @@ from bot.db.setup_drafts import SetupDraft
 from bot.services import activation as _activation
 from bot.ui import setup_wizard as sw
 from bot.ui import texts
+from tests.fake_events import fake_events
 
 REAL_IS_ACTIVE = _activation.is_active  # captured before the autouse conftest patch
 
@@ -99,7 +100,9 @@ def make_ctx(events=None):
     ctx.is_admin = lambda user_id: user_id == ADMIN
     ctx.db = MagicMock()
     ctx.db.fetchval = AsyncMock(return_value=1)
-    ctx.notion_client.list_events = AsyncMock(return_value=events or [])
+    ctx.maintenance = None
+    ctx.mirror = None
+    fake_events.list_events = AsyncMock(return_value=events or [])
     ctx.lineup_service.refresh = AsyncMock(return_value=True)
     return ctx
 
@@ -224,7 +227,7 @@ async def test_welcome_shows_checks_and_start(store):
     draft = store.drafts[GUILD]
     view = await sw.render_step(ctx, make_guild(), draft)
     assert "Discord connection" in view.content and "Database" in view.content
-    assert "Notion: Events, Slots and DJs found" in view.content
+    assert "Events, slots and DJs found" in view.content
     assert view.next_label == "Start" and not view.next_disabled
     assert sw.ID_BACK not in view.visible
 
@@ -232,10 +235,10 @@ async def test_welcome_shows_checks_and_start(store):
 @pytest.mark.asyncio
 async def test_welcome_failed_check_disables_start(store):
     ctx = make_ctx()
-    ctx.notion_client.list_events = AsyncMock(side_effect=RuntimeError("x"))
+    fake_events.list_events = AsyncMock(side_effect=RuntimeError("x"))
     view = await sw.render_step(ctx, make_guild(), SetupDraft(GUILD, 55, 7, 0, {}))
     assert view.next_disabled
-    assert "✗ Notion" in view.content
+    assert "✗ Events" in view.content
 
 
 @pytest.mark.asyncio
@@ -330,7 +333,7 @@ async def test_activate_writes_keys_flag_and_runs_effects_once_on_double_press(s
         await i2.response.defer()
         await asyncio.gather(sw.activate_from_draft(ctx, i1), sw.activate_from_draft(ctx, i2))
     assert rep.await_count == 1
-    assert rep.await_args.args[2] == GUILD
+    assert rep.await_args.args == (ctx, GUILD)
     assert ctx.lineup_service.refresh.await_count == 1
     c = {k: v for (g, k), v in store.config.items()}
     assert c["dj_channel"] == "100" and c["log_channel"] == "200"
@@ -892,7 +895,7 @@ async def test_save_refuses_first_run_draft(store):
 
 def test_active_text_only_claims_what_happened():
     both = texts.setup_active_message(6, True, "<#1>")
-    assert "I created your first 6 events in Notion" in both
+    assert "I created your first 6 events" in both
     assert "posted the Lineup Update in <#1>" in both
     none = texts.setup_active_message(0, False, "<#1>")
     assert "created" not in none and "Lineup Update" not in none
@@ -1113,7 +1116,7 @@ async def test_activate_loads_events_inside_replenish_not_before(store):
     await inter.response.defer()
     with patch("bot.ui.setup_wizard.replenish_events", AsyncMock(return_value=2)) as rep:
         await sw.activate_from_draft(ctx, inter)
-    assert rep.await_args.args == (ctx.db, ctx.notion_client, GUILD)  # no stale list passed
+    assert rep.await_args.args == (ctx, GUILD)  # no stale list passed
     # the lineup refresh uses a list loaded after replenishing
     ctx.lineup_service.refresh.assert_awaited_once()
 
@@ -1293,6 +1296,27 @@ async def test_activate_with_schedule_off_creates_no_events_and_posts_lineup(sto
     assert store.config[(GUILD, "first_event_date")] == "2099-01-02"
     ctx.notion_client.create_event.assert_not_awaited()
     ctx.lineup_service.refresh.assert_awaited_once()
+    assert store.config[(GUILD, "bot_active")] == "true"
+
+
+@pytest.mark.asyncio
+async def test_activate_in_maintenance_creates_no_events(store):
+    """An import replaces the events: activation does not replenish during it."""
+    ctx = make_ctx()
+    ctx.maintenance = "restoring"
+    seed(store, SUMMARY, FULL)
+    inter = make_inter(make_guild())
+    await inter.response.defer()
+    insert = AsyncMock()
+    with patch("bot.services.event_replenish.get_value", store.get_value), patch(
+        "bot.services.event_defaults.get_value", store.get_value
+    ), patch(
+        "bot.services.event_replenish.get_manual_page_ids", AsyncMock(return_value=set())
+    ), patch(
+        "bot.services.event_replenish.db_events.event_id_exists", AsyncMock(return_value=False)
+    ), patch("bot.services.event_replenish.db_events.insert_event", insert):
+        await sw.activate_from_draft(ctx, inter)
+    insert.assert_not_awaited()
     assert store.config[(GUILD, "bot_active")] == "true"
 
 

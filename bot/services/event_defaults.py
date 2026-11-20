@@ -1,4 +1,5 @@
-"""Default shape (start, slot length, slot count) for events the bot creates."""
+"""Default shape (start, slot length, slot count) for events the bot creates, and the
+checks every new or changed event passes (/create event, events added in Notion)."""
 import datetime
 import logging
 import re
@@ -7,7 +8,9 @@ from dataclasses import dataclass
 import asyncpg
 
 from bot.db.config import get_value
+from bot.db.events import EventDraft
 from bot.notion.models import MAX_SLOTS
+from bot.ui.setup_options import FIELD_LABELS, LIMITS
 
 logger = logging.getLogger(__name__)
 
@@ -72,3 +75,27 @@ async def default_event_shape(db: asyncpg.Pool, guild_id: int) -> EventShape:
             "slots_per_event", raw_slots, DEFAULT_SLOT_COUNT, maximum=MAX_SLOTS
         ),
     )
+
+
+INVALID_DATE = "Invalid date. Provide a future date in YYYY-MM-DD format."
+
+
+def validate_event_draft(draft: EventDraft, *, today: datetime.date) -> list[str]:
+    """The /create event checks; an empty list means the draft is valid.
+
+    The date must be after ``today``; slot count and slot length must be whole
+    numbers within the setup limits; the event ID must not be empty.
+    """
+    errors: list[str] = []
+    if not draft.event_id.strip():
+        errors.append("The event ID is required.")
+    if draft.date <= today:
+        errors.append(INVALID_DATE)
+    for value, key in (
+        (draft.slot_count, "slots_per_event"),
+        (draft.slot_minutes, "slot_duration_minutes"),
+    ):
+        if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= LIMITS[key]:
+            rule = f"use a whole number from 1 to {LIMITS[key]}."
+            errors.append(f"Invalid {FIELD_LABELS[key]}: {rule}")
+    return errors

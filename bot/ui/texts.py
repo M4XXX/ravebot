@@ -306,6 +306,7 @@ LOG_BOOKED_TITLE = "Booked"
 LOG_CANCELLED_TITLE = "Cancelled"
 LOG_ORGANIZER_TITLE = "Changed by an organizer"
 LOG_NOTION_TITLE = "Changed in Notion"
+LOG_NOTION_APPLIED_TITLE = "Applied from Notion"
 LOG_FULLY_BOOKED_TITLE = "Event fully booked"
 LOG_NEW_DJ_TITLE = "New DJ"
 LOG_ADMIN_ADDED_TITLE = "Admin added"
@@ -320,6 +321,18 @@ LOG_NOTION_MISSING_TODO = (
     "Create new databases."
 )
 LOG_NEW_DATABASES_TITLE = "New Notion databases created"
+MAINTENANCE = "The bot is restoring its data. Please try again in a few minutes."
+UPGRADE_WAITS_FOR_NOTION = (
+    "The Notion databases could not be read, so the one-time import from Notion has not "
+    "run. Booking and edits are paused until it is done. Share the Notion page with the "
+    "integration again and retry the import, or create new databases."
+)
+LOG_UPGRADE_DONE_TITLE = "Data imported from Notion"
+LOG_UPGRADE_FAILED_TITLE = "Import from Notion failed"
+LOG_UPGRADE_FAILED_TODO = (
+    "Fix these rows in Notion, then restart the bot. The import runs again on the next "
+    "start. Until then booking and edits stay paused."
+)
 NOTION_RETRY_TODO = "Check the Slots rows in Notion. The next sync retries."
 DJ_CHANNEL_TODO = "Run /setup again to set the DJ channel."
 
@@ -382,11 +395,233 @@ def log_dj_list_text(admin: str, action: str, dj_name: str) -> str:
     return f"{admin} {action} the DJ {dj_name}."
 
 
-def log_notion_missing_text(detail: str) -> str:
-    return (
-        "The bot cannot find its Notion databases, so booking and the lineup are paused. "
-        f"Details: {detail[:500]}"
+def log_notion_applied_text(lines: list[str]) -> str:
+    """Hand edits from Notion the bot applied: up to 10 lines, then "and N more"."""
+    text = "\n".join(lines[:10])
+    if len(lines) > 10:
+        text += f"\nand {len(lines) - 10} more"
+    return text[:3500]
+
+
+# --- Notion sync cycle (summaries are plain text; the sync cycle escapes before posting) ---
+
+LOG_SYNC_CONFLICT_TITLE = "Changed in the bot and in Notion"
+LOG_SYNC_WARNING_TITLE = "Notion edit not applied"
+LOG_SYNC_EXPIRED_TITLE = "Postgres kept after 24 h"
+LOG_SYNC_READ_FAILED_TITLE = "Notion could not be read"
+SYNC_CONFLICT_TODO = (
+    "Keep the bot's version or Notion's: choose on the admin page. Until then this record "
+    "is not synced. Without a decision the bot's version wins after 24 h."
+)
+SYNC_RESYNC_TODO = (
+    "Fix it in Notion (the next poll tries again), or choose resync on the admin page to "
+    "write the bot's version to Notion."
+)
+SYNC_DELETED_TODO = (
+    "To bring the Notion page back, choose resync on the admin page. To remove the record "
+    "for good, remove it in the bot."
+)
+SYNC_DUPLICATE_TODO = "Delete the extra page in Notion."
+SYNC_MASS_TODO = (
+    "Check that the integration still has access to the Notion page, then choose resync "
+    "on the admin page to write everything to Notion again."
+)
+SYNC_READ_FAILED_TODO = (
+    "Check that Notion is reachable and the integration still has access. The next poll "
+    "tries again."
+)
+SYNC_ISSUE_NOT_OPEN = "This conflict or warning is no longer open."
+SYNC_WRONG_CHOICE = "This choice does not fit this entry."
+SYNC_KEPT_POSTGRES = "The bot's version is kept and written to Notion."
+SYNC_KEPT_NOTION = "Notion's version is applied."
+SYNC_RESYNCED = "The bot's version is written to Notion again."
+
+IMPORT_UNREADABLE = "The file could not be read as a backup. Nothing was changed."
+IMPORT_NOT_A_BACKUP = "This file is not a bot backup. Nothing was changed."
+IMPORT_TOO_LARGE = (
+    "This file unpacks to more than the bot reads from a backup. Nothing was changed."
+)
+IMPORT_BAD_VERSION = "This backup file has an unsupported version ({version}). Nothing was changed."
+IMPORT_REVISION_MISMATCH = (
+    "This backup was made with database revision {file_revision}, but the bot runs "
+    "revision {running_revision}. Nothing was changed."
+)
+IMPORT_SCHEMA_MISMATCH = (
+    "This backup does not match the database tables ({detail}). Nothing was changed."
+)
+IMPORT_SAFETY_FAILED = "The safety backup could not be written, so the import was not started."
+IMPORT_DB_ERROR = "The import failed in the database and was rolled back. Nothing was changed."
+IMPORT_DONE = "The backup was restored."
+IMPORT_DONE_RESYNC_FAILED = (
+    "The backup was restored, but writing the data to Notion again failed. "
+    "The next poll tries again."
+)
+
+REBUILD_NO_NOTION = "Notion is not set up, so there is nothing to rebuild from."
+OPERATION_BUSY = "An import or rebuild is already running. Try again when it is done."
+REBUILD_SAFETY_FAILED = (
+    "The safety backup could not be written, so the rebuild was not started."
+)
+REBUILD_FAILED = (
+    "The rebuild from Notion failed and was rolled back. Nothing was changed. "
+    "The admin log lists the reasons."
+)
+LOG_REBUILD_DONE_TITLE = "Database rebuilt from Notion"
+LOG_REBUILD_FAILED_TITLE = "Rebuild from Notion failed"
+LOG_REBUILD_FAILED_TODO = (
+    "Fix these rows in Notion, then start the rebuild again. The database was not changed."
+)
+
+
+def rebuild_done_message(events: int, slots: int, djs: int, logo_failures: int) -> str:
+    text = f"The database was rebuilt from Notion: {events} events, {slots} slots and {djs} DJs."
+    if logo_failures:
+        text += f" {logo_failures} logos could not be downloaded; the admin log lists them."
+    return text
+
+
+def log_rebuild_done_text(
+    events: int, slots: int, djs: int, notes: list[str], logo_failures: list[str]
+) -> str:
+    text = (
+        f"Rebuilt {events} events, {slots} slots and {djs} DJs from Notion. "
+        "Admin accounts were kept; pending Notion changes and open conflicts were discarded."
     )
+    if notes:
+        shown = "; ".join(notes[:10])
+        more = f" (and {len(notes) - 10} more)" if len(notes) > 10 else ""
+        text += f" Skipped or changed: {shown}{more}."
+    if logo_failures:
+        shown = "; ".join(logo_failures[:10])
+        more = f" (and {len(logo_failures) - 10} more)" if len(logo_failures) > 10 else ""
+        text += f" Logos not restored: {shown}{more}."
+    return text[:3500]
+
+
+def log_rebuild_failed_text(problems: list[str]) -> str:
+    shown = "; ".join(problems[:10])
+    more = f" (and {len(problems) - 10} more)" if len(problems) > 10 else ""
+    return (
+        "Nothing was rebuilt from Notion; the database keeps its data. "
+        f"Problems: {shown}{more}."
+    )[:3500]
+
+
+def sync_conflict_summary(label: str) -> str:
+    return f"{label} was changed in the bot and in Notion."
+
+
+def sync_conflict_text(summary: str, diffs: list[str]) -> str:
+    return "\n".join([summary, *diffs])[:3500]
+
+
+def sync_diff_line(field: str, bot_value: str, notion_value: str) -> str:
+    return f"{field}: bot {bot_value}, Notion {notion_value}"
+
+
+SYNC_AFTER_RESTORE_TODO = (
+    "Nothing was applied. If you want it, restore the page from the Notion trash: the "
+    "next poll takes it in as a hand edit."
+)
+
+
+def sync_after_restore_summary(label: str) -> str:
+    return (
+        f"{label} was made in Notion after the restored backup, so it was moved to the "
+        "Notion trash."
+    )
+
+
+SYNC_SLOT_OVERWRITTEN_TODO = (
+    "Nothing to do if the bot is right. To give the slot to the other DJ, change the "
+    "booking in the bot or edit the slot page again in Notion."
+)
+
+
+def sync_slot_overwritten_summary(label: str, notion_dj: str, bot_dj: str) -> str:
+    return (
+        f"A slot page made in Notion for {label} named DJ {notion_dj}, but the bot has "
+        f"DJ {bot_dj} booked there. The bot's booking was kept and the page overwritten."
+    )
+
+
+def sync_deleted_summary(label: str) -> str:
+    return f"The Notion page of {label} was deleted. The bot keeps its record."
+
+
+def sync_key_changed_summary(label: str, field: str) -> str:
+    return f"The {field} of {label} was changed in Notion. The bot keeps its record."
+
+
+def sync_duplicate_summary(label: str) -> str:
+    return f"A Notion page for {label} repeats a record the bot already has. It was not applied."
+
+
+def sync_mass_summary(what: str) -> str:
+    return f"Many {what} are missing in Notion. The bot changed nothing."
+
+
+def sync_unreadable_summary(label: str) -> str:
+    return (
+        f"The Notion page of {label} has an empty required field or points to a page the "
+        "bot does not know. The bot ignores the page until it is fixed."
+    )
+
+
+def sync_rejected_summary(label: str, reasons: list[str], *, new: bool) -> str:
+    what = f"A new {label} in Notion" if new else f"A Notion edit of {label}"
+    return f"{what} was not applied: {' '.join(reasons)}"
+
+
+def sync_expired_text(summary: str) -> str:
+    return (
+        f"{summary} Nobody chose a version within 24 h, so the bot's version is written "
+        "to Notion again."
+    )
+
+
+def sync_read_failed_text(error: str) -> str:
+    return f"The Notion poll could not read the databases ({error}). Nothing was changed."
+
+
+def sync_notion_rejected(reasons: list[str]) -> str:
+    return f"Notion's version cannot be applied: {' '.join(reasons)} The conflict stays open."
+
+
+def sync_resync_all_done(count: int) -> str:
+    return f"{count} records are queued for Notion."
+
+
+def log_upgrade_done_text(events: int, slots: int, djs: int, notes: list[str]) -> str:
+    text = (
+        "The bot now keeps events, slots and DJs in its own database; Notion is a backup. "
+        f"Imported {events} events, {slots} slots and {djs} DJs."
+    )
+    if notes:
+        shown = "; ".join(notes[:10])
+        more = f" (and {len(notes) - 10} more)" if len(notes) > 10 else ""
+        text += f" Skipped or changed: {shown}{more}."
+    return text[:3500]
+
+
+def log_upgrade_failed_text(problems: list[str]) -> str:
+    shown = "; ".join(problems[:10])
+    more = f" (and {len(problems) - 10} more)" if len(problems) > 10 else ""
+    return (
+        "Nothing was imported from Notion, so booking and edits are paused. "
+        f"Problems: {shown}{more}."
+    )[:3500]
+
+
+def log_notion_missing_text(detail: str, *, paused: bool = False) -> str:
+    """Paused only while the one-time import from Notion has not run (C2)."""
+    effect = (
+        "The one-time import from Notion has not run, so booking and edits are paused."
+        if paused
+        else "Booking and the lineup keep working; changes reach Notion again once the "
+        "databases are back."
+    )
+    return f"The bot cannot find its Notion databases. {effect} Details: {detail[:500]}"
 
 
 def log_message_title(display_name: str, dj_name: str | None) -> str:
@@ -612,7 +847,7 @@ def setup_summary(lines: list[str], rerun: bool, total: int = 6) -> str:
 def setup_active_message(created: int, posted: bool, channel: str | None) -> str:
     parts = []
     if created > 0:
-        parts.append(f"I created your first {created} events in Notion")
+        parts.append(f"I created your first {created} events")
     if posted:
         where = f" in {channel}" if channel else ""
         parts.append(f"posted the Lineup Update{where}")
@@ -631,16 +866,22 @@ SETUP_NOT_IN_GUILD = "Please use this command in a server channel."
 
 LOG_EVENT_CANCELED_TITLE = "Event canceled"
 EVENT_CANCELED_ANYWAY = "The event was canceled anyway."
-EVENT_CANCEL_CLEANUP_TODO = "Remove the DJs from these Slots rows in Notion."
+EVENT_CANCEL_CLEANUP_TODO = (
+    "The event is canceled, so these slots cannot be booked. Nothing else needs to be done."
+)
 EVENT_CANCEL_POST_FAILED = "The cancel notice could not be posted in the DJ channel."
 EVENT_CANCEL_KEPT = "Nothing was canceled."
 EVENT_NOT_CANCELABLE = (
     "That event was not found, is in the past, or is already done or canceled."
 )
-EVENT_CANCEL_NOTION_FAILED = (
-    "Notion could not be updated. The event was not canceled and nobody was told."
+EVENT_CANCEL_SAVE_FAILED = (
+    "The database could not be updated. The event was not canceled and nobody was told."
 )
 EVENT_WAS_CANCELED = "This event was canceled. Open the menu again to pick another event."
+SLOT_NO_LONGER_EXISTS = (
+    "This slot no longer exists: the event was deleted or has fewer slots now. Nothing "
+    "was booked. Open the menu again to pick another slot."
+)
 
 # Lines shown in the /cancel event confirm message before "and N more"
 _CONFIRM_MAX_LINES = 15
@@ -697,7 +938,7 @@ def tell_canceled_todo(name: str) -> str:
 def event_cancel_cleanup_failed(event: EventInfo, slot_indexes: Sequence[int]) -> str:
     numbers = ", ".join(str(index + 1) for index in slot_indexes)
     return (
-        f"{_ev(event)} was canceled, but these slots could not be emptied in Notion: {numbers}."
+        f"{_ev(event)} was canceled, but these slots could not be emptied: {numbers}."
     )
 
 
@@ -747,5 +988,5 @@ def event_cancel_done(
         names = ", ".join(_capped([escape_text(name) for name in by_hand]))
         text += f" Tell these DJs yourself: {names}."
     if failed_slots:
-        text += " Some slots could not be emptied in Notion, see the log channel."
+        text += " Some slots could not be emptied, see the log channel."
     return text

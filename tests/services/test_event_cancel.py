@@ -1,6 +1,6 @@
 """Tests for bot/services/event_cancel.py (EventCancelService behind /cancel event).
 
-Notion, Postgres and Discord are mocked.
+Postgres and Discord are mocked; Notion is never called (the mirror follows via changed()).
 """
 import dataclasses
 import datetime
@@ -11,10 +11,10 @@ import disnake
 import pytest
 
 from bot.db.bookings import SlotLock
-from bot.notion.client import NotionWriteError
 from bot.services.event_cancel import EventCancelService
 from bot.ui import texts
 from bot.ui.embeds import ErrorCode
+from tests.fake_events import fake_events
 from tests.notion.factories import make_event, make_slot
 
 PAGE = "evt-page"
@@ -64,9 +64,9 @@ class Env:
         self.bot.get_channel = MagicMock(return_value=self.channel)
 
         self.notion = MagicMock()
-        self.notion.list_events = AsyncMock(return_value=[self.event])
-        self.notion.set_event_status = AsyncMock()
-        self.notion.empty_slot = AsyncMock()
+        fake_events.list_events = AsyncMock(return_value=[self.event])
+        self.set_status = AsyncMock()
+        self.changed = MagicMock()
 
         self.log = MagicMock()
         for name in ("post_error", "log_attention", "log_event_canceled"):
@@ -93,6 +93,8 @@ class Env:
         monkeypatch.setattr(f"{MOD}.get_dj_row", get_dj_row)
         monkeypatch.setattr(f"{MOD}.get_value", AsyncMock(return_value=dj_channel))
         monkeypatch.setattr(f"{MOD}._today", lambda: TODAY)
+        monkeypatch.setattr(f"{MOD}.db_events.set_event_status", self.set_status)
+        monkeypatch.setattr(f"{MOD}.changed", self.changed)
         self.svc = EventCancelService(self.ctx, self.bot)  # type: ignore[arg-type]
 
     def _user(self, user_id: int) -> MagicMock:
@@ -108,8 +110,11 @@ class Env:
     def released(self) -> list[int]:
         return sorted(c.args[2] for c in self.release.await_args_list)
 
-    def emptied(self) -> list[int]:
-        return sorted(c.args[1] for c in self.notion.empty_slot.await_args_list)
+    def mirrored(self) -> list[tuple[str, str]]:
+        """(entity, key) of every changed() call, in order."""
+        for c in self.changed.call_args_list:
+            assert c.args[0] is self.ctx
+        return [c.args[1:] for c in self.changed.call_args_list]
 
     def nothing_sent(self) -> None:
         for user in self.users.values():
@@ -132,11 +137,12 @@ async def test_cancel_without_bookings_logs_only(monkeypatch):
     result = await env.svc.cancel_event("Max", EVENT_ID)
     assert result.ok is True
     assert result.message == f"Canceled {EVENT_ID}."
-    env.notion.set_event_status.assert_awaited_once_with(env.event, "Canceled")
+    env.set_status.assert_awaited_once_with(env.db, PAGE, "Canceled")
     env.log.log_event_canceled.assert_awaited_once_with("Max", env.event, [])
     env.channel.send.assert_not_awaited()
-    env.notion.empty_slot.assert_not_awaited()
     env.release.assert_not_awaited()
+    assert env.mirrored() == [("event", PAGE)]
+    assert env.notion.method_calls == []
     env.lineup.notify_changed.assert_called_once_with()
 
 
@@ -149,8 +155,10 @@ async def test_cancel_with_two_djs_dms_logs_and_posts_in_the_dj_channel(monkeypa
     assert result.by_hand == ()
     assert env.dm_texts(ALPHA) == [texts.dm_event_canceled(env.event, [0])]
     assert env.dm_texts(BETA) == [texts.dm_event_canceled(env.event, [2])]
-    assert env.emptied() == [0, 2]
     assert env.released() == [0, 2]
+    env.set_status.assert_awaited_once_with(env.db, PAGE, "Canceled")
+    assert env.mirrored() == [("event", PAGE), ("slot", f"{PAGE}:0"), ("slot", f"{PAGE}:2")]
+    assert env.notion.method_calls == []
     env.log.log_event_canceled.assert_awaited_once_with(
         "Max",
         env.event,
@@ -220,7 +228,6 @@ async def test_guest_gets_a_by_hand_entry_and_no_dm_attempt(monkeypatch):
     # a guest is a booked DJ: the DJ channel is told
     env.channel.send.assert_awaited_once()
     assert env.released() == [0]
-    assert env.emptied() == [0]
 
 
 @pytest.mark.asyncio
@@ -230,8 +237,7 @@ async def test_notion_dj_without_lock_and_without_discord_id_is_by_hand(monkeypa
     result = await env.svc.cancel_event("Max", EVENT_ID)
     assert result.by_hand == ("Handmade",)
     env.bot.get_user.assert_not_called()
-    assert env.emptied() == [1]
-    env.release.assert_not_awaited()
+    assert env.released() == [1]
     env.log.post_error.assert_awaited_once()
     assert env.log.post_error.await_args.args[3] == texts.tell_canceled_todo("Handmade")
 
@@ -243,7 +249,7 @@ async def test_notion_dj_without_lock_is_notified_and_slot_emptied(monkeypatch):
     result = await env.svc.cancel_event("Max", EVENT_ID)
     assert result.notified == ("DJ Beta",)
     assert env.dm_texts(BETA) == [texts.dm_event_canceled(event, [1])]
-    assert env.emptied() == [1]
+    assert env.released() == [1]
 
 
 @pytest.mark.asyncio
@@ -253,7 +259,7 @@ async def test_lock_without_notion_dj_is_released_and_notified(monkeypatch):
     assert result.notified == ("DJ Alpha",)
     assert env.dm_texts(ALPHA) == [texts.dm_event_canceled(env.event, [3])]
     assert env.released() == [3]
-    env.notion.empty_slot.assert_not_awaited()
+    assert env.mirrored() == [("event", PAGE), ("slot", f"{PAGE}:3")]
 
 
 @pytest.mark.asyncio
@@ -270,18 +276,18 @@ async def test_extra_djs_of_a_slot_row_are_emptied_too(monkeypatch):
     )
     env = Env(monkeypatch, event, {})
     await env.svc.cancel_event("Max", EVENT_ID)
-    assert env.emptied() == [0]
+    assert env.released() == [0]
 
 
 @pytest.mark.asyncio
 async def test_status_write_failure_changes_nothing(monkeypatch):
     env = _two_djs(monkeypatch)
-    env.notion.set_event_status.side_effect = NotionWriteError("boom")
+    env.set_status.side_effect = RuntimeError("db down")
     result = await env.svc.cancel_event("Max", EVENT_ID)
     assert result.ok is False
-    assert result.message == texts.EVENT_CANCEL_NOTION_FAILED
-    env.notion.empty_slot.assert_not_awaited()
+    assert result.message == texts.EVENT_CANCEL_SAVE_FAILED
     env.release.assert_not_awaited()
+    env.changed.assert_not_called()
     env.nothing_sent()
     env.lineup.notify_changed.assert_not_called()
 
@@ -290,16 +296,17 @@ async def test_status_write_failure_changes_nothing(monkeypatch):
 async def test_slot_cleanup_failure_continues(monkeypatch):
     env = _two_djs(monkeypatch)
 
-    async def empty_slot(event, index):
+    async def release(pool, page_id, index):
         if index == 0:
-            raise NotionWriteError("boom")
+            raise RuntimeError("db down")
+        return True
 
-    env.notion.empty_slot.side_effect = empty_slot
+    env.release.side_effect = release
     result = await env.svc.cancel_event("Max", EVENT_ID)
     assert result.ok is True
     assert result.failed_slots == (0,)
-    assert env.emptied() == [0, 2]
     assert env.released() == [0, 2]
+    assert env.mirrored() == [("event", PAGE), ("slot", f"{PAGE}:2")]
     assert result.notified == ("DJ Alpha", "DJ Beta")
     env.log.log_attention.assert_awaited_once_with(
         texts.LOG_FAILED_TITLE,
@@ -315,6 +322,7 @@ async def test_lock_release_failure_does_not_stop_the_run(monkeypatch):
     env.release.side_effect = RuntimeError("db down")
     result = await env.svc.cancel_event("Max", EVENT_ID)
     assert result.ok is True
+    assert result.failed_slots == (0, 2)
     assert result.notified == ("DJ Alpha", "DJ Beta")
     env.channel.send.assert_awaited_once()
 
@@ -360,7 +368,7 @@ async def test_unknown_past_done_and_canceled_events_are_refused(monkeypatch, ev
     result = await env.svc.cancel_event("Max", EVENT_ID)
     assert result.ok is False
     assert result.message == texts.EVENT_NOT_CANCELABLE
-    env.notion.set_event_status.assert_not_awaited()
+    env.set_status.assert_not_awaited()
     env.release.assert_not_awaited()
     env.nothing_sent()
     assert await env.svc.preview(EVENT_ID) is None
@@ -376,10 +384,10 @@ async def test_an_event_dated_today_can_be_canceled(monkeypatch):
 async def test_second_cancel_of_the_same_event_sends_nothing(monkeypatch):
     env = _two_djs(monkeypatch)
 
-    async def mark_canceled(event, status):
-        env.notion.list_events.return_value = [dataclasses.replace(env.event, status=status)]
+    async def mark_canceled(pool, uid, status):
+        fake_events.list_events.return_value = [dataclasses.replace(env.event, status=status)]
 
-    env.notion.set_event_status.side_effect = mark_canceled
+    env.set_status.side_effect = mark_canceled
     first = await env.svc.cancel_event("Max", EVENT_ID)
     second = await env.svc.cancel_event("Max", EVENT_ID)
     assert first.ok is True
@@ -396,11 +404,11 @@ async def test_two_cancels_at_once_notify_once(monkeypatch):
 
     env = _two_djs(monkeypatch)
 
-    async def mark_canceled(event, status):
+    async def mark_canceled(pool, uid, status):
         await asyncio.sleep(0)
-        env.notion.list_events.return_value = [dataclasses.replace(env.event, status=status)]
+        fake_events.list_events.return_value = [dataclasses.replace(env.event, status=status)]
 
-    env.notion.set_event_status.side_effect = mark_canceled
+    env.set_status.side_effect = mark_canceled
     results = await asyncio.gather(
         env.svc.cancel_event("Max", EVENT_ID), env.svc.cancel_event("Mia", EVENT_ID)
     )
@@ -439,9 +447,9 @@ async def test_preview_lists_booked_djs_and_changes_nothing(monkeypatch):
     assert (guest.dj_id, guest.name, guest.slot_indexes, guest.reachable) == (
         GUEST, "Guesty", (1,), False
     )
-    env.notion.set_event_status.assert_not_awaited()
-    env.notion.empty_slot.assert_not_awaited()
+    env.set_status.assert_not_awaited()
     env.release.assert_not_awaited()
+    env.changed.assert_not_called()
     env.nothing_sent()
 
 
@@ -452,22 +460,33 @@ async def test_preview_returns_none_for_an_unknown_event(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_notion_read_failure_gives_a_generic_error(monkeypatch):
+async def test_event_read_failure_gives_a_generic_error(monkeypatch):
     env = Env(monkeypatch)
-    env.notion.list_events.side_effect = RuntimeError("down")
+    fake_events.list_events.side_effect = RuntimeError("down")
     result = await env.svc.cancel_event("Max", EVENT_ID)
     assert (result.ok, result.message) == (False, texts.GENERIC_ERROR)
     assert await env.svc.preview(EVENT_ID) is None
-    env.notion.set_event_status.assert_not_awaited()
+    env.set_status.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_service_without_notion_or_db_is_not_ready(monkeypatch):
+async def test_service_without_db_is_not_ready(monkeypatch):
     env = Env(monkeypatch)
-    env.ctx.notion_client = None
+    env.ctx.db = None
     result = await env.svc.cancel_event("Max", EVENT_ID)
     assert (result.ok, result.message) == (False, texts.GENERIC_ERROR)
     assert await env.svc.preview(EVENT_ID) is None
+
+
+@pytest.mark.asyncio
+async def test_cancel_works_without_notion(monkeypatch):
+    env = _two_djs(monkeypatch)
+    env.ctx.notion_client = None
+    assert (await env.svc.preview(EVENT_ID)) is not None
+    result = await env.svc.cancel_event("Max", EVENT_ID)
+    assert result.ok is True
+    assert env.released() == [0, 2]
+    env.set_status.assert_awaited_once_with(env.db, PAGE, "Canceled")
 
 
 @pytest.mark.asyncio
@@ -476,7 +495,7 @@ async def test_unreadable_bookings_stop_the_cancel_before_anything_changes(monke
     env.get_locks.side_effect = RuntimeError("db down")
     result = await env.svc.cancel_event("Max", EVENT_ID)
     assert (result.ok, result.message) == (False, texts.GENERIC_ERROR)
-    env.notion.set_event_status.assert_not_awaited()  # bookings are read before the write
+    env.set_status.assert_not_awaited()  # bookings are read before the write
     env.nothing_sent()
 
 

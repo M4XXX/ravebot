@@ -9,7 +9,9 @@ State lives in plain dicts so tests can assert on it: ``databases``,
 Implemented endpoints: POST /databases, GET/PATCH /data_sources/{id},
 POST /data_sources/{id}/query (page_size + start_cursor pagination, trashed
 pages excluded, only a title/rich_text equals filter, no sort support),
-POST /pages, GET/PATCH /pages/{id}
+POST /pages, GET/PATCH /pages/{id}, GET /databases/{id}, GET /blocks/{id}/children
+(``child_database`` blocks of the databases created under that page, page_size +
+start_cursor pagination; ``trash_database(id)`` marks one trashed),
 (property merge and ``in_trash``), POST /views, GET /views (?database_id=,
 ?data_source_id=, returns ``{id}`` items only, paginated by ``views_page_size``), GET /views/{id}.
 
@@ -103,6 +105,13 @@ class FakeNotion:
         to avoid the client's retry sleeps.
         """
         self._failures.append([method, prefix, status, skip])
+
+    def trash_database(self, db_id: str) -> None:
+        """Move a database to the trash: its block and GET report ``in_trash: true``."""
+        self.databases[db_id]["in_trash"] = True
+        for ds in self.databases[db_id]["data_sources"]:
+            if ds["id"] in self.data_sources:
+                self.data_sources[ds["id"]]["in_trash"] = True
 
     def ds_by_title(self, title: str) -> dict[str, Any]:
         return next(d for d in self.data_sources.values() if d["_title"] == title)
@@ -207,6 +216,13 @@ class FakeNotion:
 
         if method == "POST" and path == "/databases":
             return self._create_database(body)
+        if m := re.fullmatch(r"/databases/([^/]+)", path):
+            db = self.databases.get(m[1])
+            if db is None or method != "GET":
+                return _err(404, "object_not_found", f"database {m[1]} not found")
+            return httpx.Response(200, json=db)
+        if method == "GET" and (m := re.fullmatch(r"/blocks/([^/]+)/children", path)):
+            return self._child_databases(m[1], query)
         if m := re.fullmatch(r"/data_sources/([^/]+)", path):
             ds = self.data_sources.get(m[1])
             if ds is None:
@@ -335,6 +351,25 @@ class FakeNotion:
         more = start + size < len(rows)
         return httpx.Response(200, json={
             "object": "list", "results": chunk, "has_more": more,
+            "next_cursor": str(start + size) if more else None,
+        })
+
+    def _child_databases(self, page_id: str, query: dict[str, list[str]]) -> httpx.Response:
+        """GET /blocks/{page}/children: one child_database block per database of the page."""
+        blocks = [
+            {
+                "object": "block", "id": db["id"], "type": "child_database",
+                "child_database": {"title": db["title"][0]["text"]["content"]},
+                "in_trash": db["in_trash"], "archived": db["in_trash"],
+            }
+            for db in self.databases.values()
+            if db["parent"].get("page_id") == page_id
+        ]
+        size = min(int(query.get("page_size", [str(_DEFAULT_PAGE_SIZE)])[0]), _DEFAULT_PAGE_SIZE)
+        start = int(query.get("start_cursor", ["0"])[0])
+        more = start + size < len(blocks)
+        return httpx.Response(200, json={
+            "object": "list", "results": blocks[start:start + size], "has_more": more,
             "next_cursor": str(start + size) if more else None,
         })
 

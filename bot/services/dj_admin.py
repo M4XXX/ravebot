@@ -5,7 +5,8 @@ account. The djs table is keyed by Discord user id, so a guest gets a negative i
 made up by the bot (see next_guest_id); Discord ids are positive. The bot never
 contacts guests (no invites, reminders or booking notices).
 
-Every method returns a DjResult and never raises for expected problems.
+Every method returns a DjResult and never raises for expected problems. Changes are
+written to Postgres; the Notion mirror follows in the background (changed()).
 """
 import asyncio
 import logging
@@ -14,27 +15,28 @@ from typing import TYPE_CHECKING, Any
 
 import asyncpg
 
+from bot.db import events as db_events
+from bot.db import mirror as db_mirror
 from bot.db.bookings import get_dj_slot_locks
 from bot.db.djs import (
     delete_dj,
     dj_name_exists,
     get_all_dj_rows,
     get_dj_row,
-    get_notion_dj_page_id,
     insert_dj,
     next_guest_id,
     update_dj_fields,
 )
 from bot.services.dj_sync import sync_dj
 from bot.services.dj_validation import (
-    MAX_LINK_LENGTH,
-    MAX_NAME_LENGTH,
-    MAX_VRCHAT_LENGTH,
+    check_link,
+    check_name,
+    check_optional_link,
+    check_vrchat,
     clean_text,
-    name_error,
-    normalize_link,
 )
 from bot.services.logo import LogoError, process_logo_async
+from bot.sync.worker import changed
 
 if TYPE_CHECKING:
     from bot.context import BotContext
@@ -42,7 +44,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-GUEST_NAME = "Guest (no Discord)"
 NOT_READY = "The bot is not ready yet. Please try again in a moment."
 UNKNOWN_DJ = "There is no DJ with this name."
 _LOGO_TEXT = {
@@ -77,21 +78,6 @@ def parse_discord_id(raw: str | None) -> int | None:
     return value if value < 2**63 else None
 
 
-def check_link(raw: str, label: str) -> tuple[str | None, str | None]:
-    """(clean link, None) or (None, error).
-
-    The same links a DJ can save in the DM conversation ("Use as is"): any scheme
-    such as https:// or rtmp://, followed by a host, no spaces.
-    """
-    link = normalize_link(raw)
-    scheme, _, rest = link.partition("://")
-    if not scheme.isalpha() or not rest.strip("/") or any(c.isspace() for c in link):
-        return None, f"The {label} must be a link (for example https://...)."
-    if len(link) > MAX_LINK_LENGTH:
-        return None, f"The {label} is too long."
-    return link, None
-
-
 class DjAdminService:
     def __init__(self, ctx: "BotContext", bot: Any) -> None:
         self._ctx = ctx
@@ -119,13 +105,13 @@ class DjAdminService:
 
     async def future_bookings(self, dj_id: int) -> "list[tuple[EventInfo, int]]":
         """The DJ's bookings in events that are still upcoming: (event, slot_index)."""
-        db, notion = self._ctx.db, self._ctx.notion_client
-        if db is None or notion is None:
+        db = self._ctx.db
+        if db is None:
             return []
         locks = await get_dj_slot_locks(db, dj_id)
         if not locks:
             return []
-        events = {e.page_id: e for e in await notion.list_events()}
+        events = {e.page_id: e for e in await db_events.list_events(db)}
         found = [(events[x["event_id"]], x["slot_index"]) for x in locks if x["event_id"] in events]
         return sorted(found, key=lambda item: (item[0].date, item[1]))
 
@@ -139,28 +125,6 @@ class DjAdminService:
             return await process_logo_async(data), None
         except LogoError as exc:
             return None, _LOGO_TEXT.get(exc.reason, _LOGO_DEFAULT)
-
-    @staticmethod
-    def _name(raw: str) -> tuple[str | None, str | None]:
-        problem = name_error(raw)
-        if problem == "empty":
-            return None, "The DJ name is required."
-        if problem == "too_long":
-            return None, f"The DJ name is too long (at most {MAX_NAME_LENGTH} characters)."
-        return clean_text(raw), None
-
-    @staticmethod
-    def _vrchat(raw: str | None) -> tuple[str | None, str | None]:
-        text = clean_text(raw or "")
-        if len(text) > MAX_VRCHAT_LENGTH:
-            return None, f"The VRChat name is too long (at most {MAX_VRCHAT_LENGTH} characters)."
-        return (text or None), None
-
-    @staticmethod
-    def _optional_link(raw: str | None) -> tuple[str | None, str | None]:
-        if not (raw or "").strip():
-            return None, None
-        return check_link(raw or "", "backup link")
 
     # --- add ---
 
@@ -178,16 +142,16 @@ class DjAdminService:
         db = self._ctx.db
         if db is None:
             return DjResult(False, NOT_READY)
-        clean_name, err = self._name(name)
+        clean_name, err = check_name(name)
         if err:
             return DjResult(False, err)
         clean_link, err = check_link(link, "stream link")
         if err:
             return DjResult(False, err)
-        clean_alt, err = self._optional_link(alt_link)
+        clean_alt, err = check_optional_link(alt_link)
         if err:
             return DjResult(False, err)
-        clean_vrchat, err = self._vrchat(vrchat)
+        clean_vrchat, err = check_vrchat(vrchat)
         if err:
             return DjResult(False, err)
         image, err = await self._logo(logo)
@@ -214,15 +178,9 @@ class DjAdminService:
                 )
             except asyncpg.UniqueViolationError as exc:
                 return DjResult(False, _duplicate_text(exc, clean_name))
-        synced = await sync_dj(self._ctx, dj_id, self._discord_name(dj_id, clean_name))
+        await sync_dj(self._ctx, dj_id)
         await self._log(admin_name, "added", clean_name)
         what = "guest DJ" if is_guest(dj_id) else "DJ"
-        if not synced:
-            return DjResult(
-                True,
-                f"Added the {what} {clean_name}, but Notion could not be updated. "
-                "The Notion entry is created when the DJ is booked.",
-            )
         return DjResult(True, f"Added the {what} {clean_name}.")
 
     # --- edit ---
@@ -247,7 +205,7 @@ class DjAdminService:
             return DjResult(False, UNKNOWN_DJ)
         updates: dict[str, object] = {}
         if "name" in fields:
-            clean_name, err = self._name(fields["name"] or "")
+            clean_name, err = check_name(fields["name"] or "")
             if err:
                 return DjResult(False, err)
             updates["dj_name"] = clean_name
@@ -257,12 +215,12 @@ class DjAdminService:
                 return DjResult(False, err)
             updates["stream_url_primary"] = clean_link
         if "alt_link" in fields:
-            clean_alt, err = self._optional_link(fields["alt_link"])
+            clean_alt, err = check_optional_link(fields["alt_link"])
             if err:
                 return DjResult(False, err)
             updates["stream_url_backup"] = clean_alt
         if "vrchat" in fields:
-            clean_vrchat, err = self._vrchat(fields["vrchat"])
+            clean_vrchat, err = check_vrchat(fields["vrchat"])
             if err:
                 return DjResult(False, err)
             updates["vrchat_name"] = clean_vrchat
@@ -287,12 +245,8 @@ class DjAdminService:
                 return DjResult(False, UNKNOWN_DJ)
         fresh = await get_dj_row(db, dj_id)
         name = fresh["dj_name"] if fresh is not None else row["dj_name"]
-        synced = await sync_dj(self._ctx, dj_id, self._discord_name(dj_id, name))
+        await sync_dj(self._ctx, dj_id)
         await self._log(admin_name, "edited", name)
-        if not synced:
-            return DjResult(
-                True, f"Saved {name}, but Notion could not be updated. The bot tries again later."
-            )
         return DjResult(True, f"Saved {name}.")
 
     # --- delete ---
@@ -302,9 +256,9 @@ class DjAdminService:
 
         If a booking cannot be cancelled, nothing is deleted. Past bookings stay.
         """
-        db, notion = self._ctx.db, self._ctx.notion_client
+        db = self._ctx.db
         booking = self._ctx.admin_booking_service
-        if db is None or notion is None or booking is None:
+        if db is None or booking is None:
             return DjResult(False, NOT_READY)
         row = await get_dj_row(db, dj_id)
         if row is None:
@@ -325,14 +279,14 @@ class DjAdminService:
                 flow.release()
 
     async def _delete(self, admin_name: str, dj_id: int, name: str) -> DjResult:
-        db, notion = self._ctx.db, self._ctx.notion_client
+        db = self._ctx.db
         booking = self._ctx.admin_booking_service
-        assert db is not None and notion is not None and booking is not None
+        assert db is not None and booking is not None
         try:
             bookings = await self.future_bookings(dj_id)
         except Exception:
             logger.warning("Could not list the bookings of DJ %s", dj_id, exc_info=True)
-            return DjResult(False, "Could not read the bookings from Notion. Try again.")
+            return DjResult(False, "Could not read the bookings. Try again.")
         for event, slot_index in bookings:
             ok, message = await booking.cancel_slot_override(
                 admin_name=admin_name,
@@ -347,34 +301,24 @@ class DjAdminService:
                     f"Could not cancel {name} in {event.event_id}: {message} "
                     "The DJ was not deleted.",
                 )
+        key = str(dj_id)
         try:
-            page_id = await get_notion_dj_page_id(db, dj_id)
-            if page_id:
-                await notion.trash_dj_page(page_id)
-        except Exception:
-            logger.warning("Could not trash the Notion page of DJ %s", dj_id, exc_info=True)
-            return DjResult(False, "Notion could not be updated. The DJ was not deleted.")
-        try:
+            # Read before the delete: the worker trashes this Notion page afterwards
+            known = await db_mirror.get(db, "dj", key)
             await delete_dj(db, dj_id)
         except Exception:
             logger.exception("Deleting DJ %s failed", dj_id)
-            return DjResult(
-                False,
-                "The database could not be updated. The DJ was not deleted; their Notion "
-                "entry is in the Notion trash and comes back when you save the DJ again.",
-            )
+            return DjResult(False, "The database could not be updated. The DJ was not deleted.")
+        changed(
+            self._ctx, "dj", key, op="delete",
+            notion_page_id=known.notion_page_id if known is not None else None,
+        )
         await self._log(admin_name, "removed", name)
         count = len(bookings)
         extra = f" {count} upcoming booking{'s' if count != 1 else ''} cancelled." if count else ""
         return DjResult(True, f"Deleted {name}.{extra}")
 
     # --- helpers ---
-
-    def _discord_name(self, dj_id: int, fallback: str) -> str:
-        if is_guest(dj_id):
-            return GUEST_NAME
-        user = self._bot.get_user(dj_id) if self._bot is not None else None
-        return getattr(user, "display_name", None) or fallback
 
     async def _log(self, admin_name: str, action: str, dj_name: str) -> None:
         service = self._ctx.log_service

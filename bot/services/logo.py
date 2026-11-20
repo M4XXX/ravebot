@@ -129,6 +129,29 @@ async def download_attachment(
         raise LogoError("download_failed") from exc
 
 
+async def download_logo_file(url: str, *, client: httpx.AsyncClient | None = None) -> bytes:
+    """Download a logo from an https URL (a Notion-hosted file) and sanitise it.
+
+    Same limits as a Discord upload: MAX_LOGO_BYTES, the download timeout, no
+    redirects, then process_logo. Raises LogoError.
+    """
+    try:
+        if urlsplit(url).scheme != "https":
+            raise LogoError("bad_source")
+    except ValueError as exc:
+        raise LogoError("bad_source") from exc
+    try:
+        async with asyncio.timeout(_DOWNLOAD_TIMEOUT_SECONDS):
+            if client is not None:
+                data = await _fetch(client, url)
+            else:
+                async with httpx.AsyncClient() as own_client:
+                    data = await _fetch(own_client, url)
+    except TimeoutError as exc:
+        raise LogoError("download_failed") from exc
+    return await process_logo_async(data)
+
+
 async def logo_from_message(message: disnake.Message) -> bytes:
     if len(message.attachments) > 1:
         raise LogoError("many")

@@ -41,7 +41,7 @@ docker compose up -d
 
 # Copy and fill in env vars
 cp .env.example .env
-# Edit .env: set DISCORD_BOT_TOKEN, NOTION_API_KEY, NOTION_PARENT_PAGE_ID, ADMIN_USER_IDS
+# Edit .env: set DISCORD_BOT_TOKEN, ADMIN_USER_IDS (NOTION_API_KEY and NOTION_PARENT_PAGE_ID only for the optional Notion mirror)
 # POSTGRES_URL default (postgresql://ravebot:ravebot@localhost:5432/ravebot) matches the compose config
 
 # Run the bot
@@ -97,25 +97,36 @@ output/ravebot/
 │   │   ├── onboarding.py   # DJ role detection, welcome DM, DM routing
 │   │   ├── outreach_cog.py # Proactive outreach background loop
 │   │   └── setup.py        # /setup (wizard entry point)
-│   ├── db/                 # asyncpg repository layer
+│   ├── backup/             # export.py (database to one gzip JSON file), restore.py (file back into Postgres)
+│   ├── db/                 # asyncpg repository layer (events, bookings, djs, mirror, outbox, issues, ...)
+│   ├── maintenance.py      # try_claim(): one data-replacing operation at a time
+│   ├── results.py          # ActionResult (shared by the admin page and the sync code)
+│   ├── sync/               # Notion mirror and sync (see "Postgres as source of truth, Notion as mirror")
+│   │   ├── worker.py       # MirrorWorker, changed(): outbox to Notion
+│   │   ├── cycle.py        # SyncCycle: the Notion poll (conflicts, warnings, 24 h expiry, resync)
+│   │   ├── plan.py         # three-way planner (Postgres vs Notion vs last synced state)
+│   │   ├── intake.py       # checks and applies hand edits from Notion
+│   │   ├── payloads.py     # compared payloads of events, slots and DJs
+│   │   ├── botdata.py      # the read-only "Bot data" mirror
+│   │   ├── notion_import.py # upgrade import from Notion
+│   │   ├── rebuild.py      # rebuild from Notion, startup recovery cases
+│   │   └── mirror_start.py # starts the worker and the cycle
 │   ├── web/                # Admin page (aiohttp): app.py routes and middlewares, auth.py, pages.py, service.py
 │   ├── notion/             # Notion integration (API version 2026-03-11)
 │   │   ├── api.py          # NotionApi: httpx wrapper, retry/backoff, pagination
 │   │   ├── models.py       # Property names, typed EventInfo/SlotInfo/DjInfo, parsers
-│   │   ├── schema.py       # ensure_schema(): creates/verifies Events, Slots, DJs
+│   │   ├── schema.py       # ensure_schema(): creates/verifies Events, Slots, DJs, Bot data
 │   │   ├── views.py        # ensure_views(): Overview, Lineup, All DJs
-│   │   └── client.py       # NotionClient: reads and writes events, slots, DJs
+│   │   └── client.py       # NotionClient: mirror_* writes, read_all(), trash_page()
 │   ├── services/           # Business logic
 │   │   ├── activation.py   # is_active(), set_active(), bot_is_active()
 │   │   ├── admin_booking.py
 │   │   ├── fully_booked.py # check_fully_booked(): once-per-fill announcements
-│   │   ├── dj_pages.py     # ensure_dj_page(): a DJ's row in the DJs database
+│   │   ├── dj_sync.py      # sync_dj(), queue_unsynced_logos(): queue DJ changes for the mirror
 │   │   ├── event_cancel.py # EventCancelService: /cancel event (status, bookings, notices)
 │   │   ├── event_defaults.py # default start, slot length, slots per event (config)
 │   │   ├── event_replenish.py # replenish_events(): keeps future open events ready
 │   │   ├── lineup.py       # LineupService: posts, snapshot dedupe, upcoming_event
-│   │   ├── notion_sync.py  # NotionSyncService: applies hand edits from Notion
-│   │   ├── notion_sync_plan.py # plan_sync(): pure Notion-vs-Postgres planner
 │   │   ├── onboarding.py
 │   │   ├── outreach.py
 │   │   ├── reminders.py
@@ -145,7 +156,60 @@ output/ravebot/
 - Cogs are thin command handlers that delegate to `services/` and `db/` repositories.
 - All Discord UI interaction (buttons, modals, select menus) lives in `bot/ui/views.py`.
 - Runtime configuration is stored in the PostgreSQL `config(guild_id, key, value)` table, read via `db_config.get_value()`.
-- Notion is the source of truth for slot assignments (one Slots row per slot, `DJ` relation). The PostgreSQL `slot_locks` table only guards against two DJs taking one slot at the same moment.
+- PostgreSQL is the source of truth for everything the bot holds, including slot assignments (see the next section). Notion is an optional mirror. The `slot_locks` table is the slots table: one row per slot, `SELECT ... FOR UPDATE` on it keeps two DJs from taking one slot.
+
+### Postgres as source of truth, Notion as mirror
+
+Story 10.4 once kept Notion as the source of truth; that decision is reversed. The bot reads and writes only Postgres. Notion is a live backup that organizers may also edit by hand.
+
+- **No Notion call in a user-facing path.** No Discord handler awaits a Notion call, and the Notion poll and the outbox worker never hold a lock or connection a Discord handler needs. A slow or unreachable Notion delays nothing.
+- **Notion is optional.** Without `NOTION_API_KEY` and `NOTION_PARENT_PAGE_ID` there is no outbox, no poll and no Notion call; `ctx.notion_client` and `ctx.mirror` are `None`. The admin page hides the Notion sync, status and rebuild cards. Export and import still work. Tests of a Postgres-only bot exist next to the mirror tests.
+- **Outbox and `MirrorWorker`** (`bot/sync/worker.py`). A write path commits to Postgres and then calls `changed(ctx, entity, key)`. That queues the entity in `notion_outbox` from a background task and wakes the worker. The worker writes each due entity from its current Postgres state (events and DJs before slots, because a slot page needs both page ids), at most 3 Notion requests per second, with backoff, and records the written payload in `notion_mirror`. A queued write that is lost is repaired by the poll. The worker skips an entity with an open conflict. Each write (the Notion request plus the mirror record) holds `MirrorWorker.gate`; the sync cycle holds the same gate for its whole run, so the worker never records a newer state while the cycle compares an older Notion snapshot with the mirror (a stale page would otherwise read as a hand edit). Only the worker waits; Discord handlers never take the gate. A slot whose holder has no `djs` row (a deleted DJ keeps past bookings) is written and recorded without a DJ, as Notion shows it. An outbox key `stray:<page id>` is a Notion page without a bot record, queued only to be trashed. The logo is not part of the compared payload: the worker uploads it from the `djs` row while `logo_synced` is false and marks it with `mark_logo_synced_if_unchanged`. The "Discord name" cell is written from the bot cache, also outside the payload.
+- **`SyncCycle` poll** (`bot/sync/cycle.py`, run by `EventsCog._poll_notion` every 5 minutes, only while the bot is active and not in maintenance). Order: close conflicts older than 24 h, `read_all()` (a failed or empty read changes nothing), then events, DJs and slots. Per entity the planner (`bot/sync/plan.py`) decides `push`, `apply`, `new_in_notion`, `conflict`, `deleted_in_notion`, `key_changed`, `mass_change` or `agree`. Applied hand edits (a changed value, an added booking, a new DJ or event) go through `Intake` (`bot/sync/intake.py`), which runs the same checks as the command path and logs the edit to the log channel. A rejected edit becomes a warning. Slots of past events are never changed from Notion. A hand-made slot page that names another DJ than the bot's booking is overwritten (Postgres wins) and reported as a warning.
+- **Bot data mirror** (`bot/sync/botdata.py`). A fourth database, "Bot data", holds one row per record of `config`, `dj_conversations`, `outreach_sequences`, `outreach_contacts`, `reminders_sent`, `fully_booked_events`, `manual_events` and `setup_drafts` as JSON. It is read-only: the poll never applies it and overwrites hand edits. `web_admins`, `log_replies`, the `config` rows of guild 0 (Notion database ids, sync state) and binary logos are not mirrored. Admin accounts and secrets never go to Notion.
+- **Maintenance and the single-operation lock** (`bot/maintenance.py`). The upgrade import, the rebuild from Notion and the backup import each replace data. `try_claim(name)` never waits: it returns `None` while another of them runs (the caller refuses with `texts.OPERATION_BUSY`), else a context manager that holds the claim. While one runs, `ctx.maintenance` is set and bookings, edits, DJ changes, the admin page DJ routes and the Notion poll answer with a short message or skip.
+- **Notion databases missing at startup.** `ensure_schema` raises `NotionDatabasesMissing` (for example a lost share); the bot keeps running without Notion and the admin page offers to create new databases. If the one-time upgrade import has not run yet, `pause_if_import_pending` (`bot/sync/notion_import.py`) also pauses the bot (`ctx.maintenance`, `ctx.sync_problem`) so it never works on an empty database. **Retry the import from Notion** first calls `ctx.notion_connect` (read the stored databases again), then imports; creating new databases also runs the import. Either ends the pause once the import succeeds.
+- **Booking a slot that no longer exists.** `acquire_slot_lock` locks the existing `slot_locks` row joined to its event and limited to the slot count (`SELECT ... FOR UPDATE OF s`); it never inserts a row. The confirm step refuses with `texts.SLOT_NO_LONGER_EXISTS` when the event was deleted or the slot removed.
+- **Event keys.** `events.uid` is TEXT. Imported events keep their Notion page id as `uid`, new events get `str(uuid.uuid4())`; the uid is written to the Notion property `Bot ID`. `EventInfo.page_id` keeps its name and means "bot event key". A slot is `f"{uid}:{number}"`. Notion page ids live only in `notion_mirror.notion_page_id`.
+
+#### Tables
+
+| Table | Migration | Purpose |
+|---|---|---|
+| `events` | `0017` | The bot's events: `uid` (key), `event_id` (unique title), date, start, slot minutes, slot count, status, genre, notes. |
+| `notion_mirror` | `0017` | Per entity (`event`, `slot`, `dj`, `botdata`) and key: `notion_page_id`, `synced_hash`, `synced_payload`, `synced_at`. The last state both sides agreed on; it is what tells a hand edit from a bot change. |
+| `notion_outbox` | `0017` | Pending Notion writes, one row per entity and key (latest state wins): `op` (`upsert` or `delete`), attempts, `next_attempt_at`, `last_error`. |
+| `sync_issues` | `0017` | Open and resolved conflicts and warnings: `kind`, entity, key, summary, both payloads, `created_at`, `resolved_at`, `resolution` (`postgres`, `notion`, `resynced` or `expired`). At most one open conflict per entity (partial unique index). |
+| `djs.notion_dj_page_id`, `event_shapes` | removed by `0018` | The DJ page id moved into `notion_mirror` (`0017` copied it). `event_shapes` guarded Notion edits of Start, Slot length and Slots; Postgres is the truth now. The downgrade re-creates both empty and copies the page ids back from `notion_mirror`. `djs.logo_synced` stays: the worker needs it. |
+
+`TABLES` in `tests/pg/conftest.py` lists the tables the real-Postgres tests truncate; add every new table there.
+
+#### Sync: conflicts, warnings, expiry, resync
+
+- **Applied** automatically (and logged): Notion changed, Postgres has no unsynced change to that entity.
+- **Conflict**: Notion changed an entity that also has an unsynced Postgres change. The log channel and the admin page show what changed on each side; the admin chooses **Keep Postgres** (written to Notion again) or **Keep Notion** (applied after the command-path checks; if they fail the conflict stays open). Only open conflicts stall an entity, and only that entity; warnings never stall. After 24 h without a decision (`CONFLICT_TTL`) Postgres wins, the entity is queued for Notion and the log channel says so (resolution `expired`). While the bot is idle conflicts do not expire.
+- **Warning**: a deleted page, a changed key (event title, DJ Discord ID, slot number), a duplicate page, a hand edit that failed the checks, a mass change, or a failed or empty Notion read. Nothing is applied; the admin page offers **Resync Postgres to Notion**. A never-synced entity (nothing in `notion_mirror` for it) is pushed instead of guarded. A status change to Canceled or Done in Notion is applied as a plain field change (no cancel flow); `/cancel event` is the full flow.
+- **Resync all** (admin page) queues every event, DJ and slot for Notion; hand edits not yet taken over are overwritten.
+- **Notion databases found again.** `ensure_schema` stores the data source ids in `config` under guild 0. When none are stored (for example after losing Postgres), it adopts the databases titled Events, Slots, DJs and Bot data that already sit under `NOTION_PARENT_PAGE_ID` instead of creating new ones. A stored set of 3 databases gets the missing "Bot data" database created. A fresh set of databases clears `notion_mirror`.
+
+#### Backup export and import
+
+`bot/backup/export.py` writes the whole database (every base table of schema public except `alembic_version`, plus the sequences, with the Alembic revision) as one gzip-compressed JSON file, format `ravebot-backup` version 1, including logos and admin accounts. The admin page downloads it as `ravebot-<UTC time>.ravebot.json.gz`. `bot/backup/restore.py` unpacks a file in chunks (refused above `MAX_UNPACKED`, 1 GiB, so a gzip bomb cannot fill the memory), validates it, refuses one from a newer revision (the revision must equal head), writes a safety export, then replaces every table in one transaction. Safety exports go to `BACKUP_DIR` (default `/data/backups`, else `./backups` when that is not writable; the last 10 are kept). The image creates `/data/backups` for the container user (uid 1000) and declares it a volume; map it (`-v ravebot-backups:/data/backups`, or the Unraid template's Backup folder path) so the files survive a container recreate. A successful import counts as a full recovery: it clears maintenance and `sync_problem`, starts the mirror if it was not running and queues everything for Notion. A restore into a bot with Notion also marks the upgrade import done and sets `sync_post_restore` (config guild 0, survives a restart): the next sync cycle that reads Notion moves every event, DJ and slot page the restored `notion_mirror` does not know (made after the backup) to the Notion trash and records a warning for each, instead of taking them in; an event page with a known Bot ID is still adopted. The flag is cleared when that cycle finishes. The export runs its JSON and gzip work in a thread so it does not block Discord handling.
+
+#### Rebuild from Notion and startup recovery
+
+`rebuild_from_notion` (`bot/sync/rebuild.py`, admin page button) replaces events, slots, DJs and the Bot data tables with what Notion holds, in one transaction after a safety export, then downloads the DJ logos from Notion (the one exception to "logos go Postgres to Notion only") and marks them synced. `web_admins` is untouched; the owners from `ADMIN_USER_IDS` keep working and other admins return only from a backup file. The outbox and open conflicts are dropped. Unreadable Notion pages are skipped and listed as notes (a slot whose DJ page cannot be read: in the upgrade import the booking already in `slot_locks` is kept, and without one the import rolls back; in a rebuild it is imported as free with a note); the import rolls back on integrity problems (duplicate event titles or DJ names, duplicate Discord IDs, a slot holding an unknown DJ or a number outside 1..slot count).
+
+Startup cases (all need Notion; `main()` runs them after the upgrade import):
+
+| Postgres | Notion | Action |
+|---|---|---|
+| no events table yet (the upgrade) | filled | Safety export, then one automatic import from Notion. Maintenance stays on and the mirror off until it works; the result goes to the log channel, a failed import can be retried from the admin page. |
+| empty (no DJs, no events) | has events | Rebuild from Notion instead of the upgrade import; a successful rebuild marks the upgrade done. |
+| filled | empty or new databases | Clear `notion_mirror`, queue everything for Notion. |
+| filled, unsynced writes | any | The outbox pushes them. |
+
+A failed startup rebuild pauses the bot (maintenance) like a failed import.
 
 ### Lineup posts, outreach switch and texts
 
@@ -193,7 +257,7 @@ disnake 2.12 does not set `cog.bot`. `main.py` adds every cog through `_add_cog(
 
 `bot/timezone.py` holds one process-wide zone (default `Europe/Berlin`, config key `timezone`). `get_timezone()`, `set_timezone(name)` (raises `ValueError` for unknown names), `local_now()`, `local_today()`, `is_valid_timezone()`, `load_stored_timezone(db, guild_id)` (called in `on_ready`, once guilds are known; an invalid stored value keeps the default). The wizard calls `set_timezone` when it saves.
 
-An event's `Start` is a local wall-clock `HH:MM`; `EventInfo` in `bot/notion/models.py` builds timezone-aware datetimes from it with `get_timezone()`, so 21:00 stays 21:00 across the daylight saving change. Use `local_today()` for "today" (lineup `upcoming_event`, replenishing, `list_events` filters, `/create event` validation) and never `datetime.utcnow()` or a bare `date.today()`. The bot sends no Discord timestamps (`<t:...>`); times are plain text.
+An event's `Start` is a local wall-clock `HH:MM`; `EventInfo` in `bot/notion/models.py` builds timezone-aware datetimes from it with `get_timezone()`, so 21:00 stays 21:00 across the daylight saving change. Use `local_today()` for "today" (lineup `upcoming_event`, replenishing, event read filters, `/create event` validation) and never `datetime.utcnow()` or a bare `date.today()`. The bot sends no Discord timestamps (`<t:...>`); times are plain text.
 
 ### Replenishing events
 
@@ -208,12 +272,12 @@ An event's `Start` is a local wall-clock `HH:MM`; `EventInfo` in `bot/notion/mod
 - Re-run: with an active bot `/setup` shows a `Change settings` button; the draft is prefilled from the stored values (`prefilled_data`). If the wizard message was deleted, `/setup` posts it again at the saved step.
 - Roles: `bot/services/roles.py` `get_dj_role()` and `get_invites_role()` read `dj_role_id` and `invites_role_id`. Only when a key is missing they fall back to the role names `DJ` and `Active Booking`; a stored id whose role is gone returns `None`.
 
-### Notion setup and sync
+### Notion setup
 
-- The bot uses the Notion API version `2026-03-11` (databases and data sources are separate; views are created via `POST /v1/views`). The only Notion settings are `NOTION_API_KEY` and `NOTION_PARENT_PAGE_ID`.
-- At startup, before Discord connects, `main()` runs `ensure_schema(api, db, 0, parent_page_id)` and then `ensure_views(api, db, 0, ids)`. The data source and database ids are stored in the `config` table under `guild_id = 0` (global). `ensure_schema` creates the Events, DJs and Slots databases under the parent page if none are stored, adds missing properties, raises `NotionDatabasesMissing` if a stored database is gone (unless an admin approved a new set: config key `notion_recreate_approved`, set by the admin page through `ctx.notion_recover`, used up once; `main()` keeps running without Notion until then and `BotContext.attach_notion` hands the new client to the services), and raises `NotionSchemaError` on a property with the wrong type. `ensure_views` creates only missing views and sets a marker once all three exist.
+- The bot uses the Notion API version `2026-03-11` (databases and data sources are separate; views are created via `POST /v1/views`). The only Notion settings are `NOTION_API_KEY` and `NOTION_PARENT_PAGE_ID`; both or neither.
+- At startup, before Discord connects, `main()` runs `ensure_schema(api, db, 0, parent_page_id)` and then `ensure_views(api, db, 0, ids)`. The data source and database ids are stored in the `config` table under `guild_id = 0` (global). `ensure_schema` creates the Events, DJs, Slots and Bot data databases under the parent page if none are stored (adopting existing ones first, see above), adds missing properties, raises `NotionDatabasesMissing` if a stored database is gone (unless an admin approved a new set: config key `notion_recreate_approved`, set by the admin page through `ctx.notion_recover`, used up once; `main()` keeps running without Notion until then and `BotContext.attach_notion` hands the new client to the services), and raises `NotionSchemaError` on a property with the wrong type. `ensure_views` creates only missing views and sets a marker once all three exist.
 - If `ensure_schema`/`ensure_views` raise `NotionSchemaError` or `NotionWriteError`, the bot closes the pool and the Notion client and exits with a message that names the parent page sharing and both env vars.
-- `EventsCog._poll_notion` (every 5 minutes, first run once the bot is ready) runs `NotionSyncService.run_cycle()` (adopt hand entries, free hand removals, revert conflicts, create/trim Slots rows), then reads the events, auto-creates future events and updates the lineup post. A sync failure is posted to the admin log and does not stop the lineup update.
+- To find the Notion databases again after the stored ids are gone, open the parent page named by `NOTION_PARENT_PAGE_ID`: the databases Events, Slots, DJs and Bot data are its children, and `ensure_schema` re-adopts them by title.
 - Tests use `tests/notion/fake_notion.py`, an in-memory Notion behind an httpx transport, so no test talks to the real API.
 
 ---
@@ -264,7 +328,7 @@ docker push ghcr.io/YOUR_USER/ravebot:latest
 - Routing: `OnboardingCog.on_message` checks `get_conversation` first. With an open conversation it calls `handle_message`, sends the `Reply` and returns: no log entry, no menu. Without one, behaviour is unchanged (log entry, menu). A service exception is logged and answered with `GENERIC_ERROR` (a failing send is only logged). A failing `get_conversation` and `handle_message` returning `None` are logged and fall back to the menu and log entry. `Not now` on the welcome DM calls `decline`, which deletes an open onboarding conversation (edit conversations stay).
 - Stale-button rule: every conversation button is checked against `message_id`, the id of the last question message. A button of an older message gets `STALE_BUTTON` and changes nothing. `record_message_id` stores the id after the message is sent.
 - Logo: `bot/services/logo.py` accepts one attachment from `cdn.discordapp.com` or `media.discordapp.net`, PNG, JPEG or MPO (first frame), up to 5 MB, 4096 px per side, scales it to at most 1024 px on the longest side (LANCZOS, aspect ratio kept) and re-encodes it with Pillow (a new dependency) to a metadata-free PNG. A result above 4 MB is refused (`LOGO_BAD`). A module-level semaphore lets only one logo be decoded at a time. The bytes are stored in `djs.logo_image` (and `dj_conversations.logo_image` while the conversation is open). Discord attachment URLs expire, so the stored bytes are the source.
-- Notion: `NotionClient.upsert_dj` uploads `logo_image` through `NotionApi.upload_file` (`POST /file_uploads`, then `/file_uploads/{id}/send`) and sets the DJ's `Logo` files property. `sync_dj` passes `upload_logo=not logo_synced`, so unrelated edits leave `Logo` out of the update; a new row always gets the logo. If the upload fails (or the row write rejects the file), the row is written without `Logo` and `DjLogoUploadError(page_id)` is raised; `sync_dj` and `ensure_dj_page` store that page id and set `logo_synced = false`, so bookings keep working and `retry_unsynced_logos` sends the logo at the next start. `send_reply` sends a message once more without the logo file when Discord rejects it, and still records its id. Stream links are written as URL properties. Existing DJs keep their stored link.
+- Notion: the DJ write only queues the DJ (`sync_dj` calls `changed(ctx, "dj", key)` and never touches Notion). The `MirrorWorker` writes the DJ row with `NotionClient.mirror_dj` and uploads `logo_image` through `NotionApi.upload_file` (`POST /file_uploads`, then `/file_uploads/{id}/send`) into the `Logo` files property while `logo_synced` is false, and marks it with `mark_logo_synced_if_unchanged` (a logo changed in the meantime stays unsynced). A new row always gets the logo. If the upload fails (or the row write rejects the file), the row is written without `Logo` and `DjLogoUploadError(page_id)` is raised; the worker records the page id and leaves `logo_synced` false, and `queue_unsynced_logos` queues those DJs again at the next start. `send_reply` sends a message once more without the logo file when Discord rejects it, and still records its id. Stream links are written as URL properties.
 - Per-user work runs under the user lock, so two messages from one DJ are handled one after the other.
 
 ### Admin log channel
@@ -305,10 +369,10 @@ Tables (created by Alembic migrations):
 
 | Table | Migration | Columns | Purpose |
 |---|---|---|---|
-| `fully_booked_events` | `0009` | `event_id` (Notion page id, primary key), `announced_at` | Events already announced as fully booked. Restart safe. |
+| `fully_booked_events` | `0009` | `event_id` (bot event key, primary key), `announced_at` | Events already announced as fully booked. Restart safe. |
 | `log_replies` | `0010` | `message_id` (primary key), `user_id`, `created_at` | Maps a `Message from` entry to the user the Reply button answers. |
 | `setup_drafts` | `0011` | `guild_id` (primary key), `message_id`, `channel_id`, `step`, `data` (JSONB), `updated_at` | The open `/setup` wizard of a guild. Deleted on Activate or Save. |
-| `manual_events` | `0015` | `page_id` (Notion page id, primary key), `created_at` | Events created with `/create event`. The event scheduler ignores them. |
+| `manual_events` | `0015` | `page_id` (bot event key, primary key), `created_at` | Events created with `/create event`. The event scheduler ignores them. |
 
 Migration `0012` drops the `interventions` table. The intervention flow (`/intervene`, `bot/services/intervention.py`) no longer exists: an organizer who wants to talk to a DJ uses the `Reply` button on a `Message from` entry or writes to the DJ directly.
 
@@ -371,4 +435,4 @@ The images in `docs/assets` are rendered from `docs/assets/src` (and the admin p
 
 ## Guest DJs and the DJ list
 
-`bot/services/dj_admin.py` (`DjAdminService`) adds, edits and deletes DJs for the admin page (`/djs` routes in `bot/web/app.py`) and the `/dj` commands. A guest has no Discord account, so the `djs` table (keyed by Discord user ID) stores them under a negative ID from `next_guest_id`; Discord IDs are positive. The Notion `Discord ID` text holds the same negative number. Every place that contacts DJs skips negative IDs: `dm_user` returns True without sending, the reminders skip them, and the outreach pool (`get_active_booking_djs`) only returns IDs above 0. Deleting a DJ cancels their bookings in upcoming events through `AdminBookingService.cancel_slot_override`, moves their Notion DJ row to the trash, then deletes the row.
+`bot/services/dj_admin.py` (`DjAdminService`) adds, edits and deletes DJs for the admin page (`/djs` routes in `bot/web/app.py`) and the `/dj` commands. A guest has no Discord account, so the `djs` table (keyed by Discord user ID) stores them under a negative ID from `next_guest_id`; Discord IDs are positive. The Notion `Discord ID` text (the mirror) holds the same negative number. Every place that contacts DJs skips negative IDs: `dm_user` returns True without sending, the reminders skip them, and the outreach pool (`get_active_booking_djs`) only returns IDs above 0. Deleting a DJ cancels their bookings in upcoming events through `AdminBookingService.cancel_slot_override`, deletes the row and queues the Notion page for removal (the worker trashes it).

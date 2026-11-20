@@ -19,13 +19,14 @@ from typing import TYPE_CHECKING, Any
 
 import disnake
 
+from bot.db import events as db_events
 from bot.db.djs import get_dj_by_discord_id, update_active_booking
 from bot.notion.models import FINISHED_STATUSES
 from bot.services.roles import get_dj_role, get_invites_role
 from bot.ui import texts
 from bot.ui.dj_profile import respond, start_onboarding_dm
 from bot.ui.embeds import ErrorCode
-from bot.ui.gates import GatedView
+from bot.ui.gates import GatedView, refuse_in_maintenance
 
 if TYPE_CHECKING:
     from bot.context import BotContext
@@ -217,7 +218,7 @@ class FallbackMenuView(GatedView):
     ) -> None:
         """Entry point for the slot booking flow.
 
-        Acquires per-user lock, fetches events from Notion, filters to events
+        Acquires per-user lock, fetches events from Postgres, filters to events
         with open slots, and presents them as an EventSelectionView.
 
         [Source: epics.md#Story 4.1 AC1, AC3, AC4, AC6]
@@ -226,7 +227,7 @@ class FallbackMenuView(GatedView):
         if not await _has_dj_profile(self.ctx, inter.author.id):
             await self._onboard_before_booking(inter)
             return
-        # Notion is read next: acknowledge first (Discord's 3 second answer limit)
+        # The database is read next: acknowledge first (Discord's 3 second answer limit)
         await inter.response.defer(ephemeral=True)
         start = await prepare_booking(self.ctx, inter.author.id)
         if start.error is not None:
@@ -293,7 +294,7 @@ class FallbackMenuView(GatedView):
             )
             return
         await lock.acquire()
-        # Database and Notion are read next: acknowledge first (3 second answer limit)
+        # The database is read next: acknowledge first (3 second answer limit)
         try:
             await inter.response.defer(ephemeral=True)
         except Exception:
@@ -302,15 +303,6 @@ class FallbackMenuView(GatedView):
 
         # Guard: DB must be available
         if self.ctx.db is None:
-            lock.release()
-            await inter.followup.send(
-                texts.GENERIC_ERROR,
-                ephemeral=True,
-            )
-            return
-
-        # Guard: Notion client must be available
-        if self.ctx.notion_client is None:
             lock.release()
             await inter.followup.send(
                 texts.GENERIC_ERROR,
@@ -338,9 +330,9 @@ class FallbackMenuView(GatedView):
             )
             return
 
-        # Fetch Notion events to get names and slot times
+        # Fetch events to get names and slot times
         try:
-            events = await self.ctx.notion_client.list_events()
+            events = await db_events.list_events(self.ctx.db)
         except Exception:
             logger.exception("cancel_slot: list_events() failed")
             lock.release()
@@ -350,7 +342,7 @@ class FallbackMenuView(GatedView):
             )
             return
 
-        # Build bookings list by matching slot_lock rows to Notion events
+        # Build bookings list by matching slot_lock rows to events
         events_by_id = {e.page_id: e for e in events}
         bookings = []
         for row in slot_lock_rows:
@@ -515,20 +507,16 @@ class FallbackMenuView(GatedView):
     ) -> None:
         """Show the first upcoming event's lineup via LineupUpdateEmbed.
 
-        Uses list_events() to fetch live Notion data. Falls back gracefully
-        when Notion is unavailable or returns no events.
+        Uses list_events() (Postgres). Falls back gracefully when the read
+        fails or returns no events.
 
         [Source: epics.md#Story 3.3 AC1, AC5, AC6]
         """
         from bot.services.lineup import _today, future_events, upcoming_event
         from bot.ui.embeds import LineupUpdateEmbed
 
-        if self.ctx.notion_client is None:
-            await inter.response.send_message(texts.GENERIC_ERROR, ephemeral=True)
-            return
-
         try:
-            events = await self.ctx.notion_client.list_events()
+            events = await db_events.list_events(self.ctx.db)
         except Exception:
             logger.exception("show_lineup: list_events() failed")
             await inter.response.send_message(texts.GENERIC_ERROR, ephemeral=True)
@@ -647,9 +635,7 @@ class LineupEventPickView(GatedView):
         from bot.ui.embeds import LineupUpdateEmbed
 
         try:
-            if self.ctx.notion_client is None:
-                raise RuntimeError("no Notion client")
-            events = await self.ctx.notion_client.list_events()
+            events = await db_events.list_events(self.ctx.db)
         except Exception:
             logger.exception("lineup_pick: list_events() failed")
             await inter.response.send_message(texts.GENERIC_ERROR, ephemeral=True)
@@ -721,9 +707,9 @@ async def prepare_booking(
         return BookingStart(texts.FLOW_OPEN, "", None)
     await lock.acquire()
     try:
-        if ctx.notion_client is None:
-            raise RuntimeError("notion_client is not configured")
-        events = await ctx.notion_client.list_events()
+        if ctx.db is None:
+            raise RuntimeError("db is not configured")
+        events = await db_events.list_events(ctx.db)
         if not events:
             lock.release()
             return BookingStart(texts.NO_EVENTS, "", None)
@@ -1076,17 +1062,16 @@ class BookingConfirmView(FlowView):
     SlotSelectionView. The per-user lock is ALREADY HELD when this view is created.
 
     Buttons:
-      [✅ Confirm Booking] (success) — acquires PG slot lock → writes to Notion → confirms
+      [✅ Confirm Booking] (success) — acquires PG slot lock → confirms (Notion follows)
       [✖ Cancel]           (secondary) — releases lock, sends warm dismissal
 
     Flow on confirm:
       1. Guard: ctx.db must be available
-      2. acquire_slot_lock() via SELECT...FOR UPDATE
-      3. If slot taken → warm message, release per-user lock (basic; Story 4.3 adds full race)
-      4. get_notion_dj_page_id() for the DJ
-      5. assign_slot() on the Notion Slots row
-      6. On NotionWriteError → release_slot_lock() to undo DB claim → error msg → release lock
-      7. On success → BookedEmbed → trigger lineup post → admin log → release lock
+      2. Event canceled or finished meanwhile → tell the DJ, release lock
+      3. acquire_slot_lock() via SELECT...FOR UPDATE
+      4. If slot taken → slot-taken message with the remaining open slots
+      5. On success → queue the Notion mirror → BookedEmbed → lineup post → admin log
+         → release lock
 
     Expires after at most 15 minutes (FlowView.track).
 
@@ -1125,7 +1110,7 @@ class BookingConfirmView(FlowView):
         button: disnake.ui.Button,
         inter: disnake.MessageInteraction,
     ) -> None:
-        """Acquire slot lock, write booking to Notion, send confirmation. (AC2–AC3)"""
+        """Acquire slot lock, send confirmation. (AC2–AC3)"""
         await self._handle_confirm(inter)
 
     @disnake.ui.button(
@@ -1149,14 +1134,10 @@ class BookingConfirmView(FlowView):
             ephemeral=True,
         )
 
-    async def _present_slot_taken(
-        self, inter: disnake.MessageInteraction, trigger: str | None = None
-    ) -> None:
+    async def _present_slot_taken(self, inter: disnake.MessageInteraction) -> None:
         """Tell the DJ the slot was taken and offer the remaining open slots.
 
-        Shared by a lost Postgres lock and an already-filled Notion slot row.
-        Logs ERR_SLOT_CONFLICT best-effort; ``trigger`` overrides the log text
-        (used when the Postgres lock holder is not the one to name).
+        Logs ERR_SLOT_CONFLICT best-effort.
         """
         event_id = self._event.page_id
         # AC2: Log ERR_SLOT_CONFLICT to admin channel — best-effort, never blocks DJ
@@ -1164,14 +1145,13 @@ class BookingConfirmView(FlowView):
             try:
                 from bot.db.bookings import get_slot_lock_holder
                 from bot.ui.embeds import ErrorCode
-                if trigger is None:
-                    winner_id = await get_slot_lock_holder(
-                        self._ctx.db, event_id, self._slot_index
-                    )
-                    trigger = (
-                        f"DJ {self._user_id} attempted slot {self._slot_index} in event "
-                        f"{event_id!r}, but slot was already locked by DJ {winner_id}"
-                    )
+                winner_id = await get_slot_lock_holder(
+                    self._ctx.db, event_id, self._slot_index
+                )
+                trigger = (
+                    f"DJ {self._user_id} attempted slot {self._slot_index} in event "
+                    f"{event_id!r}, but slot was already locked by DJ {winner_id}"
+                )
                 await self._ctx.log_service.post_error(
                     error_code=ErrorCode.ERR_SLOT_CONFLICT,
                     trigger=trigger,
@@ -1183,19 +1163,16 @@ class BookingConfirmView(FlowView):
                     "BookingConfirmView: failed to post ERR_SLOT_CONFLICT"
                 )
 
-        # AC1: Get fresh event data from Notion — best-effort, fall back to stale self._event
+        # AC1: Get fresh event data — best-effort, fall back to stale self._event
         event_for_refresh = self._event
-        if self._ctx.notion_client is not None:
-            try:
-                fresh_events = await self._ctx.notion_client.list_events()
-                for fresh_event in fresh_events:
-                    if fresh_event.page_id == event_id:
-                        event_for_refresh = fresh_event
-                        break
-            except Exception:
-                logger.exception(
-                    "BookingConfirmView: failed to refresh events for slot conflict view"
-                )
+        try:
+            fresh_event = await db_events.get_event(self._ctx.db, event_id)
+            if fresh_event is not None:
+                event_for_refresh = fresh_event
+        except Exception:
+            logger.exception(
+                "BookingConfirmView: failed to refresh events for slot conflict view"
+            )
 
         # Compute remaining open slots from (possibly fresh) event data
         remaining = [
@@ -1225,21 +1202,25 @@ class BookingConfirmView(FlowView):
             self._release_flow()
 
     async def _handle_confirm(self, inter: disnake.MessageInteraction) -> None:
-        """[✅ Confirm Booking] — full booking flow with PG lock + Notion write. (AC2–AC3, AC5–AC6)
+        """[✅ Confirm Booking] — claim the slot in Postgres and confirm. (AC2–AC3, AC5–AC6)
+
+        Postgres is the source of truth: the slot lock is the booking. Notion is
+        written later by the mirror worker (``changed``); this handler never waits
+        for Notion.
 
         [Source: epics.md#Story 4.2 AC2, AC3]
         [Source: architecture.md#Slot Booking Atomicity: SELECT...FOR UPDATE in Transaction]
-        [Source: architecture.md#Gap Analysis — PG lock vs Notion write boundary]
         """
-        from bot.db.bookings import acquire_slot_lock, release_slot_lock
-        from bot.notion.client import NotionWriteError, SlotRowMissingError
-        from bot.services.dj_pages import ensure_dj_page
+        from bot.db.bookings import acquire_slot_lock
+        from bot.sync.worker import changed
         from bot.ui.embeds import BookedEmbed
 
         if await self._stale(inter):
             return
+        if await refuse_in_maintenance(inter, self._ctx):
+            self._release_flow()
+            return
         self._busy = True  # a second press while this runs gets FLOW_BUSY
-        # Notion calls below can take longer than Discord's 3 second answer limit
         await inter.response.defer(ephemeral=True)
 
         # Guard: DB must be available (AC6)
@@ -1253,29 +1234,19 @@ class BookingConfirmView(FlowView):
 
         event_id = self._event.page_id
 
-        # Guard: Notion client must be available — without it we cannot write the booking (AC2)
-        if self._ctx.notion_client is None:
-            self._release_flow()
-            await inter.followup.send(
-                texts.GENERIC_ERROR,
-                ephemeral=True,
-            )
-            return
-
-        # The event may have been canceled (or finished) since the menu was opened:
-        # check before any lock is taken. A failed read does not block the booking.
+        # The event may have been canceled, finished, deleted or shrunk since the menu
+        # was opened: check before any lock is taken. A failed read does not block the
+        # booking (acquire_slot_lock refuses a slot that no longer exists anyway).
+        read_ok = True
         try:
-            current = next(
-                (
-                    e
-                    for e in await self._ctx.notion_client.list_events()
-                    if e.page_id == event_id
-                ),
-                None,
-            )
+            current = await db_events.get_event(self._ctx.db, event_id)
         except Exception:
             logger.warning("BookingConfirmView: could not re-read the event", exc_info=True)
-            current = None
+            current, read_ok = None, False
+        if read_ok and (current is None or self._slot_index >= current.slot_count):
+            self._release_flow()
+            await inter.followup.send(texts.SLOT_NO_LONGER_EXISTS, ephemeral=True)
+            return
         if current is not None and current.status in FINISHED_STATUSES:
             self._release_flow()
             await inter.followup.send(texts.EVENT_WAS_CANCELED, ephemeral=True)
@@ -1305,103 +1276,17 @@ class BookingConfirmView(FlowView):
             await self._present_slot_taken(inter)
             return
 
-        pg_released = False  # Postgres lock freed (never free it twice)
-        responded = False  # an error response has gone out
-        booked = False  # assign_slot succeeded: the booking exists in Notion
+        # The booking is committed: queue it for the Notion mirror (never awaits Notion)
+        changed(self._ctx, "slot", f"{event_id}:{self._slot_index}")
 
-        async def _release_pg_lock() -> None:
-            nonlocal pg_released
-            if pg_released:
-                return
-            pg_released = True
-            try:
-                await release_slot_lock(
-                    self._ctx.db, event_id, self._slot_index, expected_holder=self._user_id
-                )
-            except Exception:
-                logger.exception("BookingConfirmView: release_slot_lock failed")
-
-        def _release_user_lock() -> None:
-            self._release_flow()
-
-        async def _abort_with_error() -> None:
-            nonlocal responded
-            await _release_pg_lock()
-            _release_user_lock()
-            if responded:
-                return
-            responded = True
-            await inter.followup.send(
-                texts.GENERIC_ERROR,
-                ephemeral=True,
-            )
-
-        # From here until the confirmation is sent, every exit must free both locks.
+        # Send booking confirmed embed (AC3). The booking stands even if this fails.
         try:
-            # DJ's Notion page id (creates the DJs row if needed); never fatal to the flow
-            try:
-                dj_page_id = await ensure_dj_page(
-                    self._ctx.db,
-                    self._ctx.notion_client,
-                    self._user_id,
-                    inter.author.display_name,
-                )
-            except Exception:
-                logger.exception("BookingConfirmView: ensure_dj_page raised")
-                dj_page_id = None
-            if dj_page_id is None:
-                await _abort_with_error()
-                return
-
-            # Write to the Slots database; the row is re-read right before writing
-            try:
-                assigned = await self._ctx.notion_client.assign_slot(
-                    self._event, self._slot_index, dj_page_id
-                )
-            except (NotionWriteError, SlotRowMissingError):
-                logger.exception("BookingConfirmView: assign_slot failed")
-                await _abort_with_error()
-                return
-            booked = assigned
-            if not assigned:
-                # Someone else already holds the Notion row. Read the Postgres holder
-                # BEFORE freeing our lock so the conflict log names real DJs.
-                try:
-                    from bot.db.bookings import get_slot_lock_holder
-                    pg_holder = await get_slot_lock_holder(
-                        self._ctx.db, event_id, self._slot_index
-                    )
-                except Exception:
-                    pg_holder = None
-                notion_slot = next(
-                    (x for x in self._event.slots if x.number == self._slot_index + 1), None
-                )
-                trigger = (
-                    f"DJ {self._user_id} attempted slot {self._slot_index} in event "
-                    f"{event_id!r}, but the Notion slot row already holds a DJ "
-                    f"(Postgres lock holder: {pg_holder}; "
-                    f"Notion slot DJ: {notion_slot.dj_name if notion_slot else None})"
-                )
-                await _release_pg_lock()
-                await self._present_slot_taken(inter, trigger=trigger)
-                return
-
-            # Send booking confirmed embed (AC3)
-            embed = BookedEmbed(self._event, self._slot_index)
-            await inter.followup.send(embed=embed)
+            await inter.followup.send(embed=BookedEmbed(self._event, self._slot_index))
         except asyncio.CancelledError:
-            if not booked:
-                await _release_pg_lock()
-            _release_user_lock()
+            self._release_flow()
             raise
         except Exception:
-            logger.exception("BookingConfirmView: unexpected error while saving booking")
-            if booked:
-                # The booking exists in Notion: keep the Postgres lock, no failure message
-                _release_user_lock()
-                return
-            await _abort_with_error()
-            return
+            logger.exception("BookingConfirmView: could not send the booking confirmation")
 
         # Trigger lineup channel post — best-effort, failure must not block confirmation (AC3)
         if self._ctx.lineup_service is not None:
@@ -1424,12 +1309,10 @@ class BookingConfirmView(FlowView):
         self._release_flow()
 
         # Announce the event when this booking filled it, clear the flag when a slot opened.
-        # After the lock release: the Notion read can be slow and must not hold the DJ's flow.
+        # After the lock release: the event read must not hold the DJ's flow.
         from bot.services.fully_booked import recheck_fully_booked
 
-        await recheck_fully_booked(
-            self._ctx.db, self._ctx.log_service, self._ctx.notion_client
-        )
+        await recheck_fully_booked(self._ctx.db, self._ctx.log_service)
 
 
 # ---------------------------------------------------------------------------
@@ -1542,7 +1425,7 @@ class CancelConfirmView(FlowView):
     in CancellationView. The per-user lock is ALREADY HELD when this view is created.
 
     Buttons:
-      [✅ Yes, Cancel It] (danger)    — removes booking from Notion + frees slot lock
+      [✅ Yes, Cancel It] (danger)    — frees the slot lock (Notion follows)
       [✖ Keep It]         (secondary) — releases lock, warm dismissal
 
     Expires after at most 15 minutes (FlowView.track).
@@ -1581,7 +1464,7 @@ class CancelConfirmView(FlowView):
         button: disnake.ui.Button,
         inter: disnake.MessageInteraction,
     ) -> None:
-        """Remove booking from Notion, free slot lock, send confirmation. (AC4)"""
+        """Free the slot lock, send confirmation. (AC4)"""
         await self._handle_confirm(inter)
 
     @disnake.ui.button(
@@ -1606,102 +1489,50 @@ class CancelConfirmView(FlowView):
         )
 
     async def _handle_confirm(self, inter: disnake.MessageInteraction) -> None:
-        """[✅ Yes, Cancel It] — remove booking from Notion + free slot_locks row. (AC4)
+        """[✅ Yes, Cancel It] — free the slot_locks row; Notion follows. (AC4)
 
         [Source: epics.md#Story 4.4 AC4]
         [Source: architecture.md#Slot Booking Atomicity]
-        [Source: architecture.md#Gap Analysis — PG lock vs Notion write boundary]
         """
-        from bot.db.bookings import release_slot_lock
-        from bot.services.dj_pages import ensure_dj_page
-
         if await self._stale(inter):
+            return
+        if await refuse_in_maintenance(inter, self._ctx):
+            self._release_flow()
             return
         self._busy = True
         await inter.response.defer(ephemeral=True)
         try:
-            await self._cancel_booking(inter, release_slot_lock, ensure_dj_page)
+            await self._cancel_booking(inter)
         finally:
             # Every exit, also an unexpected error, ends the flow
             self._release_flow()
 
-    async def _cancel_booking(self, inter, release_slot_lock, ensure_dj_page) -> None:
-        from bot.notion.client import NotionWriteError, SlotRowMissingError
+    async def _cancel_booking(self, inter: disnake.MessageInteraction) -> None:
+        from bot.db.bookings import release_slot_lock
+        from bot.sync.worker import changed
 
         event_id = self._event.page_id
 
         # Guard: DB must be available
         if self._ctx.db is None:
-            self._release_flow()
             await inter.followup.send(
                 texts.GENERIC_ERROR,
                 ephemeral=True,
             )
             return
 
-        # Guard: Notion client must be available
-        if self._ctx.notion_client is None:
-            self._release_flow()
-            await inter.followup.send(
-                texts.GENERIC_ERROR,
-                ephemeral=True,
-            )
-            return
-
-        # Get event name for messages and admin log
-        event_name = self._event.event_id
-
-        # Remove from Notion — best-effort; slot lock MUST be freed regardless
+        # Free the slot_locks DB row — slot is now open (AC4). Only if this DJ still
+        # holds it, so a stale cancel never frees a slot someone else took.
         try:
-            dj_page_id = await ensure_dj_page(
-                self._ctx.db, self._ctx.notion_client, self._user_id, inter.author.display_name
-            )
-        except Exception:
-            logger.exception("CancelConfirmView: ensure_dj_page raised")
-            dj_page_id = None
-        try:
-            if dj_page_id is None:
-                logger.warning(
-                    "CancelConfirmView: no DJ page for user %s — Notion slot not cleared",
-                    self._user_id,
-                )
-            elif not await self._ctx.notion_client.clear_slot(
-                self._event, self._slot_index, dj_page_id
-            ):
-                logger.warning(
-                    "CancelConfirmView: slot %s of %r is held by another DJ — Notion unchanged",
-                    self._slot_index + 1,
-                    event_name,
-                )
-        except SlotRowMissingError:
-            logger.warning(
-                "CancelConfirmView: slot row %s of %r is missing — Notion unchanged",
-                self._slot_index + 1,
-                event_name,
-            )
-        except NotionWriteError:
-            logger.exception("CancelConfirmView: clear_slot failed")
-            # Notion still shows the booking: keep the Postgres lock so both agree, and
-            # let the DJ try again (the sync reconciles a later hand edit in Notion).
-            self._release_flow()
-            await inter.followup.send(
-                texts.GENERIC_ERROR,
-                ephemeral=True,
-            )
-            return
-        except Exception:
-            # Any other failure: keep going, the slot lock is freed below regardless
-            logger.exception("CancelConfirmView: unexpected error clearing Notion slot")
-
-        # Free the slot_locks DB row — slot is now open (AC4)
-        try:
-            await release_slot_lock(
+            released = await release_slot_lock(
                 self._ctx.db, event_id, self._slot_index, expected_holder=self._user_id
             )
         except Exception:
             logger.exception("CancelConfirmView: release_slot_lock failed")
             await inter.followup.send(texts.GENERIC_ERROR, ephemeral=True)
             return
+        if released:
+            changed(self._ctx, "slot", f"{event_id}:{self._slot_index}")
 
         # Confirmation message (AC4)
         await inter.followup.send(
@@ -1729,12 +1560,10 @@ class CancelConfirmView(FlowView):
         self._release_flow()
 
         # Announce the event when this booking filled it, clear the flag when a slot opened.
-        # After the lock release: the Notion read can be slow and must not hold the DJ's flow.
+        # After the lock release: the event read must not hold the DJ's flow.
         from bot.services.fully_booked import recheck_fully_booked
 
-        await recheck_fully_booked(
-            self._ctx.db, self._ctx.log_service, self._ctx.notion_client
-        )
+        await recheck_fully_booked(self._ctx.db, self._ctx.log_service)
 
 
 # ---------------------------------------------------------------------------
@@ -1795,8 +1624,14 @@ class OutreachView(GatedView):
             try:
                 await self._ctx.log_service.post_error(
                     error_code=ErrorCode.ERR_BUTTON_TIMEOUT,
-                    trigger=f"OutreachView timed out for DJ {self._discord_user_id} on event '{event_name}'",
-                    action_taken="DJ marked as non-responsive for this sequence. Outreach will proceed to next eligible DJ after cooldown.",
+                    trigger=(
+                        f"OutreachView timed out for DJ {self._discord_user_id}"
+                        f" on event '{event_name}'"
+                    ),
+                    action_taken=(
+                        "DJ marked as non-responsive for this sequence. Outreach will "
+                        "proceed to next eligible DJ after cooldown."
+                    ),
                     manual_action="No action required unless the event date is imminent.",
                 )
             except Exception:
@@ -1835,7 +1670,7 @@ class OutreachView(GatedView):
         await lock.acquire()
         self.stop()  # Prevent re-use once booking flow is starting
         try:
-            await inter.response.defer()  # Notion is read next (3 second answer limit)
+            await inter.response.defer()  # the database is read next (3 second answer limit)
         except Exception:
             lock.release()
             raise
@@ -1849,16 +1684,14 @@ class OutreachView(GatedView):
             except Exception as exc:
                 logger.warning("OutreachView.accept: DB update failed: %s", exc)
 
-        # Fetch fresh event data; fall back to cached if Notion unavailable
+        # Fetch fresh event data; fall back to cached if the database read fails
         event = self._event
-        if self._ctx.notion_client is not None:
-            try:
-                events = await self._ctx.notion_client.list_events()
-                fresh = next((e for e in events if e.page_id == event_id), None)
-                if fresh is not None:
-                    event = fresh
-            except Exception as exc:
-                logger.warning("OutreachView.accept: list_events failed: %s", exc)
+        try:
+            fresh = await db_events.get_event(self._ctx.db, event_id)
+            if fresh is not None:
+                event = fresh
+        except Exception as exc:
+            logger.warning("OutreachView.accept: get_event failed: %s", exc)
 
         # The event was canceled (or finished) after the invite went out
         if event.status in FINISHED_STATUSES:

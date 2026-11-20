@@ -1,9 +1,11 @@
-"""Create the three Notion views (Events "Overview", Slots "Lineup", DJs "All DJs").
+"""Create the four Notion views.
+
+Events "Overview", Slots "Lineup", DJs "All DJs", Bot data "All rows".
 
 ``ensure_views`` lists the existing views of each database by name and creates
 only the missing ones. Existing views (including Notion's "Default view") are
 never modified or deleted. The ``notion_views_created`` marker is set only when
-all three exist; ensure_schema clears it when it creates a fresh set of
+all of them exist; ensure_schema clears it when it creates a fresh set of
 databases. Request shapes come from the API spike
 (tests/notion/fixtures/NOTES.md, views_real.json).
 """
@@ -58,6 +60,17 @@ def _view_specs(ids: NotionIds) -> list[tuple[str, dict[str, Any]]]:
             "configuration": {"type": "table", "properties": _visible(*_DJ_COLUMNS)},
             "database_id": ids.djs_db, "data_source_id": ids.djs_ds,
         }),
+        *(
+            [(ids.botdata_db, {
+                "name": "All rows", "type": "table",
+                "sorts": [{"property": "Updated", "direction": "descending"}],
+                "configuration": {
+                    "type": "table", "properties": _visible("Key", "Table", "Updated", "Note"),
+                },
+                "database_id": ids.botdata_db, "data_source_id": ids.botdata_ds,
+            })]
+            if ids.botdata_ds else []
+        ),
     ]
 
 

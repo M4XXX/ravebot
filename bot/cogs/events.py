@@ -1,8 +1,8 @@
-"""Events cog — Notion poll loop, lineup post, day-before reminders.
+"""Events cog — event poll loop, lineup post, day-before reminders.
 
 Story 1.5: DB unavailability guard pattern for scheduled task loops.
 Story 3.1: Notion event polling with snapshot-based change detection.
-Story 7.1: _auto_create_events() — maintain look-ahead event count in Notion.
+Story 7.1: _auto_create_events() — maintain look-ahead event count (Postgres).
 Full lineup post (FR10) implemented in Story 3.2.
 
 [Source: architecture.md#Scheduled Work: disnake tasks.loop]
@@ -17,7 +17,7 @@ from disnake.ext import commands, tasks
 
 from bot.cogs.loop_support import first_guild_id, guard_db, prepare_loop, run_cycle
 from bot.context import BotContext
-from bot.notion.client import NotionWriteError
+from bot.db import events as db_events
 from bot.notion.models import EventInfo
 from bot.services import activation
 from bot.services.event_replenish import replenish_events
@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 
 class EventsCog(commands.Cog):
-    """Notion polling, lineup post updates, and reminder scheduling."""
+    """Event polling, lineup post updates, and reminder scheduling."""
 
     bot: commands.Bot  # injected by disnake when the cog is added
 
@@ -51,64 +51,43 @@ class EventsCog(commands.Cog):
         return first_guild_id(self.bot)
 
     async def _auto_create_events(self, events: list[EventInfo], guild_id: int) -> int:
-        """Create Notion events to maintain the configured look-ahead count.
+        """Create events (Postgres) to maintain the configured look-ahead count.
 
         Thin wrapper around bot.services.event_replenish.replenish_events (shared
         with the setup wizard). Done, canceled and past events do not count.
 
-        Called from _poll_notion() after list_events() succeeds, before the
+        Called from _poll_notion_cycle() after the events are read from Postgres, before the
         lineup refresh. Returns how many events were created; the caller's event
         list does not include them, so a non-zero count makes it reload for the refresh.
 
-        On NotionWriteError: ERR_NOTION_WRITE is already posted by NotionApi.request.
-        Logs a warning and continues — remaining events in the loop still attempted.
+        A failed creation is logged and the remaining dates are still attempted.
 
         [Source: epics.md#Story 7.1 AC1-AC4]
         """
-        return await replenish_events(self.ctx.db, self.ctx.notion_client, guild_id, events)
-
-    async def _run_sync_cycle(self, guild_id: int) -> None:
-        """Run one NotionSyncService cycle; a failure is logged and never raised.
-
-        The lineup update must not depend on the sync succeeding.
-        """
-        sync = self.ctx.notion_sync_service
-        if sync is None:
-            return
-        try:
-            await sync.run_cycle(guild_id)
-        except Exception as exc:
-            logger.warning("Notion sync cycle failed — continuing with the poll: %s", exc)
-            # A NotionWriteError was already posted by NotionApi.
-            if self.ctx.log_service is not None and not isinstance(exc, NotionWriteError):
-                await self.ctx.log_service.log_attention(
-                    texts.LOG_FAILED_TITLE,
-                    "The sync with Notion failed. The lineup update goes on and the "
-                    "next poll tries the sync again.",
-                    "Check that the Notion integration still has access to the pages.",
-                )
+        return await replenish_events(self.ctx, guild_id, events)
 
     @tasks.loop(minutes=5)
     async def _poll_notion(self) -> None:
         await run_cycle("notion poll", self._poll_notion_cycle)
 
     async def _poll_notion_cycle(self) -> None:
-        """Notion event polling — syncs hand edits, fetches events, updates the lineup.
+        """Event poll: syncs Notion, reads the events from Postgres, replenishes, refreshes lineup.
 
-        Order per cycle: (1) NotionSyncService.run_cycle (skipped if the service is
-        None; a failure is posted and the cycle continues), (2) list_events() for the
-        state after the sync, (3) auto-create events, (4) lineup refresh.
-        The first iteration runs after the bot is ready and is the startup reconcile.
+        Order per cycle: (0) the Notion sync cycle when Notion is set up
+        (ctx.sync_cycle), (1) list_events(), (2) auto-create events, (3) fully-booked
+        check, (4) lineup refresh.
 
         On DB unavailability: skips cycle (guard handles logging).
-        On Notion read failure: logs warning, posts ERR_NOTION_WRITE, skips cycle
-        (no snapshot update).
+        On a failed event read: logs a warning, posts to the log channel, skips cycle.
         The lineup refresh compares the upcoming event with the last posted snapshot.
 
         [Source: epics.md#Story 3.1 AC1-AC4]
         [Source: architecture.md#Scheduled Work: disnake tasks.loop]
         """
         if not await self._guard_db("notion_poll"):
+            return
+        if self.ctx.maintenance:  # an import replaces the data: no writes until it is done
+            logger.debug("_poll_notion: maintenance, skipping cycle")
             return
 
         guild_id = self._get_guild_id()
@@ -118,22 +97,20 @@ class EventsCog(commands.Cog):
             logger.debug("_poll_notion: bot is idle, skipping cycle")
             return
 
-        # Reconcile hand edits in Notion with Postgres before reading the events
-        await self._run_sync_cycle(guild_id)
+        await self._sync_notion()
 
-        # Fetch events from Notion (AC1, AC4)
+        # Fetch events from Postgres (AC1, AC4)
         listed_at = datetime.datetime.now(datetime.UTC)
         try:
-            events = await self.ctx.notion_client.list_events()
+            events = await db_events.list_events(self.ctx.db)
         except Exception as exc:
-            logger.warning("Notion poll failed — skipping cycle: %s", exc)
-            # A NotionWriteError was already posted by NotionApi.
-            if self.ctx.log_service is not None and not isinstance(exc, NotionWriteError):
+            logger.warning("Event poll failed — skipping cycle: %s", exc)
+            if self.ctx.log_service is not None:
                 await self.ctx.log_service.log_attention(
                     texts.LOG_FAILED_TITLE,
-                    "The bot could not read the events from Notion. "
+                    "The bot could not read the events from the database. "
                     "It tries again on the next poll.",
-                    "Check that the Notion integration still has access to the pages.",
+                    "Check that the database is reachable.",
                 )
             return
 
@@ -157,6 +134,21 @@ class EventsCog(commands.Cog):
                 await self.ctx.lineup_service.refresh(events)
         except Exception as exc:
             logger.warning("Lineup refresh failed — retrying next cycle: %s", exc)
+
+    async def _sync_notion(self) -> None:
+        """Notion sync cycle (hand edits, conflicts, warnings); only with Notion set up.
+
+        A failure is logged and never stops the replenish and lineup part of the poll.
+        """
+        cycle = self.ctx.sync_cycle
+        if cycle is None or self.ctx.notion_client is None or self.ctx.maintenance:
+            return
+        try:
+            report = await cycle.run()
+        except Exception:
+            logger.exception("_poll_notion: the Notion sync cycle failed")
+            return
+        logger.debug("_poll_notion: sync cycle %s", report)
 
     @_poll_notion.before_loop
     async def _before_poll_notion(self) -> None:

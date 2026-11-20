@@ -15,6 +15,9 @@ from bot.notion.schema import (
     NotionSchemaError,
     ensure_schema,
 )
+from bot.notion.schema import (
+    clear_mirror as _REAL_CLEAR_MIRROR,  # the fixture patches the module name
+)
 from tests.notion.fake_notion import FakeNotion
 
 GUILD = 42
@@ -23,7 +26,7 @@ PARENT = "parent-page"
 EVENT_PROPS = {
     "ID": "title", "Date": "date", "Status": "select", "Genre": "rich_text",
     "Notes": "rich_text", "Slots": "number", "Start": "rich_text",
-    "Slot length": "number", "Slot rows": "relation",
+    "Slot length": "number", "Bot ID": "rich_text", "Slot rows": "relation",
 }
 SLOT_PROPS = {
     "Name": "title", "Event": "relation", "Slot number": "number", "DJ": "relation",
@@ -58,7 +61,7 @@ def store() -> Iterator[dict[tuple[int, str], str]]:
 @pytest.fixture(autouse=True)
 def clear_ids() -> Iterator[AsyncMock]:
     mock = AsyncMock()
-    with patch("bot.notion.schema.clear_all_notion_dj_page_ids", new=mock, create=True):
+    with patch("bot.notion.schema.clear_mirror", new=mock, create=True):
         yield mock
 
 
@@ -78,7 +81,7 @@ async def test_first_run_creates_everything(store: dict) -> None:
     api, _ = make(fake)
     ids = await ensure_schema(api, object(), GUILD, PARENT)  # type: ignore[arg-type]
 
-    assert len(fake.databases) == 3
+    assert len(fake.databases) == 4
     assert types(fake, "Events") == EVENT_PROPS
     assert types(fake, "Slots") == SLOT_PROPS
     assert types(fake, "DJs") == DJ_PROPS
@@ -135,8 +138,13 @@ async def test_first_run_creates_everything(store: dict) -> None:
     assert keys == {
         "notion_events_ds", "notion_slots_ds", "notion_djs_ds",
         "notion_events_db", "notion_slots_db", "notion_djs_db", "notion_slots_event_prop",
-        "notion_schema_complete",
+        "notion_schema_complete", "notion_botdata_ds", "notion_botdata_db",
     }
+    assert types(fake, "Bot data") == {
+        "Key": "title", "Table": "select", "Payload": "rich_text", "Updated": "date",
+        "Note": "rich_text",
+    }
+    assert ids.botdata_ds == fake.ds_by_title("Bot data")["id"]
     assert isinstance(ids, NotionIds)
     assert store[(GUILD, "notion_schema_complete")] == "1"
     assert store[(GUILD, "notion_events_db")] == ids.events_db
@@ -150,7 +158,7 @@ async def test_second_run_creates_nothing(store: dict) -> None:
     second = await ensure_schema(api, object(), GUILD, PARENT)  # type: ignore[arg-type]
 
     assert second == first
-    assert len(fake.databases) == 3
+    assert len(fake.databases) == 4
     assert not fake.requests_to("POST", "/databases")
     assert not fake.requests_to("PATCH", "/data_sources")
     log.post_error.assert_not_awaited()
@@ -179,7 +187,7 @@ async def test_missing_database_creates_fresh_set_of_all_three(
     with pytest.raises(NotionDatabasesMissing) as exc_info:
         await _run(api)
     assert first.djs_ds in exc_info.value.detail
-    assert len(fake.databases) == 3
+    assert len(fake.databases) == 4
     clear_ids.assert_not_awaited()
 
     store[(GUILD, "notion_recreate_approved")] = "1"
@@ -187,7 +195,7 @@ async def test_missing_database_creates_fresh_set_of_all_three(
         second = await _run(api)
 
     assert store[(GUILD, "notion_recreate_approved")] == "0"  # one approval, one new set
-    assert len(fake.databases) == 6
+    assert len(fake.databases) == 8
     assert {second.events_ds, second.slots_ds, second.djs_ds}.isdisjoint(
         {first.events_ds, first.slots_ds, first.djs_ds}
     )
@@ -213,8 +221,8 @@ async def test_missing_database_creates_fresh_set_of_all_three(
     [
         ("POST", "/databases", 2, 2),  # Slots creation fails
         ("POST", "/databases", 1, 1),  # DJs creation fails
-        ("PATCH", "/data_sources/", 0, 3),  # relation PATCH fails
-        ("PATCH", "/data_sources/", 1, 3),  # helper/formula PATCH fails
+        ("PATCH", "/data_sources/", 0, 4),  # relation PATCH fails
+        ("PATCH", "/data_sources/", 1, 4),  # helper/formula PATCH fails
     ],
 )
 async def test_partial_failure_then_rerun_resumes_without_duplicates(
@@ -231,7 +239,7 @@ async def test_partial_failure_then_rerun_resumes_without_duplicates(
 
     ids = await _run(api)
 
-    assert len(fake.databases) == 3
+    assert len(fake.databases) == 4
     assert types(fake, "Events") == EVENT_PROPS
     assert types(fake, "Slots") == SLOT_PROPS
     assert types(fake, "DJs") == DJ_PROPS
@@ -245,13 +253,14 @@ async def test_missing_property_is_added(store: dict) -> None:
     api, log = make(fake)
     await ensure_schema(api, object(), GUILD, PARENT)  # type: ignore[arg-type]
     del fake.ds_by_title("Events")["properties"]["Genre"]
+    del fake.ds_by_title("Events")["properties"]["Bot ID"]
     del fake.ds_by_title("DJs")["properties"]["Last booked"]
 
     await ensure_schema(api, object(), GUILD, PARENT)  # type: ignore[arg-type]
 
     assert types(fake, "Events") == EVENT_PROPS
     assert types(fake, "DJs") == DJ_PROPS
-    assert len(fake.databases) == 3
+    assert len(fake.databases) == 4
     log.post_error.assert_not_awaited()
 
 
@@ -377,3 +386,130 @@ def _store_put(data: dict) -> Any:
     async def put(_pool: Any, guild_id: int, key: str, value: str) -> None:
         data[(guild_id, key)] = value
     return put
+
+
+async def test_three_stored_databases_get_only_bot_data_created(store: dict) -> None:
+    fake = FakeNotion()
+    api, _ = make(fake)
+    ids = await ensure_schema(api, object(), GUILD, PARENT)  # type: ignore[arg-type]
+    for key in ("notion_botdata_ds", "notion_botdata_db"):  # an install from before Bot data
+        del store[(GUILD, key)]
+    fake.trash_data_source(ids.botdata_ds)
+    del fake.databases[ids.botdata_db]
+    store[(GUILD, "notion_views_created")] = "1"
+
+    new = await ensure_schema(api, object(), GUILD, PARENT)  # type: ignore[arg-type]
+
+    assert len(fake.databases) == 4
+    assert new.botdata_ds == fake.ds_by_title("Bot data")["id"] != ids.botdata_ds
+    assert (new.events_ds, new.djs_ds) == (ids.events_ds, ids.djs_ds)
+    assert store[(GUILD, "notion_views_created")] == "0"
+
+
+# ---- R18: adopt existing databases under the parent page when no ids are stored ----
+
+
+def _forget_ids(store: dict) -> None:
+    """A lost Postgres: no Notion ids (or any other guild-0 key) are stored."""
+    store.clear()
+
+
+async def test_no_stored_ids_adopts_the_databases_under_the_parent_page(
+    store: dict, clear_ids: AsyncMock
+) -> None:
+    from bot.notion.views import ensure_views
+
+    fake = FakeNotion()
+    api, _ = make(fake)
+    with (
+        patch("bot.notion.views.get_value", new=_store_get(store)),
+        patch("bot.notion.views.set_value", new=_store_put(store)),
+    ):
+        first = await _run(api)
+        await ensure_views(api, object(), GUILD, first)  # type: ignore[arg-type]
+        views_before = len(fake.views)
+        _forget_ids(store)
+        fake.views_page_size = 1  # also exercise view paging
+        adopted = await _run(api)
+        await ensure_views(api, object(), GUILD, adopted)  # type: ignore[arg-type]
+    assert adopted == first
+    assert len(fake.databases) == 4  # nothing created
+    assert len(fake.views) == views_before  # ensure_views only adds missing views
+    assert store[(GUILD, "notion_events_ds")] == first.events_ds
+    assert store[(GUILD, "notion_botdata_db")] == first.botdata_db
+    assert store[(GUILD, "notion_schema_complete")] == "1"
+    clear_ids.assert_not_awaited()
+
+
+async def test_adoption_creates_only_the_missing_databases(store: dict) -> None:
+    fake = FakeNotion()
+    api, _ = make(fake)
+    first = await _run(api)
+    fake.trash_database(first.botdata_db)  # trashed: never adopted
+    _forget_ids(store)
+    adopted = await _run(api)
+    assert (adopted.events_ds, adopted.slots_ds, adopted.djs_ds) == (
+        first.events_ds, first.slots_ds, first.djs_ds
+    )
+    assert adopted.botdata_ds not in ("", first.botdata_ds)
+    assert len(fake.databases) == 5
+
+
+async def test_slots_are_adopted_only_with_their_events_and_djs(store: dict) -> None:
+    fake = FakeNotion()
+    api, _ = make(fake)
+    first = await _run(api)
+    fake.trash_database(first.djs_db)
+    _forget_ids(store)
+    adopted = await _run(api)
+    assert adopted.events_ds == first.events_ds and adopted.botdata_ds == first.botdata_ds
+    # the old Slots relate to the trashed DJs: a new pair is created
+    assert adopted.djs_ds != first.djs_ds and adopted.slots_ds != first.slots_ds
+
+
+async def test_duplicate_title_takes_none_and_creates_a_fresh_set(
+    store: dict, caplog: pytest.LogCaptureFixture
+) -> None:
+    fake = FakeNotion()
+    api, _ = make(fake)
+    first = await _run(api)
+    fake._create_database({
+        "title": [{"type": "text", "text": {"content": "Events"}}],
+        "parent": {"type": "page_id", "page_id": PARENT},
+        "initial_data_source": {"properties": {"ID": {"title": {}}}},
+    })
+    _forget_ids(store)
+    with caplog.at_level(logging.WARNING, logger="bot.notion.schema"):
+        fresh = await _run(api)
+    assert {fresh.events_ds, fresh.slots_ds, fresh.djs_ds, fresh.botdata_ds}.isdisjoint(
+        {first.events_ds, first.slots_ds, first.djs_ds, first.botdata_ds}
+    )
+    assert "Events" in caplog.text and "more than one" in caplog.text
+
+
+async def test_stored_ids_never_search_the_parent_page(store: dict) -> None:
+    fake = FakeNotion()
+    api, _ = make(fake)
+    await _run(api)
+    fake.requests.clear()
+    await _run(api)
+    assert fake.requests_to("GET", "/blocks/") == []
+
+
+async def test_slots_relating_elsewhere_are_not_adopted(store: dict) -> None:
+    fake = FakeNotion()
+    api, _ = make(fake)
+    first = await _run(api)
+    slots = fake.data_sources[first.slots_ds]
+    slots["properties"]["Event"]["relation"]["data_source_id"] = "someone-else"
+    _forget_ids(store)
+    adopted = await _run(api)
+    assert (adopted.events_ds, adopted.djs_ds) == (first.events_ds, first.djs_ds)
+    assert adopted.slots_ds != first.slots_ds
+
+
+async def test_clear_mirror_forgets_every_mirror_row() -> None:
+    pool = MagicMock()
+    pool.execute = AsyncMock()
+    await _REAL_CLEAR_MIRROR(pool)
+    pool.execute.assert_awaited_once_with("DELETE FROM notion_mirror")

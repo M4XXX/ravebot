@@ -85,11 +85,17 @@ class BotContext:
         db:           asyncpg connection pool (set in Story 1.2, None until then).
         notion_client: NotionClient for the Events, Slots and DJs databases (set in
                       main.py after ensure_schema/ensure_views, None until then).
-        notion_sync_service: NotionSyncService that reconciles hand edits in Notion
-                      with the Postgres slot locks; run by the EventsCog poll loop
-                      before each lineup update (None until set in main.py).
         dj_conversations: DjConversationService for the DJ onboarding and profile
                       DM conversation (None until set in main.py).
+        mirror:       MirrorWorker that pushes queued Postgres changes to Notion
+                      (None while Notion is disabled or not set up).
+        sync_cycle:   SyncCycle the Notion poll runs (read Notion, apply hand edits,
+                      conflicts and warnings); None while Notion is disabled or not set up.
+        maintenance:  Text for users while an import replaces the data; bookings and
+                      edits are refused while it is set (bot/ui/gates.py).
+        sync_problem: Last sync or import failure for the admins, or None.
+        upgrade_import: Upgrade import result waiting to be posted in the admin log.
+        rebuild_report: Rebuild-from-Notion result waiting to be posted in the admin log.
         admins:       AdminRegistry (owners plus added admins; None falls back to config).
         log_service:  AdminLogService (set in Story 1.3 main.py, None until then).
         user_locks:   Per-user asyncio.Lock dict — keyed by discord_user_id.
@@ -106,26 +112,42 @@ class BotContext:
     outreach_service: "Any | None" = None
     reminders_service: "Any | None" = None
     admin_booking_service: "Any | None" = None
-    notion_sync_service: "Any | None" = None
     dj_admin_service: "Any | None" = None
     event_cancel_service: "Any | None" = None
     # Set while the stored Notion databases are gone and no new set was approved yet:
     # the reason, and the coroutine function the admin page calls to create a new set.
     notion_problem: str | None = None
     notion_recover: "Any | None" = None
+    # Builds the Notion client again from the stored databases (lost share fixed);
+    # returns an error text or None. None without Notion.
+    notion_connect: "Any | None" = None
+    # Starts the Notion mirror worker and sync cycle (main._start_mirror) once a rebuild
+    # ended a pause; None without Notion.
+    notion_start_mirror: "Any | None" = None
+    # Set while an import replaces the data (the text users get), None otherwise.
+    maintenance: str | None = None
+    # The last sync or import failure shown to admins, None when there is none.
+    sync_problem: str | None = None
+    # The upgrade import result still to post in the admin log (posted once in on_ready).
+    upgrade_import: "Any | None" = None
+    # A startup rebuild result still to post in the admin log (posted once in on_ready).
+    rebuild_report: "Any | None" = None
     dj_conversations: "Any | None" = None
+    mirror: "Any | None" = None
+    # SyncCycle run by the Notion poll (None while Notion is disabled or not set up).
+    sync_cycle: "Any | None" = None
     admins: "Any | None" = None
     user_locks: dict[int, FlowLock] = field(default_factory=dict)
 
     def attach_notion(self, client: "Any") -> None:
-        """Use a (new) Notion client everywhere, also in the services built without one."""
+        """Use a (new) Notion client, also in a mirror worker built without one.
+
+        Only the mirror worker (and the import/poll code reading ctx.notion_client)
+        talks to Notion; bookings, lineup, outreach and reminders do not.
+        """
         self.notion_client = client
-        for service in (
-            self.lineup_service, self.notion_sync_service, self.outreach_service,
-            self.reminders_service, self.admin_booking_service,
-        ):
-            if service is not None and hasattr(service, "notion_client"):
-                service.notion_client = client
+        if self.mirror is not None:
+            self.mirror.notion_client = client
 
     def is_admin(self, user_id: int) -> bool:
         """Registry (owners plus added admins) if set, else the env admin ids."""

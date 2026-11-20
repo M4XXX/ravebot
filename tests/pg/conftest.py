@@ -6,7 +6,7 @@ from tests.pg import URL, run_alembic
 TABLES = (
     "slot_locks, reminders_sent, outreach_contacts, outreach_sequences, dj_conversations, "
     "djs, config, web_admins, fully_booked_events, log_replies, setup_drafts, "
-    "event_shapes, manual_events"
+    "manual_events, events, notion_mirror, notion_outbox, sync_issues"
 )
 
 

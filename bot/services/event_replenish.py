@@ -1,5 +1,6 @@
-"""Keep the configured number of future events ready in Notion.
+"""Keep the configured number of future events ready.
 
+Events are written to Postgres; the Notion mirror follows in the background.
 Used by the poll loop (EventsCog) and by the setup wizard at activation time.
 """
 import asyncio
@@ -9,14 +10,18 @@ import weakref
 from collections.abc import Iterator
 from datetime import timedelta
 from itertools import count, islice
+from typing import TYPE_CHECKING
 
-from bot.db.bookings import init_event_slots
+from bot.db import events as db_events
 from bot.db.config import get_value, set_value
 from bot.db.manual_events import get_manual_page_ids
-from bot.notion.client import DuplicateEventError, NotionWriteError
 from bot.notion.models import FINISHED_STATUSES, EventInfo
 from bot.services.event_defaults import default_event_shape
+from bot.sync.worker import changed
 from bot.timezone import local_today
+
+if TYPE_CHECKING:
+    from bot.context import BotContext
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +42,13 @@ def _replenish_lock() -> asyncio.Lock:
 def replenish_guard() -> asyncio.Lock:
     """The lock that serializes event creation: hold it while creating an event by hand."""
     return _replenish_lock()
+
+
+def mirror_new_event(ctx: "BotContext", event: EventInfo) -> None:
+    """Queue a new event and each of its slots for the Notion mirror."""
+    changed(ctx, "event", event.page_id)
+    for index in range(event.slot_count):
+        changed(ctx, "slot", f"{event.page_id}:{index}")
 
 
 FIRST_DATE_KEY = "first_event_date"
@@ -75,26 +87,29 @@ def _to_int(raw: str | None, default: int) -> int:
 
 
 async def replenish_events(
-    db,  # noqa: ANN001
-    notion_client,  # noqa: ANN001
+    ctx: "BotContext",
     guild_id: int,
     events: list[EventInfo] | None = None,
 ) -> int:
     """Serialized wrapper: the poll loop and the wizard never replenish at the same time.
 
     Without `events` the list is loaded inside the lock, so it is never stale.
+    Creates nothing (0) without a database or while in maintenance (an import
+    replaces the events).
     """
+    if ctx.db is None or ctx.maintenance:
+        return 0
     async with _replenish_lock():
+        if ctx.maintenance:  # an import or rebuild started while this waited
+            return 0
         if events is None:
-            if notion_client is None:
-                return 0
-            loaded: list[EventInfo] = await notion_client.list_events()
+            loaded: list[EventInfo] = await db_events.list_events(ctx.db)
         else:
             loaded = events
-        return await _replenish(db, notion_client, guild_id, loaded)
+        return await _replenish(ctx, guild_id, loaded)
 
 
-async def _replenish(db, notion_client, guild_id: int, events: list[EventInfo]) -> int:  # noqa: ANN001
+async def _replenish(ctx: "BotContext", guild_id: int, events: list[EventInfo]) -> int:
     """Create scheduled events until the look-ahead count of future, open ones is met.
 
     Does nothing when the schedule is off. Manual events (/create event) are ignored:
@@ -108,8 +123,8 @@ async def _replenish(db, notion_client, guild_id: int, events: list[EventInfo]) 
     a creation. first_event_date is cleared once it was used or found unusable.
     Returns the number created.
     """
-    if notion_client is None or db is None:
-        return 0
+    db = ctx.db
+    assert db is not None
     if not _schedule_enabled(await get_value(db, guild_id, "event_schedule_enabled")):
         return 0
 
@@ -139,7 +154,7 @@ async def _replenish(db, notion_client, guild_id: int, events: list[EventInfo]) 
         event_id = f"{new_date.isoformat()} Rave Night"
         counted = False
         try:
-            if await notion_client.event_id_exists(event_id):
+            if await db_events.event_id_exists(db, event_id):
                 logger.info("Auto-create skipped: event ID %r already exists", event_id)
                 if new_date in manual_dates:
                     continue  # a manual event holds this date: the next date is used
@@ -148,29 +163,23 @@ async def _replenish(db, notion_client, guild_id: int, events: list[EventInfo]) 
                 continue
             attempts += 1
             counted = True
-            event = await notion_client.create_event(
-                event_id, new_date, shape.start, shape.slot_count, shape.slot_minutes
+            draft = db_events.EventDraft(
+                event_id=event_id,
+                date=new_date,
+                start=shape.start,
+                slot_minutes=shape.slot_minutes,
+                slot_count=shape.slot_count,
             )
-            logger.info("Auto-created Notion event: %r", event_id)
+            event = await db_events.insert_event(db, draft)
+            logger.info("Auto-created event: %r", event_id)
             created += 1
-            try:
-                await init_event_slots(db, event.page_id, shape.slot_count)
-            except Exception as exc:
-                logger.warning(
-                    "init_event_slots failed for event %r: %s"
-                    " — slots will be lazily created on booking",
-                    event_id,
-                    exc,
-                )
-        except (NotionWriteError, DuplicateEventError):
+            mirror_new_event(ctx, event)
+        except db_events.DuplicateEventError:
+            logger.warning("Auto-create skipped: event ID %r was just taken", event_id)
+        except Exception:
             if not counted:
                 attempts += 1
-            logger.warning(
-                "Auto event creation failed for %s — ERR_NOTION_WRITE posted to admin log",
-                new_date.isoformat(),
-            )
-        except ValueError:
-            logger.exception("Auto event creation rejected for %s", new_date.isoformat())
+            logger.exception("Auto event creation failed for %s", new_date.isoformat())
     if (raw_first or "").strip() and (first is None or created > 0):
         await set_value(db, guild_id, FIRST_DATE_KEY, "")
     return created

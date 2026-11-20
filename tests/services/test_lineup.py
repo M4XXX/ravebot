@@ -14,6 +14,7 @@ from bot.services.lineup import (
     upcoming_event,
 )
 from bot.ui.embeds import LineupUpdateEmbed
+from tests.fake_events import fake_events
 from tests.notion.factories import make_event, make_slot
 
 TODAY = datetime.date(2026, 11, 6)
@@ -46,8 +47,9 @@ def _service(
     bot.guilds = [MagicMock(id=GUILD)]
     bot.get_channel = MagicMock(return_value=channel)
     log = MagicMock(post_error=AsyncMock(), log_attention=AsyncMock())
-    notion = MagicMock(list_events=AsyncMock(return_value=events or []))
-    service = LineupService(bot=bot, db=MagicMock(), log_service=log, notion_client=notion)
+    fake_events.list_events = AsyncMock(return_value=events or [])
+    notion = MagicMock()
+    service = LineupService(bot=bot, db=MagicMock(), log_service=log)
     return service, cfg, channel, log, notion
 
 
@@ -165,7 +167,7 @@ async def test_refresh_loads_events_when_none() -> None:
     service, cfg, channel, _log, notion = _service(events=[event])
     with _Ctx(cfg):
         assert await service.refresh() is True
-    notion.list_events.assert_awaited_once_with()
+    fake_events.list_events.assert_awaited_once()
 
 
 @pytest.mark.asyncio

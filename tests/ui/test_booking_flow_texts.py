@@ -16,6 +16,7 @@ from bot.ui.views import (
     prepare_booking,
 )
 from tests.conftest import make_real_ctx
+from tests.fake_events import fake_events
 from tests.notion.factories import make_event, make_slot
 
 
@@ -77,7 +78,7 @@ def test_booked_embed_texts() -> None:
 async def test_prepare_booking_event_list_and_errors() -> None:
     ctx = make_real_ctx(db=MagicMock())
     ctx.notion_client = MagicMock()
-    ctx.notion_client.list_events = AsyncMock(return_value=[_event(booked=1)])
+    fake_events.list_events = AsyncMock(return_value=[_event(booked=1)])
     start = await prepare_booking(ctx, 5)
     assert start.content == ""
     assert start.embed.title == "Which event do you want to play?"
@@ -95,13 +96,13 @@ async def test_prepare_booking_event_list_and_errors() -> None:
     # no events / all booked / error
     ctx2 = make_real_ctx(db=MagicMock())
     ctx2.notion_client = MagicMock()
-    ctx2.notion_client.list_events = AsyncMock(return_value=[])
+    fake_events.list_events = AsyncMock(return_value=[])
     assert (await prepare_booking(ctx2, 6)).error == "There are no upcoming events yet."
-    ctx2.notion_client.list_events = AsyncMock(return_value=[_event(booked=4)])
+    fake_events.list_events = AsyncMock(return_value=[_event(booked=4)])
     assert (await prepare_booking(ctx2, 6)).error == (
         "All slots are booked. I'll message you if one opens up."
     )
-    ctx2.notion_client.list_events = AsyncMock(side_effect=RuntimeError("x"))
+    fake_events.list_events = AsyncMock(side_effect=RuntimeError("x"))
     assert (await prepare_booking(ctx2, 6)).error == texts.GENERIC_ERROR
 
 
@@ -135,22 +136,29 @@ async def test_slot_selection_presents_confirm_embed() -> None:
     assert embed.description == "Rave One\nSaturday 14.11.2026, slot 2 at 21:00"
 
 
-async def _confirm(ctx, uid, *, acquire=True, assign=True, ensure="dj-me", event=None):
+def _seed_event(event) -> None:  # noqa: ANN001
+    """The confirm step re-reads its event (I5): make the seeded reads return it."""
+    reads = fake_events.list_events
+    if reads.side_effect is None and isinstance(reads.return_value, list):
+        if all(e.page_id != event.page_id for e in reads.return_value):
+            reads.return_value = [*reads.return_value, event]
+
+
+async def _confirm(ctx, uid, *, acquire=True, event=None):
     lock = await _locked(ctx, uid)
-    view = BookingConfirmView(ctx, event or _event(), 1, 1, lock, uid)
+    event = event or _event()
+    _seed_event(event)
+    view = BookingConfirmView(ctx, event, 1, 1, lock, uid)
     inter = _inter()
-    with patch("bot.db.bookings.acquire_slot_lock", new=AsyncMock(return_value=acquire)), \
-         patch("bot.db.bookings.release_slot_lock", new=AsyncMock()), \
-         patch("bot.services.dj_pages.ensure_dj_page", new=AsyncMock(return_value=ensure)):
-        ctx.notion_client.assign_slot = AsyncMock(return_value=assign)
+    with patch("bot.db.bookings.acquire_slot_lock", new=AsyncMock(return_value=acquire)):
         await view._handle_confirm(inter)
     return inter, lock
 
 
 def _ctx_with_notion(events=None):
     ctx = make_real_ctx(db=MagicMock())
-    ctx.notion_client = MagicMock()
-    ctx.notion_client.list_events = AsyncMock(return_value=events or [])
+    ctx.notion_client = MagicMock()  # booking and cancel never touch it
+    fake_events.list_events = AsyncMock(return_value=events or [])
     ctx.log_service = None
     ctx.lineup_service = None
     return ctx
@@ -193,22 +201,12 @@ async def test_booking_confirm_generic_errors() -> None:
     inter = _inter()
     await view._handle_confirm(inter)
     assert _msg(inter) == texts.GENERIC_ERROR
-    # notion None
-    ctx = make_real_ctx(db=MagicMock())
-    ctx.notion_client = None
-    view = BookingConfirmView(ctx, _event(), 0, 1, await _locked(ctx, 24), 24)
-    inter = _inter()
-    await view._handle_confirm(inter)
-    assert _msg(inter) == texts.GENERIC_ERROR
     # acquire raises
-    ctx = _ctx_with_notion()
+    ctx = _ctx_with_notion([_event()])
     view = BookingConfirmView(ctx, _event(), 0, 1, await _locked(ctx, 25), 25)
     inter = _inter()
     with patch("bot.db.bookings.acquire_slot_lock", new=AsyncMock(side_effect=RuntimeError)):
         await view._handle_confirm(inter)
-    assert _msg(inter) == texts.GENERIC_ERROR
-    # no dj page
-    inter, _ = await _confirm(_ctx_with_notion(), 26, ensure=None)
     assert _msg(inter) == texts.GENERIC_ERROR
 
 
@@ -250,7 +248,7 @@ async def test_cancel_slot_entry_texts() -> None:
         await FallbackMenuView(ctx).cancel_slot.callback(inter)
     assert _msg(inter) == texts.GENERIC_ERROR
     ctx = _ctx_with_notion()
-    ctx.notion_client.list_events = AsyncMock(side_effect=RuntimeError)
+    fake_events.list_events = AsyncMock(side_effect=RuntimeError)
     inter = _inter()
     with patch("bot.db.bookings.get_dj_slot_locks", new=AsyncMock(return_value=rows)):
         await FallbackMenuView(ctx).cancel_slot.callback(inter)
@@ -296,9 +294,7 @@ async def test_cancel_confirm_keep_and_done() -> None:
     lock = await _locked(ctx, 33)
     view = CancelConfirmView(ctx, event, 1, 1, lock, 33)
     inter = _inter()
-    ctx.notion_client.clear_slot = AsyncMock(return_value=True)
-    with patch("bot.services.dj_pages.ensure_dj_page", new=AsyncMock(return_value="d")), \
-         patch("bot.db.bookings.release_slot_lock", new=AsyncMock()):
+    with patch("bot.db.bookings.release_slot_lock", new=AsyncMock()):
         await view._handle_confirm(inter)
     assert _msg(inter) == "Your booking is cancelled. The slot is open again."
 
@@ -310,21 +306,10 @@ async def test_cancel_confirm_generic_errors() -> None:
     inter = _inter()
     await view._handle_confirm(inter)
     assert _msg(inter) == texts.GENERIC_ERROR
-    ctx = make_real_ctx(db=MagicMock())
-    ctx.notion_client = None
-    view = CancelConfirmView(ctx, event, 1, 1, await _locked(ctx, 35), 35)
-    inter = _inter()
-    await view._handle_confirm(inter)
-    assert _msg(inter) == texts.GENERIC_ERROR
-    from bot.notion.client import NotionWriteError
-
     ctx = _ctx_with_notion()
-    ctx.notion_client.clear_slot = AsyncMock(side_effect=NotionWriteError("x"))
     view = CancelConfirmView(ctx, event, 1, 1, await _locked(ctx, 36), 36)
     inter = _inter()
-    with patch("bot.services.dj_pages.ensure_dj_page", new=AsyncMock(return_value="d")), \
-         patch("bot.ui.views.release_slot_lock", new=AsyncMock(), create=True), \
-         patch("bot.db.bookings.release_slot_lock", new=AsyncMock()):
+    with patch("bot.db.bookings.release_slot_lock", new=AsyncMock(side_effect=OSError("db"))):
         await view._handle_confirm(inter)
     assert _msg(inter) == texts.GENERIC_ERROR
 

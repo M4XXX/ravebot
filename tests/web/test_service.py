@@ -376,3 +376,232 @@ async def test_recreate_notion_runs_the_recovery_once_needed() -> None:
     ctx.notion_recover = AsyncMock(return_value="not shared")
     result = await svc.recreate_notion()
     assert not result.ok and "not shared" in result.message
+
+
+# --- data and backup, Notion sync (Task 17) ---
+
+import datetime  # noqa: E402
+
+from bot import maintenance as maintenance_mod  # noqa: E402
+from bot.db.outbox import OutboxStats  # noqa: E402
+from bot.results import ActionResult  # noqa: E402
+from bot.ui import texts  # noqa: E402
+
+
+def _notion_svc():
+    svc = _svc()
+    ctx = svc._ctx
+    ctx.notion_client = object()
+    ctx.sync_cycle = MagicMock()
+    ctx.sync_cycle.resolve_issue = AsyncMock(return_value=ActionResult(True, "kept"))
+    ctx.sync_cycle.resync_all = AsyncMock(return_value=5)
+    return svc, ctx
+
+
+def _patch_status(last_run="2026-11-20T12:00:00+00:00", last_error=""):
+    values = {"sync_last_run": last_run, "sync_last_error": last_error}
+    return (
+        patch("bot.web.service.config_db.get_value",
+              AsyncMock(side_effect=lambda db, guild, key: values[key])),
+        patch("bot.web.service.outbox.stats", AsyncMock(return_value=OutboxStats(2, None, None))),
+        patch("bot.web.service.issues.list_open", AsyncMock(return_value=["issue"])),
+    )
+
+
+async def test_sync_status_disabled_without_notion() -> None:
+    svc = _svc()
+    a, b, c = _patch_status()
+    with a as get_value, b as stats, c as list_open:
+        status = await svc.sync_status()
+    assert status.enabled is False and status.issues == []
+    assert status.outbox == OutboxStats(0, None, None)
+    get_value.assert_not_awaited()
+    stats.assert_not_awaited()
+    list_open.assert_not_awaited()
+
+
+async def test_sync_status_maps_empty_error_to_none() -> None:
+    svc, ctx = _notion_svc()
+    ctx.sync_problem = "Duplicate title"
+    a, b, c = _patch_status()
+    with a, b, c:
+        status = await svc.sync_status()
+    assert status.enabled and status.last_error is None
+    assert status.last_run == datetime.datetime(2026, 11, 20, 12, tzinfo=datetime.UTC)
+    assert status.outbox.count == 2 and status.issues == ["issue"]
+    assert status.problem == "Duplicate title"
+    a, b, c = _patch_status(last_run=None, last_error="boom")
+    with a, b, c:
+        status = await svc.sync_status()
+    assert status.last_run is None and status.last_error == "boom"
+    a, b, c = _patch_status(last_run="not a date")
+    with a, b, c:
+        assert (await svc.sync_status()).last_run is None
+
+
+async def test_sync_status_shows_running_operation() -> None:
+    svc = _svc()
+    assert (await svc.sync_status()).maintenance is None
+    claim = maintenance_mod.try_claim("rebuild")
+    assert claim is not None
+    with claim:
+        text = (await svc.sync_status()).maintenance
+    assert text is not None and "rebuild" in text.lower()
+    svc._ctx.maintenance = texts.MAINTENANCE
+    assert (await svc.sync_status()).maintenance is not None
+
+
+async def test_resolve_issue_validates_and_delegates() -> None:
+    svc, ctx = _notion_svc()
+    for raw, choice in (("x", "notion"), ("7", "evil"), ("7", "expired"), ("-1", "notion")):
+        assert not (await svc.resolve_issue(raw, choice)).ok
+    ctx.sync_cycle.resolve_issue.assert_not_awaited()
+    assert (await svc.resolve_issue("7", "notion")).ok
+    ctx.sync_cycle.resolve_issue.assert_awaited_once_with(7, "notion")
+    ctx.sync_cycle = None
+    assert not (await svc.resolve_issue("7", "postgres")).ok
+
+
+async def test_resync_all() -> None:
+    svc, ctx = _notion_svc()
+    result = await svc.resync_all()
+    assert result.ok and "5" in result.message
+    ctx.maintenance = texts.MAINTENANCE
+    assert not (await svc.resync_all()).ok
+    ctx.maintenance = None
+    ctx.sync_cycle.resync_all = AsyncMock(return_value=0)
+    assert not (await svc.resync_all()).ok
+    ctx.sync_cycle = None
+    assert not (await svc.resync_all()).ok
+
+
+async def test_import_backup_rejects_non_gzip() -> None:
+    svc = _svc()
+    result = await svc.import_backup(b"not gzip at all")
+    assert result == ActionResult(False, texts.IMPORT_UNREADABLE)
+    assert maintenance_mod.running() is None
+
+
+async def test_import_backup_never_raises() -> None:
+    svc = _svc()
+    with patch("bot.web.service.import_database", AsyncMock(side_effect=RuntimeError("x"))):
+        result = await svc.import_backup(b"x")
+    assert not result.ok
+
+
+async def test_export_backup_reads_the_pool() -> None:
+    svc = _svc()
+    with patch("bot.web.service.export_database", AsyncMock(return_value=b"gz")) as export:
+        assert await svc.export_backup() == b"gz"
+    export.assert_awaited_once_with(svc._ctx.db)
+
+
+async def test_rebuild_delegates_and_never_raises() -> None:
+    svc, ctx = _notion_svc()
+    with patch("bot.web.service.rebuild_from_notion",
+               AsyncMock(return_value=ActionResult(True, "done"))) as rebuild:
+        assert (await svc.rebuild_from_notion()).message == "done"
+    rebuild.assert_awaited_once_with(ctx)
+    with patch("bot.web.service.rebuild_from_notion", AsyncMock(side_effect=RuntimeError)):
+        assert not (await svc.rebuild_from_notion()).ok
+
+
+def _patch_retry(succeed: bool, ctx):
+    async def upgrade(c):
+        c.upgrade_import = "result"
+        if succeed:
+            c.maintenance = None
+            c.sync_problem = None
+
+    return (
+        patch("bot.web.service.run_startup_rebuild_if_needed", AsyncMock(return_value=False)),
+        patch("bot.web.service.run_upgrade_import_if_needed", AsyncMock(side_effect=upgrade)),
+        patch("bot.web.service.post_upgrade_result", AsyncMock()),
+        patch("bot.web.service.run_startup_recovery", AsyncMock()),
+        patch("bot.web.service.post_rebuild_result", AsyncMock()),
+    )
+
+
+async def test_retry_import_success_starts_the_mirror() -> None:
+    svc, ctx = _notion_svc()
+    ctx.sync_cycle = None
+    ctx.maintenance = texts.MAINTENANCE
+    ctx.sync_problem = "Duplicate title"
+    ctx.notion_start_mirror = AsyncMock()
+    a, b, c, d, e = _patch_retry(True, ctx)
+    with a, b as upgrade, c as post, d as recovery, e:
+        result = await svc.retry_import()
+    assert result.ok
+    upgrade.assert_awaited_once_with(ctx)
+    post.assert_awaited_once_with(ctx)
+    ctx.notion_start_mirror.assert_awaited_once()
+    recovery.assert_awaited_once_with(ctx)
+
+
+async def test_retry_import_failure_keeps_the_pause() -> None:
+    svc, ctx = _notion_svc()
+    ctx.maintenance = texts.MAINTENANCE
+    ctx.sync_problem = "Duplicate title"
+    ctx.notion_start_mirror = AsyncMock()
+    a, b, c, d, e = _patch_retry(False, ctx)
+    with a, b, c as post, d as recovery, e:
+        result = await svc.retry_import()
+    assert not result.ok and "Duplicate title" in result.message
+    post.assert_awaited_once_with(ctx)
+    ctx.notion_start_mirror.assert_not_awaited()
+    recovery.assert_not_awaited()
+
+
+async def test_retry_import_refused_without_problem_or_while_busy() -> None:
+    svc, ctx = _notion_svc()
+    a, b, c, d, e = _patch_retry(True, ctx)
+    with a, b as upgrade, c, d, e:
+        assert not (await svc.retry_import()).ok
+        ctx.sync_problem = "x"
+        claim = maintenance_mod.try_claim("import")
+        assert claim is not None
+        with claim:
+            result = await svc.retry_import()
+        assert result == ActionResult(False, texts.OPERATION_BUSY)
+        ctx.notion_client = None
+        assert not (await svc.retry_import()).ok
+    upgrade.assert_not_awaited()
+
+
+async def test_retry_import_reconnects_notion_first() -> None:
+    """C2: the databases were missing at startup; retry reconnects, then imports."""
+    svc, ctx = _notion_svc()
+    client = ctx.notion_client
+    ctx.notion_client = None
+    ctx.notion_problem = "Events database not found"
+    ctx.maintenance = texts.MAINTENANCE
+    ctx.sync_problem = texts.UPGRADE_WAITS_FOR_NOTION
+    ctx.notion_start_mirror = AsyncMock()
+
+    async def connect():
+        ctx.notion_client = client
+        ctx.notion_problem = None
+        return None
+
+    ctx.notion_connect = connect
+    a, b, c, d, e = _patch_retry(True, ctx)
+    with a, b as upgrade, c, d, e:
+        result = await svc.retry_import()
+    assert result.ok
+    upgrade.assert_awaited_once_with(ctx)
+    ctx.notion_start_mirror.assert_awaited_once()
+
+
+async def test_retry_import_reconnect_fails_keeps_the_pause() -> None:
+    svc, ctx = _notion_svc()
+    ctx.notion_client = None
+    ctx.notion_problem = "Events database not found"
+    ctx.maintenance = texts.MAINTENANCE
+    ctx.sync_problem = texts.UPGRADE_WAITS_FOR_NOTION
+    ctx.notion_connect = AsyncMock(return_value="still not shared")
+    a, b, c, d, e = _patch_retry(True, ctx)
+    with a, b as upgrade, c, d, e:
+        result = await svc.retry_import()
+    assert not result.ok and "still not shared" in result.message
+    upgrade.assert_not_awaited()
+    assert ctx.maintenance == texts.MAINTENANCE

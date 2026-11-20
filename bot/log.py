@@ -226,6 +226,14 @@ class AdminLogService:
             )
         )
 
+    async def log_notion_applied(self, what: str) -> None:
+        """Applied hand edits from Notion; ``what`` is built and escaped by the caller."""
+        await self._post_built(
+            lambda: LogEntryEmbed(
+                texts.LOG_NOTION_APPLIED_TITLE, what, EmbedColors.MISSION_GOLD
+            )
+        )
+
     async def log_fully_booked(self, event: EventInfo) -> None:
         await self._post_built(
             lambda: LogEntryEmbed(
@@ -266,6 +274,10 @@ class AdminLogService:
                 EmbedColors.SUCCESS_GREEN,
             )
         )
+
+    async def log_notice(self, title: str, what: str) -> None:
+        """A finished bot operation the admins should know about (green entry)."""
+        await self._post_built(lambda: LogEntryEmbed(title, what, EmbedColors.SUCCESS_GREEN))
 
     async def log_attention(self, title: str, what: str, todo: str | None = None) -> None:
         await self._post_built(lambda: LogEntryEmbed(title, what, EmbedColors.IMPERIAL_RED, todo))

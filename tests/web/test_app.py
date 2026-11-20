@@ -575,3 +575,292 @@ async def test_blocked_login_also_waits(monkeypatch) -> None:
         resp = await client.post("/login", data={"password": PASSWORD})
         assert resp.status == 429
         assert delays == [0.25] * 6
+
+
+# --- data and backup, Notion sync (Task 17) ---
+
+import datetime  # noqa: E402
+
+from bot.db.issues import IssueRow  # noqa: E402
+from bot.db.outbox import OutboxStats  # noqa: E402
+from bot.web.service import SyncStatus  # noqa: E402
+
+NOW = datetime.datetime(2026, 11, 20, 12, 0, tzinfo=datetime.UTC)
+
+
+def _issue(issue_id=7, kind="conflict", summary="Moon changed"):
+    return IssueRow(
+        id=issue_id, kind=kind, entity="dj", entity_key="42", summary=summary,
+        pg_payload={"dj_name": "Moon"}, notion_payload={"dj_name": "Moon2"},
+        created_at=NOW, resolved_at=None, resolution=None,
+    )
+
+
+class SyncFakeService(FakeService):
+    def __init__(self, enabled: bool = True) -> None:
+        super().__init__()
+        self.enabled = enabled
+        self.issues = [_issue(), _issue(8, "warning", "Event deleted in Notion")]
+        self.problem: str | None = None
+        self.uploads: list[bytes] = []
+
+    async def sync_status(self):
+        return SyncStatus(
+            enabled=self.enabled, last_run=NOW, last_error=None,
+            outbox=OutboxStats(3, NOW, None), issues=self.issues if self.enabled else [],
+            problem=self.problem, maintenance=None,
+        )
+
+    async def export_backup(self) -> bytes:
+        self.calls.append(("export_backup",))
+        return b"\x1f\x8bbackup"
+
+    async def import_backup(self, data: bytes):
+        self.calls.append(("import_backup", len(data)))
+        self.uploads.append(data)
+        return ActionResult(True, "The backup was restored.")
+
+    async def rebuild_from_notion(self):
+        self.calls.append(("rebuild_from_notion",))
+        return ActionResult(True, "Rebuilt.")
+
+    async def resync_all(self):
+        self.calls.append(("resync_all",))
+        return ActionResult(True, "Queued.")
+
+    async def open_issue(self, raw_id: str):
+        return next((i for i in self.issues if str(i.id) == raw_id), None)
+
+    async def resolve_issue(self, raw_id: str, choice: str):
+        self.calls.append(("resolve_issue", raw_id, choice))
+        return ActionResult(True, "Notion's version is applied.")
+
+    async def retry_import(self):
+        self.calls.append(("retry_import",))
+        return ActionResult(True, "Imported.")
+
+
+async def test_export_requires_login() -> None:
+    service = SyncFakeService()
+    async with make_client(service) as client:
+        resp = await client.get("/backup/export", allow_redirects=False)
+        assert resp.status == 303
+        assert resp.headers["Location"] == "/login"
+    assert ("export_backup",) not in service.calls
+
+
+async def test_export_downloads_file() -> None:
+    sessions = SessionManager(secret=b"k" * 32)
+    headers, _ = _auth(sessions)
+    service = SyncFakeService()
+    async with make_client(service, sessions) as client:
+        resp = await client.get("/backup/export", headers=headers)
+        assert resp.status == 200
+        assert await resp.read() == b"\x1f\x8bbackup"
+        disposition = resp.headers["Content-Disposition"]
+        assert disposition.startswith('attachment; filename="ravebot-')
+        assert disposition.endswith('.ravebot.json.gz"')
+        _assert_headers(resp)
+
+
+async def test_import_needs_csrf() -> None:
+    sessions = SessionManager(secret=b"k" * 32)
+    headers, csrf = _auth(sessions)
+    service = SyncFakeService()
+    async with make_client(service, sessions) as client:
+        page = await (await client.get("/backup/import", headers=headers)).text()
+        assert 'action="/backup/import"' in page and 'enctype="multipart/form-data"' in page
+        form = aiohttp.FormData()
+        form.add_field("csrf", "wrong")
+        form.add_field("backup", b"data", filename="b.ravebot.json.gz")
+        resp = await client.post("/backup/import", headers=headers, data=form)
+        assert resp.status == 403
+        assert service.uploads == []
+        form = aiohttp.FormData()
+        form.add_field("csrf", csrf)
+        form.add_field("backup", b"data", filename="b.ravebot.json.gz")
+        resp = await client.post("/backup/import", headers=headers, data=form)
+        assert resp.status == 200
+        assert "The backup was restored." in await resp.text()
+    assert service.uploads == [b"data"]
+
+
+async def test_import_without_file_is_refused() -> None:
+    sessions = SessionManager(secret=b"k" * 32)
+    headers, csrf = _auth(sessions)
+    service = SyncFakeService()
+    async with make_client(service, sessions) as client:
+        form = aiohttp.FormData()
+        form.add_field("csrf", csrf)
+        form.add_field("backup", b"", filename="")
+        resp = await client.post("/backup/import", headers=headers, data=form)
+        assert resp.status == 400
+    assert service.uploads == []
+
+
+async def test_import_large_file_accepted_other_paths_limited() -> None:
+    sessions = SessionManager(secret=b"k" * 32)
+    headers, csrf = _auth(sessions)
+    service = SyncFakeService()
+    big = b"x" * (web_app.MAX_UPLOAD + 1024 * 1024)
+    assert web_app.MAX_BACKUP == 512 * 1024 * 1024
+    async with make_client(service, sessions) as client:
+        form = aiohttp.FormData()
+        form.add_field("csrf", csrf)
+        form.add_field("backup", big, filename="b.ravebot.json.gz")
+        resp = await client.post("/backup/import", headers=headers, data=form)
+        assert resp.status == 200
+        for path in ("/djs/add", "/djs/edit"):
+            form = aiohttp.FormData()
+            form.add_field("csrf", csrf)
+            form.add_field("logo", big, filename="logo.png", content_type="image/png")
+            resp = await client.post(path, headers=headers, data=form)
+            assert resp.status == 413, path
+            _assert_headers(resp)
+        resp = await client.post(
+            "/admins/add", headers=headers,
+            data={"id": "1" * 5000, "csrf": csrf},
+        )
+        assert resp.status == 413
+    assert service.uploads == [big]
+
+
+async def test_chunked_upload_on_logo_path_limited() -> None:
+    sessions = SessionManager(secret=b"k" * 32)
+    headers, csrf = _auth(sessions)
+    service = SyncFakeService()
+
+    async def chunks():
+        boundary = b"--B\r\n"
+        yield boundary + b'Content-Disposition: form-data; name="csrf"\r\n\r\n' + csrf.encode()
+        yield b"\r\n" + boundary
+        yield b'Content-Disposition: form-data; name="logo"; filename="a.png"\r\n\r\n'
+        for _ in range(8):
+            yield b"x" * (1024 * 1024)
+        yield b"\r\n--B--\r\n"
+
+    async with make_client(service, sessions) as client:
+        resp = await client.post(
+            "/djs/add", headers={**headers, "Content-Type": "multipart/form-data; boundary=B"},
+            data=chunks(),
+        )
+        assert resp.status == 413
+
+
+async def test_notion_card_hidden_when_disabled() -> None:
+    sessions = SessionManager(secret=b"k" * 32)
+    headers, _ = _auth(sessions)
+    async with make_client(SyncFakeService(enabled=False), sessions) as client:
+        text = await (await client.get("/", headers=headers)).text()
+        assert "Data and backup" in text and 'href="/backup/export"' in text
+        assert "Notion sync" not in text and "/sync/rebuild" not in text
+    async with make_client(SyncFakeService(enabled=True), sessions) as client:
+        text = await (await client.get("/", headers=headers)).text()
+        assert "Data and backup" in text and "Notion sync" in text
+        assert 'href="/sync/rebuild"' in text and 'href="/sync/resync"' in text
+        assert "Keep Postgres" in text and "Keep Notion" in text
+        assert "Resync Postgres to Notion" in text
+
+
+async def test_issue_keep_notion_calls_resolve() -> None:
+    sessions = SessionManager(secret=b"k" * 32)
+    headers, csrf = _auth(sessions)
+    service = SyncFakeService()
+    async with make_client(service, sessions) as client:
+        confirm = await client.get("/sync/issues/7?choice=notion", headers=headers)
+        assert confirm.status == 200
+        page = await confirm.text()
+        assert 'action="/sync/issues/7"' in page and 'value="notion"' in page
+        assert "Moon2" in page
+        bad = await client.post("/sync/issues/7", headers=headers,
+                                data={"csrf": "x", "choice": "notion"})
+        assert bad.status == 403
+        assert not [c for c in service.calls if c[0] == "resolve_issue"]
+        resp = await client.post("/sync/issues/7", headers=headers,
+                                 data={"csrf": csrf, "choice": "notion"})
+        assert resp.status == 200
+        assert "Notion&#x27;s version is applied." in await resp.text()
+    assert ("resolve_issue", "7", "notion") in service.calls
+
+
+async def test_issue_confirm_unknown_or_wrong_choice() -> None:
+    sessions = SessionManager(secret=b"k" * 32)
+    headers, _ = _auth(sessions)
+    async with make_client(SyncFakeService(), sessions) as client:
+        resp = await client.get("/sync/issues/99?choice=notion", headers=headers)
+        assert resp.status == 404
+        resp = await client.get("/sync/issues/7?choice=resynced", headers=headers)
+        assert resp.status == 400
+        resp = await client.get("/sync/issues/7?choice=evil", headers=headers)
+        assert resp.status == 400
+
+
+async def test_rebuild_confirm_page() -> None:
+    sessions = SessionManager(secret=b"k" * 32)
+    headers, csrf = _auth(sessions)
+    service = SyncFakeService()
+    async with make_client(service, sessions) as client:
+        page = await (await client.get("/sync/rebuild", headers=headers)).text()
+        assert 'action="/sync/rebuild"' in page and "safety backup" in page
+        assert ("rebuild_from_notion",) not in service.calls
+        resp = await client.post("/sync/rebuild", headers=headers, data={"csrf": csrf})
+        assert resp.status == 200 and "Rebuilt." in await resp.text()
+    assert service.calls.count(("rebuild_from_notion",)) == 1
+
+
+@pytest.mark.parametrize(
+    ("path", "call"),
+    [("/sync/resync", "resync_all"), ("/sync/retry-import", "retry_import")],
+)
+async def test_sync_actions_have_confirm_and_need_csrf(path, call) -> None:
+    sessions = SessionManager(secret=b"k" * 32)
+    headers, csrf = _auth(sessions)
+    service = SyncFakeService()
+    service.problem = "Duplicate title"
+    async with make_client(service, sessions) as client:
+        page = await (await client.get(path, headers=headers)).text()
+        assert f'action="{path}"' in page
+        bad = await client.post(path, headers=headers, data={"csrf": "x"})
+        assert bad.status == 403
+        assert (call,) not in service.calls
+        ok = await client.post(path, headers=headers, data={"csrf": csrf})
+        assert ok.status == 200
+    assert (call,) in service.calls
+
+
+async def test_sync_pages_hidden_when_notion_disabled() -> None:
+    sessions = SessionManager(secret=b"k" * 32)
+    headers, _ = _auth(sessions)
+    async with make_client(SyncFakeService(enabled=False), sessions) as client:
+        for path in ("/sync/rebuild", "/sync/resync", "/sync/retry-import",
+                     "/sync/issues/7?choice=notion"):
+            resp = await client.get(path, headers=headers, allow_redirects=False)
+            assert resp.status == 303, path
+
+
+async def test_retry_button_only_with_sync_problem() -> None:
+    sessions = SessionManager(secret=b"k" * 32)
+    headers, _ = _auth(sessions)
+    service = SyncFakeService()
+    async with make_client(service, sessions) as client:
+        text = await (await client.get("/", headers=headers)).text()
+        assert "/sync/retry-import" not in text
+        service.problem = "Two events named <b>X</b>"
+        text = await (await client.get("/", headers=headers)).text()
+        assert 'href="/sync/retry-import"' in text
+        assert "<b>X</b>" not in text and "&lt;b&gt;X&lt;/b&gt;" in text
+
+
+@pytest.mark.parametrize(
+    "path", ["/backup/export", "/backup/import", "/sync/rebuild", "/sync/resync",
+             "/sync/retry-import", "/sync/issues/7"],
+)
+async def test_new_routes_redirect_without_login(path) -> None:
+    service = SyncFakeService()
+    async with make_client(service) as client:
+        for method in ("GET", "POST"):
+            resp = await client.request(method, path, allow_redirects=False)
+            assert resp.status in (303, 405), (method, path)
+            if resp.status == 303:
+                assert resp.headers["Location"] == "/login"
+    assert [c for c in service.calls if c[0] != "server_info"] == []

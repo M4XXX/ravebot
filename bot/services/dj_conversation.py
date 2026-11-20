@@ -433,6 +433,10 @@ class DjConversationService:
         await save_conversation(db, conv)
 
     async def _finish_onboarding(self, db: asyncpg.Pool, conv: Conversation) -> Reply:
+        if self._ctx.maintenance:  # an import replaces the DJ list: try again later
+            summary = _summary(conv)
+            summary.text = f"{texts.MAINTENANCE}\n\n{summary.text}"
+            return summary
         user_id = conv.discord_user_id
         data = conv.data
         name = data.get("name")
@@ -475,7 +479,7 @@ class DjConversationService:
             except Exception:
                 logger.warning("Logging the new DJ %s failed", user_id, exc_info=True)
         await self._set_invites_role(db, user_id, add=True, guild_id=conv.guild_id)
-        await sync_dj(self._ctx, user_id, self._discord_name(user_id, conv.guild_id, name))
+        await sync_dj(self._ctx, user_id)
         await self._drop(db, user_id)
         return Reply(texts.ONBOARD_DONE, "done")
 
@@ -487,6 +491,8 @@ class DjConversationService:
             logger.warning("Deleting the conversation of %s failed", user_id, exc_info=True)
 
     async def _finish_edit(self, db: asyncpg.Pool, conv: Conversation, value: Any) -> Reply:
+        if self._ctx.maintenance:  # an import replaces the DJ list: the question stays open
+            return _error(conv, texts.MAINTENANCE)
         user_id = conv.discord_user_id
         field = conv.step
         if field == "name":
@@ -502,9 +508,7 @@ class DjConversationService:
         if not updated:
             await delete_conversation(db, user_id)
             return Reply(texts.NO_PROFILE, "info")
-        row = await get_dj_by_discord_id(db, user_id)
-        fallback = row["dj_name"] if row is not None else ""
-        await sync_dj(self._ctx, user_id, self._discord_name(user_id, conv.guild_id, fallback))
+        await sync_dj(self._ctx, user_id)
         await self._drop(db, user_id)
         overview = await self._overview(db, user_id)
         if overview.kind != "overview":
@@ -577,15 +581,6 @@ class DjConversationService:
             if member is not None:
                 return guild, member
         return None, None
-
-    def _discord_name(self, user_id: int, guild_id: int | None, fallback: str) -> str:
-        try:
-            _, member = self._member(user_id, guild_id)
-            if member is not None:
-                return member.display_name
-        except Exception:
-            logger.warning("Member lookup failed for %s", user_id, exc_info=True)
-        return fallback
 
     async def _set_invites_role(
         self, db: asyncpg.Pool, user_id: int, *, add: bool, guild_id: int | None = None

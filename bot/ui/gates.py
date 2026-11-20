@@ -1,9 +1,11 @@
-"""Idle gate shared by every DJ-facing view and the admin check."""
+"""Idle and maintenance gates shared by every DJ-facing view and the admin check."""
 import logging
+from typing import Any
 
 import disnake
 
 from bot.services import activation
+from bot.ui import texts
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +25,14 @@ async def _reply(interaction: disnake.MessageInteraction, text: str) -> None:
             await interaction.response.send_message(text, ephemeral=True)
     except disnake.HTTPException:
         pass
+
+
+async def refuse_in_maintenance(inter: Any, ctx: Any) -> bool:
+    """While an import replaces the data: answer MAINTENANCE privately and return True."""
+    if not getattr(ctx, "maintenance", None):
+        return False
+    await _reply(inter, texts.MAINTENANCE)
+    return True
 
 
 class GatedView(disnake.ui.View):

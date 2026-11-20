@@ -11,10 +11,10 @@ import pytest
 from bot.log import AdminLogService
 from bot.notion.api import NotionApi
 from bot.services.lineup import LineupService
-from bot.services.notion_sync import SyncAction
 from bot.services.outreach import OutreachService
 from bot.services.reminders import RemindersService
 from tests.notion.factories import make_event, make_slot
+from tests.fake_events import fake_events
 
 DM_TODO = (
     "Tell {name} yourself. They need to allow DMs from server members "
@@ -77,10 +77,10 @@ async def welcome_blocked(log: Recorder) -> None:
 
 
 async def reminder_blocked(log: Recorder) -> None:
+    fake_events.list_events = AsyncMock(return_value=[EVENT])
     svc = RemindersService(
         bot=MagicMock(),
         db=MagicMock(),
-        notion_client=MagicMock(list_events=AsyncMock(return_value=[EVENT])),
         log_service=log,
     )
     user = MagicMock(send=AsyncMock(side_effect=forbidden()))
@@ -97,7 +97,7 @@ async def reminder_blocked(log: Recorder) -> None:
 
 async def invite_blocked(log: Recorder) -> None:
     svc = OutreachService(
-        bot=MagicMock(), db=MagicMock(), notion_client=MagicMock(), log_service=log
+        bot=MagicMock(), db=MagicMock(), log_service=log
     )
     user = MagicMock(send=AsyncMock(side_effect=forbidden()))
     svc.bot.get_user = MagicMock(return_value=user)
@@ -155,7 +155,7 @@ async def outreach_exhausted(log: Recorder, contacted: tuple[int, ...] = (101, 1
     event = make_event(event_id="Rave Night", page_id="evt-001",
                        date=datetime.date(2030, 5, 22), slot_count=6, slots=slots)
     svc = OutreachService(
-        bot=MagicMock(), db=MagicMock(), notion_client=MagicMock(), log_service=log
+        bot=MagicMock(), db=MagicMock(), log_service=log
     )
     seq = {"event_id": "evt-001", "status": "active", "last_contact_at": None}
     with patch("bot.services.outreach.get_sequence", new=AsyncMock(return_value=seq)), \
@@ -179,20 +179,12 @@ async def notion_read_failed(log: Recorder) -> None:
             await api.request("POST", "/data_sources/x/query", {}, "query data source x")
 
 
-async def sync_cycle_failed(log: Recorder) -> None:
-    from bot.cogs.events import EventsCog
-
-    sync = MagicMock(run_cycle=AsyncMock(side_effect=RuntimeError("boom 123")))
-    cog = EventsCog(MagicMock(notion_sync_service=sync, log_service=log))
-    await cog._run_sync_cycle(1)
-
-
 async def poll_read_failed(log: Recorder) -> None:
     from bot.cogs.events import EventsCog
 
-    ctx = MagicMock(log_service=log, notion_sync_service=None)
+    ctx = MagicMock(log_service=log, maintenance=None)
     ctx.db.fetchval = AsyncMock(return_value=1)
-    ctx.notion_client.list_events = AsyncMock(side_effect=httpx.RequestError("timeout"))
+    fake_events.list_events = AsyncMock(side_effect=httpx.RequestError("timeout"))
     cog = EventsCog(ctx)
     cog.bot = MagicMock(guilds=[MagicMock(id=1)])
     from bot.cogs.events import EventsCog as C
@@ -200,17 +192,9 @@ async def poll_read_failed(log: Recorder) -> None:
     await C._poll_notion.coro(cog)
 
 
-async def sync_write_failed(log: Recorder) -> None:
-    from bot.services.notion_sync import NotionSyncService
-
-    svc = NotionSyncService(MagicMock(), MagicMock(), MagicMock(), log)
-    action = SyncAction(kind="free", event=EVENT, slot_index=1, discord_id=5, detail="x")
-    await svc._notion_failed(action, RuntimeError("kaputt"))
-
-
 async def no_dj_channel(log: Recorder) -> None:
     svc = LineupService(bot=MagicMock(guilds=[MagicMock(id=1)]), db=MagicMock(),
-                        log_service=log, notion_client=MagicMock())
+                        log_service=log)
     with patch("bot.services.lineup.get_value", new=AsyncMock(return_value=None)):
         await svc._send(1, EVENT)
 
@@ -231,12 +215,9 @@ CASES = [
                  "starts another round of invites.", ["Rave Night", "4 slots"], id="exhausted"),
     pytest.param(notion_write_failed, "Notion write failed", NOTION_TODO, [],
                  id="notion-write"),
-    pytest.param(sync_write_failed, "Notion write failed", NOTION_TODO,
-                 ["Rave Night"], id="sync-write"),
     pytest.param(notion_read_failed, "Something failed", None, ["read from Notion"],
                  id="notion-read"),
-    pytest.param(sync_cycle_failed, "Something failed", None, ["Notion"], id="sync-cycle"),
-    pytest.param(poll_read_failed, "Something failed", None, ["Notion"], id="poll-read"),
+    pytest.param(poll_read_failed, "Something failed", None, ["database"], id="poll-read"),
     pytest.param(no_dj_channel, "Something failed", DJ_CHANNEL_TODO, ["lineup"],
                  id="no-dj-channel"),
 ]

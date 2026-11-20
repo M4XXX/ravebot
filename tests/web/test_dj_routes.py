@@ -195,6 +195,22 @@ async def test_delete_confirm_lists_bookings_then_deletes() -> None:
     assert service.djs.calls == [("delete", {"admin_name": "The admin page", "dj_id": -1})]
 
 
+async def test_delete_confirm_bookings_read_failure_names_no_notion() -> None:
+    sessions = SessionManager(secret=b"k" * 32)
+    headers, _ = _auth(sessions)
+    service = _service()
+
+    async def broken(dj_id):  # noqa: ANN001, ANN202
+        raise OSError("db down")
+
+    service.djs.future_bookings = broken
+    async with make_client(service, sessions) as client:
+        resp = await client.get("/djs/delete?id=-1", headers=headers)
+        text = await resp.text()
+    assert resp.status == 502
+    assert "Could not read the bookings. Try again." in text
+
+
 async def test_big_bodies_are_only_allowed_on_the_upload_routes() -> None:
     sessions = SessionManager(secret=b"k" * 32)
     headers, csrf = _auth(sessions)
@@ -296,3 +312,25 @@ async def test_recreate_needs_confirmation_csrf_and_login() -> None:
         ok = await client.post("/notion/recreate", headers=headers, data={"csrf": csrf})
         assert ok.status == 200 and "New Notion databases were created" in await ok.text()
     assert service.recreated == 1
+
+
+@pytest.mark.parametrize(
+    ("path", "fields"),
+    [
+        ("/djs/add", {"name": "Moon", "link": "https://a.b"}),
+        ("/djs/edit", {"id": "-1", "name": "Moon", "link": "https://a.b"}),
+        ("/djs/delete", {"id": "-1"}),
+    ],
+)
+async def test_dj_writes_refused_in_maintenance(path, fields) -> None:
+    from bot.ui import texts
+
+    sessions = SessionManager(secret=b"k" * 32)
+    headers, csrf = _auth(sessions)
+    service = _service()
+    service.maintenance = lambda: texts.MAINTENANCE
+    async with make_client(service, sessions) as client:
+        resp = await client.post(path, headers=headers, data=_form(csrf, **fields))
+        assert resp.status == 503
+        assert texts.MAINTENANCE in await resp.text()
+    assert service.djs.calls == []

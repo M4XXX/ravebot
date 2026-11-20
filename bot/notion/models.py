@@ -7,6 +7,11 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# Bot data properties
+PROP_BOTDATA_KEY = "Key"
+PROP_BOTDATA_TABLE = "Table"
+PROP_BOTDATA_PAYLOAD = "Payload"
+BOTDATA_TOO_LARGE_NOTE = "Too large for Notion; the payload is only in the export file."
 # Events properties
 PROP_EVENT_ID = "ID"
 PROP_EVENT_DATE = "Date"
@@ -16,6 +21,7 @@ PROP_EVENT_NOTES = "Notes"
 PROP_EVENT_SLOTS = "Slots"
 PROP_EVENT_START = "Start"
 PROP_EVENT_SLOT_LENGTH = "Slot length"
+PROP_EVENT_BOT_ID = "Bot ID"
 # Slots properties
 PROP_SLOT_EVENT = "Event"
 PROP_SLOT_NUMBER = "Slot number"
@@ -48,7 +54,7 @@ class SlotInfo:
 
 @dataclass(frozen=True)
 class EventInfo:
-    page_id: str
+    page_id: str  # bot event key (events.uid); a Notion page id only for imported events
     event_id: str
     date: datetime.date
     status: str | None

@@ -9,6 +9,7 @@ import logging
 
 import asyncpg
 
+from bot.db import events as db_events
 from bot.db import fully_booked as fb_db
 from bot.log import AdminLogService
 from bot.notion.models import FINISHED_STATUSES, EventInfo
@@ -57,16 +58,16 @@ async def check_fully_booked(
         logger.exception("check_fully_booked failed")
 
 
-async def recheck_fully_booked(ctx_db, log_service, notion_client) -> None:
+async def recheck_fully_booked(ctx_db, log_service) -> None:
     """Reload the events and run check_fully_booked; never raises.
 
     Called after a booking or cancellation (the caller's event list predates it).
     """
-    if ctx_db is None or notion_client is None:
+    if ctx_db is None:
         return
     listed_at = datetime.datetime.now(datetime.UTC)
     try:
-        events = await notion_client.list_events()
+        events = await db_events.list_events(ctx_db)
     except Exception:
         logger.exception("recheck_fully_booked: list_events failed")
         return

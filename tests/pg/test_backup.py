@@ -1,0 +1,310 @@
+"""Real-SQL checks of bot/backup/export.py."""
+import base64
+import datetime
+import gzip
+import json
+
+from bot.backup.export import export_database
+
+A = 111111111111111111
+
+
+async def _load(pool) -> dict:  # noqa: ANN001
+    return json.loads(gzip.decompress(await export_database(pool)))
+
+
+async def test_export_contains_every_table_but_alembic(pool) -> None:  # noqa: ANN001
+    doc = await _load(pool)
+    expected = {
+        r["table_name"]
+        for r in await pool.fetch(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema = 'public' AND table_type = 'BASE TABLE'"
+        )
+    } - {"alembic_version"}
+    assert set(doc["tables"]) == expected
+    assert doc["format"] == "ravebot-backup" and doc["version"] == 1
+    assert doc["alembic_revision"] == await pool.fetchval("SELECT version_num FROM alembic_version")
+    assert "guest_dj_id_seq" in doc["sequences"]
+    seq_names = {r["sequencename"] for r in await pool.fetch(
+        "SELECT sequencename FROM pg_sequences WHERE schemaname = 'public'")}
+    assert set(doc["sequences"]) == seq_names
+
+
+async def test_export_encodes_bytea_and_jsonb(pool) -> None:  # noqa: ANN001
+    await pool.execute(
+        "INSERT INTO djs (discord_user_id, dj_name, logo_image) VALUES ($1, 'Eve', $2)",
+        A, b"\x00\x01\xff",
+    )
+    await pool.execute("SELECT nextval('guest_dj_id_seq')")
+    doc = await _load(pool)
+    table = doc["tables"]["djs"]
+    names = [c["name"] for c in table["columns"]]
+    types = {c["name"]: c["type"] for c in table["columns"]}
+    assert types["logo_image"] == "bytea"
+    (row,) = table["rows"]
+    assert base64.b64decode(row[names.index("logo_image")]) == b"\x00\x01\xff"
+    assert row[names.index("dj_name")] == "Eve"
+    assert doc["sequences"]["guest_dj_id_seq"]["is_called"] is True
+
+
+async def test_export_decodes_jsonb_and_timestamps(pool) -> None:  # noqa: ANN001
+    await pool.execute(
+        "INSERT INTO setup_drafts (guild_id, message_id, channel_id, step, data, updated_at) "
+        "VALUES (1, 2, 3, 1, $1::jsonb, now())",
+        json.dumps({"k": [1, 2]}),
+    )
+    table = (await _load(pool))["tables"]["setup_drafts"]
+    names = [c["name"] for c in table["columns"]]
+    types = {c["name"]: c["type"] for c in table["columns"]}
+    assert types["data"] == "jsonb" and types["updated_at"] == "timestamp with time zone"
+    (row,) = table["rows"]
+    assert row[names.index("data")] == {"k": [1, 2]}
+    assert "T" in row[names.index("updated_at")]
+
+
+# ---- import (bot/backup/restore.py) ----
+
+import asyncio  # noqa: E402
+import contextlib  # noqa: E402
+import gzip as _gzip  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
+from unittest.mock import AsyncMock  # noqa: E402
+
+from bot.backup import restore  # noqa: E402
+
+
+class _FakeCycle:
+    def __init__(self) -> None:
+        self.lock = asyncio.Lock()
+        self.resync_all = AsyncMock(return_value=3)
+
+    @contextlib.asynccontextmanager
+    async def exclusive(self):  # noqa: ANN202
+        async with self.lock:
+            yield
+
+
+def _ctx(pool, *, notion: bool = False):  # noqa: ANN001, ANN202
+    return SimpleNamespace(
+        db=pool, maintenance=None, admins=SimpleNamespace(load=AsyncMock()),
+        sync_cycle=_FakeCycle() if notion else None,
+    )
+
+
+async def _snapshot(pool) -> dict:  # noqa: ANN001
+    doc = await _load(pool)
+    return {"tables": doc["tables"], "sequences": doc["sequences"]}
+
+
+async def _seed(pool) -> None:  # noqa: ANN001
+    await pool.execute(
+        "INSERT INTO djs (discord_user_id, dj_name, logo_image) VALUES ($1, 'Eve', $2)",
+        A, b"\x00\x01\xff",
+    )
+    await pool.execute("INSERT INTO web_admins (discord_user_id) VALUES (7)")
+    await pool.execute(
+        "INSERT INTO setup_drafts (guild_id, message_id, channel_id, step, data, updated_at) "
+        "VALUES (1, 2, 3, 1, $1::jsonb, now())",
+        json.dumps({"k": [1, 2]}),
+    )
+    await pool.execute("SELECT nextval('guest_dj_id_seq')")
+    from bot.db.events import EventDraft, insert_event
+
+    await insert_event(
+        pool, EventDraft("E1", datetime.date(2030, 1, 2), datetime.time(20, 0), 60, 3), uid="u1"
+    )
+    await pool.execute("INSERT INTO outreach_sequences (event_id) VALUES ('E1')")
+    await pool.execute(
+        "INSERT INTO outreach_contacts (event_id, discord_user_id) VALUES ('E1', $1)", A
+    )
+
+
+async def test_import_round_trip(pool, tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setenv("BACKUP_DIR", str(tmp_path))
+    await _seed(pool)
+    before = await _snapshot(pool)
+    data = await export_database(pool)
+    await pool.execute("DELETE FROM djs")
+    await pool.execute("INSERT INTO djs (discord_user_id, dj_name) VALUES (5, 'Other')")
+    await pool.execute("SELECT nextval('guest_dj_id_seq')")
+    ctx = _ctx(pool)
+    result = await restore.import_database(ctx, data)
+    assert result.ok, result.message
+    assert await _snapshot(pool) == before
+    assert ctx.maintenance is None
+    assert list(tmp_path.glob("*before-import*"))
+
+
+async def test_import_refuses_newer_revision(pool, tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setenv("BACKUP_DIR", str(tmp_path))
+    await _seed(pool)
+    doc = json.loads(_gzip.decompress(await export_database(pool)))
+    doc["alembic_revision"] = "9999_future"
+    before = await _snapshot(pool)
+    result = await restore.import_database(_ctx(pool), _gzip.compress(json.dumps(doc).encode()))
+    assert not result.ok and "9999_future" in result.message
+    assert await _snapshot(pool) == before
+    assert not list(tmp_path.iterdir())
+
+
+async def test_import_corrupt_file_leaves_db(pool, tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setenv("BACKUP_DIR", str(tmp_path))
+    await _seed(pool)
+    before = await _snapshot(pool)
+    ctx = _ctx(pool)
+    assert not (await restore.import_database(ctx, b"garbage")).ok
+    # A failure in the middle of the write rolls everything back.
+    doc = json.loads(_gzip.decompress(await export_database(pool)))
+    doc["tables"]["djs"]["rows"].append(doc["tables"]["djs"]["rows"][0])  # duplicate key
+    result = await restore.import_database(ctx, _gzip.compress(json.dumps(doc).encode()))
+    assert not result.ok
+    assert await _snapshot(pool) == before
+    assert ctx.maintenance is None
+
+
+async def test_import_reloads_admins_and_resyncs(pool, tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setenv("BACKUP_DIR", str(tmp_path))
+    await _seed(pool)
+    data = await export_database(pool)
+    ctx = _ctx(pool, notion=True)
+    assert (await restore.import_database(ctx, data)).ok
+    ctx.admins.load.assert_awaited_once()
+    ctx.sync_cycle.resync_all.assert_awaited_once()
+    plain = _ctx(pool)
+    assert (await restore.import_database(plain, data)).ok
+    plain.admins.load.assert_awaited_once()
+
+
+async def test_import_waits_for_running_cycle_and_keeps_maintenance_until_resync(
+    pool, tmp_path, monkeypatch  # noqa: ANN001
+) -> None:
+    monkeypatch.setenv("BACKUP_DIR", str(tmp_path))
+    await _seed(pool)
+    data = await export_database(pool)
+    ctx = _ctx(pool, notion=True)
+    seen: list = []
+
+    async def resync():  # noqa: ANN202
+        seen.append(ctx.maintenance)
+        return 3
+
+    ctx.sync_cycle.resync_all = AsyncMock(side_effect=resync)
+    await ctx.sync_cycle.lock.acquire()  # a cycle is stuck in read_all
+    task = asyncio.create_task(restore.import_database(ctx, data))
+    await asyncio.sleep(1)
+    assert not task.done() and ctx.maintenance  # waiting, bookings paused
+    ctx.sync_cycle.resync_all.assert_not_awaited()
+    ctx.sync_cycle.lock.release()
+    result = await task
+    assert result.ok, result.message
+    assert seen and seen[0]  # maintenance still set when the resync ran
+    assert ctx.maintenance is None
+
+
+# ---- R24: a successful import recovers a paused bot ----
+
+from bot.sync.notion_import import PG_TRUTH_IMPORTED_KEY  # noqa: E402
+from bot.ui import texts  # noqa: E402
+
+
+def _paused_ctx(pool):  # noqa: ANN001, ANN202
+    """A bot after a failed upgrade import: paused, no mirror, no sync cycle."""
+    ctx = SimpleNamespace(
+        db=pool, maintenance=texts.MAINTENANCE, sync_problem="Two events named E1",
+        admins=SimpleNamespace(load=AsyncMock()), sync_cycle=None, mirror=None,
+        notion_client=object(),
+    )
+    cycle = _FakeCycle()
+
+    async def start() -> None:
+        assert ctx.maintenance is None  # main._start_mirror refuses during maintenance
+        ctx.mirror = object()
+        ctx.sync_cycle = cycle
+
+    ctx.notion_start_mirror = AsyncMock(side_effect=start)
+    return ctx, cycle
+
+
+async def _mark(pool) -> str | None:  # noqa: ANN001
+    return await pool.fetchval(
+        "SELECT value FROM config WHERE guild_id = 0 AND key = $1", PG_TRUTH_IMPORTED_KEY
+    )
+
+
+async def test_import_after_failed_upgrade_recovers(pool, tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setenv("BACKUP_DIR", str(tmp_path))
+    await _seed(pool)
+    data = await export_database(pool)  # the file has no upgrade mark
+    ctx, cycle = _paused_ctx(pool)
+    result = await restore.import_database(ctx, data)
+    assert result.ok, result.message
+    assert await _mark(pool) == "1"
+    assert ctx.maintenance is None and ctx.sync_problem is None
+    ctx.notion_start_mirror.assert_awaited_once()
+    cycle.resync_all.assert_awaited_once()
+
+
+async def test_import_mark_survives_a_file_with_the_mark_unset(
+    pool, tmp_path, monkeypatch  # noqa: ANN001
+) -> None:
+    monkeypatch.setenv("BACKUP_DIR", str(tmp_path))
+    await _seed(pool)
+    await pool.execute(
+        "INSERT INTO config (guild_id, key, value) VALUES (0, $1, '0')", PG_TRUTH_IMPORTED_KEY
+    )
+    data = await export_database(pool)
+    ctx, _ = _paused_ctx(pool)
+    assert (await restore.import_database(ctx, data)).ok
+    assert await _mark(pool) == "1"
+
+
+async def test_failed_import_keeps_the_pause(pool, tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setenv("BACKUP_DIR", str(tmp_path))
+    await _seed(pool)
+    doc = json.loads(_gzip.decompress(await export_database(pool)))
+    doc["tables"]["djs"]["rows"].append(doc["tables"]["djs"]["rows"][0])  # duplicate key
+    ctx, cycle = _paused_ctx(pool)
+    result = await restore.import_database(ctx, _gzip.compress(json.dumps(doc).encode()))
+    assert result == restore.ActionResult(False, texts.IMPORT_DB_ERROR)
+    assert ctx.maintenance == texts.MAINTENANCE
+    assert ctx.sync_problem == "Two events named E1"
+    assert await _mark(pool) is None
+    ctx.notion_start_mirror.assert_not_awaited()
+    cycle.resync_all.assert_not_awaited()
+    # A refused file (unreadable) changes nothing either.
+    assert not (await restore.import_database(ctx, b"garbage")).ok
+    assert ctx.maintenance == texts.MAINTENANCE and ctx.sync_problem == "Two events named E1"
+
+
+async def test_import_with_running_mirror_resyncs_once(pool, tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setenv("BACKUP_DIR", str(tmp_path))
+    await _seed(pool)
+    data = await export_database(pool)
+    ctx, cycle = _paused_ctx(pool)
+    ctx.maintenance, ctx.sync_problem = None, None
+    ctx.mirror, ctx.sync_cycle = object(), cycle
+    assert (await restore.import_database(ctx, data)).ok
+    ctx.notion_start_mirror.assert_not_awaited()
+    cycle.resync_all.assert_awaited_once()
+
+
+async def test_import_with_notion_marks_the_next_cycle_post_restore(
+    pool, tmp_path, monkeypatch  # noqa: ANN001
+) -> None:
+    """I4: the flag survives a restart (config guild 0) and is set only with Notion."""
+    from bot.sync.cycle import POST_RESTORE_KEY
+
+    monkeypatch.setenv("BACKUP_DIR", str(tmp_path))
+    await _seed(pool)
+    data = await export_database(pool)
+    ctx, _ = _paused_ctx(pool)
+    assert (await restore.import_database(ctx, data)).ok
+    flag = "SELECT value FROM config WHERE guild_id = 0 AND key = $1"
+    assert await pool.fetchval(flag, POST_RESTORE_KEY) == "1"
+    await pool.execute("DELETE FROM config WHERE guild_id = 0")
+    ctx, _ = _paused_ctx(pool)
+    ctx.notion_client = None
+    ctx.notion_start_mirror = None
+    assert (await restore.import_database(ctx, data)).ok
+    assert await pool.fetchval(flag, POST_RESTORE_KEY) is None

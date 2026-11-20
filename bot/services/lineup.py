@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 import disnake
 
+from bot.db import events as db_events
 from bot.db.config import get_value, set_value
 from bot.notion.models import FINISHED_STATUSES, EventInfo
 from bot.services import activation
@@ -77,13 +78,11 @@ class LineupService:
         bot: Any,
         db: Any,
         log_service: "AdminLogService",
-        notion_client: Any,
         view: disnake.ui.View | None = None,
     ) -> None:
         self.bot = bot
         self.db = db
         self.log_service = log_service
-        self.notion_client = notion_client
         self.view = view
         self._lock = asyncio.Lock()
         self._pending = False
@@ -126,7 +125,7 @@ class LineupService:
             guild_id = self._get_guild_id()
             if guild_id is None or not await activation.is_active(self.db, guild_id):
                 return False
-            loaded = events if events is not None else await self.notion_client.list_events()
+            loaded = events if events is not None else await db_events.list_events(self.db)
             upcoming = upcoming_event(loaded, _today())
             snapshot = event_snapshot(upcoming)
             stored = await get_value(self.db, guild_id, SNAPSHOT_KEY)
@@ -153,7 +152,7 @@ class LineupService:
             if await self._send(guild_id, event, report_error=False) != _SENT:
                 return False
             try:
-                current = upcoming_event(await self.notion_client.list_events(), _today())
+                current = upcoming_event(await db_events.list_events(self.db), _today())
             except Exception:
                 logger.warning("LineupService.post_event: could not load events", exc_info=True)
                 return True

@@ -7,7 +7,7 @@ Operator reference for deploying and configuring RaveBot.
 ## Table of Contents
 
 1. [Prerequisites](#1-prerequisites)
-2. [Notion Setup](#2-notion-setup)
+2. [Notion Setup (optional)](#2-notion-setup-optional)
 3. [Environment Variables](#3-environment-variables)
 4. [Deployment: Unraid (Primary)](#4-deployment-unraid-primary)
 5. [Deployment: Docker Compose](#5-deployment-docker-compose)
@@ -24,15 +24,19 @@ Before deploying RaveBot you need:
 
 - **Discord Application** - a bot account with a token from [discord.com/developers/applications](https://discord.com/developers/applications).
   > **Critical:** Under **Bot** → **Privileged Gateway Intents**, enable **Server Members Intent**. Without it, `on_member_update` never fires and DJ onboarding never triggers automatically.
-- **Notion account** - a Notion workspace with an internal integration. Created at [notion.so/my-integrations](https://www.notion.so/my-integrations).
-- **PostgreSQL 16** - a PostgreSQL instance reachable from the bot container. On Unraid this is typically a separate PostgreSQL Docker container.
+- **Notion account (optional)** - a Notion workspace with an internal integration, created at [notion.so/my-integrations](https://www.notion.so/my-integrations). Without it the bot runs on PostgreSQL alone.
+- **PostgreSQL 16** - a PostgreSQL instance reachable from the bot container. It holds all of the bot's data (events, slots, DJs, settings). On Unraid this is typically a separate PostgreSQL Docker container.
 - **Docker** (or Podman) on your host machine.
 
 ---
 
-## 2. Notion Setup
+## 2. Notion Setup (optional)
 
-RaveBot keeps its events, slots and DJs in three Notion databases. You do not build them yourself: you give the bot one empty page, and on its first start the bot creates the databases and views under that page.
+PostgreSQL is the source of truth: the bot reads and writes events, slots, DJs and settings only there. Notion is an optional mirror and backup. When you give the bot a Notion integration, it writes every change to Notion in the background and picks up hand edits from there. A slow or unreachable Notion never delays a booking or any other reply.
+
+**Without Notion:** leave `NOTION_API_KEY` and `NOTION_PARENT_PAGE_ID` empty. The bot then makes no Notion calls, starts normally, and the admin page hides the Notion cards. Backup and restore on the admin page still work. If you add both variables later, the bot creates the Notion databases and fills them from PostgreSQL.
+
+You do not build the databases yourself: you give the bot one empty page, and on its first start the bot creates the databases and views under that page.
 
 ### 2.1 Create an Integration
 
@@ -60,7 +64,7 @@ The page ID is the 32-character hex string at the end of the URL (after the last
 
 ### 2.4 What the Bot Creates
 
-On the first start the bot creates three databases under the parent page:
+On the first start the bot creates four databases under the parent page (Events, Slots and DJs below, plus Bot data, see 2.10):
 
 **Events** - one row per event
 
@@ -92,7 +96,7 @@ The Slots database also has a few helper columns (`Name`, `Event start`, `Event 
 | Property | Type | Notes |
 |---|---|---|
 | `DJ name` | Title | |
-| `Discord name` | Text | Refreshed by the bot when it changes |
+| `Discord name` | Text | Refreshed by the bot when it changes; edits are overwritten |
 | `Discord ID` | Text | Links the row to a Discord account; empty for guest DJs |
 | `VRChat name` | Text | Optional |
 | `Logo` | Files | Optional |
@@ -107,7 +111,7 @@ It also creates three views:
 - **Lineup** (Slots): grouped by event (newest first), sorted by slot number, showing Slot number, Time and DJ.
 - **All DJs** (DJs): sorted by Last booked, showing name, Discord name, VRChat name, links, Events booked and Last booked.
 
-The bot never recreates what already exists. On every start it checks the databases, adds missing properties and leaves your own views, columns and edits in place. The three views are created once; a view you delete later is not re-created, except when the bot creates a fresh set of databases (see 2.7), which gets new views. A DJ gets a row in DJs when they onboard or are booked; if that row was deleted, the bot creates a new one the next time the DJ books or cancels.
+The bot never recreates what already exists. On every start it checks the databases, adds missing properties and leaves your own views, columns and edits in place. The three views are created once; a view you delete later is not re-created, except when the bot creates a fresh set of databases (see 2.7), which gets new views. A DJ gets a row in DJs when they onboard or the DJ is changed; if that row was deleted, the bot reports a warning (see 2.9) and writes it again on a resync.
 
 ### 2.5 Adding an Event by Hand
 
@@ -121,29 +125,61 @@ The bot keeps the configured number of future events itself (the number is set i
 
 On the next poll (every five minutes) the bot creates the Slots rows for the event. Later changes to `Slots`, `Start` or `Slot length` follow the rules in 2.6.
 
-### 2.6 Editing Bookings in Notion
+### 2.6 Editing in Notion by Hand
 
-Notion is the source of truth for who plays which slot. The bot picks up hand edits on its next poll (every five minutes):
+The bot picks up hand edits on its next poll (every five minutes, only while the bot is active). It checks every edit the same way as the equivalent command, applies it to PostgreSQL and posts an `Applied from Notion` entry in the log channel. What the bot applies:
 
-- **Book by hand:** pick a DJ in the `DJ` cell of an open slot. The bot treats it as a booking: the slot leaves the booking menu and the DJ gets a DM.
-- **Free a slot by hand:** clear the `DJ` cell. The bot frees the slot like a cancellation (on the next poll; a slot booked in the last two minutes is left alone) and the DJ gets a DM.
-- **Replace a DJ:** clear the cell first, wait until the slot is freed, then enter the new DJ. Overwriting a booked DJ directly is reverted.
-- **Conflicts:** a different DJ entered on a booked slot, or several DJs in one cell, is reverted to the bot's booking and logged in the admin log channel.
-- **Guest DJs:** a DJ row without a `Discord ID` can be booked by hand on an open slot. It gets no DM; the slot just shows the name. A guest entered over a booked DJ is reverted like any other conflict.
-- **Start and Slot length:** a change is applied while no slot of the event has a DJ. Once a slot has a DJ, the bot writes the previous values back on the next poll and logs it in the admin log channel.
-- **Slots:** raising the number adds empty slot rows. Lowering it removes the empty rows above the new number; a row above it that still has a DJ is kept and logged once in the admin log channel.
-- **Status:** the event `Status` is yours. The bot only reads it.
+- **Book by hand:** pick a DJ in the `DJ` cell of an open slot. The slot must be free and the DJ must be in the bot's DJ list. The DJ gets a DM, the lineup updates and the log channel shows the booking.
+- **Free a slot by hand:** clear the `DJ` cell. The bot frees the slot like a cancellation and the DJ gets a DM.
+- **Replace a DJ:** enter another DJ over a booked one. The bot removes the old DJ (DM) and books the new one.
+- **Guest DJs:** a DJ row without a `Discord ID` can be booked by hand. It gets no DM; the slot just shows the name.
+- **New DJ:** a new row in DJs passes the same checks as `/dj add` (name, links, unique name). A row that fails them is not applied (see 2.9).
+- **New event:** a new row in Events passes the same checks as `/create event` (valid date, unique `ID`, slots, start, slot length). The bot creates its Slots rows and writes a `Bot ID` into the row. Do not change `Bot ID`.
+- **Changed values:** `Date`, `Start`, `Slot length`, `Slots`, `Genre`, `Notes`, `Status`, DJ name, links and VRChat name. `Start`, `Slot length` and lowering `Slots` below a booked slot are refused while a slot of the event has a DJ (see 2.9). Setting `Status` to `Canceled` or `Done` in Notion is applied as a plain status change: the bot stops using the event, but it sends no DMs and frees no slots. Use `/cancel event` for the full cancellation.
+
+The DJ logo is written from the bot to Notion only. Changing `Logo` in Notion changes nothing in the bot.
 
 ### 2.7 If Databases Were Deleted
 
 If one of the bot's databases is deleted or moved to the trash, or the integration lost access to it, the bot does **not** replace it on its own. It keeps running with booking and the lineup paused, and posts "Notion databases not found" to the admin log channel. Then:
 
 - If the integration only lost access: share the Notion page with it again and restart the bot.
-- If the databases were deleted on purpose: open the [admin page](#77-the-admin-page) and press **Create new databases**. After a confirmation the bot creates a fresh set of all three databases and their views right away, no restart needed. Data in the old databases stays where it is; the bot does not copy it over. DJ rows are created again in the new DJs database when DJs book.
+- If the databases were deleted on purpose: open the [admin page](#77-the-admin-page) and press **Create new databases**. After a confirmation the bot creates a fresh set of all four databases and their views right away, no restart needed, and writes everything from PostgreSQL into them. Data in the old databases stays where it is.
+- If PostgreSQL itself was lost and the Notion databases still exist: start the bot with the same `NOTION_PARENT_PAGE_ID`. It finds the databases Events, Slots, DJs and Bot data under that page again and rebuilds PostgreSQL from them (see 2.11).
+
+Do not rename or move the databases away from the parent page: the bot finds them again by title.
 
 ### 2.8 Time Zone
 
 All start times are local wall-clock times, not UTC. The default zone is `Europe/Berlin`: an event at `21:00` starts at 21:00 CET in winter and 21:00 CEST in summer, so 21:00 stays 21:00 all year. The `Start` column, the slot times in the lineup post, the reminders and the day an event counts as "today" all use this zone. Discord timestamps are not used. The zone is stored in the setting `timezone` and is changed in `/setup` (Time zone step: pick a zone or press **Other** and enter a name such as `Europe/Berlin`). Changing it moves the real start of existing events, because their `Start` text is kept as it is.
+
+### 2.9 Conflicts and Warnings
+
+The bot never applies a risky hand edit silently. It posts an entry in the log channel and lists the case on the [admin page](#77-the-admin-page) in the **Notion sync** card.
+
+**Conflict** (`Changed in the bot and in Notion`): you edited something in Notion while the bot had its own change to the same booking, DJ or event that Notion did not have yet. The entry shows both versions. On the admin page choose:
+
+- **Keep Postgres** - the bot's version wins and is written to Notion; your Notion edit is overwritten.
+- **Keep Notion** - your Notion edit is applied to the bot after the same checks as a command. If the checks fail, the conflict stays open.
+
+Only that one booking, DJ or event waits; everything else keeps syncing. If nobody decides within 24 hours, the bot's version wins automatically and the log channel says `Postgres kept after 24 h`. While the bot is idle (before `/setup` is finished) conflicts do not expire.
+
+**Warning** (`Notion edit not applied`): the bot did not apply the edit and changed nothing. Typical cases are a hand-made slot page that names another DJ than the one booked in the bot (the bot keeps its booking and overwrites the page), a change to a slot of a past event, a deleted page, a changed event `ID`, `Discord ID` or `Slot number`, a duplicate page, a new row that fails the checks, a `Start` or `Slot length` change while a slot is booked, many records missing at once, or an empty or unreadable Notion. Fix it in Notion (the next poll tries again), or choose **Resync Postgres to Notion** on the admin page to write the bot's version back. A warning does not stop that record from syncing the bot's changes to Notion.
+
+### 2.10 Bot Data Is Read-Only
+
+The fourth database, **Bot data**, is a backup of the bot's own state: settings, open DJ conversations, invite and reminder history, setup drafts and similar records, one row per record with a JSON payload. It is for restoring only. Hand edits there are ignored and overwritten at the next sync, and a row you add is moved to the trash. Admin accounts, secrets and logs are never written to Notion.
+
+### 2.11 Backup, Restore, Rebuild and Resync
+
+All four live on the [admin page](#77-the-admin-page). Each destructive action asks for a confirmation first.
+
+- **Download a backup:** one file (`ravebot-<date>.ravebot.json.gz`) with the whole database: events, slots, DJs with logos, settings and the admins added on the page. It works with or without Notion.
+- **Restore a backup:** upload such a file. The bot saves a safety backup of the current data first (in the folder `BACKUP_DIR`, default `/data/backups`, the newest 10 are kept; map that folder to a host folder or volume, or the safety backups are lost when the container is recreated), then replaces the whole database in one step. Bookings and edits are refused while it runs, and a file from a newer bot version, or one that unpacks to more than 1 GB, is refused. With Notion set up, everything is written to Notion again afterwards. Changes made since the backup are lost, also in Notion: on the first sync after the restore, events, DJs and slots that were added in Notion after the backup are moved to the Notion trash and listed as warnings (`... was made in Notion after the restored backup`). To keep one, restore its page from the Notion trash; the next sync takes it in as a hand edit.
+- **Rebuild from Notion:** for a lost PostgreSQL. The bot saves a safety backup, then replaces events, slots, DJs with logos, settings and Bot data with what Notion holds. Changes still waiting for Notion and open conflicts are dropped. Admins added on the page are not in Notion: the owners from `ADMIN_USER_IDS` keep working, the others come back only from a backup file. If the rebuild finds unusable rows (for example two events with the same `ID`), it changes nothing and lists them.
+- **Resync all to Notion:** writes every event, DJ and slot to Notion again. Use it after fixing a Notion problem; hand edits not yet taken over are overwritten.
+
+**First start after updating from a version that kept its data in Notion:** the bot saves a safety backup, imports events, slots and DJs from Notion once, and posts the result in the log channel (`Data imported from Notion`). Until the import works, booking and edits are paused and the Notion sync is off. If it fails, fix the listed rows in Notion and press **Retry the import from Notion** on the admin page, or restart the bot. If the bot cannot find its Notion databases on this first start (for example the page is no longer shared with the integration), it stays paused too: share the page again and press **Retry the import from Notion**, or create new databases on the admin page. If PostgreSQL is empty and Notion holds events, the bot rebuilds from Notion instead. A booked slot whose DJ page cannot be read keeps the booking the bot already had; if there is none, the import stops and lists the slot.
 
 ---
 
@@ -155,12 +191,13 @@ Copy `.env.example` to `.env` and fill in your values. **Never commit `.env` to 
 |---|---|---|---|
 | `DISCORD_BOT_TOKEN` | Yes | - | Bot token from Discord Developer Portal |
 | `POSTGRES_URL` | Yes | - | PostgreSQL connection string: `postgresql://user:pass@host:5432/dbname` |
-| `NOTION_API_KEY` | Yes | - | Internal Integration Secret of your Notion integration (see [section 2.1](#21-create-an-integration)) |
-| `NOTION_PARENT_PAGE_ID` | Yes | - | 32-character ID of an empty Notion page shared with the integration; the bot creates its databases under it |
+| `NOTION_API_KEY` | No | - | Internal Integration Secret of your Notion integration (see [section 2.1](#21-create-an-integration)). Set together with `NOTION_PARENT_PAGE_ID` to turn the Notion mirror on; without both the bot runs on PostgreSQL alone |
+| `NOTION_PARENT_PAGE_ID` | No | - | 32-character ID of an empty Notion page shared with the integration; the bot creates its databases under it |
 | `ADMIN_USER_IDS` | Yes | - | Comma-separated Discord user IDs of the owners: they are always admins and cannot be removed on the admin page |
 | `ADMIN_PAGE_PASSWORD` | No | - | Password of the admin page. While empty, the page is off. Choose a long random value |
 | `ADMIN_PAGE_PORT` | No | `8080` | Port of the admin page inside the container (1 to 65535) |
 | `LOG_LEVEL` | No | `INFO` | Log verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+| `BACKUP_DIR` | No | `/data/backups` | Folder for the safety backups saved before a restore, a rebuild or the one-time import from Notion (the newest 10 are kept). Map it to a host folder or volume writable by user ID 1000 so the files survive a container recreate |
 | `DB_POOL_MIN` | No | `5` | Minimum asyncpg connection pool size |
 | `DB_POOL_MAX` | No | `20` | Maximum asyncpg connection pool size |
 
@@ -168,7 +205,7 @@ The key `GUILD_ID` is not read by the bot. If it is still in your `.env` or cont
 
 **Finding your Discord user ID:** Enable Developer Mode in Discord (**Settings** → **Advanced** → **Developer Mode**), then right-click your username and select **Copy User ID**.
 
-**Finding your Notion parent page ID:** See [section 2.3](#23-find-the-parent-page-id) above.
+**Finding your Notion parent page ID (only with Notion):** See [section 2.3](#23-find-the-parent-page-id) above.
 
 ---
 
@@ -215,8 +252,8 @@ In the Add Container form, click **"Add another Path, Port, Variable, Label or D
 |---|---|
 | `DISCORD_BOT_TOKEN` | `your_bot_token` |
 | `POSTGRES_URL` | `postgresql://ravebot:pass@192.168.1.100:5432/ravebot` |
-| `NOTION_API_KEY` | `your_notion_integration_secret` |
-| `NOTION_PARENT_PAGE_ID` | `your_notion_parent_page_id` |
+| `NOTION_API_KEY` | `your_notion_integration_secret` (optional, with the next row) |
+| `NOTION_PARENT_PAGE_ID` | `your_notion_parent_page_id` (optional) |
 | `ADMIN_USER_IDS` | `123456789012345678` |
 | `ADMIN_PAGE_PASSWORD` | `a_long_random_password` (only for the admin page) |
 | `LOG_LEVEL` | `INFO` |
@@ -239,7 +276,7 @@ If you see these three lines, the bot is running correctly.
 
 - **Repository `...:latest`:** on the **Docker** tab click **Check for Updates**, then apply the update of `ravebot`. Unraid pulls the newest release and restarts the container. The database updates itself at the start.
 - **Repository with a version (`...:1.1.0`):** change the version in the container settings and click **Apply**.
-- Read the [release notes](https://github.com/M4XXX/ravebot/releases) first. Your variables and the data in PostgreSQL and Notion stay as they are.
+- Read the [release notes](https://github.com/M4XXX/ravebot/releases) first. Your variables and the data in PostgreSQL and Notion stay as they are. The first start after the update to PostgreSQL as the source of truth imports your Notion data once (see 2.11).
 
 ---
 
@@ -330,7 +367,7 @@ POSTGRES_URL=postgresql://ravebot:ravebot@host.containers.internal:5432/ravebot
 
 After a fresh deploy the bot is idle until an admin finishes `/setup`. While idle it does the following:
 
-- It sends no lineup posts, invites, reminders or onboarding DMs, and the Notion poll does not run.
+- It sends no lineup posts, invites, reminders or onboarding DMs, and the Notion poll and sync do not run.
 - Buttons and menus under old messages answer privately: "I can't answer right now. Please try again later."
 - A DJ who writes the bot a DM gets the same sentence. Nothing is logged.
 - Admin commands other than `/setup` and `/config show` answer privately: "The bot is not active yet. Run /setup to finish the setup."
@@ -342,7 +379,7 @@ A server that already has both a DJ channel and a log channel stored (set up bef
 
 Run `/setup` in the channel where you want to set up (admins only). The bot posts one wizard message and edits it step by step. The wizard survives a restart; running `/setup` again while it is open links to the open message.
 
-1. **Welcome and checks.** Shows whether the Discord connection, the database and the three Notion databases work. The bot stays idle until you press **Activate** at the end.
+1. **Welcome and checks.** Shows whether the Discord connection and the database work and, when Notion is set up, the four Notion databases. The bot stays idle until you press **Activate** at the end.
 2. **DJ channel.** Pick the channel for the Lineup Update and the `Book a slot` button. The bot checks it can send messages and embeds there.
 3. **Log channel.** Pick the channel for bookings, new DJs, problems and DJ messages. Only organizers should see it. The same permission check runs.
 4. **Roles.** Pick the DJ role (the welcome DM goes to members who get it) and the invites role (the bot gives it to DJs who want automatic invites). The two roles must differ, `@everyone` and integration roles are refused, and the bot's own role must be above both. A button can create the invites role (default name `Active Booking`). Any role selection needs the Manage Roles permission: the bot refuses roles it cannot manage.
@@ -362,7 +399,7 @@ Nothing is stored until Activate. Defaults: 6 slots, 20:00, 60 minutes, scheduli
 
 **Roles without the wizard.** If no role was stored (older setup), the bot uses a role named `DJ` for onboarding and `Active Booking` for invites. Once `/setup` stores roles, the stored ones are used.
 
-Finally check that the Events, Slots and DJs databases appeared under your Notion parent page, and use `/config show` to review all settings and the bot status (`active` or `idle`).
+Finally, with Notion set up, check that the Events, Slots, DJs and Bot data databases appeared under your Notion parent page, and use `/config show` to review all settings and the bot status (`active` or `idle`).
 
 ### 7.3 Commands
 
@@ -376,9 +413,9 @@ All commands are for admins: the user IDs in `ADMIN_USER_IDS` plus the admins ad
 | `/post lineup update [event:<event id>]` | Posts the lineup of the upcoming event, or of a chosen future event, in the DJ channel. |
 | `/book dj slot event:<event> slot:<number> dj:<member>` or `guest:<name>` | Books a DJ into a slot without asking for confirmation. Use `dj` for a server member, or `guest` to pick a DJ from the DJ list by name (also DJs without Discord). |
 | `/cancel dj slot event:<event> slot:<number> dj:<member>` or `guest:<name>` | Frees a DJ's slot. |
-| `/cancel event event:<event>` | Cancels an upcoming event after you confirm. The event gets the status `Canceled` in Notion and its bookings are removed. Booked DJs are told by DM; DJs the bot cannot reach (closed DMs, guests without Discord) are listed in the log channel so you can tell them yourself. If at least one DJ was booked, the DJ channel gets a notice. With scheduling on, one new event is added at the end of the schedule; the canceled date stays empty. |
+| `/cancel event event:<event>` | Cancels an upcoming event after you confirm. The event gets the status `Canceled` and its bookings are removed (Notion follows in the background). Booked DJs are told by DM; DJs the bot cannot reach (closed DMs, guests without Discord) are listed in the log channel so you can tell them yourself. If at least one DJ was booked, the DJ channel gets a notice. With scheduling on, one new event is added at the end of the schedule; the canceled date stays empty. |
 | `/dj add name:<name> link:<stream link> [backup_link] [vrchat_name] [logo] [discord_user]` | Adds a DJ to the DJ list. Leave `discord_user` empty for a guest who has no Discord account. `logo` is an optional PNG or JPEG up to 5 MB. |
-| `/dj edit dj:<name> [name] [link] [backup_link] [vrchat_name] [logo]` | Changes the given fields of a DJ. Send `-` for `backup_link` or `vrchat_name` to remove it. Changes are synced to Notion. |
+| `/dj edit dj:<name> [name] [link] [backup_link] [vrchat_name] [logo]` | Changes the given fields of a DJ. Send `-` for `backup_link` or `vrchat_name` to remove it. Changes are mirrored to Notion in the background. |
 | `/dj remove dj:<name>` | Deletes a DJ after you confirm. Their bookings in upcoming events are cancelled. Past bookings stay. |
 | `/list all djs` | Lists all registered DJs and whether they get automatic invites. Guests are marked. |
 | `/automatic dj booking dj:<member> enabled:<on/off>` | Adds a DJ to or removes a DJ from the automatic booking pool and syncs the invites role. |
@@ -397,7 +434,7 @@ The old commands `/config set`, `/add-event`, `/lineup post`, `/admin book`, `/a
 
 ### 7.5 Done and canceled events are replaced
 
-The bot keeps the configured number of future, open events. An event counts as open when its local date is today or later and its status is not Done or Canceled. When you set an event to Done or Canceled in Notion, the next poll (within five minutes) creates a new event so the count is met again. New events follow the schedule: with a first event date set and no scheduled event ahead, the first one gets that date and the next ones follow every interval days; otherwise they start one interval after the latest scheduled event date or today, whichever is later. They use the default start, slot length and slot count. Events created by hand with `/create event` are not scheduled events: they never count toward the number and never move the schedule. A date that already has a manual event is skipped. With scheduling off in `/setup` the bot creates no events. Past events and events with Done or Canceled status never count.
+The bot keeps the configured number of future, open events. An event counts as open when its local date is today or later and its status is not Done or Canceled. When you set an event to Done or Canceled (in Notion by hand, or with `/cancel event`), the next poll (within five minutes) creates a new event so the count is met again. New events follow the schedule: with a first event date set and no scheduled event ahead, the first one gets that date and the next ones follow every interval days; otherwise they start one interval after the latest scheduled event date or today, whichever is later. They use the default start, slot length and slot count. Events created by hand with `/create event` are not scheduled events: they never count toward the number and never move the schedule. A date that already has a manual event is skipped. With scheduling off in `/setup` the bot creates no events. Past events and events with Done or Canceled status never count.
 
 ### 7.6 Joining the Active DJ Booking Group
 
@@ -409,7 +446,7 @@ A member who gets the DJ role receives a welcome DM with two buttons: `Yes, I wa
 4. Stream link (Twitch, YouTube or stream.vrcdn). Required.
 5. Backup stream link. Can be skipped.
 
-Every question has a `Cancel` button; questions that can be skipped also have `Skip`. A stream link that does not look like Twitch, YouTube or stream.vrcdn is answered with a hint and a `Use it as it is` button to keep it anyway. At the end the bot shows the profile with `Looks good` and `Start over`. After `Looks good` the DJ is in the Active DJ Booking Group, has a row in the Notion DJs database (the logo is uploaded there as a file) and gets the Active Booking role. If Notion does not accept the logo, the profile is still saved and the DJ can book; the bot sends the logo to Notion again at its next start.
+Every question has a `Cancel` button; questions that can be skipped also have `Skip`. A stream link that does not look like Twitch, YouTube or stream.vrcdn is answered with a hint and a `Use it as it is` button to keep it anyway. At the end the bot shows the profile with `Looks good` and `Start over`. After `Looks good` the DJ is in the Active DJ Booking Group, is saved in the database and gets the Active Booking role. With Notion set up, the DJ also gets a row in the Notion DJs database in the background (the logo is uploaded there as a file). If Notion does not accept the logo, the profile is still saved and the DJ can book; the bot sends the logo to Notion again at its next start.
 
 `Not now` ends an unfinished setup. Any later DM opens the menu, where `Contact me for Booking` starts again.
 
@@ -427,13 +464,15 @@ A small web page to manage the admin list and the DJ list. It is off until you s
 2. Map the container port to a host port. The container port must equal `ADMIN_PAGE_PORT` (`8080` unless you changed it); the host port is any free port. In Unraid, add a **Port** with that container port. With Docker Compose use `ports: ["8080:8080"]` (host port first, container port second). If you changed `ADMIN_PAGE_PORT`, use that value as the container port, for example `"8095:9000"` for `ADMIN_PAGE_PORT=9000`.
 3. Open `http://SERVER_IP:HOST_PORT/` in a browser and log in with the password. If the port is wrong or already in use, the container log shows an `Admin page not started` error and the bot keeps running without the page.
 
-What the page shows: the server name, the owners from `ADMIN_USER_IDS` (they cannot be removed) and the added admins with their Discord name when it can be found.
+What the page shows: the server name, the owners from `ADMIN_USER_IDS` (they cannot be removed), the added admins with their Discord name when it can be found, and the cards **Data and backup** and (only with Notion set up) **Notion sync**.
 
 What you can do:
-- When the bot cannot find its Notion databases, the page shows a red card with **Create new databases** (see 2.7). This is the only way the bot replaces its databases.
+- When the bot cannot find its Notion databases, the page shows a red card with **Create new databases** (see 2.7). This is the only way the bot replaces its Notion databases.
 - Open **Manage DJs** to add, edit and delete DJs, with an optional logo upload. The same works with the `/dj` commands.
 - Add an admin by Discord user ID (17 to 19 digits). The ID does not have to be a server member. An added admin can use every admin command, including `/setup`. While the bot is active, adding an admin writes an entry to the admin log channel; removals do not.
 - Remove an added admin.
+- **Download a backup** and **Restore a backup** (the whole database in one file, see 2.11). While a restore or rebuild runs, the page shows that the bot is busy and bookings are refused.
+- In the **Notion sync** card (only with Notion): see when the last sync ran, how many changes wait for Notion and since when, the last error, and the open conflicts and warnings. Per conflict choose **Keep Postgres** or **Keep Notion**; per warning choose **Resync Postgres to Notion** (see 2.9). **Resync all to Notion** and **Rebuild from Notion** are at the bottom of the card (see 2.11). **Retry the import from Notion** appears there when the import after an update failed.
 - Log out. This clears the cookie in your browser only.
 
 A DJ added without a Discord user ID is a **guest**. Admins can book guests and they appear in the lineup, but the bot never sends them anything (no invites, reminders or booking notices) and they are not part of the automatic invites.
@@ -461,7 +500,7 @@ Same as above - the asyncpg pool could not be opened. Fix the connection string 
 
 ### Bot exits with "Cannot use the Notion parent page"
 
-At startup the bot could not create or read its Notion databases. Check:
+This only happens when both Notion variables are set. To run without Notion, remove both. Otherwise the bot could not create or read its Notion databases at startup. Check:
 - The parent page is shared with the integration (page menu → **Connections**)
 - `NOTION_API_KEY` is the Internal Integration Secret of that integration
 - `NOTION_PARENT_PAGE_ID` is the 32-character ID at the end of the page URL (see [section 2.3](#23-find-the-parent-page-id))
@@ -476,7 +515,15 @@ Someone changed the type of a property the bot needs (e.g. `Slots` from Number t
 
 ### A slot I edited in Notion went back to the old DJ
 
-The bot reverts a hand entry on a slot it has booked for another DJ. Clear the `DJ` cell first, wait for the next poll, then enter the new DJ (see [section 2.6](#26-editing-bookings-in-notion)).
+The bot changed that slot too before it saw your edit (a conflict), or your edit was not applied (a warning). Open the admin page, look in the **Notion sync** card and choose **Keep Notion** or **Keep Postgres**; without a decision the bot's version wins after 24 hours (see [section 2.9](#29-conflicts-and-warnings)).
+
+### A hand edit in Notion did nothing
+
+The bot applies an edit only after the same checks as the matching command, and only on its next poll (every five minutes, while the bot is active). A rejected edit is listed as a warning on the admin page and in the log channel (`Notion edit not applied`) with the reason. Edits in the Bot data database are always ignored (see [section 2.10](#210-bot-data-is-read-only)).
+
+### Booking and edits are paused after an update
+
+The one-time import from Notion failed, or the bot could not find its Notion databases before that import ran. The log channel (`Import from Notion failed`) and the admin page list the rows to fix. Fix them in Notion, then press **Retry the import from Notion** on the admin page, or restart the bot (see [section 2.11](#211-backup-restore-rebuild-and-resync)).
 
 ### The bot does not answer
 
@@ -498,11 +545,15 @@ Set it in `/setup` (step 3, Log channel); `/config show` shows the current chann
 | `Cancelled` | A DJ cancelled a slot by DM. |
 | `Changed by an organizer` | An organizer booked or removed a DJ with `/book dj slot` or `/cancel dj slot`. |
 | `Changed in Notion` | A DJ was removed from a slot by hand in Notion. |
+| `Applied from Notion` | The bot took over hand edits made in Notion (changed values, bookings, new DJs or events). One entry per poll. |
+| `Changed in the bot and in Notion` | A conflict: choose Keep Postgres or Keep Notion on the admin page. After 24 hours the bot's version wins (`Postgres kept after 24 h`). |
+| `Notion edit not applied` | A warning: the bot did not apply a hand edit. Fix it in Notion or resync on the admin page. |
+| `Data imported from Notion` | The one-time import after the update finished. |
 | `Event canceled` | An organizer canceled an event with `/cancel event`. Lists the DJs who were booked. |
 | `Event fully booked` | Every slot of an event has a DJ. Posted once per fill, and again if a slot opens and the event fills up once more. |
 | `New DJ` | A DJ joined the pool. |
 | `Message from <name>` | A user sent the bot a DM that is not part of a booking flow or a DJ profile conversation. |
-| Critical problems | The bot could not DM a DJ, a Notion write failed, a hand edit was reverted, no more DJs are left to ask, the database is unavailable, or something else failed. These are red and have a `What to do` line. |
+| Critical problems | The bot could not DM a DJ, a Notion write failed, Notion could not be read, no more DJs are left to ask, the database is unavailable, or something else failed. These are red and have a `What to do` line. |
 
 Button taps, the bot's own replies and routine sync work are not logged.
 

@@ -23,14 +23,20 @@ from disnake.ext import commands
 
 from bot.context import BotContext
 from bot.db import config as db_config
-from bot.db.bookings import init_event_slots
+from bot.db import events as db_events
 from bot.db.djs import get_all_djs
 from bot.db.manual_events import mark_manual
-from bot.notion.client import DuplicateEventError, NotionWriteError
 from bot.services import activation
 from bot.services.dj_admin import UNKNOWN_DJ, is_guest
-from bot.services.event_defaults import default_event_shape
-from bot.services.event_replenish import replenish_guard
+from bot.services.event_defaults import (
+    DEFAULT_SLOT_COUNT,
+    DEFAULT_SLOT_MINUTES,
+    DEFAULT_START,
+    INVALID_DATE,
+    default_event_shape,
+    validate_event_draft,
+)
+from bot.services.event_replenish import mirror_new_event, replenish_guard
 from bot.services.lineup import future_events, upcoming_event
 from bot.services.logo import MAX_LOGO_BYTES
 from bot.services.outreach import parse_outreach_enabled
@@ -38,7 +44,7 @@ from bot.services.roles import DJ_ROLE_KEY, INVITES_ROLE_KEY
 from bot.timezone import DEFAULT_TIMEZONE, local_today
 from bot.ui import texts
 from bot.ui.embeds import EmbedColors
-from bot.ui.gates import ADMIN_IDLE_REPLY
+from bot.ui.gates import ADMIN_IDLE_REPLY, refuse_in_maintenance
 from bot.ui.setup_options import FIELD_LABELS, LIMITS, parse_hhmm
 
 logger = logging.getLogger(__name__)
@@ -220,7 +226,7 @@ class AdminCog(commands.Cog):
         pass
 
     @create_base.sub_command(
-        name="event", description="Manually create a new event in Notion"
+        name="event", description="Manually create a new event"
     )
     async def create_event(
         self,
@@ -244,7 +250,7 @@ class AdminCog(commands.Cog):
             le=LIMITS["slot_duration_minutes"],
         ),
     ) -> None:
-        """Create a new event page in Notion on the specified future date.
+        """Create a new event (Postgres, mirrored to Notion) on the specified future date.
 
         Validates date format and that it is strictly in the future.
         Event ID is auto-generated: "YYYY-MM-DD Rave Night"; start, slot length and
@@ -254,7 +260,9 @@ class AdminCog(commands.Cog):
 
         [Source: epics.md#Story 7.1 AC5, AC6, AC7 — FR40]
         """
-        if self.ctx.notion_client is None or self.ctx.db is None:
+        if await refuse_in_maintenance(inter, self.ctx):
+            return
+        if self.ctx.db is None:
             await inter.response.send_message(
                 "The bot is not ready yet. Please try again in a moment.", ephemeral=True
             )
@@ -263,38 +271,32 @@ class AdminCog(commands.Cog):
         try:
             event_date = date.fromisoformat(date_str)
         except ValueError:
-            await inter.response.send_message(
-                "Invalid date. Provide a future date in YYYY-MM-DD format.",
-                ephemeral=True,
-            )
+            await inter.response.send_message(INVALID_DATE, ephemeral=True)
             return
 
-        if event_date <= _today():
-            await inter.response.send_message(
-                "Invalid date. Provide a future date in YYYY-MM-DD format.",
-                ephemeral=True,
-            )
-            return
-
-        errors = []
+        event_id = f"{event_date.isoformat()} Rave Night"
+        start_errors = []
         start_time = None
         if start is not None:
             normalized = parse_hhmm(start)
             if normalized is None:
                 label = FIELD_LABELS["default_start_time"]
-                errors.append(f"Invalid {label}: use a time like 21:30.")
+                start_errors.append(f"Invalid {label}: use a time like 21:30.")
             else:
                 start_time = time_of_day.fromisoformat(normalized)
-        for value, key in ((slots, "slots_per_event"), (slot_minutes, "slot_duration_minutes")):
-            if value is not None and not 1 <= value <= LIMITS[key]:
-                rule = f"use a whole number from 1 to {LIMITS[key]}."
-                errors.append(f"Invalid {FIELD_LABELS[key]}: {rule}")
+        # Options left out take the setup defaults, which are valid by construction
+        given = db_events.EventDraft(
+            event_id=event_id,
+            date=event_date,
+            start=start_time if start_time is not None else DEFAULT_START,
+            slot_minutes=slot_minutes if slot_minutes is not None else DEFAULT_SLOT_MINUTES,
+            slot_count=slots if slots is not None else DEFAULT_SLOT_COUNT,
+        )
+        errors = validate_event_draft(given, today=_today()) + start_errors
         if errors:
             await inter.response.send_message("\n".join(errors), ephemeral=True)
             return
 
-        event_name = "Rave Night"
-        event_id = f"{event_date.isoformat()} {event_name}"
         assert inter.guild_id is not None
         # Creating the event and its slot rows can exceed Discord's 3 s deadline.
         await inter.response.defer(ephemeral=True)
@@ -305,33 +307,28 @@ class AdminCog(commands.Cog):
             event_start = start_time if start_time is not None else shape.start
             slot_count = slots if slots is not None else shape.slot_count
             slot_length = slot_minutes if slot_minutes is not None else shape.slot_minutes
+            draft = db_events.EventDraft(
+                event_id=event_id,
+                date=event_date,
+                start=event_start,
+                slot_minutes=slot_length,
+                slot_count=slot_count,
+            )
             try:
-                event = await self.ctx.notion_client.create_event(
-                    event_id, event_date, event_start, slot_count, slot_length
-                )
-            except DuplicateEventError:
+                # Writes the event and its slot rows in one transaction
+                event = await db_events.insert_event(self.ctx.db, draft)
+            except db_events.DuplicateEventError:
                 await inter.followup.send(
                     "An event with that ID already exists.", ephemeral=True
                 )
                 return
-            except NotionWriteError:
-                logger.exception("create_event: create_event() failed for %s", event_date)
+            except Exception:
+                logger.exception("create_event: insert_event() failed for %s", event_date)
                 await inter.followup.send(
-                    "Could not create the event in Notion. Please try again in a moment.",
+                    "Could not create the event. Please try again in a moment.",
                     ephemeral=True,
                 )
                 return
-
-            # Pre-initialize slot_locks rows, as the auto-create path does (Story 7.3 AC2)
-            try:
-                await init_event_slots(self.ctx.db, event.page_id, slot_count)
-            except Exception as exc:
-                logger.warning(
-                    "create_event: init_event_slots failed for %r: %s"
-                    " — slots will be lazily created on booking",
-                    event_id,
-                    exc,
-                )
             # Manual events are ignored by the event scheduler
             marked = True
             try:
@@ -342,9 +339,10 @@ class AdminCog(commands.Cog):
                     "create_event: could not record %r as manual", event_id, exc_info=True
                 )
 
+        mirror_new_event(self.ctx, event)
         note = "" if marked else texts.CREATE_EVENT_NOT_MARKED
         await inter.followup.send(
-            f"Event created in Notion for {texts.fmt_slot_when(event, 0)}.{note}",
+            f"Event created for {texts.fmt_slot_when(event, 0)}.{note}",
             ephemeral=True
         )
 
@@ -371,11 +369,7 @@ class AdminCog(commands.Cog):
         ),
     ) -> None:
         """Post a new lineup message. Admin-only through the cog check."""
-        if (
-            self.ctx.notion_client is None
-            or self.ctx.db is None
-            or self.ctx.lineup_service is None
-        ):
+        if self.ctx.db is None or self.ctx.lineup_service is None:
             await inter.response.send_message(
                 "Bot is not ready. Please try again.", ephemeral=True
             )
@@ -384,11 +378,11 @@ class AdminCog(commands.Cog):
         await inter.response.defer(ephemeral=True)
 
         try:
-            events = await self.ctx.notion_client.list_events()
+            events = await db_events.list_events(self.ctx.db)
         except Exception:
             logger.exception("post_lineup_update: list_events() failed")
             await inter.followup.send(
-                "Could not fetch events from Notion. Please try again.", ephemeral=True
+                "Could not fetch the events. Please try again.", ephemeral=True
             )
             return
 
@@ -442,14 +436,13 @@ class AdminCog(commands.Cog):
             return []
         guild_id = inter.guild_id
         if (
-            self.ctx.notion_client is None
-            or self.ctx.db is None
+            self.ctx.db is None
             or guild_id is None
             or not await activation.is_active(self.ctx.db, guild_id)
         ):
             return []
         try:
-            events = await self.ctx.notion_client.list_events()
+            events = await db_events.list_events(self.ctx.db)
         except Exception:
             logger.warning("event autocomplete: list_events() failed", exc_info=True)
             return []
@@ -492,7 +485,7 @@ class AdminCog(commands.Cog):
             default=None, description="Or a DJ from the DJ list (guests without Discord)"
         ),
     ) -> None:
-        """Force-book a DJ into a slot, writing directly to Notion without confirmation.
+        """Force-book a DJ into a slot in Postgres without confirmation.
 
         Uses AdminBookingService.book_slot_override().
         Protected by cog_slash_command_check — admin-only.
@@ -500,12 +493,14 @@ class AdminCog(commands.Cog):
         [Source: epics.md#Story 6.3 AC1, AC4]
         [Source: bot/services/admin_booking.py -- AdminBookingService.book_slot_override()]
         """
+        if await refuse_in_maintenance(inter, self.ctx):
+            return
         if self.ctx.admin_booking_service is None:
             await inter.response.send_message(
                 "The bot is not ready yet. Please try again in a moment.", ephemeral=True
             )
             return
-        # Notion work can exceed Discord's 3 s response deadline: defer first.
+        # The database work can exceed Discord's 3 s response deadline: defer first.
         await inter.response.defer(ephemeral=True)
         target = await self._resolve_dj(inter, dj, guest)
         if target is None:
@@ -553,7 +548,7 @@ class AdminCog(commands.Cog):
             default=None, description="Or a DJ from the DJ list (guests without Discord)"
         ),
     ) -> None:
-        """Force-cancel a DJ's booking, removing it from Notion and slot_locks.
+        """Force-cancel a DJ's booking, freeing the slot in Postgres.
 
         Uses AdminBookingService.cancel_slot_override().
         Returns 'No booking found' if the slot is not held by this DJ (AC3).
@@ -562,12 +557,14 @@ class AdminCog(commands.Cog):
         [Source: epics.md#Story 6.3 AC2, AC3, AC4]
         [Source: bot/services/admin_booking.py -- AdminBookingService.cancel_slot_override()]
         """
+        if await refuse_in_maintenance(inter, self.ctx):
+            return
         if self.ctx.admin_booking_service is None:
             await inter.response.send_message(
                 "The bot is not ready yet. Please try again in a moment.", ephemeral=True
             )
             return
-        # Notion work can exceed Discord's 3 s response deadline: defer first.
+        # The database work can exceed Discord's 3 s response deadline: defer first.
         await inter.response.defer(ephemeral=True)
         target = await self._resolve_dj(inter, dj, guest)
         if target is None:
@@ -612,6 +609,8 @@ class AdminCog(commands.Cog):
 
         Nothing is changed or sent before the admin presses "Cancel event".
         """
+        if await refuse_in_maintenance(inter, self.ctx):
+            return
         service = self.ctx.event_cancel_service
         if service is None:
             await inter.response.send_message(
@@ -848,6 +847,8 @@ class AdminCog(commands.Cog):
             default=None, description="The DJ's Discord account. Leave empty for a guest."
         ),
     ) -> None:
+        if await refuse_in_maintenance(inter, self.ctx):
+            return
         service = self.ctx.dj_admin_service
         if service is None:
             await inter.response.send_message(
@@ -886,6 +887,8 @@ class AdminCog(commands.Cog):
             default=None, description="New logo (PNG or JPEG, up to 5 MB)"
         ),
     ) -> None:
+        if await refuse_in_maintenance(inter, self.ctx):
+            return
         service = self.ctx.dj_admin_service
         if service is None:
             await inter.response.send_message(
@@ -920,6 +923,8 @@ class AdminCog(commands.Cog):
         inter: disnake.ApplicationCommandInteraction,
         dj: str = commands.Param(description="The DJ to delete"),
     ) -> None:
+        if await refuse_in_maintenance(inter, self.ctx):
+            return
         service = self.ctx.dj_admin_service
         if service is None:
             await inter.response.send_message(
@@ -977,6 +982,8 @@ class _ConfirmDelete(disnake.ui.View):
         self, button: disnake.ui.Button, inter: disnake.MessageInteraction
     ) -> None:
         self.stop()
+        if await refuse_in_maintenance(inter, self._ctx):
+            return
         await inter.response.defer()
         try:
             result = await self._service.delete_dj(
@@ -1029,6 +1036,8 @@ class _ConfirmCancelEvent(disnake.ui.View):
         self, button: disnake.ui.Button, inter: disnake.MessageInteraction
     ) -> None:
         self.stop()
+        if await refuse_in_maintenance(inter, self._ctx):
+            return
         await inter.response.defer()
         try:
             result = await self._service.cancel_event(

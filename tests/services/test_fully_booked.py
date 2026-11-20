@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from bot.services.fully_booked import check_fully_booked, recheck_fully_booked
+from tests.fake_events import fake_events
 from tests.notion.factories import make_event, make_slot
 
 
@@ -186,16 +187,15 @@ async def test_old_announcement_is_cleared_when_slot_opened(store, log) -> None:
 @pytest.mark.asyncio
 async def test_recheck_records_time_before_listing_events(store, log) -> None:
     order = []
-    notion = MagicMock()
 
-    async def list_events():
+    async def list_events(_db):
         order.append("list")
         return [_event(2)]
 
-    notion.list_events = list_events
+    fake_events.list_events = list_events
     store.rows.add("ev-1")
     before = datetime.datetime.now(datetime.UTC)
-    await recheck_fully_booked(MagicMock(), log, notion)
+    await recheck_fully_booked(MagicMock(), log)
     (event_id, cutoff), = store.clear_calls
     assert before <= cutoff <= datetime.datetime.now(datetime.UTC)
 

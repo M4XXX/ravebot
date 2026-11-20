@@ -18,12 +18,27 @@ async def _dj(pool, user_id, name, active=True):
     )
 
 
+async def _event(pool, uid="e1", slot_count=3):  # noqa: ANN001, ANN202
+    import datetime
+
+    from bot.db.events import EventDraft, insert_event
+    from bot.timezone import local_today
+
+    await insert_event(
+        pool,
+        EventDraft(event_id=f"Event {uid}", date=local_today() + datetime.timedelta(days=3),
+                   start=datetime.time(20, 0), slot_minutes=60, slot_count=slot_count),
+        uid=uid,
+    )
+
+
 def test_migrations_go_down_and_up_again(schema) -> None:
     run_alembic("downgrade", "base")
     run_alembic("upgrade", "head")
 
 
 async def test_two_djs_racing_for_one_slot_get_exactly_one_lock(pool) -> None:
+    await _event(pool)
     results = await asyncio.gather(
         *(bookings.acquire_slot_lock(pool, "e1", 0, uid) for uid in (A, B, A + 1, B + 1))
     )
@@ -33,6 +48,7 @@ async def test_two_djs_racing_for_one_slot_get_exactly_one_lock(pool) -> None:
 
 
 async def test_own_slot_counts_as_taken_and_release_needs_the_holder(pool) -> None:
+    await _event(pool)
     assert await bookings.acquire_slot_lock(pool, "e1", 1, A)
     assert not await bookings.release_slot_lock(pool, "e1", 1, expected_holder=B)
     assert await bookings.get_slot_lock_holder(pool, "e1", 1) == A
@@ -41,9 +57,37 @@ async def test_own_slot_counts_as_taken_and_release_needs_the_holder(pool) -> No
     assert await bookings.acquire_slot_lock(pool, "e1", 1, B)
 
 
+async def test_booking_a_slot_that_no_longer_exists_is_refused(pool) -> None:
+    """I5: no slot row is created for a deleted event or a removed slot."""
+    assert not await bookings.acquire_slot_lock(pool, "gone", 0, A)
+    await _event(pool, "e1", slot_count=2)
+    assert not await bookings.acquire_slot_lock(pool, "e1", 2, A)
+    await pool.execute("UPDATE events SET slot_count = 1 WHERE uid = 'e1'")
+    assert not await bookings.acquire_slot_lock(pool, "e1", 1, A)  # row left, slot gone
+    rows = await pool.fetch("SELECT event_id, slot_index, discord_user_id FROM slot_locks")
+    assert sorted((r["event_id"], r["slot_index"], r["discord_user_id"]) for r in rows) == [
+        ("e1", 0, None), ("e1", 1, None),
+    ]
+    assert await bookings.acquire_slot_lock(pool, "e1", 0, A)
+
+
+async def test_admin_force_returns_previous_holder(pool) -> None:
+    assert await bookings.force_slot_holder(pool, "e1", 0, A) is None  # row created
+    assert await bookings.get_slot_lock_holder(pool, "e1", 0) == A
+    assert await bookings.force_slot_holder(pool, "e1", 0, B) == A
+    assert await bookings.get_slot_lock_holder(pool, "e1", 0) == B
+    assert await bookings.force_slot_holder(pool, "e1", 0, None) == B
+    row = await pool.fetchrow(
+        "SELECT discord_user_id, booked_at FROM slot_locks WHERE event_id = 'e1'"
+    )
+    assert (row["discord_user_id"], row["booked_at"]) == (None, None)
+    await _event(pool)
+    assert await bookings.acquire_slot_lock(pool, "e1", 0, A)
+
+
 async def test_dj_slot_locks_are_ordered(pool) -> None:
     for event, index in (("e2", 1), ("e1", 0), ("e1", 2)):
-        await bookings.admin_force_book_slot(pool, event, index, A)
+        await bookings.force_slot_holder(pool, event, index, A)
     rows = await bookings.get_dj_slot_locks(pool, A)
     assert len(rows) == 3
 
@@ -80,7 +124,7 @@ async def test_guest_ids_count_down_and_are_never_reused(pool) -> None:
 
 async def test_delete_dj_removes_what_the_bot_keeps_about_them(pool) -> None:
     await _dj(pool, A, "Nova")
-    await bookings.admin_force_book_slot(pool, "past", 0, A)
+    await bookings.force_slot_holder(pool, "past", 0, A)
     await reminders.record_reminder_sent(pool, "past", A, 0)
     await outreach.upsert_sequence(pool, "past")
     await outreach.record_outreach_contact(pool, "past", A)
@@ -127,3 +171,28 @@ async def test_logo_marked_synced_only_when_unchanged(pool) -> None:
     assert await djs.list_unsynced_logo_user_ids(pool) == [A]
     await djs.mark_logo_synced_if_unchanged(pool, A, b"two")
     assert await djs.list_unsynced_logo_user_ids(pool) == []
+
+
+async def test_events_slot_count_check(pool) -> None:
+    sql = (
+        "INSERT INTO events (uid, event_id, date, start, slot_minutes, slot_count) "
+        "VALUES ($1, $1, '2026-12-01', '20:00', 60, $2)"
+    )
+    await pool.execute(sql, "ok", 100)
+    with pytest.raises(asyncpg.CheckViolationError):
+        await pool.execute(sql, "too-many", 101)
+    with pytest.raises(asyncpg.CheckViolationError):
+        await pool.execute(sql, "none", 0)
+
+
+async def test_one_open_conflict_per_entity(pool) -> None:
+    sql = (
+        "INSERT INTO sync_issues (kind, entity, entity_key, summary) "
+        "VALUES ($1, 'event', 'e1', 's')"
+    )
+    await pool.execute(sql, "conflict")
+    await pool.execute(sql, "warning")
+    with pytest.raises(asyncpg.UniqueViolationError):
+        await pool.execute(sql, "conflict")
+    await pool.execute("UPDATE sync_issues SET resolved_at = now() WHERE kind = 'conflict'")
+    await pool.execute(sql, "conflict")

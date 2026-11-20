@@ -46,14 +46,9 @@ class TestConfigMissingVars:
             Config.from_env()
 
         message = str(exc.value)
-        for var in (
-            "DISCORD_BOT_TOKEN",
-            "POSTGRES_URL",
-            "NOTION_API_KEY",
-            "NOTION_PARENT_PAGE_ID",
-            "ADMIN_USER_IDS",
-        ):
+        for var in ("DISCORD_BOT_TOKEN", "POSTGRES_URL", "ADMIN_USER_IDS"):
             assert var in message, f"Expected {var} in exit message"
+        assert "NOTION" not in message
 
     def test_exits_when_single_var_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """sys.exit() with message even when only one var is missing."""
@@ -166,6 +161,41 @@ class TestNotionParentPage:
         monkeypatch.setenv("NOTION_PARENT_PAGE_ID", "page-123")
         Config = _fresh_config(monkeypatch)
         assert Config.from_env().notion_parent_page_id == "page-123"
+
+
+class TestOptionalNotion:
+    def _base(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        monkeypatch.setenv("POSTGRES_URL", "postgresql://localhost/test")
+        monkeypatch.setenv("ADMIN_USER_IDS", "1")
+        monkeypatch.delenv("NOTION_API_KEY", raising=False)
+        monkeypatch.delenv("NOTION_PARENT_PAGE_ID", raising=False)
+
+    def test_notion_vars_optional(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._base(monkeypatch)
+        config = _fresh_config(monkeypatch).from_env()
+        assert config.notion_api_key == ""
+        assert config.notion_parent_page_id == ""
+        assert config.notion_enabled is False
+
+    def test_notion_vars_both_set_enables(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._base(monkeypatch)
+        monkeypatch.setenv("NOTION_API_KEY", "k")
+        monkeypatch.setenv("NOTION_PARENT_PAGE_ID", "p")
+        assert _fresh_config(monkeypatch).from_env().notion_enabled is True
+
+    @pytest.mark.parametrize(
+        ("present", "missing"),
+        [("NOTION_API_KEY", "NOTION_PARENT_PAGE_ID"), ("NOTION_PARENT_PAGE_ID", "NOTION_API_KEY")],
+    )
+    def test_only_one_notion_var_exits(
+        self, monkeypatch: pytest.MonkeyPatch, present: str, missing: str
+    ) -> None:
+        self._base(monkeypatch)
+        monkeypatch.setenv(present, "x")
+        with pytest.raises(SystemExit) as exc:
+            _fresh_config(monkeypatch).from_env()
+        assert "Set both NOTION_API_KEY and NOTION_PARENT_PAGE_ID, or neither" in str(exc.value)
 
 
 class TestAdminPageConfig:

@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 import disnake
 
 from bot.db import config as db_config
+from bot.db import events as db_events
 from bot.db.setup_drafts import SetupDraft, delete_draft, get_draft, save_draft
 from bot.notion.models import MAX_SLOTS
 from bot.services import activation
@@ -282,19 +283,19 @@ async def _welcome_checks(ctx: "BotContext") -> list[tuple[bool, str]]:
         await _db(ctx).fetchval("SELECT 1")
     except Exception:
         db_ok = False
-    notion_ok = True
+    events_ok = True
     try:
-        await ctx.notion_client.list_events()  # type: ignore[union-attr]
+        await db_events.list_events(_db(ctx))
     except Exception:
-        notion_ok = False
+        events_ok = False
     return [
         (True, "Discord connection"),
         (db_ok, "Database" if db_ok else "Database: I can't reach it"),
         (
-            notion_ok,
-            "Notion: Events, Slots and DJs found"
-            if notion_ok
-            else "Notion: I can't read the databases",
+            events_ok,
+            "Events, slots and DJs found"
+            if events_ok
+            else "Events: I can't read them from the database",
         ),
     ]
 
@@ -1017,16 +1018,15 @@ async def _run_effects(ctx: "BotContext", guild_id: int) -> tuple[int, bool]:
     """Create the missing future events and post the first Lineup Update.
 
     The event list is loaded by replenish_events inside its lock, so a poll running at
-    the same time cannot leave this call with a stale list.
+    the same time cannot leave this call with a stale list. During maintenance (an
+    import replaces the events) replenish_events creates nothing.
     Returns (events created, whether the Lineup Update was posted).
     """
-    created = 0
+    created = await replenish_events(ctx, guild_id)
     posted = False
-    if ctx.notion_client is not None:
-        created = await replenish_events(_db(ctx), ctx.notion_client, guild_id)
-        if ctx.lineup_service is not None:
-            events = await ctx.notion_client.list_events()
-            posted = bool(await ctx.lineup_service.refresh(events))
+    if ctx.lineup_service is not None:
+        events = await db_events.list_events(_db(ctx))
+        posted = bool(await ctx.lineup_service.refresh(events))
     return created, posted
 
 

@@ -1,4 +1,4 @@
-"""Tests for NotionClient.assign_slot / clear_slot against the fake Notion API."""
+"""Tests for the NotionClient slot row helpers against the fake Notion API."""
 import datetime
 from unittest.mock import AsyncMock, MagicMock
 
@@ -49,137 +49,6 @@ def dj_of(fake, page_id):
 
 def patches(fake):
     return [r for r in fake.requests if r[0] == "PATCH"]
-
-
-@pytest.mark.asyncio
-async def test_assign_empty_slot_writes_relation(env):
-    fake, client = env
-    event = await make_event(client)
-    assert await client.assign_slot(event, 1, "dj-1") is True
-    assert dj_of(fake, event.slots[1].page_id) == ["dj-1"]
-    assert patches(fake)[0][2] == {"properties": {"DJ": {"relation": [{"id": "dj-1"}]}}}
-
-
-@pytest.mark.asyncio
-async def test_assign_filled_slot_writes_nothing(env):
-    fake, client = env
-    event = await make_event(client)
-    set_dj(fake, event.slots[0].page_id, "other")
-    assert await client.assign_slot(event, 0, "dj-1") is False
-    assert dj_of(fake, event.slots[0].page_id) == ["other"]
-    assert patches(fake) == []
-
-
-@pytest.mark.asyncio
-async def test_assign_slot_already_held_by_same_dj_returns_false(env):
-    fake, client = env
-    event = await make_event(client)
-    set_dj(fake, event.slots[0].page_id, "dj-1")
-    assert await client.assign_slot(event, 0, "dj-1") is False
-    assert patches(fake) == []
-
-
-@pytest.mark.asyncio
-async def test_same_dj_can_take_two_slots_of_one_event(env):
-    fake, client = env
-    event = await make_event(client)
-    assert await client.assign_slot(event, 0, "dj-1") is True
-    assert await client.assign_slot(event, 2, "dj-1") is True
-    assert dj_of(fake, event.slots[0].page_id) == ["dj-1"]
-    assert dj_of(fake, event.slots[2].page_id) == ["dj-1"]
-
-
-@pytest.mark.asyncio
-async def test_assign_rereads_page_so_stale_event_cannot_overwrite(env):
-    fake, client = env
-    event = await make_event(client)  # shows slot 1 open
-    assert event.slots[0].dj_page_id is None
-    set_dj(fake, event.slots[0].page_id, "someone-else")  # booked meanwhile
-    assert await client.assign_slot(event, 0, "dj-1") is False
-    assert dj_of(fake, event.slots[0].page_id) == ["someone-else"]
-    assert patches(fake) == []
-
-
-@pytest.mark.asyncio
-async def test_assign_missing_row_raises(env):
-    _, client = env
-    event = await make_event(client)
-    with pytest.raises(SlotRowMissingError):
-        await client.assign_slot(event, 3, "dj-1")
-
-
-@pytest.mark.asyncio
-async def test_assign_write_failure_raises_notion_write_error(env):
-    fake, client = env
-    event = await make_event(client)
-    fake.fail_once("PATCH", "/pages/", 400)
-    with pytest.raises(NotionWriteError):
-        await client.assign_slot(event, 0, "dj-1")
-
-
-@pytest.mark.asyncio
-async def test_clear_removes_only_named_dj(env):
-    fake, client = env
-    event = await make_event(client)
-    set_dj(fake, event.slots[0].page_id, "dj-1")
-    assert await client.clear_slot(event, 0, "dj-1") is True
-    assert dj_of(fake, event.slots[0].page_id) == []
-    set_dj(fake, event.slots[1].page_id, "dj-1", "dj-2")
-    assert await client.clear_slot(event, 1, "dj-1") is True
-    assert dj_of(fake, event.slots[1].page_id) == ["dj-2"]
-
-
-@pytest.mark.asyncio
-async def test_clear_slot_held_by_other_dj_returns_false(env):
-    fake, client = env
-    event = await make_event(client)
-    set_dj(fake, event.slots[0].page_id, "dj-2")
-    assert await client.clear_slot(event, 0, "dj-1") is False
-    assert dj_of(fake, event.slots[0].page_id) == ["dj-2"]
-    assert patches(fake) == []
-
-
-@pytest.mark.asyncio
-async def test_clear_empty_slot_returns_true_without_writing(env):
-    fake, client = env
-    event = await make_event(client)
-    assert await client.clear_slot(event, 0, "dj-1") is True
-    assert patches(fake) == []
-
-
-@pytest.mark.asyncio
-async def test_clear_missing_row_raises(env):
-    _, client = env
-    event = await make_event(client)
-    with pytest.raises(SlotRowMissingError):
-        await client.clear_slot(event, 7, "dj-1")
-
-
-@pytest.mark.asyncio
-async def test_force_assign_replaces_held_slot_and_extra_djs(env):
-    fake, client = env
-    event = await make_event(client)
-    set_dj(fake, event.slots[1].page_id, "old-dj", "extra-dj")
-    await client.force_assign_slot(event, 1, "dj-1")
-    assert dj_of(fake, event.slots[1].page_id) == ["dj-1"]
-    assert patches(fake)[-1][2] == {"properties": {"DJ": {"relation": [{"id": "dj-1"}]}}}
-
-
-@pytest.mark.asyncio
-async def test_force_assign_empty_slot(env):
-    fake, client = env
-    event = await make_event(client)
-    await client.force_assign_slot(event, 0, "dj-1")
-    assert dj_of(fake, event.slots[0].page_id) == ["dj-1"]
-
-
-@pytest.mark.asyncio
-async def test_force_assign_missing_row_raises(env):
-    fake, client = env
-    event = await make_event(client)
-    with pytest.raises(SlotRowMissingError):
-        await client.force_assign_slot(event, 3, "dj-1")
-    assert patches(fake) == []
 
 
 @pytest.mark.asyncio
@@ -302,22 +171,13 @@ async def _event_with_duplicate_row(fake, client):
     return dataclasses.replace(event, slots=slots), first.page_id, low
 
 
-@pytest.mark.parametrize("call", ["assign", "clear", "force", "keep_first"])
 @pytest.mark.asyncio
-async def test_duplicate_slot_number_uses_lowest_page_id(env, call):
+async def test_duplicate_slot_number_uses_lowest_page_id(env):
     fake, client = env
     event, high, low = await _event_with_duplicate_row(fake, client)
-    if call in ("clear", "keep_first"):
-        for page in (high, low):
-            set_dj(fake, page, "dj-1", "dj-2")
-    if call == "assign":
-        await client.assign_slot(event, 0, "dj-1")
-    elif call == "clear":
-        await client.clear_slot(event, 0, "dj-1")
-    elif call == "force":
-        await client.force_assign_slot(event, 0, "dj-1")
-    else:
-        await client.keep_first_dj(event, 0)
+    for page in (high, low):
+        set_dj(fake, page, "dj-1", "dj-2")
+    await client.keep_first_dj(event, 0)
     touched = {path for _, path, _ in fake.requests if path in (f"/pages/{high}", f"/pages/{low}")}
     assert touched == {f"/pages/{low}"}
 
