@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from bot.notion.api import NotionApi
 from bot.notion.client import NotionClient
+from bot.notion.models import BOTDATA_TOO_LARGE_NOTE
 from bot.notion.schema import NotionIds
 from bot.sync.botdata import parse_botdata_page
 from tests.notion.fake_notion import FakeNotion
@@ -62,3 +63,26 @@ async def test_payload_over_2000_chars_round_trips() -> None:
     chunks = fake.pages[page_id]["properties"]["Payload"]["rich_text"]
     assert len(chunks) == 3
     assert parse_botdata_page(fake.pages[page_id]) == ("config:1", "config", row)
+
+
+def _oversized_page(page_id: str, key: str) -> dict:
+    page = bd_page(page_id, key, None)
+    page["properties"]["Note"] = {"rich_text": [{"plain_text": BOTDATA_TOO_LARGE_NOTE}]}
+    return page
+
+
+async def test_oversized_unchanged_row_is_not_requeued(store) -> None:  # noqa: F811
+    big = {**ROW, "data": "x" * 250_000}
+    store.botdata["manual_events:a"] = ("manual_events", big)
+    store.sync("botdata", "manual_events:a", "p1", big)
+    await _cycle(store, [_oversized_page("p1", "manual_events:a")])
+    assert store.changed == []
+    # A changed row is still pushed.
+    store.botdata["manual_events:a"] = ("manual_events", {**big, "data": "y" * 250_000})
+    await _cycle(store, [_oversized_page("p1", "manual_events:a")])
+    assert store.changed == [("botdata", "manual_events:a", "upsert")]
+    # An emptied payload without the note is an unreadable page: overwritten.
+    store.botdata["manual_events:a"] = ("manual_events", big)
+    store.changed.clear()
+    await _cycle(store, [bd_page("p1", "manual_events:a", None)])
+    assert store.changed == [("botdata", "manual_events:a", "upsert")]

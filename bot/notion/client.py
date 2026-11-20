@@ -10,6 +10,7 @@ from typing import Any
 from bot.db.events import DuplicateEventError
 from bot.notion.api import NotionApi, NotionWriteError
 from bot.notion.models import (
+    BOTDATA_TOO_LARGE_NOTE,
     MAX_SLOTS,
     PROP_BOTDATA_KEY,
     PROP_BOTDATA_PAYLOAD,
@@ -720,7 +721,7 @@ class NotionClient:
         chunks = [text[i : i + _RICH_TEXT_LIMIT] for i in range(0, len(text), _RICH_TEXT_LIMIT)]
         note = ""
         if len(chunks) > _RICH_TEXT_MAX_CHUNKS:
-            chunks, note = [], "Too large for Notion; the payload is only in the export file."
+            chunks, note = [], BOTDATA_TOO_LARGE_NOTE
         props: dict[str, Any] = {
             PROP_BOTDATA_KEY: {"title": _text(key)},
             PROP_BOTDATA_TABLE: {"select": {"name": table}},

@@ -34,3 +34,21 @@ async def test_rebuild_restores_config_rows(pool) -> None:
         "SELECT notion_page_id FROM notion_mirror WHERE entity='botdata'"
     )
     assert page_id == "pg1"
+
+
+async def test_rebuild_restores_parents_before_children(pool) -> None:
+    import json
+
+    def page(page_id: str, table: str, key: str, row: dict) -> dict:
+        return {"id": page_id, "properties": {
+            "Key": {"title": [{"plain_text": key}]},
+            "Table": {"select": {"name": table}},
+            "Payload": {"rich_text": [{"plain_text": json.dumps(row)}]},
+        }}
+
+    contact = page("c1", "outreach_contacts", "outreach_contacts:E1:5",
+                   {"event_id": "E1", "discord_user_id": 5, "status": "sent"})
+    sequence = page("s1", "outreach_sequences", "outreach_sequences:E1", {"event_id": "E1"})
+    async with pool.acquire() as conn:
+        assert await restore_botdata(conn, [contact, sequence]) == 2
+    assert await pool.fetchval("SELECT count(*) FROM outreach_contacts") == 1

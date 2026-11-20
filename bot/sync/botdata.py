@@ -16,6 +16,7 @@ import asyncpg
 from bot.backup.export import _encode, _quote
 from bot.db import mirror
 from bot.notion.models import (
+    BOTDATA_TOO_LARGE_NOTE,
     PROP_BOTDATA_KEY,
     PROP_BOTDATA_PAYLOAD,
     PROP_BOTDATA_TABLE,
@@ -30,6 +31,7 @@ __all__ = [
     "PROP_BOTDATA_TABLE",
     "botdata_row",
     "botdata_rows",
+    "is_oversized_page",
     "parse_botdata_page",
     "restore_botdata",
 ]
@@ -123,6 +125,11 @@ def parse_botdata_page(page: dict[str, Any]) -> tuple[str, str, dict[str, Any] |
     return key, table, row if isinstance(row, dict) else None
 
 
+def is_oversized_page(page: dict[str, Any]) -> bool:
+    """True for a page whose payload was left out because it exceeds Notion's limit."""
+    return not _rich(page, PROP_BOTDATA_PAYLOAD) and _rich(page, "Note") == BOTDATA_TOO_LARGE_NOTE
+
+
 def _select_name(page: dict[str, Any]) -> str | None:
     sel = ((page.get("properties") or {}).get(PROP_BOTDATA_TABLE) or {}).get("select")
     return sel.get("name") if sel else None
@@ -136,11 +143,15 @@ async def restore_botdata(conn: asyncpg.Connection, pages: list[dict[str, Any]])
     in the mirror as synced.
     """
     restored = 0
-    for page in pages:
-        parsed = parse_botdata_page(page)
-        if parsed is None:
-            continue
-        key, table, row = parsed
+    parsed_pages = [(page, parsed) for page in pages if (parsed := parse_botdata_page(page))]
+    # Parents before children (outreach_contacts has a foreign key to outreach_sequences);
+    # Notion's page order is arbitrary.
+    parsed_pages.sort(
+        key=lambda item: BOTDATA_TABLES.index(item[1][1])
+        if item[1][1] in BOTDATA_TABLES
+        else len(BOTDATA_TABLES)
+    )
+    for page, (key, table, row) in parsed_pages:
         if table not in BOTDATA_TABLES or row is None:
             logger.warning("Skipping Bot data page %r", key)
             continue

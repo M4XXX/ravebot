@@ -41,7 +41,7 @@ from bot.notion.models import (
     _title,
 )
 from bot.results import ActionResult
-from bot.sync.botdata import botdata_rows, parse_botdata_page
+from bot.sync.botdata import botdata_rows, is_oversized_page, parse_botdata_page
 from bot.sync.intake import Intake
 from bot.sync.payloads import (
     PROP_DJ_ALT_LINK,
@@ -345,6 +345,9 @@ class SyncCycle:
                 self._counts.pushed += 1
             elif parsed is None or parsed[0] != key:
                 live[key] = None  # hand-edited key or unreadable page: overwrite
+            elif parsed[2] is None and is_oversized_page(page):
+                # Left out on purpose (too large): the hash check below detects changes.
+                live[key] = rows[key].synced_payload
             else:
                 live[key] = parsed[2]
         for key, (_, row) in pg.items():
