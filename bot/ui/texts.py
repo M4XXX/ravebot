@@ -449,6 +449,55 @@ IMPORT_DONE_RESYNC_FAILED = (
     "The next poll tries again."
 )
 
+REBUILD_NO_NOTION = "Notion is not set up, so there is nothing to rebuild from."
+REBUILD_BUSY = "An import or rebuild is already running. Try again when it is done."
+REBUILD_SAFETY_FAILED = (
+    "The safety backup could not be written, so the rebuild was not started."
+)
+REBUILD_FAILED = (
+    "The rebuild from Notion failed and was rolled back. Nothing was changed. "
+    "The admin log lists the reasons."
+)
+LOG_REBUILD_DONE_TITLE = "Database rebuilt from Notion"
+LOG_REBUILD_FAILED_TITLE = "Rebuild from Notion failed"
+LOG_REBUILD_FAILED_TODO = (
+    "Fix these rows in Notion, then start the rebuild again. The database was not changed."
+)
+
+
+def rebuild_done_message(events: int, slots: int, djs: int, logo_failures: int) -> str:
+    text = f"The database was rebuilt from Notion: {events} events, {slots} slots and {djs} DJs."
+    if logo_failures:
+        text += f" {logo_failures} logos could not be downloaded; the admin log lists them."
+    return text
+
+
+def log_rebuild_done_text(
+    events: int, slots: int, djs: int, notes: list[str], logo_failures: list[str]
+) -> str:
+    text = (
+        f"Rebuilt {events} events, {slots} slots and {djs} DJs from Notion. "
+        "Admin accounts were kept; pending Notion changes and open conflicts were discarded."
+    )
+    if notes:
+        shown = "; ".join(notes[:10])
+        more = f" (and {len(notes) - 10} more)" if len(notes) > 10 else ""
+        text += f" Skipped or changed: {shown}{more}."
+    if logo_failures:
+        shown = "; ".join(logo_failures[:10])
+        more = f" (and {len(logo_failures) - 10} more)" if len(logo_failures) > 10 else ""
+        text += f" Logos not restored: {shown}{more}."
+    return text[:3500]
+
+
+def log_rebuild_failed_text(problems: list[str]) -> str:
+    shown = "; ".join(problems[:10])
+    more = f" (and {len(problems) - 10} more)" if len(problems) > 10 else ""
+    return (
+        "Nothing was rebuilt from Notion; the database keeps its data. "
+        f"Problems: {shown}{more}."
+    )[:3500]
+
 
 def sync_conflict_summary(label: str) -> str:
     return f"{label} was changed in the bot and in Notion."

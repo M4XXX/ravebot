@@ -169,3 +169,13 @@ async def test_trash_page_tolerates_404_and_read_all_skips_trashed(env):
     await client.trash_page("does-not-exist")
     snap = await client.read_all()
     assert snap.events == [] and snap.botdata == []
+
+
+async def test_has_rows_reads_one_page_and_skips_trashed(env):
+    fake, client, _ = env
+    assert not await client.has_rows("events")
+    page_id = await client.mirror_event("uid-1", event_payload(EVENT_ROW), None)
+    assert await client.has_rows("events")
+    assert not await client.has_rows("djs") and not await client.has_rows("slots")
+    fake.trash_page(page_id)
+    assert not await client.has_rows("events")

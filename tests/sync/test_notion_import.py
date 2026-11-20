@@ -207,3 +207,17 @@ async def test_unreadable_notion_fails() -> None:
     result = await import_from_notion(MagicMock(), client, mode="upgrade")
     assert result.ok is False
     assert "Notion is down" in result.problems[0]
+
+
+def test_logo_file_takes_the_first_notion_or_external_file() -> None:
+    logo = notion_import._logo_file
+    assert logo(dj_page("d", "D", 1)) is None
+    assert logo(dj_page("d", "D", 1, logo="https://s3.example/a.png")) == (
+        "file", "https://s3.example/a.png"
+    )
+    assert logo(dj_page("d", "D", 1, logo="https://x.org/b.png", logo_kind="external")) == (
+        "external", "https://x.org/b.png"
+    )
+    odd = dj_page("d", "D", 1)
+    odd["properties"]["Logo"] = {"files": [{"type": "file_upload", "file_upload": {"id": "u"}}]}
+    assert logo(odd) is None

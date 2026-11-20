@@ -100,6 +100,8 @@ async def replenish_events(
     if ctx.db is None or ctx.maintenance:
         return 0
     async with _replenish_lock():
+        if ctx.maintenance:  # an import or rebuild started while this waited
+            return 0
         if events is None:
             loaded: list[EventInfo] = await db_events.list_events(ctx.db)
         else:

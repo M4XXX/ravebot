@@ -419,6 +419,24 @@ async def test_maintenance_creates_nothing() -> None:
 
 
 @pytest.mark.asyncio
+async def test_maintenance_set_while_waiting_for_the_lock_creates_nothing() -> None:
+    """A rebuild that starts while replenish waits for the lock wins: nothing is created."""
+    import asyncio
+
+    from bot.services.event_replenish import replenish_guard
+
+    ctx = _ctx()
+    with _cfg("3", "7", "6"):
+        async with replenish_guard():
+            task = asyncio.create_task(_rep(SimpleNamespace(ctx=ctx), []))
+            await asyncio.sleep(0)
+            ctx.maintenance = "restoring"
+        assert await task == 0
+    REPO.create_event.assert_not_awaited()
+    REPO.changed.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_concurrent_replenish_never_creates_the_same_event_twice() -> None:
     import asyncio
 

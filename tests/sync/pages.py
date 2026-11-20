@@ -56,10 +56,14 @@ def dj_page(
     *,
     vrchat: str | None = None,
     link: str | None = None,
+    logo: str | None = None,
+    logo_kind: str = "file",
 ) -> dict[str, Any]:
+    files = [{"name": "logo.png", "type": logo_kind, logo_kind: {"url": logo}}] if logo else []
     return {
         "id": page_id,
         "properties": {
+            "Logo": {"files": files},
             "DJ name": {"title": _text(name)},
             "Discord ID": {"rich_text": _text(str(discord_id) if discord_id is not None else None)},
             "VRChat name": {"rich_text": _text(vrchat)},

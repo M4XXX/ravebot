@@ -95,6 +95,7 @@ class BotContext:
                       edits are refused while it is set (bot/ui/gates.py).
         sync_problem: Last sync or import failure for the admins, or None.
         upgrade_import: Upgrade import result waiting to be posted in the admin log.
+        rebuild_report: Rebuild-from-Notion result waiting to be posted in the admin log.
         admins:       AdminRegistry (owners plus added admins; None falls back to config).
         log_service:  AdminLogService (set in Story 1.3 main.py, None until then).
         user_locks:   Per-user asyncio.Lock dict — keyed by discord_user_id.
@@ -123,6 +124,8 @@ class BotContext:
     sync_problem: str | None = None
     # The upgrade import result still to post in the admin log (posted once in on_ready).
     upgrade_import: "Any | None" = None
+    # A startup rebuild result still to post in the admin log (posted once in on_ready).
+    rebuild_report: "Any | None" = None
     dj_conversations: "Any | None" = None
     mirror: "Any | None" = None
     # SyncCycle run by the Notion poll (None while Notion is disabled or not set up).

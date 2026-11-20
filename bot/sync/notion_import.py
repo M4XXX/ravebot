@@ -24,6 +24,7 @@ from bot.backup.export import write_safety_export
 from bot.db import mirror, outbox
 from bot.db.config import get_value, set_value
 from bot.db.events import EventDraft, insert_event
+from bot.notion.client import PROP_DJ_LOGO
 from bot.notion.models import (
     PROP_EVENT_BOT_ID,
     PROP_EVENT_ID,
@@ -75,6 +76,9 @@ class ImportResult:
     djs: int
     problems: list[str]
     notes: list[str] = field(default_factory=list)
+    # replace mode only: the first Notion ``Logo`` file of each imported DJ by Discord ID,
+    # as (kind, url) with kind "file" (Notion-hosted, signed URL) or "external".
+    logos: dict[int, tuple[str, str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -92,6 +96,7 @@ class _Dj:
     discord_id: int | None
     name: str
     payload: dict[str, Any]  # what the Notion page holds (discord_id None when missing)
+    logo: tuple[str, str] | None = None  # first Logo file: (kind, url)
 
 
 class _Rollback(Exception):
@@ -174,8 +179,20 @@ def _plan_djs(pages: list[dict[str, Any]], problems: list[str], notes: list[str]
             problems.append(f"Two Notion DJs have the name '{dj.name}'")
             continue
         names.add(_norm(dj.name))
-        result.append(_Dj(dj.page_id, dj.discord_id, dj.name, payload))
+        result.append(_Dj(dj.page_id, dj.discord_id, dj.name, payload, _logo_file(page)))
     return result
+
+
+def _logo_file(page: dict[str, Any]) -> tuple[str, str] | None:
+    """The first file of the DJ page's ``Logo`` property as (kind, url), or None."""
+    prop = (page.get("properties") or {}).get(PROP_DJ_LOGO) or {}
+    for item in prop.get("files") or []:
+        kind = item.get("type")
+        if kind in ("file", "external"):
+            url = (item.get(kind) or {}).get("url")
+            if isinstance(url, str) and url.strip():
+                return kind, url.strip()
+    return None
 
 
 def _plan_slots(
@@ -246,7 +263,12 @@ async def import_from_notion(
     except asyncpg.PostgresError as exc:
         logger.exception("The Notion import failed in the database")
         return ImportResult(False, 0, 0, 0, [f"Database error: {exc}"], notes)
-    return ImportResult(True, *counts, problems=[], notes=notes)
+    logos = (
+        {d.discord_id: d.logo for d in djs if d.logo and d.discord_id is not None}
+        if mode == "replace"
+        else {}
+    )
+    return ImportResult(True, *counts, problems=[], notes=notes, logos=logos)
 
 
 async def _write(

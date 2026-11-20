@@ -5,7 +5,7 @@ import datetime
 import json
 import logging
 import urllib.parse
-from typing import Any
+from typing import Any, Literal
 
 from bot.db.events import DuplicateEventError
 from bot.notion.api import NotionApi, NotionWriteError
@@ -734,6 +734,18 @@ class NotionClient:
         return await self._mirror_page(
             self._ids.botdata_ds, props, page_id, f"bot data {key}"
         )
+
+    async def has_rows(self, table: Literal["events", "slots", "djs"]) -> bool:
+        """True when the Events, Slots or DJs database holds a live page (reads one page)."""
+        ds_id = {
+            "events": self._ids.events_ds,
+            "slots": self._ids.slots_ds,
+            "djs": self._ids.djs_ds,
+        }[table]
+        data = await self._api.request(
+            "POST", f"/data_sources/{ds_id}/query", {"page_size": 1}, f"check {table} for rows"
+        )
+        return any(not _is_trashed(p) for p in data.get("results") or [])
 
     async def read_all(self) -> "NotionSnapshot":
         """All non-trashed pages of the mirrored databases (raw JSON)."""

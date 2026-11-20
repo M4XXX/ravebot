@@ -7,9 +7,10 @@ Startup sequence:
   4. Run Alembic migrations (subprocess: alembic upgrade head) — exits on failure
   5. Open asyncpg pool — exits if PostgreSQL unreachable
   6. Create disnake Bot with correct intents and the AdminLogService
-  7. Notion (only when both NOTION_* are set): NotionApi -> ensure_schema -> ensure_views -> NotionClient. The schema
-     and view config keys live under guild_id 0 (global), so this runs before
-     Discord connects. Exits with a clear message if the parent page is unusable.
+  7. Notion (only when both NOTION_* are set): NotionApi -> ensure_schema -> ensure_views
+     -> NotionClient. The schema and view config keys live under guild_id 0 (global),
+     so this runs before Discord connects. Exits with a clear message if the parent
+     page is unusable.
   8. Upgrade import (bot/sync/notion_import.py): on the first start after the switch to
      Postgres as the source of truth, a safety export, then events, slots and DJs are
      imported from Notion once. Until it succeeds the bot is in maintenance (bookings and
@@ -19,7 +20,10 @@ Startup sequence:
  11. With a Notion client and the import done: start the Notion mirror worker
      (bot/sync/worker.py), queue the DJs whose logo is not in Notion yet and set
      ctx.sync_cycle (bot/sync/cycle.py), which the 5-minute Notion poll runs
- 12. On shutdown: stop the mirror worker, close pool and Notion API client
+ 12. Startup cases (bot/sync/rebuild.py), only with Notion and once the upgrade import is
+     done: Postgres empty and Notion holds events -> rebuild from Notion (result posted in
+     on_ready); Postgres filled and Notion empty -> queue everything for Notion
+ 13. On shutdown: stop the mirror worker, close pool and Notion API client
 
 [Source: architecture.md#Implementation Sequence]
 [Source: architecture.md#Decision Impact Analysis]
@@ -49,6 +53,7 @@ from bot.services import activation
 from bot.services.dj_sync import queue_unsynced_logos
 from bot.sync.cycle import SyncCycle
 from bot.sync.notion_import import post_upgrade_result, run_upgrade_import_if_needed
+from bot.sync.rebuild import post_rebuild_result, run_startup_recovery
 from bot.sync.worker import MirrorWorker
 from bot.timezone import load_stored_timezone
 from bot.ui import texts
@@ -191,6 +196,8 @@ async def main() -> None:
             await run_upgrade_import_if_needed(ctx)
             await post_upgrade_result(ctx)
             await _start_mirror(ctx, bot)
+            await run_startup_recovery(ctx)
+            await post_rebuild_result(ctx)
             logger.info("New Notion databases created after an admin approved it")
             return None
 
@@ -209,6 +216,7 @@ async def main() -> None:
         ctx.notion_recover = recover_notion
         await run_upgrade_import_if_needed(ctx)
         await _start_mirror(ctx, bot)
+        await run_startup_recovery(ctx)  # never raises
 
     # Story 3.2: init LineupService after DB and log_service are ready
     from bot.services.lineup import LineupService
@@ -313,6 +321,7 @@ async def main() -> None:
                 except Exception:
                     logger.warning("Could not post the missing Notion databases", exc_info=True)
             await post_upgrade_result(ctx)
+            await post_rebuild_result(ctx)
 
     runner = await start_admin_page(ctx, bot)
     try:

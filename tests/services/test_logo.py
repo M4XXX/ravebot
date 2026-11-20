@@ -390,3 +390,38 @@ async def test_logo_processing_runs_one_at_a_time(monkeypatch):
     outs = await asyncio.gather(*(logo_from_message(message([att()])) for _ in range(3)))
     assert outs == [b"png"] * 3
     assert state["max"] == 1
+
+
+async def test_download_logo_file_processes_a_notion_file():
+    from bot.services.logo import download_logo_file
+
+    data = make_image("PNG")
+    async with client_with(lambda r: httpx.Response(200, content=data)) as c:
+        out = await download_logo_file("https://files.notion.example/a.png?sig=1", client=c)
+    assert Image.open(io.BytesIO(out)).format == "PNG"
+
+
+@pytest.mark.parametrize("url", ["http://files.example/a.png", "file:///etc/passwd", "nope"])
+async def test_download_logo_file_needs_https(url):
+    from bot.services.logo import download_logo_file
+
+    calls = []
+    async with client_with(lambda r: calls.append(r) or httpx.Response(200)) as c:
+        with pytest.raises(LogoError) as e:
+            await download_logo_file(url, client=c)
+    assert reason_of(e) == "bad_source" and calls == []
+
+
+async def test_download_logo_file_limits_size_and_redirects():
+    from bot.services.logo import download_logo_file
+
+    big = b"x" * (MAX_LOGO_BYTES + 1)
+    async with client_with(lambda r: httpx.Response(200, content=big)) as c:
+        with pytest.raises(LogoError) as e:
+            await download_logo_file("https://files.example/a.png", client=c)
+    assert reason_of(e) == "too_big"
+    redirect = httpx.Response(302, headers={"location": "https://evil.example/x"})
+    async with client_with(lambda r: redirect) as c:
+        with pytest.raises(LogoError) as e:
+            await download_logo_file("https://files.example/a.png", client=c)
+    assert reason_of(e) == "download_failed"
