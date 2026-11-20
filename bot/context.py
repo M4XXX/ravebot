@@ -90,6 +90,8 @@ class BotContext:
                       before each lineup update (None until set in main.py).
         dj_conversations: DjConversationService for the DJ onboarding and profile
                       DM conversation (None until set in main.py).
+        mirror:       MirrorWorker that pushes queued Postgres changes to Notion
+                      (None while Notion is disabled or not set up).
         admins:       AdminRegistry (owners plus added admins; None falls back to config).
         log_service:  AdminLogService (set in Story 1.3 main.py, None until then).
         user_locks:   Per-user asyncio.Lock dict — keyed by discord_user_id.
@@ -114,6 +116,7 @@ class BotContext:
     notion_problem: str | None = None
     notion_recover: "Any | None" = None
     dj_conversations: "Any | None" = None
+    mirror: "Any | None" = None
     admins: "Any | None" = None
     user_locks: dict[int, FlowLock] = field(default_factory=dict)
 
@@ -122,7 +125,7 @@ class BotContext:
         self.notion_client = client
         for service in (
             self.lineup_service, self.notion_sync_service, self.outreach_service,
-            self.reminders_service, self.admin_booking_service,
+            self.reminders_service, self.admin_booking_service, self.mirror,
         ):
             if service is not None and hasattr(service, "notion_client"):
                 service.notion_client = client

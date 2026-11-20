@@ -363,6 +363,7 @@ async def test_missing_databases_keep_the_bot_running_until_an_admin_decides() -
     s = _Startup(schema_error=NotionDatabasesMissing("DJs data source x returned 404"))
     stored: dict = {}
     seen: dict = {}
+    seen_mirror: list = []
 
     async def put(db, guild_id, key, value):  # noqa: ANN001, ANN202
         stored[key] = value
@@ -371,6 +372,7 @@ async def test_missing_databases_keep_the_bot_running_until_an_admin_decides() -
         ctx = s.ctx
         seen["client"] = ctx.notion_client
         seen["problem"] = ctx.notion_problem
+        seen_mirror.append(ctx.mirror)
         s._schema_error = None
         seen["error"] = await ctx.notion_recover()
 
@@ -384,6 +386,8 @@ async def test_missing_databases_keep_the_bot_running_until_an_admin_decides() -
     assert ctx.notion_client is s.client
     assert ctx.outreach_service.notion_client is s.client
     assert ctx.lineup_service.notion_client is s.client
+    assert seen_mirror == [None]
+    assert ctx.mirror is not None and ctx.mirror.notion_client is s.client
 
 
 @pytest.mark.asyncio
@@ -433,7 +437,28 @@ async def test_main_without_notion_skips_setup() -> None:
     assert ctx.notion_client is None
     assert ctx.notion_recover is None
     assert ctx.notion_problem is None
+    assert ctx.mirror is None
     assert ctx.outreach_service.notion_client is None
     s.pool.close.assert_awaited_once()
     on_ready = s.bot.event.call_args.args[0]
     await on_ready()
+
+
+@pytest.mark.asyncio
+async def test_mirror_worker_runs_while_the_bot_runs() -> None:
+    from bot.sync.worker import MirrorWorker
+
+    s = _Startup()
+    seen: dict = {}
+
+    async def check() -> None:
+        mirror = s.ctx.mirror
+        seen["running"] = isinstance(mirror, MirrorWorker) and not mirror._task.done()
+        seen["client"] = mirror.notion_client
+        seen["mirror"] = mirror
+
+    s.while_running = check
+    await s.run()
+    assert seen["running"] is True
+    assert seen["client"] is s.client
+    assert seen["mirror"]._task is None  # stopped on shutdown

@@ -12,7 +12,8 @@ Startup sequence:
      Discord connects. Exits with a clear message if the parent page is unusable.
   8. Create the services (incl. NotionSyncService) and load the cogs
   9. Start bot (Discord connects only AFTER DB and Notion are ready)
- 10. On shutdown: close pool and Notion API client
+ 10. With a Notion client: start the Notion mirror worker (bot/sync/worker.py)
+ 11. On shutdown: stop the mirror worker, close pool and Notion API client
 
 [Source: architecture.md#Implementation Sequence]
 [Source: architecture.md#Decision Impact Analysis]
@@ -40,6 +41,7 @@ from bot.notion.schema import (
 from bot.notion.views import ensure_views
 from bot.services import activation
 from bot.services.dj_sync import retry_unsynced_logos
+from bot.sync.worker import MirrorWorker
 from bot.timezone import load_stored_timezone
 from bot.ui import texts
 from bot.ui.gates import STARTUP_ADMIN_DM
@@ -110,6 +112,13 @@ async def _retry_logos_if_active(bot: commands.Bot, ctx: BotContext) -> None:
         logger.warning("Retrying unsynced DJ logos failed", exc_info=True)
 
 
+def _start_mirror(ctx: BotContext) -> None:
+    """Start the Notion mirror worker once a Notion client exists (never without Notion)."""
+    if ctx.mirror is None and ctx.notion_client is not None and ctx.db is not None:
+        ctx.mirror = MirrorWorker(ctx.db, ctx.notion_client, ctx.log_service)
+        ctx.mirror.start()
+
+
 async def main() -> None:
     """Async entry point — configure, run migrations, open pool, start bot."""
     config = Config.from_env()
@@ -161,6 +170,7 @@ async def main() -> None:
                 await set_value(db, NOTION_CONFIG_GUILD_ID, RECREATE_APPROVED_KEY, "0")
                 return str(exc)
             ctx.attach_notion(client)
+            _start_mirror(ctx)
             ctx.notion_problem = None
             logger.info("New Notion databases created after an admin approved it")
             return None
@@ -178,6 +188,7 @@ async def main() -> None:
             await notion_api.close()
             sys.exit(f"{NOTION_SETUP_FAILED} (Cause: {exc})")
         ctx.notion_recover = recover_notion
+        _start_mirror(ctx)
 
     # Story 3.2: init LineupService after DB and log_service are ready
     from bot.services.lineup import LineupService
@@ -300,6 +311,9 @@ async def main() -> None:
         await bot.start(config.discord_bot_token)
     finally:
         await stop_admin_page(runner)
+        if ctx.mirror is not None:
+            await ctx.mirror.stop()
+            logger.info("Notion mirror worker stopped.")
         if ctx.db is not None:
             await ctx.db.close()
             logger.info("asyncpg pool closed.")

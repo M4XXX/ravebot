@@ -118,3 +118,14 @@ class TestFlowLock:
         for uid in range(1002):
             ctx.get_user_lock(uid)
         assert len(ctx.user_locks) < 10
+
+
+def test_attach_notion_hands_the_client_to_the_mirror(monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+
+    ctx = BotContext(config=make_config(monkeypatch))
+    assert ctx.mirror is None
+    ctx.mirror = SimpleNamespace(notion_client=None)
+    client = object()
+    ctx.attach_notion(client)
+    assert ctx.mirror.notion_client is client
