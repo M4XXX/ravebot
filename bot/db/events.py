@@ -20,6 +20,8 @@ from bot.timezone import local_today
 __all__ = [
     "DuplicateEventError",
     "EventDraft",
+    "SlotsBookedError",
+    "edit_event",
     "event_id_exists",
     "get_event",
     "insert_event",
@@ -37,6 +39,14 @@ class DuplicateEventError(Exception):
     def __init__(self, event_id: str) -> None:
         super().__init__(f"Event ID already exists: {event_id}")
         self.event_id = event_id
+
+
+class SlotsBookedError(Exception):
+    """An event edit would cut off a booked slot or move the times of booked slots."""
+
+    def __init__(self, booked: tuple[int, ...]) -> None:
+        super().__init__(f"Booked slot indexes: {booked}")
+        self.booked = booked  # 0-based slot indexes holding a DJ
 
 
 @dataclass(frozen=True)
@@ -225,3 +235,45 @@ async def event_id_exists(db: Executor, event_id: str) -> bool:
     return bool(
         await db.fetchval("SELECT EXISTS (SELECT 1 FROM events WHERE event_id = $1)", event_id)
     )
+
+
+async def edit_event(pool: asyncpg.Pool, uid: str, **fields: object) -> bool:
+    """Update the event and add or remove its slot rows, in one transaction.
+
+    The slot rows are locked first (as a booking does), so no booking slips in.
+    SlotsBookedError when a slot at or above the new slot count is booked, or when
+    the start or slot length changes while any slot is booked. True when the event
+    exists.
+    """
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                "SELECT start, slot_minutes, slot_count FROM events WHERE uid = $1 FOR UPDATE",
+                uid,
+            )
+            if row is None:
+                return False
+            rows = await conn.fetch(
+                "SELECT slot_index, discord_user_id FROM slot_locks WHERE event_id = $1"
+                " ORDER BY slot_index FOR UPDATE",
+                uid,
+            )
+            booked = tuple(r["slot_index"] for r in rows if r["discord_user_id"] is not None)
+            old_count = row["slot_count"]
+            new_count = int(fields.get("slot_count", old_count))  # type: ignore[call-overload]
+            start = fields.get("start")
+            moved = (
+                start is not None and _format_start(start) != row["start"]  # type: ignore[arg-type]
+            ) or fields.get("slot_minutes", row["slot_minutes"]) != row["slot_minutes"]
+            if booked and (max(booked) >= new_count or moved):
+                raise SlotsBookedError(booked)
+            await update_event(conn, uid, **fields)
+            if new_count > old_count:
+                await init_event_slots(conn, uid, new_count)
+            elif new_count < old_count:
+                await conn.execute(
+                    "DELETE FROM slot_locks WHERE event_id = $1 AND slot_index >= $2",
+                    uid,
+                    new_count,
+                )
+            return True

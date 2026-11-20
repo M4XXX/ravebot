@@ -7,6 +7,8 @@ from bot.db import bookings, djs
 from bot.db.events import (
     DuplicateEventError,
     EventDraft,
+    SlotsBookedError,
+    edit_event,
     get_event,
     insert_event,
     list_events,
@@ -88,3 +90,58 @@ async def test_update_and_status(pool) -> None:
     assert ev.genre == "House" and ev.start == datetime.time(21, 30)
     assert ev.status == "Done"
     assert not await update_event(pool, "missing", genre="x")
+
+
+async def _booked_event(pool, slots=4, booked_index=1):
+    await djs.insert_dj(
+        pool, discord_user_id=A, dj_name="DJ Test", vrchat_name=None, logo_url=None,
+        stream_url_primary="https://twitch.tv/x", stream_url_backup=None,
+        active_booking=True,
+    )
+    day = local_today() + datetime.timedelta(days=3)
+    await insert_event(pool, _draft("E1", day, slots=slots), uid="u1")
+    if booked_index is not None:
+        await bookings.acquire_slot_lock(pool, "u1", booked_index, A)
+
+
+async def _slot_rows(pool):
+    rows = await pool.fetch(
+        "SELECT slot_index FROM slot_locks WHERE event_id = 'u1' ORDER BY slot_index"
+    )
+    return [r["slot_index"] for r in rows]
+
+
+async def test_edit_event_grows_and_shrinks_slot_rows(pool) -> None:
+    await _booked_event(pool, slots=4, booked_index=1)
+    assert await edit_event(pool, "u1", slot_count=6, genre="Techno") is True
+    assert await _slot_rows(pool) == [0, 1, 2, 3, 4, 5]
+    assert (await get_event(pool, "u1")).genre == "Techno"
+    assert await edit_event(pool, "u1", slot_count=2) is True
+    assert await _slot_rows(pool) == [0, 1]
+    assert (await get_event(pool, "u1")).slot_count == 2
+    assert await edit_event(pool, "nope", genre="x") is False
+
+
+async def test_edit_event_refuses_cutting_a_booked_slot(pool) -> None:
+    await _booked_event(pool, slots=4, booked_index=2)
+    with pytest.raises(SlotsBookedError) as caught:
+        await edit_event(pool, "u1", slot_count=2)
+    assert caught.value.booked == (2,)
+    assert await _slot_rows(pool) == [0, 1, 2, 3]
+    assert (await get_event(pool, "u1")).slot_count == 4
+
+
+async def test_edit_event_refuses_moving_times_of_booked_slots(pool) -> None:
+    await _booked_event(pool, slots=4, booked_index=0)
+    with pytest.raises(SlotsBookedError):
+        await edit_event(pool, "u1", start=datetime.time(21, 0))
+    with pytest.raises(SlotsBookedError):
+        await edit_event(pool, "u1", slot_minutes=45)
+    assert await edit_event(pool, "u1", start=datetime.time(20, 0), slot_minutes=60) is True
+
+
+async def test_edit_event_moves_times_when_nothing_is_booked(pool) -> None:
+    await _booked_event(pool, slots=4, booked_index=None)
+    assert await edit_event(pool, "u1", start=datetime.time(21, 30), slot_minutes=45) is True
+    ev = await get_event(pool, "u1")
+    assert ev.start == datetime.time(21, 30) and ev.slot_minutes == 45

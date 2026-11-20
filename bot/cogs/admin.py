@@ -28,7 +28,14 @@ from bot.db.djs import get_all_djs
 from bot.db.manual_events import mark_manual
 from bot.services import activation
 from bot.services.dj_admin import UNKNOWN_DJ, is_guest
-from bot.services.event_defaults import default_event_shape
+from bot.services.event_defaults import (
+    DEFAULT_SLOT_COUNT,
+    DEFAULT_SLOT_MINUTES,
+    DEFAULT_START,
+    INVALID_DATE,
+    default_event_shape,
+    validate_event_draft,
+)
 from bot.services.event_replenish import mirror_new_event, replenish_guard
 from bot.services.lineup import future_events, upcoming_event
 from bot.services.logo import MAX_LOGO_BYTES
@@ -264,38 +271,32 @@ class AdminCog(commands.Cog):
         try:
             event_date = date.fromisoformat(date_str)
         except ValueError:
-            await inter.response.send_message(
-                "Invalid date. Provide a future date in YYYY-MM-DD format.",
-                ephemeral=True,
-            )
+            await inter.response.send_message(INVALID_DATE, ephemeral=True)
             return
 
-        if event_date <= _today():
-            await inter.response.send_message(
-                "Invalid date. Provide a future date in YYYY-MM-DD format.",
-                ephemeral=True,
-            )
-            return
-
-        errors = []
+        event_id = f"{event_date.isoformat()} Rave Night"
+        start_errors = []
         start_time = None
         if start is not None:
             normalized = parse_hhmm(start)
             if normalized is None:
                 label = FIELD_LABELS["default_start_time"]
-                errors.append(f"Invalid {label}: use a time like 21:30.")
+                start_errors.append(f"Invalid {label}: use a time like 21:30.")
             else:
                 start_time = time_of_day.fromisoformat(normalized)
-        for value, key in ((slots, "slots_per_event"), (slot_minutes, "slot_duration_minutes")):
-            if value is not None and not 1 <= value <= LIMITS[key]:
-                rule = f"use a whole number from 1 to {LIMITS[key]}."
-                errors.append(f"Invalid {FIELD_LABELS[key]}: {rule}")
+        # Options left out take the setup defaults, which are valid by construction
+        given = db_events.EventDraft(
+            event_id=event_id,
+            date=event_date,
+            start=start_time if start_time is not None else DEFAULT_START,
+            slot_minutes=slot_minutes if slot_minutes is not None else DEFAULT_SLOT_MINUTES,
+            slot_count=slots if slots is not None else DEFAULT_SLOT_COUNT,
+        )
+        errors = validate_event_draft(given, today=_today()) + start_errors
         if errors:
             await inter.response.send_message("\n".join(errors), ephemeral=True)
             return
 
-        event_name = "Rave Night"
-        event_id = f"{event_date.isoformat()} {event_name}"
         assert inter.guild_id is not None
         # Creating the event and its slot rows can exceed Discord's 3 s deadline.
         await inter.response.defer(ephemeral=True)

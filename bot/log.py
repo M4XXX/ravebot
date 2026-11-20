@@ -226,6 +226,14 @@ class AdminLogService:
             )
         )
 
+    async def log_notion_applied(self, what: str) -> None:
+        """Applied hand edits from Notion; ``what`` is built and escaped by the caller."""
+        await self._post_built(
+            lambda: LogEntryEmbed(
+                texts.LOG_NOTION_APPLIED_TITLE, what, EmbedColors.MISSION_GOLD
+            )
+        )
+
     async def log_fully_booked(self, event: EventInfo) -> None:
         await self._post_built(
             lambda: LogEntryEmbed(

@@ -306,6 +306,7 @@ LOG_BOOKED_TITLE = "Booked"
 LOG_CANCELLED_TITLE = "Cancelled"
 LOG_ORGANIZER_TITLE = "Changed by an organizer"
 LOG_NOTION_TITLE = "Changed in Notion"
+LOG_NOTION_APPLIED_TITLE = "Applied from Notion"
 LOG_FULLY_BOOKED_TITLE = "Event fully booked"
 LOG_NEW_DJ_TITLE = "New DJ"
 LOG_ADMIN_ADDED_TITLE = "Admin added"
@@ -387,6 +388,14 @@ def log_admin_added_text(name: str, user_id: int) -> str:
 
 def log_dj_list_text(admin: str, action: str, dj_name: str) -> str:
     return f"{admin} {action} the DJ {dj_name}."
+
+
+def log_notion_applied_text(lines: list[str]) -> str:
+    """Hand edits from Notion the bot applied: up to 10 lines, then "and N more"."""
+    text = "\n".join(lines[:10])
+    if len(lines) > 10:
+        text += f"\nand {len(lines) - 10} more"
+    return text[:3500]
 
 
 def log_upgrade_done_text(events: int, slots: int, djs: int, notes: list[str]) -> str:

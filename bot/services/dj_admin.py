@@ -29,12 +29,11 @@ from bot.db.djs import (
 )
 from bot.services.dj_sync import sync_dj
 from bot.services.dj_validation import (
-    MAX_LINK_LENGTH,
-    MAX_NAME_LENGTH,
-    MAX_VRCHAT_LENGTH,
+    check_link,
+    check_name,
+    check_optional_link,
+    check_vrchat,
     clean_text,
-    name_error,
-    normalize_link,
 )
 from bot.services.logo import LogoError, process_logo_async
 from bot.sync.worker import changed
@@ -78,21 +77,6 @@ def parse_discord_id(raw: str | None) -> int | None:
         return None
     value = int(text)
     return value if value < 2**63 else None
-
-
-def check_link(raw: str, label: str) -> tuple[str | None, str | None]:
-    """(clean link, None) or (None, error).
-
-    The same links a DJ can save in the DM conversation ("Use as is"): any scheme
-    such as https:// or rtmp://, followed by a host, no spaces.
-    """
-    link = normalize_link(raw)
-    scheme, _, rest = link.partition("://")
-    if not scheme.isalpha() or not rest.strip("/") or any(c.isspace() for c in link):
-        return None, f"The {label} must be a link (for example https://...)."
-    if len(link) > MAX_LINK_LENGTH:
-        return None, f"The {label} is too long."
-    return link, None
 
 
 class DjAdminService:
@@ -143,28 +127,6 @@ class DjAdminService:
         except LogoError as exc:
             return None, _LOGO_TEXT.get(exc.reason, _LOGO_DEFAULT)
 
-    @staticmethod
-    def _name(raw: str) -> tuple[str | None, str | None]:
-        problem = name_error(raw)
-        if problem == "empty":
-            return None, "The DJ name is required."
-        if problem == "too_long":
-            return None, f"The DJ name is too long (at most {MAX_NAME_LENGTH} characters)."
-        return clean_text(raw), None
-
-    @staticmethod
-    def _vrchat(raw: str | None) -> tuple[str | None, str | None]:
-        text = clean_text(raw or "")
-        if len(text) > MAX_VRCHAT_LENGTH:
-            return None, f"The VRChat name is too long (at most {MAX_VRCHAT_LENGTH} characters)."
-        return (text or None), None
-
-    @staticmethod
-    def _optional_link(raw: str | None) -> tuple[str | None, str | None]:
-        if not (raw or "").strip():
-            return None, None
-        return check_link(raw or "", "backup link")
-
     # --- add ---
 
     async def add_dj(
@@ -181,16 +143,16 @@ class DjAdminService:
         db = self._ctx.db
         if db is None:
             return DjResult(False, NOT_READY)
-        clean_name, err = self._name(name)
+        clean_name, err = check_name(name)
         if err:
             return DjResult(False, err)
         clean_link, err = check_link(link, "stream link")
         if err:
             return DjResult(False, err)
-        clean_alt, err = self._optional_link(alt_link)
+        clean_alt, err = check_optional_link(alt_link)
         if err:
             return DjResult(False, err)
-        clean_vrchat, err = self._vrchat(vrchat)
+        clean_vrchat, err = check_vrchat(vrchat)
         if err:
             return DjResult(False, err)
         image, err = await self._logo(logo)
@@ -244,7 +206,7 @@ class DjAdminService:
             return DjResult(False, UNKNOWN_DJ)
         updates: dict[str, object] = {}
         if "name" in fields:
-            clean_name, err = self._name(fields["name"] or "")
+            clean_name, err = check_name(fields["name"] or "")
             if err:
                 return DjResult(False, err)
             updates["dj_name"] = clean_name
@@ -254,12 +216,12 @@ class DjAdminService:
                 return DjResult(False, err)
             updates["stream_url_primary"] = clean_link
         if "alt_link" in fields:
-            clean_alt, err = self._optional_link(fields["alt_link"])
+            clean_alt, err = check_optional_link(fields["alt_link"])
             if err:
                 return DjResult(False, err)
             updates["stream_url_backup"] = clean_alt
         if "vrchat" in fields:
-            clean_vrchat, err = self._vrchat(fields["vrchat"])
+            clean_vrchat, err = check_vrchat(fields["vrchat"])
             if err:
                 return DjResult(False, err)
             updates["vrchat_name"] = clean_vrchat
