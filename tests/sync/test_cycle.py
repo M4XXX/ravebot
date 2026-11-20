@@ -39,6 +39,7 @@ def ev(title: str, **over) -> dict:
 class Store:
     def __init__(self) -> None:
         self.pg: dict[str, dict[str, dict]] = {"event": {}, "dj": {}, "slot": {}}
+        self.botdata: dict[str, tuple[str, dict]] = {}
         self.mirror: dict[tuple[str, str], MirrorRow] = {}
         self.issues: list[IssueRow] = []
         self.config: dict[str, str] = {}
@@ -75,6 +76,9 @@ class Store:
     async def load_pg(self, db, entity):  # noqa: ANN001, ANN202
         return dict(self.pg[entity])
 
+    async def load_botdata(self, db):  # noqa: ANN001, ANN202
+        return dict(self.botdata)
+
     # mirror
     async def get_all(self, db, entity):  # noqa: ANN001, ANN202
         return {k: r for (e, k), r in self.mirror.items() if e == entity}
@@ -84,6 +88,9 @@ class Store:
 
     async def set_synced(self, db, entity, key, page_id, payload):  # noqa: ANN001, ANN202
         self.sync(entity, key, page_id, payload)
+
+    async def forget(self, db, entity, key):  # noqa: ANN001, ANN202
+        self.mirror.pop((entity, key), None)
 
     async def open_issue_keys(self, db):  # noqa: ANN001, ANN202
         return {(i.entity, i.entity_key) for i in self.open("conflict")}
@@ -190,6 +197,8 @@ def store(monkeypatch):
     monkeypatch.setattr(config_mod, "get_value", s.get_value)
     monkeypatch.setattr(config_mod, "set_value", s.set_value)
     monkeypatch.setattr(cycle_mod, "_load_pg", s.load_pg)
+    monkeypatch.setattr(cycle_mod, "botdata_rows", s.load_botdata)
+    monkeypatch.setattr(mirror_mod, "forget", s.forget, raising=True)
     monkeypatch.setattr(cycle_mod, "changed", s.record_changed)
     FakeIntake.instances = []
     FakeIntake.reject = {}

@@ -12,6 +12,9 @@ Runs inside the Notion poll (bot/cogs/events.py), never during maintenance. Orde
    ``deleted_in_notion`` / ``key_changed`` / ``mass_change`` -> warning, nothing
    applied; ``agree`` -> recorded as synced.
 
+After them the "Bot data" pass pushes bot tables to the read-only mirror: it never applies
+and never conflicts, a hand edit is overwritten and a page without a row is trashed.
+
 Warnings are not repeated while an identical one is still open. Every database call
 uses its own short-lived pool connection; no row lock is held across a Notion call.
 ``sync_last_run`` and ``sync_last_error`` are stored under config guild 0.
@@ -38,6 +41,7 @@ from bot.notion.models import (
     _title,
 )
 from bot.results import ActionResult
+from bot.sync.botdata import botdata_rows, parse_botdata_page
 from bot.sync.intake import Intake
 from bot.sync.payloads import (
     PROP_DJ_ALT_LINK,
@@ -49,6 +53,7 @@ from bot.sync.payloads import (
     notion_dj_payload,
     notion_event_payload,
     notion_slot_payload,
+    payload_hash,
     slot_payload,
 )
 from bot.sync.plan import Change, Side, plan
@@ -236,6 +241,7 @@ class SyncCycle:
             await self._event_pass(snapshot.events, intake)
             await self._dj_pass(snapshot.djs, intake)
             await self._slot_pass(snapshot.slots, intake)
+            await self._botdata_pass(snapshot.botdata)
         finally:
             await intake.flush_log()
         now = datetime.datetime.now(datetime.UTC).isoformat()
@@ -319,6 +325,45 @@ class SyncCycle:
         side, unmatched, unreadable = _match(pages, rows, parse)
         unmatched, adopted = await self._adopt_slots(pg, rows, unmatched, intake)
         await self._plan("slot", pg, side, rows, unmatched, unreadable, intake, adopted)
+
+    async def _botdata_pass(self, pages: list[dict[str, Any]]) -> None:
+        """Push-only: queue rows that differ from Notion, trash pages without a row."""
+        pg = await botdata_rows(self._db)
+        rows = await mirror.get_all(self._db, "botdata")
+        key_by_page = {r.notion_page_id: k for k, r in rows.items() if r.notion_page_id}
+        live: dict[str, dict[str, Any] | None] = {}  # key -> (parsed) Notion row payload
+        for page in pages:
+            if self._ctx.maintenance:
+                raise _Stopped
+            page_id = str(page.get("id") or "")
+            parsed = parse_botdata_page(page)
+            key = key_by_page.get(page_id)
+            if key is None or key not in pg:
+                # No row in Postgres, or a page the mirror does not know: trash it. A stray
+                # page gets its own outbox key so it never replaces a row's own write.
+                changed(self._ctx, "botdata", key or f"stray:{page_id}", "delete", page_id)
+                self._counts.pushed += 1
+            elif parsed is None or parsed[0] != key:
+                live[key] = None  # hand-edited key or unreadable page: overwrite
+            else:
+                live[key] = parsed[2]
+        for key, (_, row) in pg.items():
+            if self._ctx.maintenance:
+                raise _Stopped
+            known = rows.get(key)
+            if (
+                known is None
+                or known.notion_page_id is None
+                or key not in live
+                or known.synced_hash != payload_hash(row)
+                or live[key] != known.synced_payload
+            ):
+                changed(self._ctx, "botdata", key)
+                self._counts.pushed += 1
+        page_ids = {str(p.get("id") or "") for p in pages}
+        for key in rows.keys() - pg.keys():
+            if rows[key].notion_page_id not in page_ids:
+                await mirror.forget(self._db, "botdata", key)  # page and row both gone
 
     async def _adopt_slots(
         self,

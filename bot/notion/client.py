@@ -2,6 +2,7 @@
 import asyncio
 import dataclasses
 import datetime
+import json
 import logging
 import urllib.parse
 from typing import Any
@@ -10,6 +11,9 @@ from bot.db.events import DuplicateEventError
 from bot.notion.api import NotionApi, NotionWriteError
 from bot.notion.models import (
     MAX_SLOTS,
+    PROP_BOTDATA_KEY,
+    PROP_BOTDATA_PAYLOAD,
+    PROP_BOTDATA_TABLE,
     PROP_DJ_DISCORD_ID,
     PROP_DJ_DISCORD_NAME,
     PROP_DJ_NAME,
@@ -93,6 +97,10 @@ def _is_http_url(value: str | None) -> bool:
 
 def _url_prop(value: str | None) -> dict[str, Any]:
     return {"url": value.strip() if value and _is_http_url(value) else None}
+
+
+_RICH_TEXT_LIMIT = 2000
+_RICH_TEXT_MAX_CHUNKS = 100
 
 
 @dataclasses.dataclass
@@ -700,13 +708,39 @@ class NotionClient:
             raise DjLogoUploadError(new_id)
         return new_id
 
+    async def mirror_botdata(
+        self, key: str, table: str, payload: dict[str, Any], page_id: str | None
+    ) -> str:
+        """Write one Bot data row (read-only backup) to its page (created when missing).
+
+        The JSON payload is split into 2000-character rich text chunks. A payload beyond
+        Notion's 100 chunks per property is left out and the ``Note`` says so.
+        """
+        text = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+        chunks = [text[i : i + _RICH_TEXT_LIMIT] for i in range(0, len(text), _RICH_TEXT_LIMIT)]
+        note = ""
+        if len(chunks) > _RICH_TEXT_MAX_CHUNKS:
+            chunks, note = [], "Too large for Notion; the payload is only in the export file."
+        props: dict[str, Any] = {
+            PROP_BOTDATA_KEY: {"title": _text(key)},
+            PROP_BOTDATA_TABLE: {"select": {"name": table}},
+            PROP_BOTDATA_PAYLOAD: {"rich_text": [_text(c)[0] for c in chunks]},
+            "Updated": {
+                "date": {"start": datetime.datetime.now(datetime.UTC).isoformat()}
+            },
+            "Note": {"rich_text": _text(note) if note else []},
+        }
+        return await self._mirror_page(
+            self._ids.botdata_ds, props, page_id, f"bot data {key}"
+        )
+
     async def read_all(self) -> "NotionSnapshot":
         """All non-trashed pages of the mirrored databases (raw JSON)."""
         return NotionSnapshot(
             events=await self._rows(self._ids.events_ds),
             slots=await self._rows(self._ids.slots_ds),
             djs=await self._rows(self._ids.djs_ds),
-            botdata=[],
+            botdata=await self._rows(self._ids.botdata_ds) if self._ids.botdata_ds else [],
         )
 
     @staticmethod

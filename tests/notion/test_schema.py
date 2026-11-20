@@ -78,7 +78,7 @@ async def test_first_run_creates_everything(store: dict) -> None:
     api, _ = make(fake)
     ids = await ensure_schema(api, object(), GUILD, PARENT)  # type: ignore[arg-type]
 
-    assert len(fake.databases) == 3
+    assert len(fake.databases) == 4
     assert types(fake, "Events") == EVENT_PROPS
     assert types(fake, "Slots") == SLOT_PROPS
     assert types(fake, "DJs") == DJ_PROPS
@@ -135,8 +135,13 @@ async def test_first_run_creates_everything(store: dict) -> None:
     assert keys == {
         "notion_events_ds", "notion_slots_ds", "notion_djs_ds",
         "notion_events_db", "notion_slots_db", "notion_djs_db", "notion_slots_event_prop",
-        "notion_schema_complete",
+        "notion_schema_complete", "notion_botdata_ds", "notion_botdata_db",
     }
+    assert types(fake, "Bot data") == {
+        "Key": "title", "Table": "select", "Payload": "rich_text", "Updated": "date",
+        "Note": "rich_text",
+    }
+    assert ids.botdata_ds == fake.ds_by_title("Bot data")["id"]
     assert isinstance(ids, NotionIds)
     assert store[(GUILD, "notion_schema_complete")] == "1"
     assert store[(GUILD, "notion_events_db")] == ids.events_db
@@ -150,7 +155,7 @@ async def test_second_run_creates_nothing(store: dict) -> None:
     second = await ensure_schema(api, object(), GUILD, PARENT)  # type: ignore[arg-type]
 
     assert second == first
-    assert len(fake.databases) == 3
+    assert len(fake.databases) == 4
     assert not fake.requests_to("POST", "/databases")
     assert not fake.requests_to("PATCH", "/data_sources")
     log.post_error.assert_not_awaited()
@@ -179,7 +184,7 @@ async def test_missing_database_creates_fresh_set_of_all_three(
     with pytest.raises(NotionDatabasesMissing) as exc_info:
         await _run(api)
     assert first.djs_ds in exc_info.value.detail
-    assert len(fake.databases) == 3
+    assert len(fake.databases) == 4
     clear_ids.assert_not_awaited()
 
     store[(GUILD, "notion_recreate_approved")] = "1"
@@ -187,7 +192,7 @@ async def test_missing_database_creates_fresh_set_of_all_three(
         second = await _run(api)
 
     assert store[(GUILD, "notion_recreate_approved")] == "0"  # one approval, one new set
-    assert len(fake.databases) == 6
+    assert len(fake.databases) == 8
     assert {second.events_ds, second.slots_ds, second.djs_ds}.isdisjoint(
         {first.events_ds, first.slots_ds, first.djs_ds}
     )
@@ -213,8 +218,8 @@ async def test_missing_database_creates_fresh_set_of_all_three(
     [
         ("POST", "/databases", 2, 2),  # Slots creation fails
         ("POST", "/databases", 1, 1),  # DJs creation fails
-        ("PATCH", "/data_sources/", 0, 3),  # relation PATCH fails
-        ("PATCH", "/data_sources/", 1, 3),  # helper/formula PATCH fails
+        ("PATCH", "/data_sources/", 0, 4),  # relation PATCH fails
+        ("PATCH", "/data_sources/", 1, 4),  # helper/formula PATCH fails
     ],
 )
 async def test_partial_failure_then_rerun_resumes_without_duplicates(
@@ -231,7 +236,7 @@ async def test_partial_failure_then_rerun_resumes_without_duplicates(
 
     ids = await _run(api)
 
-    assert len(fake.databases) == 3
+    assert len(fake.databases) == 4
     assert types(fake, "Events") == EVENT_PROPS
     assert types(fake, "Slots") == SLOT_PROPS
     assert types(fake, "DJs") == DJ_PROPS
@@ -252,7 +257,7 @@ async def test_missing_property_is_added(store: dict) -> None:
 
     assert types(fake, "Events") == EVENT_PROPS
     assert types(fake, "DJs") == DJ_PROPS
-    assert len(fake.databases) == 3
+    assert len(fake.databases) == 4
     log.post_error.assert_not_awaited()
 
 
@@ -378,3 +383,21 @@ def _store_put(data: dict) -> Any:
     async def put(_pool: Any, guild_id: int, key: str, value: str) -> None:
         data[(guild_id, key)] = value
     return put
+
+
+async def test_three_stored_databases_get_only_bot_data_created(store: dict) -> None:
+    fake = FakeNotion()
+    api, _ = make(fake)
+    ids = await ensure_schema(api, object(), GUILD, PARENT)  # type: ignore[arg-type]
+    for key in ("notion_botdata_ds", "notion_botdata_db"):  # an install from before Bot data
+        del store[(GUILD, key)]
+    fake.trash_data_source(ids.botdata_ds)
+    del fake.databases[ids.botdata_db]
+    store[(GUILD, "notion_views_created")] = "1"
+
+    new = await ensure_schema(api, object(), GUILD, PARENT)  # type: ignore[arg-type]
+
+    assert len(fake.databases) == 4
+    assert new.botdata_ds == fake.ds_by_title("Bot data")["id"] != ids.botdata_ds
+    assert (new.events_ds, new.djs_ds) == (ids.events_ds, ids.djs_ds)
+    assert store[(GUILD, "notion_views_created")] == "0"

@@ -7,6 +7,10 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# Bot data properties
+PROP_BOTDATA_KEY = "Key"
+PROP_BOTDATA_TABLE = "Table"
+PROP_BOTDATA_PAYLOAD = "Payload"
 # Events properties
 PROP_EVENT_ID = "ID"
 PROP_EVENT_DATE = "Date"

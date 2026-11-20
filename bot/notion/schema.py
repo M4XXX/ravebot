@@ -1,4 +1,4 @@
-"""Create and verify the three Notion databases (Events, Slots, DJs).
+"""Create and verify the four Notion databases (Events, Slots, DJs, Bot data).
 
 ``ensure_schema`` is idempotent: it reads the stored data source ids from the
 config table, verifies every property, adds what is missing, recreates data
@@ -38,9 +38,11 @@ _KEYS = {
     "events_ds": "notion_events_ds",
     "slots_ds": "notion_slots_ds",
     "djs_ds": "notion_djs_ds",
+    "botdata_ds": "notion_botdata_ds",
     "events_db": "notion_events_db",
     "slots_db": "notion_slots_db",
     "djs_db": "notion_djs_db",
+    "botdata_db": "notion_botdata_db",
     "slots_event_property_id": "notion_slots_event_prop",
 }
 
@@ -78,6 +80,11 @@ class NotionIds:
     slots_db: str
     djs_db: str
     slots_event_property_id: str  # URL-decoded; needed for the Lineup view group_by
+    botdata_ds: str = ""
+    botdata_db: str = ""
+
+
+BOTDATA_DESCRIPTION = "Read-only backup written by the bot. Edits here are overwritten."
 
 
 def _events_props() -> dict[str, Any]:
@@ -91,6 +98,16 @@ def _events_props() -> dict[str, Any]:
         "Start": {"rich_text": {}},
         "Slot length": {"number": {}},
         "Bot ID": {"rich_text": {}},
+    }
+
+
+def _botdata_props() -> dict[str, Any]:
+    return {
+        "Key": {"title": {}},
+        "Table": {"select": {}},
+        "Payload": {"rich_text": {}},
+        "Updated": {"date": {}},
+        "Note": {"rich_text": {}},
     }
 
 
@@ -237,6 +254,7 @@ async def _create(
     props: dict[str, Any],
     ds_key: str,
     db_key: str,
+    description: str | None = None,
 ) -> str:
     """Create a database and persist its ids immediately (crash safety)."""
     created = await api.request(
@@ -245,6 +263,11 @@ async def _create(
         {
             "parent": {"type": "page_id", "page_id": parent_page_id},
             "title": [{"type": "text", "text": {"content": title}}],
+            **(
+                {"description": [{"type": "text", "text": {"content": description}}]}
+                if description
+                else {}
+            ),
             "initial_data_source": {"properties": props},
         },
         f"create {title} database",
@@ -272,7 +295,8 @@ async def _check(api: NotionApi, ds_id: str, label: str) -> str | None:
 async def ensure_schema(
     api: NotionApi, db: asyncpg.Pool, guild_id: int, parent_page_id: str
 ) -> NotionIds:
-    labels = {"events": "Events", "djs": "DJs", "slots": "Slots"}
+    labels = {"events": "Events", "djs": "DJs", "slots": "Slots", "botdata": "Bot data"}
+    core = ("events", "djs", "slots")  # databases older installs already have
     stored: dict[str, str | None] = {
         n: (await get_value(db, guild_id, _KEYS[f"{n}_ds"])) or None for n in labels
     }
@@ -281,12 +305,19 @@ async def ensure_schema(
     # If any stored database is gone, abandon the whole set and start a fresh one.
     problems = []
     for name, ds_id in stored.items():
-        if ds_id is None:
+        if ds_id is None or name == "botdata":
             continue
         reason = await _check(api, ds_id, labels[name])
         if reason:
             problems.append(f"{labels[name]} data source {ds_id} {reason}")
-    if complete and any(v is None for v in stored.values()):
+    # Bot data only mirrors Postgres: a lost one is recreated alone, nothing is lost.
+    if stored["botdata"] is not None:
+        reason = await _check(api, stored["botdata"], "Bot data")
+        if reason:
+            logger.warning("Notion schema: Bot data data source %s %s; recreating it",
+                           stored["botdata"], reason)
+            stored["botdata"] = None
+    if complete and any(stored[n] is None for n in core):
         problems.append("a stored database id is missing from the config")
     if problems:
         detail = "; ".join(problems)
@@ -313,10 +344,10 @@ async def ensure_schema(
         await set_value(db, guild_id, _COMPLETE_KEY, "0")
 
     # Events and DJs first, Slots needs both data source ids.
-    def mk(n: str, title: str, props: dict[str, Any]) -> Any:
+    def mk(n: str, title: str, props: dict[str, Any], description: str | None = None) -> Any:
         return _create(
             api, db, guild_id, parent_page_id, title, props,
-            _KEYS[f"{n}_ds"], _KEYS[f"{n}_db"],
+            _KEYS[f"{n}_ds"], _KEYS[f"{n}_db"], description,
         )
 
     events_ds = stored["events"] or await mk("events", "Events", _events_props())
@@ -325,12 +356,21 @@ async def ensure_schema(
         "slots", "Slots", _slots_props(events_ds, djs_ds, dj_dual=False)
     )
 
+    # An install from before the Bot data mirror gets just this database (R5).
+    botdata_new = stored["botdata"] is None
+    botdata_ds = stored["botdata"] or await mk(
+        "botdata", "Bot data", _botdata_props(), BOTDATA_DESCRIPTION
+    )
+    if botdata_new and await get_value(db, guild_id, VIEWS_MARKER_KEY) == "1":
+        await set_value(db, guild_id, VIEWS_MARKER_KEY, "0")  # ensure_views adds its view
+
     events = await _reconcile(api, events_ds, "Events", _events_props())
     djs = await _reconcile(api, djs_ds, "DJs", _djs_props())
     await _reconcile(api, slots_ds, "Slots", _slots_props(events_ds, djs_ds, dj_dual=True))
     await _reconcile(api, slots_ds, "Slots", _slots_rollups())
     await _reconcile(api, slots_ds, "Slots", _slots_formulas())
     await _reconcile(api, djs_ds, "DJs", _djs_rollups())
+    botdata = await _reconcile(api, botdata_ds, "Bot data", _botdata_props())
     slots = await api.request("GET", f"/data_sources/{slots_ds}", None, "retrieve Slots")
 
     async def db_id(name: str, ds: dict[str, Any]) -> str:
@@ -344,6 +384,8 @@ async def ensure_schema(
         events_db=await db_id("events", events),
         slots_db=await db_id("slots", slots),
         djs_db=await db_id("djs", djs),
+        botdata_ds=botdata_ds,
+        botdata_db=await db_id("botdata", botdata),
         slots_event_property_id=unquote(slots["properties"]["Event"]["id"]),
     )
     await set_value(

@@ -19,6 +19,7 @@ import asyncpg
 
 from bot.db import djs, mirror, outbox
 from bot.notion.client import DjLogoUploadError
+from bot.sync.botdata import botdata_row
 from bot.sync.payloads import dj_payload, event_payload, slot_payload
 
 __all__ = ["MirrorWorker", "changed"]
@@ -159,6 +160,8 @@ class MirrorWorker:
             await self._sync_dj(row.entity_key, row.op, row.notion_page_id)
         elif row.entity == "slot":
             await self._sync_slot(row.entity_key, row.op, row.notion_page_id)
+        elif row.entity == "botdata":
+            await self._sync_botdata(row.entity_key, row.op, row.notion_page_id)
         else:
             raise ValueError(f"unknown mirror entity: {row.entity}")
 
@@ -234,6 +237,20 @@ class MirrorWorker:
         if upload_logo:
             await djs.mark_logo_synced_if_unchanged(self.db, int(key), image)
         return new_id
+
+    async def _sync_botdata(
+        self, key: str, op: str = "upsert", page_id: str | None = None
+    ) -> None:
+        current = None if op == "delete" else await botdata_row(self.db, key)
+        if current is None:
+            await self._trash("botdata", key, page_id)
+            return
+        table, row = current
+        await self._limiter.acquire(_WRITE_REQUESTS)
+        new_id = await self.notion_client.mirror_botdata(
+            key, table, row, await self._page_id("botdata", key)
+        )
+        await mirror.set_synced(self.db, "botdata", key, new_id, row)
 
     async def _sync_slot(self, key: str, op: str = "upsert", page_id: str | None = None) -> None:
         uid, _, index_text = key.rpartition(":")

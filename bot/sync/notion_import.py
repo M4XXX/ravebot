@@ -36,6 +36,7 @@ from bot.notion.models import (
     _title,
     parse_dj,
 )
+from bot.sync.botdata import restore_botdata
 from bot.sync.payloads import (
     PROP_DJ_ALT_LINK,
     PROP_DJ_LINK,
@@ -237,7 +238,9 @@ async def import_from_notion(
 
     try:
         async with pool.acquire() as conn, conn.transaction():
-            counts = await _write(conn, mode, events, djs, problems, notes)
+            counts = await _write(
+                conn, mode, events, djs, problems, notes, snapshot.botdata
+            )
     except _Rollback:
         return ImportResult(False, 0, 0, 0, problems, notes)
     except asyncpg.PostgresError as exc:
@@ -253,6 +256,7 @@ async def _write(
     djs: list[_Dj],
     problems: list[str],
     notes: list[str],
+    botdata: list[dict[str, Any]],
 ) -> tuple[int, int, int]:
     if mode == "replace":
         await conn.execute(f"TRUNCATE {_REPLACE_TABLES}")
@@ -295,6 +299,9 @@ async def _write(
         for index in range(event.draft.slot_count):
             if index not in event.slot_pages:  # no Notion row yet: the worker creates it
                 await outbox.enqueue(conn, "slot", f"{event.uid}:{index}")
+    if mode == "replace":
+        # Upgrade keeps what Postgres already holds; a rebuild restores the bot tables.
+        await restore_botdata(conn, botdata)
     return len(new_events), slots, len(djs)
 
 
