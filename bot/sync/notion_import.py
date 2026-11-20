@@ -200,11 +200,14 @@ def _logo_file(page: dict[str, Any]) -> tuple[str, str] | None:
 def _plan_slots(
     pages: list[dict[str, Any]],
     events: list[_Event],
-    dj_pages: set[str],
     problems: list[str],
     notes: list[str],
 ) -> None:
-    """Attach each readable slot page to its event; booked orphans are problems."""
+    """Attach each readable slot page to its event; booked orphans are problems.
+
+    A slot whose DJ page cannot be read is decided in ``_write`` (it needs the
+    database: upgrade mode keeps an existing booking).
+    """
     by_page = {e.page_id: e for e in events}
     for page in pages:
         event_ids = _relation_ids(page, PROP_SLOT_EVENT)
@@ -228,8 +231,6 @@ def _plan_slots(
                 notes.append(f"{slot} has a second Notion row; skipped")
                 continue
             notes.append(f"{slot} has a second Notion row; the empty one is skipped")
-        if djs and djs[0] not in dj_pages:
-            notes.append(f"{slot}: its DJ page is unreadable, imported as free")
         if len(djs) > 1:
             notes.append(f"{slot} has more than one DJ; the first is kept")
         event.slot_pages[index] = page
@@ -251,7 +252,7 @@ async def import_from_notion(
     notes: list[str] = []
     events = _plan_events(snapshot.events, problems, notes)
     djs = _plan_djs(snapshot.djs, problems, notes)
-    _plan_slots(snapshot.slots, events, {d.page_id for d in djs}, problems, notes)
+    _plan_slots(snapshot.slots, events, problems, notes)
     if problems:
         return ImportResult(False, 0, 0, 0, problems, notes)
 
@@ -316,6 +317,13 @@ async def _write(
             payload = notion_slot_payload(page, uid_by_page, id_by_dj_page)
             if payload is None:  # cannot happen after the checks above
                 continue
+            dj_pages = _relation_ids(page, PROP_SLOT_DJ)
+            if dj_pages and dj_pages[0] not in id_by_dj_page:
+                payload = await _unreadable_dj(
+                    conn, mode, event, index, payload, problems, notes
+                )
+                if payload is None:
+                    continue
             holders[index] = payload["discord_id"]
             await mirror.set_synced(conn, "slot", f"{event.uid}:{index}", page["id"], payload)
             slots += 1
@@ -323,10 +331,45 @@ async def _write(
         for index in range(event.draft.slot_count):
             if index not in event.slot_pages:  # no Notion row yet: the worker creates it
                 await outbox.enqueue(conn, "slot", f"{event.uid}:{index}")
+    if problems:
+        raise _Rollback
     if mode == "replace":
         # Upgrade keeps what Postgres already holds; a rebuild restores the bot tables.
         await restore_botdata(conn, botdata)
     return len(new_events), slots, len(djs)
+
+
+async def _unreadable_dj(
+    conn: asyncpg.Connection,
+    mode: str,
+    event: _Event,
+    index: int,
+    payload: dict[str, Any],
+    problems: list[str],
+    notes: list[str],
+) -> dict[str, Any] | None:
+    """A booked slot whose Notion DJ page cannot be read (I6).
+
+    Upgrade: the booking the database already holds (rows keyed by the page id) is
+    kept; without one the booking would be lost, so it is a problem (rollback).
+    Replace (rebuild): imported as free, with a note. Returns the payload to use.
+    """
+    slot = f"Slot {index + 1} of '{event.draft.event_id}'"
+    if mode != "upgrade":
+        notes.append(f"{slot}: its DJ page is unreadable, imported as free")
+        return payload
+    holder = await conn.fetchval(
+        "SELECT discord_user_id FROM slot_locks WHERE event_id = $1 AND slot_index = $2",
+        event.uid,
+        index,
+    )
+    if holder is None:
+        problems.append(
+            f"{slot}: its DJ page cannot be read and the database has no booking for it"
+        )
+        return None
+    notes.append(f"{slot}: its DJ page cannot be read; the booking in the database is kept")
+    return {**payload, "discord_id": holder}
 
 
 async def _check_events(

@@ -135,6 +135,46 @@ async def test_upgrade_import_merges_existing_slot_locks(pool) -> None:
     assert rows[1]["booked_at"] is None
 
 
+async def test_upgrade_import_keeps_the_booking_of_an_unreadable_dj_page(pool) -> None:
+    """I6: a booked slot whose Notion DJ page cannot be read keeps the database holder."""
+    await djs.insert_dj(
+        pool, discord_user_id=A, dj_name="DJ A", vrchat_name=None, logo_url=None,
+        stream_url_primary=None, stream_url_backup=None,
+    )
+    await pool.execute(
+        "INSERT INTO slot_locks (event_id, slot_index, discord_user_id, booked_at)"
+        " VALUES ('ev-1', 0, $1, now())",
+        A,
+    )
+    snap = snapshot(
+        events=[event_page("ev-1", "Rave One", slots=2)],
+        slots=[slot_page("sl-1", "ev-1", 1, "dj-unreadable")],
+        djs=[dj_page("dj-unreadable", None)],  # no name: skipped as unreadable
+    )
+    result = await import_from_notion(pool, _client(snap), mode="upgrade")
+    assert result.ok, result.problems
+    holder = await pool.fetchval(
+        "SELECT discord_user_id FROM slot_locks WHERE event_id = 'ev-1' AND slot_index = 0"
+    )
+    assert holder == A
+    synced = await mirror.get(pool, "slot", "ev-1:0")
+    assert synced is not None and synced.synced_payload["discord_id"] == A
+    assert any("kept" in n for n in result.notes)
+
+
+async def test_upgrade_import_rolls_back_on_unreadable_dj_page_without_booking(pool) -> None:
+    """I6: no database holder to keep: the booking would be lost, so nothing is imported."""
+    snap = snapshot(
+        events=[event_page("ev-1", "Rave One", slots=2)],
+        slots=[slot_page("sl-1", "ev-1", 1, "dj-unreadable")],
+        djs=[dj_page("dj-unreadable", None)],
+    )
+    result = await import_from_notion(pool, _client(snap), mode="upgrade")
+    assert not result.ok
+    assert any("DJ page" in p for p in result.problems)
+    assert await _count(pool, "events") == 0
+
+
 async def test_upgrade_import_rolls_back_on_duplicate_titles(pool) -> None:
     snap = snapshot(
         events=[event_page("p1", "Rave"), event_page("p2", "Rave")],
