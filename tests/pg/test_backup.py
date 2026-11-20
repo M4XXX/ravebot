@@ -65,6 +65,8 @@ async def test_export_decodes_jsonb_and_timestamps(pool) -> None:  # noqa: ANN00
 
 # ---- import (bot/backup/restore.py) ----
 
+import asyncio  # noqa: E402
+import contextlib  # noqa: E402
 import gzip as _gzip  # noqa: E402
 from types import SimpleNamespace  # noqa: E402
 from unittest.mock import AsyncMock  # noqa: E402
@@ -72,10 +74,21 @@ from unittest.mock import AsyncMock  # noqa: E402
 from bot.backup import restore  # noqa: E402
 
 
+class _FakeCycle:
+    def __init__(self) -> None:
+        self.lock = asyncio.Lock()
+        self.resync_all = AsyncMock(return_value=3)
+
+    @contextlib.asynccontextmanager
+    async def exclusive(self):  # noqa: ANN202
+        async with self.lock:
+            yield
+
+
 def _ctx(pool, *, notion: bool = False):  # noqa: ANN001, ANN202
     return SimpleNamespace(
         db=pool, maintenance=None, admins=SimpleNamespace(load=AsyncMock()),
-        sync_cycle=SimpleNamespace(resync_all=AsyncMock(return_value=3)) if notion else None,
+        sync_cycle=_FakeCycle() if notion else None,
     )
 
 
@@ -161,3 +174,29 @@ async def test_import_reloads_admins_and_resyncs(pool, tmp_path, monkeypatch) ->
     plain = _ctx(pool)
     assert (await restore.import_database(plain, data)).ok
     plain.admins.load.assert_awaited_once()
+
+
+async def test_import_waits_for_running_cycle_and_keeps_maintenance_until_resync(
+    pool, tmp_path, monkeypatch  # noqa: ANN001
+) -> None:
+    monkeypatch.setenv("BACKUP_DIR", str(tmp_path))
+    await _seed(pool)
+    data = await export_database(pool)
+    ctx = _ctx(pool, notion=True)
+    seen: list = []
+
+    async def resync():  # noqa: ANN202
+        seen.append(ctx.maintenance)
+        return 3
+
+    ctx.sync_cycle.resync_all = AsyncMock(side_effect=resync)
+    await ctx.sync_cycle.lock.acquire()  # a cycle is stuck in read_all
+    task = asyncio.create_task(restore.import_database(ctx, data))
+    await asyncio.sleep(1)
+    assert not task.done() and ctx.maintenance  # waiting, bookings paused
+    ctx.sync_cycle.resync_all.assert_not_awaited()
+    ctx.sync_cycle.lock.release()
+    result = await task
+    assert result.ok, result.message
+    assert seen and seen[0]  # maintenance still set when the resync ran
+    assert ctx.maintenance is None

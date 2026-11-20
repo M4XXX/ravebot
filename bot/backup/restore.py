@@ -7,6 +7,7 @@ maintenance mode).
 """
 import asyncio
 import base64
+import contextlib
 import datetime
 import decimal
 import gzip
@@ -210,21 +211,25 @@ async def import_database(ctx: Any, data: bytes) -> ActionResult:
 
     ctx.maintenance = texts.MAINTENANCE
     try:
-        try:
-            async with pool.acquire() as conn, conn.transaction():
-                await _write(conn, converted, document["sequences"])
-        except (asyncpg.PostgresError, asyncpg.InterfaceError):
-            logger.exception("The import from the backup file failed in the database")
-            return ActionResult(False, texts.IMPORT_DB_ERROR)
+        async with contextlib.AsyncExitStack() as stack:
+            if ctx.sync_cycle is not None:
+                # Wait for a running Notion cycle; it must not compare an old Notion
+                # snapshot with the restored data.
+                await stack.enter_async_context(ctx.sync_cycle.exclusive())
+            try:
+                async with pool.acquire() as conn, conn.transaction():
+                    await _write(conn, converted, document["sequences"])
+            except (asyncpg.PostgresError, asyncpg.InterfaceError):
+                logger.exception("The import from the backup file failed in the database")
+                return ActionResult(False, texts.IMPORT_DB_ERROR)
+            if ctx.admins is not None:
+                await ctx.admins.load()
+            if ctx.sync_cycle is not None:
+                try:
+                    await ctx.sync_cycle.resync_all()
+                except Exception:
+                    logger.exception("Writing the restored data to Notion failed")
+                    return ActionResult(True, texts.IMPORT_DONE_RESYNC_FAILED)
+            return ActionResult(True, texts.IMPORT_DONE)
     finally:
         ctx.maintenance = None
-
-    if ctx.admins is not None:
-        await ctx.admins.load()
-    if ctx.sync_cycle is not None:
-        try:
-            await ctx.sync_cycle.resync_all()
-        except Exception:
-            logger.exception("Writing the restored data to Notion failed")
-            return ActionResult(True, texts.IMPORT_DONE_RESYNC_FAILED)
-    return ActionResult(True, texts.IMPORT_DONE)

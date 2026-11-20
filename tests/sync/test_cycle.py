@@ -458,3 +458,24 @@ async def test_resync_all_enqueues_everything(store, monkeypatch) -> None:
     ctx.mirror.notify.assert_called_once()
     ctx.mirror = None
     assert await cycle.resync_all() == 0
+
+
+async def test_exclusive_waits_for_running_cycle(store, monkeypatch) -> None:
+    import asyncio
+
+    cycle, _ctx = make_cycle()
+    entered = []
+
+    async def hold() -> None:
+        async with cycle.exclusive():
+            entered.append(1)
+
+    async with cycle._lock:
+        task = asyncio.create_task(hold())
+        await asyncio.sleep(0.05)
+        assert not entered
+    await task
+    assert entered == [1]
+    monkeypatch.setattr(cycle_mod, "_load_pg", AsyncMock(return_value={}))
+    async with cycle.exclusive():  # resync_all must not take the lock again
+        assert await asyncio.wait_for(cycle.resync_all(), 1) == 0

@@ -20,9 +20,10 @@ uses its own short-lived pool connection; no row lock is held across a Notion ca
 ``sync_last_run`` and ``sync_last_error`` are stored under config guild 0.
 """
 import asyncio
+import contextlib
 import datetime
 import logging
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -199,6 +200,16 @@ class SyncCycle:
     @property
     def _db(self) -> asyncpg.Pool:
         return self._ctx.db
+
+    @contextlib.asynccontextmanager
+    async def exclusive(self) -> AsyncIterator[None]:
+        """Wait for a running cycle or admin decision, then keep them out until exit.
+
+        For maintenance jobs (backup import). Do not call run, resolve_issue or any
+        other method that takes the lock while holding it; resync_all does not.
+        """
+        async with self._lock:
+            yield
 
     # ---- cycle ----
 
