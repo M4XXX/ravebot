@@ -74,12 +74,6 @@ class OutreachCog(commands.Cog):
             logger.debug("OutreachCog._outreach_check: automatic outreach is off, skipping")
             return
 
-        if self.ctx.notion_client is None:
-            logger.warning(
-                "OutreachCog._outreach_check: notion_client not available — skipping cycle"
-            )
-            return
-
         if self.ctx.outreach_service is None:
             logger.warning(
                 "OutreachCog._outreach_check: outreach_service not available — skipping cycle"

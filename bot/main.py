@@ -14,7 +14,7 @@ Startup sequence:
      Postgres as the source of truth, a safety export, then events, slots and DJs are
      imported from Notion once. Until it succeeds the bot is in maintenance (bookings and
      edits refused) and the mirror worker stays off. The result is posted in on_ready.
-  9. Create the services (incl. NotionSyncService) and load the cogs
+  9. Create the services and load the cogs
  10. Start bot (Discord connects only AFTER DB and Notion are ready)
  11. With a Notion client and the import done: start the Notion mirror worker
      (bot/sync/worker.py) and queue the DJs whose logo is not in Notion yet
@@ -108,7 +108,7 @@ async def notify_admins_if_idle(bot: commands.Bot, db: object, admin_ids: object
             logger.warning("Could not send the setup DM to admin %s", admin_id, exc_info=True)
 
 
-async def _start_mirror(ctx: BotContext) -> None:
+async def _start_mirror(ctx: BotContext, bot: commands.Bot) -> None:
     """Start the Notion mirror worker once a Notion client exists (never without Notion).
 
     Not during maintenance: until the upgrade import succeeded ctx.mirror stays None,
@@ -121,7 +121,12 @@ async def _start_mirror(ctx: BotContext) -> None:
         and ctx.db is not None
         and ctx.maintenance is None
     ):
-        ctx.mirror = MirrorWorker(ctx.db, ctx.notion_client, ctx.log_service)
+        ctx.mirror = MirrorWorker(
+            ctx.db,
+            ctx.notion_client,
+            ctx.log_service,
+            name_resolver=lambda uid: getattr(bot.get_user(uid), "display_name", None),
+        )
         ctx.mirror.start()
         await queue_unsynced_logos(ctx)
 
@@ -180,7 +185,7 @@ async def main() -> None:
             ctx.notion_problem = None
             await run_upgrade_import_if_needed(ctx)
             await post_upgrade_result(ctx)
-            await _start_mirror(ctx)
+            await _start_mirror(ctx, bot)
             logger.info("New Notion databases created after an admin approved it")
             return None
 
@@ -198,7 +203,7 @@ async def main() -> None:
             sys.exit(f"{NOTION_SETUP_FAILED} (Cause: {exc})")
         ctx.notion_recover = recover_notion
         await run_upgrade_import_if_needed(ctx)
-        await _start_mirror(ctx)
+        await _start_mirror(ctx, bot)
 
     # Story 3.2: init LineupService after DB and log_service are ready
     from bot.services.lineup import LineupService
@@ -231,33 +236,21 @@ async def main() -> None:
         view=post_view,
         db=ctx.db,
         log_service=ctx.log_service,
-        notion_client=ctx.notion_client,
     )
 
-    # Notion rework: reconcile hand edits in Notion with Postgres on every poll
-    from bot.services.notion_sync import NotionSyncService
-    ctx.notion_sync_service = NotionSyncService(
-        bot=bot,
-        db=ctx.db,
-        notion_client=ctx.notion_client,
-        log_service=ctx.log_service,
-    )
-
-    # Story 5.1: init OutreachService after notion_client and log_service are ready
+    # Story 5.1: init OutreachService after log_service is ready
     from bot.services.outreach import OutreachService
     ctx.outreach_service = OutreachService(
         bot=bot,
         db=ctx.db,
-        notion_client=ctx.notion_client,
         log_service=ctx.log_service,
     )
 
-    # Story 5.4: init RemindersService after notion_client and log_service are ready
+    # Story 5.4: init RemindersService after log_service is ready
     from bot.services.reminders import RemindersService
     ctx.reminders_service = RemindersService(
         bot=bot,
         db=ctx.db,
-        notion_client=ctx.notion_client,
         log_service=ctx.log_service,
     )
 
@@ -266,8 +259,8 @@ async def main() -> None:
     ctx.admin_booking_service = AdminBookingService(
         bot=bot,
         db=ctx.db,
-        notion_client=ctx.notion_client,
         log_service=ctx.log_service,
+        ctx=ctx,
     )
 
     from bot.services.dj_admin import DjAdminService

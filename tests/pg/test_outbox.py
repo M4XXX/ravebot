@@ -96,7 +96,9 @@ class _Notion:
         self.calls.append(f"event {uid}")
         return "page-ev"
 
-    async def mirror_dj(self, payload, page_id, *, logo_image, upload_logo, logo_url=None):  # noqa: ANN001, ANN202
+    async def mirror_dj(  # noqa: ANN202
+        self, payload, page_id, *, logo_image, upload_logo, logo_url=None, discord_name=None  # noqa: ANN001
+    ):
         self.calls.append(f"dj {payload['discord_id']} logo={upload_logo}")
         return "page-dj"
 
@@ -121,7 +123,7 @@ async def test_drain_against_postgres(pool) -> None:
                    slot_minutes=60, slot_count=2),
         uid="u1",
     )
-    await bookings.acquire_slot_lock(pool, "E1", 1, A)
+    await bookings.acquire_slot_lock(pool, "u1", 1, A)  # slot_locks is keyed by the uid
     for entity, key in (("slot", "u1:1"), ("slot", "u1:0"), ("dj", str(A)), ("event", "u1")):
         await outbox.enqueue(pool, entity, key)
     notion = _Notion()

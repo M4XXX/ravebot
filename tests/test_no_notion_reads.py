@@ -4,8 +4,8 @@ import ast
 from pathlib import Path
 
 BOT = Path(__file__).resolve().parent.parent / "bot"
-# The Notion client, the mirror/poll code and the old Notion-wins sync (deleted in Task 10)
-ALLOWED = ("notion/", "sync/", "services/notion_sync.py")
+# The Notion client and the mirror/poll code
+ALLOWED = ("notion/", "sync/")
 
 
 def test_no_list_events_outside_sync() -> None:

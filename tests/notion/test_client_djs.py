@@ -257,28 +257,6 @@ async def test_upsert_without_upload_logo_still_sends_image_for_new_row(env):
     assert body["properties"]["Logo"]["files"][0]["file_upload"] == {"id": "up-3"}
 
 
-async def test_booking_page_lookup_survives_failing_logo_upload(env):
-    """ensure_dj_page (used by BookingConfirmView) on the real client: the logo
-    upload fails, yet a page id comes back and is stored, so the booking goes on."""
-    from bot.services.dj_pages import ensure_dj_page
-
-    fake, client, nids = env
-    client._api.upload_file = AsyncMock(side_effect=NotionWriteError("too big", 413))
-    row = {"dj_name": "DJ A", "vrchat_name": None, "logo_url": None,
-           "logo_image": b"img", "stream_url_primary": "https://twitch.tv/a",
-           "stream_url_backup": None}
-    with patch("bot.services.dj_pages.get_notion_dj_page_id", new=AsyncMock(return_value=None)), \
-         patch("bot.services.dj_pages.get_dj_by_discord_id", new=AsyncMock(return_value=row)), \
-         patch("bot.services.dj_pages.set_notion_dj_page_id", new=AsyncMock()) as setp, \
-         patch("bot.services.dj_pages.set_logo_synced", new=AsyncMock()) as setl:
-        page_id = await ensure_dj_page(MagicMock(), client, 123, "alice")
-    assert page_id is not None
-    assert [p["id"] for p in dj_pages(fake, nids)] == [page_id]
-    setp.assert_awaited_once()
-    setl.assert_awaited_once()
-    assert setl.await_args.args[1:] == (123, False)
-
-
 async def test_parallel_upserts_for_one_dj_run_one_after_the_other() -> None:
     import asyncio
     from unittest.mock import MagicMock

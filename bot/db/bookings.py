@@ -5,11 +5,10 @@ Handles: FR17, FR19, FR23 — slot booking writes with SELECT...FOR UPDATE.
 CRITICAL PATTERN:
   acquire_slot_lock() uses INSERT ON CONFLICT + SELECT...FOR UPDATE within a single
   transaction to guarantee only one DJ can claim a given (event_id, slot_index) pair.
-  The DB lock is a semaphore only — the authoritative booking record lives in Notion.
-  On Notion write failure, the caller MUST call release_slot_lock() to undo the claim.
+  slot_locks is the bookings table (Postgres is the source of truth); Notion only
+  mirrors it. event_id is the event uid (EventInfo.page_id).
 
 [Source: architecture.md#Slot Booking Atomicity: SELECT...FOR UPDATE in Transaction]
-[Source: architecture.md#Gap Analysis — PG lock vs Notion write boundary]
 """
 import datetime
 from dataclasses import dataclass
@@ -116,17 +115,13 @@ async def release_slot_lock(
 
     Returns True when a held slot was freed (False: nobody, or someone else, held it).
 
-    Called when:
-      - The Notion booking write fails after a successful acquire_slot_lock()
-      - A DJ self-cancels (Story 4.4)
-      - The Notion sync frees a slot cleared by hand, or an admin cancels
+    Called when a DJ self-cancels (Story 4.4) or an admin cancels.
 
     ``expected_holder`` set: only release if that user still holds the slot, so a
     stale caller never frees a slot someone else took in the meantime.
 
     Idempotent: safe to call even if the row does not exist or is already NULL.
 
-    [Source: epics.md#Story 4.2 AC3 (rollback on Notion failure)]
     [Source: epics.md#Story 4.4 (cancellation flow)]
     """
     if expected_holder is None:
@@ -200,6 +195,53 @@ async def admin_force_book_slot(
         slot_index,
         discord_user_id,
     )
+
+
+async def force_slot_holder(
+    pool: asyncpg.Pool,
+    event_id: str,
+    slot_index: int,
+    discord_user_id: int | None,
+) -> int | None:
+    """Set the slot's holder to ``discord_user_id`` (None frees it); admin override only.
+
+    Takes the same row lock as acquire_slot_lock (SELECT ... FOR UPDATE), so a DJ
+    booking racing the override is serialized with it. The row is created when
+    missing. Returns the previous holder (None if the slot was free).
+    """
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                """
+                INSERT INTO slot_locks (event_id, slot_index)
+                VALUES ($1, $2)
+                ON CONFLICT (event_id, slot_index) DO NOTHING
+                """,
+                event_id,
+                slot_index,
+            )
+            previous = await conn.fetchval(
+                """
+                SELECT discord_user_id FROM slot_locks
+                WHERE event_id = $1 AND slot_index = $2
+                FOR UPDATE
+                """,
+                event_id,
+                slot_index,
+            )
+            if previous != discord_user_id:
+                await conn.execute(
+                    """
+                    UPDATE slot_locks
+                    SET discord_user_id = $3,
+                        booked_at = CASE WHEN $3::bigint IS NULL THEN NULL ELSE NOW() END
+                    WHERE event_id = $1 AND slot_index = $2
+                    """,
+                    event_id,
+                    slot_index,
+                    discord_user_id,
+                )
+            return previous
 
 
 async def init_event_slots(

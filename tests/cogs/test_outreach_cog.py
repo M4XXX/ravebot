@@ -25,7 +25,7 @@ def _make_cog(enabled_value: str | None) -> tuple["object", MagicMock, MagicMock
     ctx = MagicMock()
     ctx.db = MagicMock()
     ctx.db.fetchval = AsyncMock(return_value=1)
-    ctx.notion_client = MagicMock()
+    ctx.notion_client = None  # outreach runs on Postgres alone
     svc = MagicMock()
     svc.run_gap_detection = AsyncMock(return_value=[MagicMock()])
     svc.contact_next_dj = AsyncMock(return_value=False)

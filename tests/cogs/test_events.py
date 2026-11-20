@@ -103,16 +103,11 @@ def _make_cog_with_bot(guilds: list = None) -> "EventsCog":
     log = MagicMock()
     log.post_error = AsyncMock()
     log.log_attention = AsyncMock()
-    notion = MagicMock()
-    notion.list_events = AsyncMock()
     ctx = MagicMock()
     ctx.db = mock_db
     ctx.log_service = log
     ctx.maintenance = None
-    ctx.notion_client = notion
-    sync = MagicMock()
-    sync.run_cycle = AsyncMock(return_value=[])
-    ctx.notion_sync_service = sync
+    ctx.notion_client = MagicMock()  # the poll must never touch it
 
     cog = EventsCog(ctx)
     mock_bot = MagicMock()
@@ -252,81 +247,42 @@ async def test_poll_notion_calls_auto_create_events() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Notion rework Task 13: sync cycle before the lineup, wait for ready
+# Poll order (Postgres only), wait for ready
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_poll_notion_runs_sync_cycle_before_list_and_refresh() -> None:
-    """_poll_notion runs NotionSyncService.run_cycle first, then reads fresh events."""
+async def test_poll_reads_postgres_and_never_calls_notion() -> None:
+    """The poll lists events, replenishes and refreshes the lineup; Notion is not used."""
     from bot.cogs.events import EventsCog
 
     cog = _make_cog_with_bot()
     events = _make_pages("page-a")
     order: list[str] = []
 
-    async def _sync(guild_id: int) -> list:
-        order.append(f"sync:{guild_id}")
-        return []
-
     async def _list(_db: object) -> list[EventInfo]:
         order.append("list")
         return events
+
+    async def _auto(_events: list[EventInfo], _guild_id: int) -> int:
+        order.append("replenish")
+        return 0
 
     async def _refresh(_events: list[EventInfo]) -> bool:
         order.append("refresh")
         return False
 
     cog.ctx.lineup_service = MagicMock(refresh=AsyncMock(side_effect=_refresh))
-
-    cog.ctx.notion_sync_service.run_cycle = AsyncMock(side_effect=_sync)
     fake_events.list_events = AsyncMock(side_effect=_list)
 
-    with patch.object(cog, "_auto_create_events", new=AsyncMock(return_value=0)):
+    with patch.object(cog, "_auto_create_events", new=AsyncMock(side_effect=_auto)):
         await EventsCog._poll_notion.coro(cog)
 
-    assert order == ["sync:99999", "list", "refresh"]
+    assert order == ["list", "replenish", "refresh"]
     cog.ctx.lineup_service.refresh.assert_awaited_once_with(events)
-
-
-@pytest.mark.asyncio
-async def test_poll_notion_sync_failure_does_not_stop_lineup_update() -> None:
-    """A failing run_cycle is logged and posted; the lineup update still runs."""
-    from bot.cogs.events import EventsCog
-
-    cog = _make_cog_with_bot()
-    events = _make_pages("page-a")
-    cog.ctx.notion_sync_service.run_cycle = AsyncMock(side_effect=RuntimeError("boom"))
-    fake_events.list_events = AsyncMock(return_value=events)
-
-    cog.ctx.lineup_service = MagicMock(refresh=AsyncMock())
-    with patch.object(cog, "_auto_create_events", new=AsyncMock(return_value=0)) as mock_auto:
-        await EventsCog._poll_notion.coro(cog)
-
-    mock_auto.assert_awaited_once()
-    cog.ctx.lineup_service.refresh.assert_awaited_once_with(events)
-    cog.ctx.log_service.log_attention.assert_awaited_once()
-    title, what, _todo = cog.ctx.log_service.log_attention.call_args.args
-    assert title == "Something failed"
-    assert "boom" not in what
-
-
-@pytest.mark.asyncio
-async def test_poll_notion_without_sync_service_still_updates_lineup() -> None:
-    """notion_sync_service=None skips the sync step; the poll works as before."""
-    from bot.cogs.events import EventsCog
-
-    cog = _make_cog_with_bot()
-    cog.ctx.notion_sync_service = None
-    events = _make_pages("page-a")
-    fake_events.list_events = AsyncMock(return_value=events)
-
-    cog.ctx.lineup_service = MagicMock(refresh=AsyncMock())
-    with patch.object(cog, "_auto_create_events", new=AsyncMock(return_value=0)):
-        await EventsCog._poll_notion.coro(cog)
-
-    cog.ctx.lineup_service.refresh.assert_awaited_once_with(events)
+    assert cog.ctx.notion_client.mock_calls == []
     cog.ctx.log_service.post_error.assert_not_called()
+    cog.ctx.log_service.log_attention.assert_not_called()
 
 
 @pytest.mark.asyncio

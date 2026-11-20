@@ -149,6 +149,19 @@ async def test_mirror_dj_keeps_logo_when_not_uploading(env):
     assert props["Logo"]["files"][0]["external"]["url"] == "https://x.test/l.png"
 
 
+async def test_mirror_dj_writes_discord_name_outside_the_payload(env):
+    fake, client, _ = env
+    page_id = await client.mirror_dj(
+        dj_payload(DJ_ROW), None, logo_image=None, upload_logo=True, discord_name="alice")
+    props = fake.pages[page_id]["properties"]
+    assert props["Discord name"]["rich_text"][0]["plain_text"] == "alice"
+    assert notion_dj_payload(fake.pages[page_id]) == dj_payload(DJ_ROW)
+    # Unknown name (user not in the cache): the cell keeps its value
+    await client.mirror_dj(dj_payload(DJ_ROW), page_id, logo_image=None, upload_logo=False)
+    props = fake.pages[page_id]["properties"]
+    assert props["Discord name"]["rich_text"][0]["plain_text"] == "alice"
+
+
 async def test_trash_page_tolerates_404_and_read_all_skips_trashed(env):
     fake, client, _ = env
     page_id = await client.mirror_event("uid-1", event_payload(EVENT_ROW), None)

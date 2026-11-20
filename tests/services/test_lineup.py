@@ -49,7 +49,7 @@ def _service(
     log = MagicMock(post_error=AsyncMock(), log_attention=AsyncMock())
     fake_events.list_events = AsyncMock(return_value=events or [])
     notion = MagicMock()
-    service = LineupService(bot=bot, db=MagicMock(), log_service=log, notion_client=notion)
+    service = LineupService(bot=bot, db=MagicMock(), log_service=log)
     return service, cfg, channel, log, notion
 
 

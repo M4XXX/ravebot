@@ -85,9 +85,6 @@ class BotContext:
         db:           asyncpg connection pool (set in Story 1.2, None until then).
         notion_client: NotionClient for the Events, Slots and DJs databases (set in
                       main.py after ensure_schema/ensure_views, None until then).
-        notion_sync_service: NotionSyncService that reconciles hand edits in Notion
-                      with the Postgres slot locks; run by the EventsCog poll loop
-                      before each lineup update (None until set in main.py).
         dj_conversations: DjConversationService for the DJ onboarding and profile
                       DM conversation (None until set in main.py).
         mirror:       MirrorWorker that pushes queued Postgres changes to Notion
@@ -112,7 +109,6 @@ class BotContext:
     outreach_service: "Any | None" = None
     reminders_service: "Any | None" = None
     admin_booking_service: "Any | None" = None
-    notion_sync_service: "Any | None" = None
     dj_admin_service: "Any | None" = None
     event_cancel_service: "Any | None" = None
     # Set while the stored Notion databases are gone and no new set was approved yet:
@@ -131,14 +127,14 @@ class BotContext:
     user_locks: dict[int, FlowLock] = field(default_factory=dict)
 
     def attach_notion(self, client: "Any") -> None:
-        """Use a (new) Notion client everywhere, also in the services built without one."""
+        """Use a (new) Notion client, also in a mirror worker built without one.
+
+        Only the mirror worker (and the import/poll code reading ctx.notion_client)
+        talks to Notion; bookings, lineup, outreach and reminders do not.
+        """
         self.notion_client = client
-        for service in (
-            self.lineup_service, self.notion_sync_service, self.outreach_service,
-            self.reminders_service, self.admin_booking_service, self.mirror,
-        ):
-            if service is not None and hasattr(service, "notion_client"):
-                service.notion_client = client
+        if self.mirror is not None:
+            self.mirror.notion_client = client
 
     def is_admin(self, user_id: int) -> bool:
         """Registry (owners plus added admins) if set, else the env admin ids."""

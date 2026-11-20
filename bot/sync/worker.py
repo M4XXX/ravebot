@@ -73,10 +73,13 @@ class MirrorWorker:
         log_service: Any,
         *,
         rate: float = REQUESTS_PER_SECOND,
+        name_resolver: Callable[[int], str | None] | None = None,
     ) -> None:
         self.db = db
         self.notion_client = notion_client
         self.log_service = log_service
+        # Discord user id -> current Discord display name, for the "Discord name" column
+        self._name_resolver = name_resolver
         self._limiter = _RateLimiter(rate)
         self._wake = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
@@ -191,6 +194,16 @@ class MirrorWorker:
         await mirror.set_synced(self.db, "event", uid, new_id, payload)
         return new_id
 
+    def _discord_name(self, discord_id: int) -> str | None:
+        """The DJ's Discord name, or None (no resolver, not in the cache, guest)."""
+        if self._name_resolver is None or discord_id <= 0:
+            return None
+        try:
+            return self._name_resolver(discord_id)
+        except Exception:
+            logger.warning("Resolving the Discord name of %s failed", discord_id, exc_info=True)
+            return None
+
     async def _sync_dj(
         self, key: str, op: str = "upsert", page_id: str | None = None
     ) -> str | None:
@@ -211,6 +224,7 @@ class MirrorWorker:
                 logo_image=image,
                 upload_logo=upload_logo,
                 logo_url=row["logo_url"],
+                discord_name=self._discord_name(int(key)),
             )
         except DjLogoUploadError as exc:
             # The row is written; keep it and retry the logo through the outbox backoff.
@@ -232,7 +246,7 @@ class MirrorWorker:
             return
         holder = await self.db.fetchval(
             "SELECT discord_user_id FROM slot_locks WHERE event_id = $1 AND slot_index = $2",
-            event["event_id"],
+            uid,  # slot_locks is keyed by the event uid, not its title
             slot_index,
         )
         # A slot page needs its event's page (and its DJ's): write them first if missing.

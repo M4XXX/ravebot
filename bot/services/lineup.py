@@ -78,13 +78,11 @@ class LineupService:
         bot: Any,
         db: Any,
         log_service: "AdminLogService",
-        notion_client: Any,
         view: disnake.ui.View | None = None,
     ) -> None:
         self.bot = bot
         self.db = db
         self.log_service = log_service
-        self.notion_client = notion_client
         self.view = view
         self._lock = asyncio.Lock()
         self._pending = False

@@ -142,19 +142,20 @@ async def test_startup_ensures_schema_then_views_for_guild_zero() -> None:
 
 @pytest.mark.asyncio
 async def test_startup_builds_services_with_new_client() -> None:
-    from bot.services.notion_sync import NotionSyncService
-
     s = _Startup()
     await s.run()
 
     ctx = s.ctx
     assert ctx is not None
     assert ctx.notion_client is s.client
-    assert ctx.outreach_service.notion_client is s.client
-    assert ctx.reminders_service.notion_client is s.client
-    assert ctx.admin_booking_service.notion_client is s.client
-    assert isinstance(ctx.notion_sync_service, NotionSyncService)
-    assert ctx.notion_sync_service.notion_client is s.client
+    assert not hasattr(ctx, "notion_sync_service")
+    # Booking, lineup, outreach and reminders work on Postgres alone
+    for service in (
+        ctx.outreach_service, ctx.reminders_service, ctx.admin_booking_service,
+        ctx.lineup_service,
+    ):
+        assert not hasattr(service, "notion_client")
+    assert ctx.admin_booking_service._ctx is ctx
 
 
 @pytest.mark.asyncio
@@ -408,8 +409,6 @@ async def test_missing_databases_keep_the_bot_running_until_an_admin_decides() -
     assert stored["notion_recreate_approved"] == "1"
     assert ctx.notion_problem is None
     assert ctx.notion_client is s.client
-    assert ctx.outreach_service.notion_client is s.client
-    assert ctx.lineup_service.notion_client is s.client
     assert seen_mirror == [None]
     assert ctx.mirror is not None and ctx.mirror.notion_client is s.client
 
@@ -462,7 +461,7 @@ async def test_main_without_notion_skips_setup() -> None:
     assert ctx.notion_recover is None
     assert ctx.notion_problem is None
     assert ctx.mirror is None
-    assert ctx.outreach_service.notion_client is None
+    assert ctx.admin_booking_service is not None
     s.pool.close.assert_awaited_once()
     on_ready = s.bot.event.call_args.args[0]
     await on_ready()
@@ -480,12 +479,19 @@ async def test_mirror_worker_runs_while_the_bot_runs() -> None:
         seen["running"] = isinstance(mirror, MirrorWorker) and not mirror._task.done()
         seen["client"] = mirror.notion_client
         seen["mirror"] = mirror
+        seen["name"] = mirror._name_resolver
 
     s.while_running = check
     await s.run()
     assert seen["running"] is True
     assert seen["client"] is s.client
     assert seen["mirror"]._task is None  # stopped on shutdown
+    # The "Discord name" column comes from the bot's user cache
+    s.bot.get_user = MagicMock(return_value=MagicMock(display_name="alice"))
+    assert seen["name"](42) == "alice"
+    s.bot.get_user.assert_called_once_with(42)
+    s.bot.get_user = MagicMock(return_value=None)
+    assert seen["name"](43) is None
 
 
 @pytest.mark.asyncio

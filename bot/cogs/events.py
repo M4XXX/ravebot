@@ -1,8 +1,8 @@
-"""Events cog — Notion poll loop, lineup post, day-before reminders.
+"""Events cog — event poll loop, lineup post, day-before reminders.
 
 Story 1.5: DB unavailability guard pattern for scheduled task loops.
 Story 3.1: Notion event polling with snapshot-based change detection.
-Story 7.1: _auto_create_events() — maintain look-ahead event count in Notion.
+Story 7.1: _auto_create_events() — maintain look-ahead event count (Postgres).
 Full lineup post (FR10) implemented in Story 3.2.
 
 [Source: architecture.md#Scheduled Work: disnake tasks.loop]
@@ -18,7 +18,6 @@ from disnake.ext import commands, tasks
 from bot.cogs.loop_support import first_guild_id, guard_db, prepare_loop, run_cycle
 from bot.context import BotContext
 from bot.db import events as db_events
-from bot.notion.client import NotionWriteError
 from bot.notion.models import EventInfo
 from bot.services import activation
 from bot.services.event_replenish import replenish_events
@@ -29,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 
 class EventsCog(commands.Cog):
-    """Notion polling, lineup post updates, and reminder scheduling."""
+    """Event polling, lineup post updates, and reminder scheduling."""
 
     bot: commands.Bot  # injected by disnake when the cog is added
 
@@ -67,42 +66,18 @@ class EventsCog(commands.Cog):
         """
         return await replenish_events(self.ctx, guild_id, events)
 
-    async def _run_sync_cycle(self, guild_id: int) -> None:
-        """Run one NotionSyncService cycle; a failure is logged and never raised.
-
-        The lineup update must not depend on the sync succeeding.
-        """
-        sync = self.ctx.notion_sync_service
-        if sync is None:
-            return
-        try:
-            await sync.run_cycle(guild_id)
-        except Exception as exc:
-            logger.warning("Notion sync cycle failed — continuing with the poll: %s", exc)
-            # A NotionWriteError was already posted by NotionApi.
-            if self.ctx.log_service is not None and not isinstance(exc, NotionWriteError):
-                await self.ctx.log_service.log_attention(
-                    texts.LOG_FAILED_TITLE,
-                    "The sync with Notion failed. The lineup update goes on and the "
-                    "next poll tries the sync again.",
-                    "Check that the Notion integration still has access to the pages.",
-                )
-
     @tasks.loop(minutes=5)
     async def _poll_notion(self) -> None:
         await run_cycle("notion poll", self._poll_notion_cycle)
 
     async def _poll_notion_cycle(self) -> None:
-        """Notion event polling — syncs hand edits, fetches events, updates the lineup.
+        """Event poll — reads the events from Postgres, replenishes, updates the lineup.
 
-        Order per cycle: (1) NotionSyncService.run_cycle (skipped if the service is
-        None; a failure is posted and the cycle continues), (2) list_events() for the
-        state after the sync, (3) auto-create events, (4) lineup refresh.
-        The first iteration runs after the bot is ready and is the startup reconcile.
+        Order per cycle: (1) list_events(), (2) auto-create events, (3) fully-booked
+        check, (4) lineup refresh. Notion is not read here.
 
         On DB unavailability: skips cycle (guard handles logging).
-        On Notion read failure: logs warning, posts ERR_NOTION_WRITE, skips cycle
-        (no snapshot update).
+        On a failed event read: logs a warning, posts to the log channel, skips cycle.
         The lineup refresh compares the upcoming event with the last posted snapshot.
 
         [Source: epics.md#Story 3.1 AC1-AC4]
@@ -120,9 +95,6 @@ class EventsCog(commands.Cog):
         if not await activation.is_active(self.ctx.db, guild_id):
             logger.debug("_poll_notion: bot is idle, skipping cycle")
             return
-
-        # Reconcile hand edits in Notion with Postgres before reading the events
-        await self._run_sync_cycle(guild_id)
 
         # Fetch events from Postgres (AC1, AC4)
         listed_at = datetime.datetime.now(datetime.UTC)

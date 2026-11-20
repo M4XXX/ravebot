@@ -45,12 +45,10 @@ class RemindersService:
         self,
         bot: Any,
         db: "asyncpg.Pool",
-        notion_client: Any,
         log_service: "AdminLogService | None",
     ) -> None:
         self.bot = bot
         self.db = db
-        self.notion_client = notion_client
         self.log_service = log_service
         # (event, DJ, slot) whose failed reminder was already posted: the hourly runs
         # in the 20-28 h window retry silently instead of posting the same error again
@@ -83,7 +81,7 @@ class RemindersService:
         """Send day-before reminders to all booked DJs for tomorrow's events.
 
         Algorithm:
-          1. Fetch all future events from Notion.
+          1. Fetch all future events from Postgres.
           2. Filter to events whose start is 20-28 hours from now.
           3. For each matching event, fetch booked DJs from slot_locks JOIN djs.
           4. For each booked DJ, skip if reminder already sent (AC2, AC4).

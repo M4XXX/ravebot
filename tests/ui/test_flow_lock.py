@@ -126,16 +126,13 @@ async def test_cancel_confirm_db_error_frees_the_flow(fail) -> None:
     from bot.ui.views import CancelConfirmView
 
     ctx = make_real_ctx(db=MagicMock())
-    ctx.notion_client = MagicMock()
-    ctx.notion_client.clear_slot = AsyncMock(return_value=True)
     ctx.lineup_service = None
     ctx.log_service = None
     lock = ctx.get_user_lock(9)
     await lock.acquire()
     view = CancelConfirmView(ctx, make_event(page_id="e1"), 0, 1, lock, 9)
     inter = _inter(user_id=9)
-    with patch("bot.services.dj_pages.ensure_dj_page", new=AsyncMock(return_value="p")), \
-         patch("bot.db.bookings.release_slot_lock", new=AsyncMock(side_effect=OSError("db"))):
+    with patch("bot.db.bookings.release_slot_lock", new=AsyncMock(side_effect=OSError("db"))):
         await view._handle_confirm(inter)
     assert inter.followup.send.call_args.args[0] == texts.GENERIC_ERROR
     assert not lock.locked()

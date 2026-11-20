@@ -54,11 +54,10 @@ def _make_service(list_events_result: list | None = None) -> OutreachService:
     bot = MagicMock()
     bot.guilds = [MagicMock(id=1)]
     db = MagicMock()
-    notion_client = MagicMock()
     fake_events.list_events = AsyncMock(return_value=list_events_result or [])
     log_service = MagicMock()
     log_service.post_error = AsyncMock()
-    return OutreachService(bot=bot, db=db, notion_client=notion_client, log_service=log_service)
+    return OutreachService(bot=bot, db=db, log_service=log_service)
 
 
 def _active_seq(last_contact_at=None) -> dict:

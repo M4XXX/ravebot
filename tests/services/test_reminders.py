@@ -49,12 +49,11 @@ def _make_event(
 def _make_service(list_events_result: list | None = None) -> RemindersService:
     bot = MagicMock()
     db = MagicMock()
-    notion_client = MagicMock()
     fake_events.list_events = AsyncMock(return_value=list_events_result or [])
     log_service = MagicMock()
     log_service.post_error = AsyncMock()
     return RemindersService(
-        bot=bot, db=db, notion_client=notion_client, log_service=log_service
+        bot=bot, db=db, log_service=log_service
     )
 
 

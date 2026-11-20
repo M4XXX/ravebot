@@ -58,7 +58,7 @@ async def outreach_enabled(db: Any, guild_id: int) -> bool:
 class OutreachService:
     """Stateless outreach logic — gap detection, sequence lifecycle, cooldown enforcement.
 
-    Constructor mirrors LineupService: bot, db, notion_client, log_service.
+    Constructor mirrors LineupService: bot, db, log_service.
     All per-event state is stored in the outreach_sequences table — never in instance vars.
 
     [Source: bot/services/lineup.py — constructor pattern]
@@ -69,12 +69,10 @@ class OutreachService:
         self,
         bot: Any,
         db: Any,
-        notion_client: Any,
         log_service: "AdminLogService",
     ) -> None:
         self.bot = bot
         self.db = db
-        self.notion_client = notion_client
         self.log_service = log_service
 
     @staticmethod
@@ -274,7 +272,7 @@ class OutreachService:
         this event, ordered by last_contacted_at ASC NULLS FIRST (cross-sequence
         fairness — DJs never contacted anywhere get priority).
 
-        ctx: BotContext — passed from OutreachCog for user lock access and notion_client.
+        ctx: BotContext — passed from OutreachCog for user lock access.
 
         [Source: epics.md#Story 5.2 AC1–AC5]
         [Source: architecture.md#Stateless Services: All Per-User State in PostgreSQL]

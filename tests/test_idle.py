@@ -32,7 +32,6 @@ async def test_poll_notion_idle_does_nothing(idle) -> None:
     cog = _make_cog_with_bot()
     cog.ctx.lineup_service = MagicMock(refresh=AsyncMock())
     await EventsCog._poll_notion.coro(cog)
-    cog.ctx.notion_sync_service.run_cycle.assert_not_called()
     fake_events.list_events.assert_not_called()
     cog.ctx.lineup_service.refresh.assert_not_called()
 
@@ -48,7 +47,8 @@ async def test_poll_notion_active_runs() -> None:
         "bot.cogs.events.check_fully_booked", new=AsyncMock()
     ):
         await EventsCog._poll_notion.coro(cog)
-    cog.ctx.notion_sync_service.run_cycle.assert_awaited_once()
+    fake_events.list_events.assert_awaited_once()
+    cog.ctx.lineup_service.refresh.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -59,7 +59,6 @@ async def test_poll_notion_skips_while_in_maintenance() -> None:
     cog.ctx.maintenance = "restoring"
     cog.ctx.lineup_service = MagicMock(refresh=AsyncMock())
     await EventsCog._poll_notion.coro(cog)
-    cog.ctx.notion_sync_service.run_cycle.assert_not_called()
     fake_events.list_events.assert_not_called()
 
 

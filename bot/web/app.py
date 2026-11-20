@@ -50,7 +50,7 @@ WRONG_PASSWORD = "Wrong password."
 OWNER_MESSAGE = "Owners can only be changed with ADMIN_USER_IDS."
 NOT_ADDED_MESSAGE = "This person is not an added admin."
 NO_DJ_MESSAGE = "There is no DJ with this ID."
-BOOKINGS_FAILED = "Could not read the bookings from Notion. Try again."
+BOOKINGS_FAILED = "Could not read the bookings. Try again."
 CSRF_MESSAGE = "This form has expired. Go back, reload the page and try again."
 
 SECURITY_HEADERS = {

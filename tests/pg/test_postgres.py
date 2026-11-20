@@ -41,6 +41,19 @@ async def test_own_slot_counts_as_taken_and_release_needs_the_holder(pool) -> No
     assert await bookings.acquire_slot_lock(pool, "e1", 1, B)
 
 
+async def test_admin_force_returns_previous_holder(pool) -> None:
+    assert await bookings.force_slot_holder(pool, "e1", 0, A) is None  # row created
+    assert await bookings.get_slot_lock_holder(pool, "e1", 0) == A
+    assert await bookings.force_slot_holder(pool, "e1", 0, B) == A
+    assert await bookings.get_slot_lock_holder(pool, "e1", 0) == B
+    assert await bookings.force_slot_holder(pool, "e1", 0, None) == B
+    row = await pool.fetchrow(
+        "SELECT discord_user_id, booked_at FROM slot_locks WHERE event_id = 'e1'"
+    )
+    assert (row["discord_user_id"], row["booked_at"]) == (None, None)
+    assert await bookings.acquire_slot_lock(pool, "e1", 0, A)
+
+
 async def test_dj_slot_locks_are_ordered(pool) -> None:
     for event, index in (("e2", 1), ("e1", 0), ("e1", 2)):
         await bookings.admin_force_book_slot(pool, event, index, A)

@@ -655,10 +655,13 @@ class NotionClient:
         logo_image: bytes | None,
         upload_logo: bool,
         logo_url: str | None = None,
+        discord_name: str | None = None,
     ) -> str:
         """Write the DJ payload to its DJs row (created when missing).
 
         The logo is not part of the payload: pass ``logo_url``/``logo_image`` separately.
+        ``discord_name`` (not compared either) is written to "Discord name" when given;
+        None leaves the cell as it is.
         Logo rules as in ``upsert_dj``: with ``upload_logo`` False an existing row keeps
         its ``Logo``; a new row always gets it. A failed logo upload still writes the
         row and then raises DjLogoUploadError(page_id).
@@ -673,6 +676,8 @@ class NotionClient:
             PROP_DJ_LINK: _url_prop(payload.get("link")),
             PROP_DJ_ALT_LINK: _url_prop(payload.get("alt_link")),
         }
+        if discord_name is not None:
+            props[PROP_DJ_DISCORD_NAME] = {"rich_text": _text(discord_name)}
         alive = await self._page_alive(page_id)
         existing = {"id": page_id} if alive else None
         logo_failed = False

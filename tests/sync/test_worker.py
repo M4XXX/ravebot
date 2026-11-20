@@ -105,13 +105,17 @@ class FakeDb:
 class FakeNotion:
     def __init__(self) -> None:
         self.calls: list[tuple] = []
+        self.discord_names: list[str | None] = []
 
     async def mirror_event(self, uid, payload, page_id):  # noqa: ANN001, ANN202
         self.calls.append(("event", uid, page_id))
         return page_id or f"page-ev-{uid}"
 
-    async def mirror_dj(self, payload, page_id, *, logo_image, upload_logo, logo_url=None):  # noqa: ANN001, ANN202
+    async def mirror_dj(  # noqa: ANN202
+        self, payload, page_id, *, logo_image, upload_logo, logo_url=None, discord_name=None  # noqa: ANN001
+    ):
         self.calls.append(("dj", payload["discord_id"], page_id, upload_logo))
+        self.discord_names.append(discord_name)
         return page_id or f"page-dj-{payload['discord_id']}"
 
     async def mirror_slot(self, payload, event_page_id, dj_page_id, page_id, *, event_label=None):  # noqa: ANN001, ANN202
@@ -149,7 +153,7 @@ def _worker(store: Store, notion: FakeNotion | None = None) -> MirrorWorker:
 async def test_drain_writes_event_then_slots(store: Store) -> None:
     store.events["u1"] = EVENT_ROW
     store.djs[DJ] = DJ_ROW
-    store.holders[("RAVE-1", 1)] = DJ
+    store.holders[("u1", 1)] = DJ  # slot_locks is keyed by the event uid
     # Queued in the "wrong" order: slots first.
     store.add("slot", "u1:0")
     store.add("slot", "u1:1")
@@ -271,6 +275,45 @@ async def test_dj_logo_uploaded_when_unsynced_and_marked(store: Store) -> None:
 
     assert notion.calls == [("dj", DJ, None, True)]
     assert store.logo_marked == [(DJ, b"png")]
+
+
+async def test_dj_discord_name_comes_from_the_resolver(store: Store) -> None:
+    store.djs[DJ] = DJ_ROW
+    store.djs[DJ + 1] = {**DJ_ROW, "discord_user_id": DJ + 1, "dj_name": "DJ B"}
+    store.add("dj", str(DJ))
+    store.add("dj", str(DJ + 1))
+    notion = FakeNotion()
+    names = {DJ: "alice"}
+    worker = MirrorWorker(FakeDb(store), notion, None, rate=1e9, name_resolver=names.get)
+
+    assert await worker.drain_once() == 2
+
+    assert notion.discord_names == ["alice", None]
+    # The Discord name is not part of the compared payload
+    assert "discord_name" not in store.synced[("dj", str(DJ))]
+
+
+async def test_dj_discord_name_resolver_failure_writes_no_name(store: Store) -> None:
+    store.djs[DJ] = DJ_ROW
+    store.add("dj", str(DJ))
+    notion = FakeNotion()
+
+    def boom(_uid: int) -> str | None:
+        raise RuntimeError("no cache")
+
+    worker = MirrorWorker(FakeDb(store), notion, None, rate=1e9, name_resolver=boom)
+
+    assert await worker.drain_once() == 1
+    assert notion.discord_names == [None]
+
+
+async def test_dj_without_resolver_writes_no_name(store: Store) -> None:
+    store.djs[DJ] = DJ_ROW
+    store.add("dj", str(DJ))
+    notion = FakeNotion()
+
+    assert await _worker(store, notion).drain_once() == 1
+    assert notion.discord_names == [None]
 
 
 async def test_dj_logo_failure_keeps_row_and_retries(store: Store) -> None:
