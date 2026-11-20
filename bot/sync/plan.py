@@ -61,17 +61,34 @@ def plan(
     *,
     unmatched_notion: list[dict],
 ) -> list[Change]:
-    if pg and not notion.payloads and not unmatched_notion:
+    if (
+        pg
+        and not notion.payloads
+        and not unmatched_notion
+        and any(r.notion_page_id for r in mirror.values())
+    ):
         return [Change("mass_change", entity, None, None, None, None)]
 
     changes: list[Change] = []
     deleted = 0
 
+    def _adopts(u: dict) -> bool:
+        bot_id = u.get("_bot_id")
+        return (
+            entity == "event"
+            and bot_id in pg
+            and bot_id not in open_keys
+            and bot_id not in notion.payloads
+            and not (mirror.get(bot_id) and mirror[bot_id].notion_page_id)
+        )
+
+    adopted = {u["_bot_id"] for u in unmatched_notion if _adopts(u)}
+
     def add(kind: Kind, key: str | None, p: dict | None, n: dict | None, page: str | None) -> None:
         changes.append(Change(kind, entity, key, p, n, page))
 
     for key in sorted(set(pg) | set(notion.payloads) | set(mirror)):
-        if key in open_keys:
+        if key in open_keys or key in adopted:
             continue
         p = pg.get(key)
         n = notion.payloads.get(key)
@@ -125,14 +142,8 @@ def plan(
     for u in unmatched_notion:
         page_id = u.get("_page_id")
         payload = _strip(u)
-        bot_id = u.get("_bot_id")
-        if (
-            entity == "event"
-            and bot_id in pg
-            and bot_id not in open_keys
-            and bot_id not in notion.payloads
-            and not (mirror.get(bot_id) and mirror[bot_id].notion_page_id)
-        ):
+        if _adopts(u):
+            bot_id = u["_bot_id"]
             add("agree", bot_id, pg[bot_id], payload, page_id)
             continue
         nk = _natural_key(entity, payload)

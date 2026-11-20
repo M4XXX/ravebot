@@ -92,9 +92,9 @@ def test_pg_deleted_but_notion_still_has_it_pushes():
 
 def test_orphan_event_page_is_adopted():
     ev = {"event_id": "Party", "date": "2026-01-01"}
-    c = plan("event", {"u1": ev}, Side({"x": {}}, {}), {}, set(),
+    c = plan("event", {"u1": ev}, Side({}, {}), {}, set(),
              unmatched_notion=[{**ev, "_page_id": "pz", "_bot_id": "u1"}])
-    assert [(x.kind, x.key, x.page_id) for x in c if x.kind == "agree"] == [("agree", "u1", "pz")]
+    assert [(x.kind, x.key, x.page_id) for x in c] == [("agree", "u1", "pz")]
 
 
 def test_mass_deletion_guard():
@@ -113,3 +113,37 @@ def test_few_deletions_pass_guard():
     mirror = {k: mrow(k, v) for k, v in pg.items()}
     c = run(pg, {k: v for k, v in pg.items() if int(k) > 2}, mirror)
     assert kinds(c) == ["deleted_in_notion"] * 3
+
+
+def test_adoption_skipped_when_mirror_has_page_id():
+    ev = {"event_id": "Party", "date": "2026-01-01"}
+    m = {"u1": MirrorRow("event", "u1", "old", payload_hash(ev), ev, None)}
+    other = {"event_id": "Other", "date": "2026-02-02"}
+    c = plan("event", {"u1": ev}, Side({"u1": ev}, {"u1": "old"}), m, set(),
+             unmatched_notion=[{**other, "_page_id": "pz", "_bot_id": "u1"}])
+    assert kinds(c) == ["new_in_notion"]
+
+
+def test_empty_notion_without_mirror_page_ids_pushes_everything():
+    c = run({"1": BASE, "2": dj("B", 2)}, {}, {})
+    assert kinds(c) == ["push", "push"]
+
+
+def test_empty_notion_with_mirror_page_ids_is_mass_change():
+    assert kinds(run({"1": BASE}, {}, MIR)) == ["mass_change"]
+
+
+def test_event_new_in_notion():
+    ev = {"event_id": "Party", "date": "2026-01-01"}
+    c = plan("event", {}, Side({}, {}), {}, set(), unmatched_notion=[{**ev, "_page_id": "p"}])
+    assert kinds(c) == ["new_in_notion"]
+
+
+def test_slot_new_in_notion_and_key_changed():
+    s = {"event_uid": "e", "number": 1, "discord_id": None}
+    c = plan("slot", {}, Side({}, {}), {}, set(), unmatched_notion=[{**s, "_page_id": "p"}])
+    assert kinds(c) == ["new_in_notion"]
+    c = plan("slot", {"e:0": s}, Side({"e:0": s}, {"e:0": "q"}),
+             {"e:0": MirrorRow("slot", "e:0", "q", payload_hash(s), s, None)}, set(),
+             unmatched_notion=[{**s, "discord_id": 5, "_page_id": "p"}])
+    assert kinds(c) == ["key_changed"]
