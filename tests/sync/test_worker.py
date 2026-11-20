@@ -436,3 +436,22 @@ async def test_stray_page_is_trashed(store: Store, entity: str) -> None:
 
     assert notion.calls == [("trash", "p9")]
     assert store.failures == {}
+
+
+async def test_conflict_opened_while_waiting_for_the_gate_stalls_the_write(
+    store: Store,
+) -> None:
+    """C1: a sync cycle that held the gate may have opened a conflict meanwhile."""
+    store.events["u1"] = EVENT_ROW
+    store.add("event", "u1")
+    notion = FakeNotion()
+    worker = _worker(store, notion)
+
+    async with worker.gate:  # a sync cycle runs
+        task = asyncio.create_task(worker.drain_once())
+        await asyncio.sleep(0.01)
+        assert notion.calls == []  # the worker waits
+        store.conflicts.add(("event", "u1"))  # the cycle opened a conflict
+    assert await task == 0
+    assert notion.calls == []
+    assert ("event", "u1") in store.queue
