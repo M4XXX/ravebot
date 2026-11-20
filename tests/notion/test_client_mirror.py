@@ -13,6 +13,7 @@ from bot.sync.payloads import (
     notion_dj_payload,
     notion_event_payload,
     notion_slot_payload,
+    payload_hash,
     slot_payload,
 )
 from tests.notion.fake_notion import FakeNotion
@@ -65,10 +66,28 @@ async def test_payload_round_trip_event_cleared_fields(env):
     assert notion_event_payload(fake.pages[page_id]) == event_payload(row)
 
 
-async def test_payload_round_trip_dj(env):
+async def test_payload_round_trip_dj_external_logo(env):
     fake, client, _ = env
-    page_id = await client.mirror_dj(dj_payload(DJ_ROW), None, logo_image=None, upload_logo=True)
-    assert notion_dj_payload(fake.pages[page_id]) == dj_payload(DJ_ROW)
+    page_id = await client.mirror_dj(
+        dj_payload(DJ_ROW), None, logo_image=None, upload_logo=True, logo_url=DJ_ROW["logo_url"])
+    got = notion_dj_payload(fake.pages[page_id])
+    assert got == dj_payload(DJ_ROW)
+    assert payload_hash(got) == payload_hash(dj_payload(DJ_ROW))
+    assert "logo_url" not in got
+    assert fake.pages[page_id]["properties"]["Logo"]["files"][0]["external"]["url"] == (
+        "https://x.test/l.png")
+
+
+async def test_payload_round_trip_dj_uploaded_logo(env):
+    fake, client, _ = env
+    row = {**DJ_ROW, "logo_image": b"png"}
+    client._api.upload_file = AsyncMock(return_value="up-1")
+    page_id = await client.mirror_dj(
+        dj_payload(row), None, logo_image=b"png", upload_logo=True, logo_url=row["logo_url"])
+    got = notion_dj_payload(fake.pages[page_id])
+    assert got == dj_payload(row)
+    assert payload_hash(got) == payload_hash(dj_payload(row))
+    assert fake.pages[page_id]["properties"]["Logo"]["files"][0]["type"] == "file_upload"
 
 
 async def test_payload_round_trip_slot(env):
@@ -121,7 +140,8 @@ async def test_mirror_event_writes_bot_id(env):
 
 async def test_mirror_dj_keeps_logo_when_not_uploading(env):
     fake, client, _ = env
-    page_id = await client.mirror_dj(dj_payload(DJ_ROW), None, logo_image=None, upload_logo=True)
+    page_id = await client.mirror_dj(
+        dj_payload(DJ_ROW), None, logo_image=None, upload_logo=True, logo_url=DJ_ROW["logo_url"])
     changed = {**DJ_ROW, "dj_name": "DJ B", "logo_url": None}
     await client.mirror_dj(dj_payload(changed), page_id, logo_image=None, upload_logo=False)
     props = fake.pages[page_id]["properties"]

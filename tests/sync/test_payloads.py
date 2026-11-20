@@ -26,5 +26,5 @@ def test_dj_payload_maps_stream_urls():
            "stream_url_primary": "https://a.test", "stream_url_backup": None,
            "logo_image": b"x"}
     assert dj_payload(row) == {
-        "discord_id": 5, "dj_name": "A", "vrchat_name": None, "logo_url": None,
+        "discord_id": 5, "dj_name": "A", "vrchat_name": None,
         "link": "https://a.test", "alt_link": None}

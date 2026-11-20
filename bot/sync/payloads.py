@@ -34,7 +34,6 @@ __all__ = [
 PROP_DJ_VRCHAT_NAME = "VRChat name"
 PROP_DJ_LINK = "Link"
 PROP_DJ_ALT_LINK = "Alternative link"
-PROP_DJ_LOGO = "Logo"
 
 
 def _iso(value: Any) -> str:
@@ -67,12 +66,11 @@ def slot_payload(
 
 
 def dj_payload(row: Mapping[str, Any]) -> dict[str, Any]:
-    """The DJ fields Notion shows; the logo image bytes are not part of it."""
+    """The compared DJ fields; logos go Postgres -> Notion only and are not part of it."""
     return {
         "discord_id": row["discord_user_id"],
         "dj_name": row["dj_name"],
         "vrchat_name": row["vrchat_name"] or None,
-        "logo_url": row["logo_url"] or None,
         "link": row["stream_url_primary"] or None,
         "alt_link": row["stream_url_backup"] or None,
     }
@@ -118,13 +116,6 @@ def _url(page: dict[str, Any], name: str) -> str | None:
     return _prop(page, name).get("url") or None
 
 
-def _external_logo(page: dict[str, Any]) -> str | None:
-    for item in _prop(page, PROP_DJ_LOGO).get("files") or []:
-        if item.get("type") == "external":
-            return (item.get("external") or {}).get("url") or None
-    return None
-
-
 def notion_dj_payload(page: dict[str, Any]) -> dict[str, Any] | None:
     dj = parse_dj(page)
     if not dj.name or dj.discord_id is None:
@@ -133,7 +124,6 @@ def notion_dj_payload(page: dict[str, Any]) -> dict[str, Any] | None:
         "discord_id": dj.discord_id,
         "dj_name": dj.name,
         "vrchat_name": _rich(page, PROP_DJ_VRCHAT_NAME),
-        "logo_url": _external_logo(page),
         "link": _url(page, PROP_DJ_LINK),
         "alt_link": _url(page, PROP_DJ_ALT_LINK),
     }
