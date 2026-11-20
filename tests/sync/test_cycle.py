@@ -479,3 +479,53 @@ async def test_exclusive_waits_for_running_cycle(store, monkeypatch) -> None:
     monkeypatch.setattr(cycle_mod, "_load_pg", AsyncMock(return_value={}))
     async with cycle.exclusive():  # resync_all must not take the lock again
         assert await asyncio.wait_for(cycle.resync_all(), 1) == 0
+
+
+async def test_worker_write_during_read_waits_for_cycle(store, monkeypatch) -> None:
+    """C1: a booking the worker mirrors while the cycle reads Notion is not undone."""
+    import asyncio
+
+    store.event("u1", ev("Rave"), "pe1")
+    store.pg["dj"][str(A)] = {"discord_id": A, "dj_name": "Alpha", "vrchat_name": None,
+                              "link": "https://a.example", "alt_link": None}
+    store.sync("dj", str(A), "pd1", store.pg["dj"][str(A)])
+    for i in range(3):
+        store.sync("slot", f"u1:{i}", f"ps{i}", store.pg["slot"][f"u1:{i}"])
+    # Notion snapshot taken before the booking: slot 1 free.
+    snap = snapshot(
+        events=[event_page("pe1", "Rave")],
+        slots=[slot_page(f"ps{i}", "pe1", i + 1) for i in range(3)],
+        djs=[dj_page("pd1", "Alpha", A, link="https://a.example")],
+    )
+    cycle, ctx = make_cycle(snap)
+    worker = MirrorWorker(object(), MagicMock(), None)
+    monkeypatch.setattr(
+        worker_mod, "outbox", SimpleNamespace(due=store.due, done=store.done, failed=store.failed)
+    )
+    monkeypatch.setattr(worker_mod.mirror, "open_issue_keys", store.open_issue_keys)
+
+    async def write(row):  # noqa: ANN001, ANN202
+        # The worker pushes the booking to Notion and records it as synced.
+        store.sync("slot", row.entity_key, "ps0", store.pg["slot"][row.entity_key])
+
+    monkeypatch.setattr(worker, "_write", write)
+    ctx.mirror = worker
+    orig = ctx.notion_client.read_all
+    drains: list[asyncio.Task] = []
+
+    async def read_then_book():  # noqa: ANN202
+        result = await orig()
+        # During the read: a DJ books slot 1 and the worker drains the outbox.
+        store.pg["slot"]["u1:0"] = {"event_uid": "u1", "number": 1, "discord_id": A}
+        store.record_changed(None, "slot", "u1:0")
+        drains.append(asyncio.create_task(worker.drain_once()))
+        await asyncio.sleep(0.01)
+        return result
+
+    ctx.notion_client.read_all = read_then_book
+    await cycle.run()
+    await drains[0]
+
+    applied = [(c.kind, c.key, c.notion) for c in FakeIntake.all_applied()]
+    assert not applied, applied
+    assert store.mirror[("slot", "u1:0")].synced_payload["discord_id"] == A

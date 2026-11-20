@@ -17,6 +17,9 @@ and never conflicts, a hand edit is overwritten and a page without a row is tras
 
 Warnings are not repeated while an identical one is still open. Every database call
 uses its own short-lived pool connection; no row lock is held across a Notion call.
+The cycle holds the mirror worker's ``gate`` for its whole run: the worker waits, so
+it never records a write newer than the Notion snapshot the cycle compares (a stale
+page would otherwise read as a hand edit). Discord handlers never take the gate.
 ``sync_last_run`` and ``sync_last_error`` are stored under config guild 0.
 """
 import asyncio
@@ -211,6 +214,10 @@ class SyncCycle:
         async with self._lock:
             yield
 
+    def _worker_gate(self) -> contextlib.AbstractAsyncContextManager[Any]:
+        gate = getattr(self._ctx.mirror, "gate", None)
+        return gate if isinstance(gate, asyncio.Lock) else contextlib.nullcontext()
+
     # ---- cycle ----
 
     async def run(self) -> CycleReport:
@@ -222,7 +229,8 @@ class SyncCycle:
             if self._ctx.maintenance:
                 return self._counts.report()
             try:
-                await self._run()
+                async with self._worker_gate():
+                    await self._run()
             except _Stopped:
                 logger.info("Notion sync cycle stopped: maintenance started")
             except Exception as exc:

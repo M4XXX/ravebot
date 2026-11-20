@@ -7,6 +7,11 @@ due entity from its current Postgres state (events and DJs before slots, since a
 slot page needs both page ids), at most 3 Notion requests per second, and records
 the written payload in ``notion_mirror``. Entities with an open conflict are
 skipped until the conflict is decided.
+
+``gate`` is held for each write (Notion request plus the mirror record). The sync
+cycle holds it for its whole run, so the worker never records a newer state while
+the cycle compares an older Notion snapshot against the mirror (the worker waits;
+Discord handlers never take the gate).
 """
 import asyncio
 import contextlib
@@ -83,6 +88,8 @@ class MirrorWorker:
         self._name_resolver = name_resolver
         self._limiter = _RateLimiter(rate)
         self._wake = asyncio.Event()
+        # Held per write; the sync cycle holds it for its whole run (see module doc).
+        self.gate = asyncio.Lock()
         self._task: asyncio.Task[None] | None = None
         self._last_batch = 0
 
@@ -133,25 +140,34 @@ class MirrorWorker:
         stalled = await mirror.open_issue_keys(self.db)
         written = 0
         for row in sorted(rows, key=lambda r: (_ORDER.get(r.entity, 3), r.enqueued_at)):
-            if (row.entity, row.entity_key) in stalled:
-                continue
-            if self.notion_client is None:
-                break
-            try:
-                await self._write(row)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                logger.warning(
-                    "Notion mirror of %s %s failed", row.entity, row.entity_key, exc_info=True
-                )
-                await outbox.failed(
-                    self.db, row.entity, row.entity_key, (str(exc) or repr(exc))[:_ERROR_LIMIT]
-                )
-                continue
-            await outbox.done(self.db, row.entity, row.entity_key, row.enqueued_at)
-            written += 1
+            waited = self.gate.locked()
+            async with self.gate:
+                if waited:
+                    # A sync cycle ran meanwhile and may have opened conflicts.
+                    stalled = await mirror.open_issue_keys(self.db)
+                if (row.entity, row.entity_key) in stalled:
+                    continue
+                if self.notion_client is None:
+                    break
+                if await self._write_one(row):
+                    written += 1
         return written
+
+    async def _write_one(self, row: outbox.OutboxRow) -> bool:
+        try:
+            await self._write(row)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "Notion mirror of %s %s failed", row.entity, row.entity_key, exc_info=True
+            )
+            await outbox.failed(
+                self.db, row.entity, row.entity_key, (str(exc) or repr(exc))[:_ERROR_LIMIT]
+            )
+            return False
+        await outbox.done(self.db, row.entity, row.entity_key, row.enqueued_at)
+        return True
 
     async def _write(self, row: outbox.OutboxRow) -> None:
         if row.entity == "event":
