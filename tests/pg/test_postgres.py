@@ -18,12 +18,27 @@ async def _dj(pool, user_id, name, active=True):
     )
 
 
+async def _event(pool, uid="e1", slot_count=3):  # noqa: ANN001, ANN202
+    import datetime
+
+    from bot.db.events import EventDraft, insert_event
+    from bot.timezone import local_today
+
+    await insert_event(
+        pool,
+        EventDraft(event_id=f"Event {uid}", date=local_today() + datetime.timedelta(days=3),
+                   start=datetime.time(20, 0), slot_minutes=60, slot_count=slot_count),
+        uid=uid,
+    )
+
+
 def test_migrations_go_down_and_up_again(schema) -> None:
     run_alembic("downgrade", "base")
     run_alembic("upgrade", "head")
 
 
 async def test_two_djs_racing_for_one_slot_get_exactly_one_lock(pool) -> None:
+    await _event(pool)
     results = await asyncio.gather(
         *(bookings.acquire_slot_lock(pool, "e1", 0, uid) for uid in (A, B, A + 1, B + 1))
     )
@@ -33,12 +48,27 @@ async def test_two_djs_racing_for_one_slot_get_exactly_one_lock(pool) -> None:
 
 
 async def test_own_slot_counts_as_taken_and_release_needs_the_holder(pool) -> None:
+    await _event(pool)
     assert await bookings.acquire_slot_lock(pool, "e1", 1, A)
     assert not await bookings.release_slot_lock(pool, "e1", 1, expected_holder=B)
     assert await bookings.get_slot_lock_holder(pool, "e1", 1) == A
     assert await bookings.release_slot_lock(pool, "e1", 1, expected_holder=A)
     assert not await bookings.release_slot_lock(pool, "e1", 1, expected_holder=A)
     assert await bookings.acquire_slot_lock(pool, "e1", 1, B)
+
+
+async def test_booking_a_slot_that_no_longer_exists_is_refused(pool) -> None:
+    """I5: no slot row is created for a deleted event or a removed slot."""
+    assert not await bookings.acquire_slot_lock(pool, "gone", 0, A)
+    await _event(pool, "e1", slot_count=2)
+    assert not await bookings.acquire_slot_lock(pool, "e1", 2, A)
+    await pool.execute("UPDATE events SET slot_count = 1 WHERE uid = 'e1'")
+    assert not await bookings.acquire_slot_lock(pool, "e1", 1, A)  # row left, slot gone
+    rows = await pool.fetch("SELECT event_id, slot_index, discord_user_id FROM slot_locks")
+    assert sorted((r["event_id"], r["slot_index"], r["discord_user_id"]) for r in rows) == [
+        ("e1", 0, None), ("e1", 1, None),
+    ]
+    assert await bookings.acquire_slot_lock(pool, "e1", 0, A)
 
 
 async def test_admin_force_returns_previous_holder(pool) -> None:
@@ -51,6 +81,7 @@ async def test_admin_force_returns_previous_holder(pool) -> None:
         "SELECT discord_user_id, booked_at FROM slot_locks WHERE event_id = 'e1'"
     )
     assert (row["discord_user_id"], row["booked_at"]) == (None, None)
+    await _event(pool)
     assert await bookings.acquire_slot_lock(pool, "e1", 0, A)
 
 

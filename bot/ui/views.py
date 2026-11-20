@@ -1234,13 +1234,19 @@ class BookingConfirmView(FlowView):
 
         event_id = self._event.page_id
 
-        # The event may have been canceled (or finished) since the menu was opened:
-        # check before any lock is taken. A failed read does not block the booking.
+        # The event may have been canceled, finished, deleted or shrunk since the menu
+        # was opened: check before any lock is taken. A failed read does not block the
+        # booking (acquire_slot_lock refuses a slot that no longer exists anyway).
+        read_ok = True
         try:
             current = await db_events.get_event(self._ctx.db, event_id)
         except Exception:
             logger.warning("BookingConfirmView: could not re-read the event", exc_info=True)
-            current = None
+            current, read_ok = None, False
+        if read_ok and (current is None or self._slot_index >= current.slot_count):
+            self._release_flow()
+            await inter.followup.send(texts.SLOT_NO_LONGER_EXISTS, ephemeral=True)
+            return
         if current is not None and current.status in FINISHED_STATUSES:
             self._release_flow()
             await inter.followup.send(texts.EVENT_WAS_CANCELED, ephemeral=True)
@@ -1618,8 +1624,14 @@ class OutreachView(GatedView):
             try:
                 await self._ctx.log_service.post_error(
                     error_code=ErrorCode.ERR_BUTTON_TIMEOUT,
-                    trigger=f"OutreachView timed out for DJ {self._discord_user_id} on event '{event_name}'",
-                    action_taken="DJ marked as non-responsive for this sequence. Outreach will proceed to next eligible DJ after cooldown.",
+                    trigger=(
+                        f"OutreachView timed out for DJ {self._discord_user_id}"
+                        f" on event '{event_name}'"
+                    ),
+                    action_taken=(
+                        "DJ marked as non-responsive for this sequence. Outreach will "
+                        "proceed to next eligible DJ after cooldown."
+                    ),
                     manual_action="No action required unless the event date is imminent.",
                 )
             except Exception:

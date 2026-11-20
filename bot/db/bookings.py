@@ -3,7 +3,7 @@
 Handles: FR17, FR19, FR23 — slot booking writes with SELECT...FOR UPDATE.
 
 CRITICAL PATTERN:
-  acquire_slot_lock() uses INSERT ON CONFLICT + SELECT...FOR UPDATE within a single
+  acquire_slot_lock() uses SELECT...FOR UPDATE on the existing slot row within a single
   transaction to guarantee only one DJ can claim a given (event_id, slot_index) pair.
   slot_locks is the bookings table (Postgres is the source of truth); Notion only
   mirrors it. event_id is the event uid (EventInfo.page_id).
@@ -33,41 +33,35 @@ async def acquire_slot_lock(
     """Try to claim a slot using SELECT...FOR UPDATE inside a transaction.
 
     Returns True if the slot was successfully claimed by this DJ.
-    Returns False if the slot is already taken by another DJ.
+    Returns False if the slot is already taken by another DJ, or when it no longer
+    exists (event deleted, or ``slot_index`` at or above the event's slot count).
 
     Algorithm:
-      1. INSERT ON CONFLICT DO NOTHING — ensures the row exists before FOR UPDATE.
-      2. SELECT ... FOR UPDATE — acquires exclusive row lock; blocks concurrent callers.
-      3. Check discord_user_id: if not NULL, slot is taken → return False.
-      4. UPDATE to set discord_user_id → commit → return True.
+      1. SELECT ... FOR UPDATE OF the existing slot row, joined to its event and
+         limited to the event's slot count. No row is ever created here, so a stale
+         booking never revives a removed slot. Locks the row; blocks concurrent
+         callers (an event edit that deletes the row makes the waiter see none).
+      2. Check discord_user_id: if not NULL, slot is taken -> return False.
+      3. UPDATE to set discord_user_id -> commit -> return True.
 
     [Source: epics.md#Story 4.2 AC2]
     [Source: architecture.md#Slot Booking Atomicity: SELECT...FOR UPDATE in Transaction]
     """
     async with pool.acquire() as conn:
         async with conn.transaction():
-            # Step 1: guarantee the row exists so FOR UPDATE has something to lock
-            await conn.execute(
-                """
-                INSERT INTO slot_locks (event_id, slot_index)
-                VALUES ($1, $2)
-                ON CONFLICT (event_id, slot_index) DO NOTHING
-                """,
-                event_id,
-                slot_index,
-            )
-            # Step 2: acquire exclusive row lock
+            # Step 1: lock the existing slot row of an existing event
             row = await conn.fetchrow(
                 """
-                SELECT discord_user_id FROM slot_locks
-                WHERE event_id = $1 AND slot_index = $2
-                FOR UPDATE
+                SELECT s.discord_user_id FROM slot_locks s
+                JOIN events e ON e.uid = s.event_id AND s.slot_index < e.slot_count
+                WHERE s.event_id = $1 AND s.slot_index = $2
+                FOR UPDATE OF s
                 """,
                 event_id,
                 slot_index,
             )
             if row is None or row["discord_user_id"] is not None:
-                # Row missing (should not happen after INSERT above) or slot already taken
+                # The slot no longer exists, or it is already taken
                 return False
             # Step 3: claim the slot within the same transaction
             await conn.execute(

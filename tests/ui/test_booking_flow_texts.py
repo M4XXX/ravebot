@@ -16,8 +16,8 @@ from bot.ui.views import (
     prepare_booking,
 )
 from tests.conftest import make_real_ctx
-from tests.notion.factories import make_event, make_slot
 from tests.fake_events import fake_events
+from tests.notion.factories import make_event, make_slot
 
 
 def _event(booked: int = 0, slots: int = 4):
@@ -136,9 +136,19 @@ async def test_slot_selection_presents_confirm_embed() -> None:
     assert embed.description == "Rave One\nSaturday 14.11.2026, slot 2 at 21:00"
 
 
+def _seed_event(event) -> None:  # noqa: ANN001
+    """The confirm step re-reads its event (I5): make the seeded reads return it."""
+    reads = fake_events.list_events
+    if reads.side_effect is None and isinstance(reads.return_value, list):
+        if all(e.page_id != event.page_id for e in reads.return_value):
+            reads.return_value = [*reads.return_value, event]
+
+
 async def _confirm(ctx, uid, *, acquire=True, event=None):
     lock = await _locked(ctx, uid)
-    view = BookingConfirmView(ctx, event or _event(), 1, 1, lock, uid)
+    event = event or _event()
+    _seed_event(event)
+    view = BookingConfirmView(ctx, event, 1, 1, lock, uid)
     inter = _inter()
     with patch("bot.db.bookings.acquire_slot_lock", new=AsyncMock(return_value=acquire)):
         await view._handle_confirm(inter)
@@ -192,7 +202,7 @@ async def test_booking_confirm_generic_errors() -> None:
     await view._handle_confirm(inter)
     assert _msg(inter) == texts.GENERIC_ERROR
     # acquire raises
-    ctx = _ctx_with_notion()
+    ctx = _ctx_with_notion([_event()])
     view = BookingConfirmView(ctx, _event(), 0, 1, await _locked(ctx, 25), 25)
     inter = _inter()
     with patch("bot.db.bookings.acquire_slot_lock", new=AsyncMock(side_effect=RuntimeError)):

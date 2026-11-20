@@ -849,6 +849,10 @@ EVENT_CANCEL_SAVE_FAILED = (
     "The database could not be updated. The event was not canceled and nobody was told."
 )
 EVENT_WAS_CANCELED = "This event was canceled. Open the menu again to pick another event."
+SLOT_NO_LONGER_EXISTS = (
+    "This slot no longer exists: the event was deleted or has fewer slots now. Nothing "
+    "was booked. Open the menu again to pick another slot."
+)
 
 # Lines shown in the /cancel event confirm message before "and N more"
 _CONFIRM_MAX_LINES = 15

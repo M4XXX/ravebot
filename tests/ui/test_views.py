@@ -9,8 +9,8 @@ from bot.notion.models import EventInfo
 from bot.ui import texts
 from bot.ui.embeds import BookedEmbed
 from tests.conftest import make_real_ctx
-from tests.notion.factories import make_event, make_slot
 from tests.fake_events import fake_events
+from tests.notion.factories import make_event, make_slot
 
 # ---------------------------------------------------------------------------
 # Story 2.4: pass_for_now + FallbackMenuView
@@ -860,6 +860,14 @@ async def test_slot_selection_handle_slot_presents_booking_confirm_view() -> Non
 # Story 4.2: BookingConfirmView
 # ---------------------------------------------------------------------------
 
+def _seed_event(event) -> None:  # noqa: ANN001
+    """The confirm step re-reads its event (I5): make the seeded reads return it."""
+    reads = fake_events.list_events
+    if reads.side_effect is None and isinstance(reads.return_value, list):
+        if all(e.page_id != event.page_id for e in reads.return_value):
+            reads.return_value = [*reads.return_value, event]
+
+
 def _make_booking_confirm_view(
     ctx: object,
     lock: object,
@@ -872,6 +880,7 @@ def _make_booking_confirm_view(
     from bot.ui.views import BookingConfirmView
 
     event = _make_event(slots=slots, djs_booked=djs_booked)
+    _seed_event(event)
     return BookingConfirmView(
         ctx=ctx,
         event=event,
@@ -934,7 +943,8 @@ async def test_booking_confirm_slot_taken_presents_slot_selection_view() -> None
 
     ctx = make_real_ctx(db=MagicMock())
     ctx.notion_client = MagicMock()  # must pass notion_client guard to reach slot-lock check
-    fake_events.list_events = AsyncMock(return_value=[])  # Story 4.3: poll called in slot-taken path
+    # Story 4.3: poll called in slot-taken path
+    fake_events.list_events = AsyncMock(return_value=[])
     lock = ctx.get_user_lock(20003)
     await lock.acquire()
     view = _make_booking_confirm_view(ctx, lock, user_id=20003)
@@ -1092,7 +1102,8 @@ async def test_booking_confirm_slot_conflict_logs_err_slot_conflict() -> None:
 
 @pytest.mark.asyncio
 async def test_booking_confirm_slot_conflict_uses_fresh_notion_data() -> None:
-    """acquire_slot_lock returns False → list_events called, SlotSelectionView uses fresh event. (AC1)"""
+    """acquire_slot_lock returns False → list_events called, SlotSelectionView uses the
+    fresh event. (AC1)"""
     from bot.ui.views import SlotSelectionView
 
     ctx = make_real_ctx(db=MagicMock())
@@ -1124,7 +1135,8 @@ async def test_booking_confirm_slot_conflict_uses_fresh_notion_data() -> None:
 
 @pytest.mark.asyncio
 async def test_booking_confirm_slot_conflict_all_slots_taken() -> None:
-    """acquire_slot_lock returns False and no slots remain → lock released, 'fully booked' message."""
+    """acquire_slot_lock returns False and no slots remain → lock released,
+    'fully booked' message."""
     ctx = make_real_ctx(db=MagicMock())
     ctx.notion_client = MagicMock()
     # All 6 slots booked — remaining will be [] after excluding the conflicting slot_index=2
@@ -1151,7 +1163,8 @@ async def test_booking_confirm_slot_conflict_all_slots_taken() -> None:
 
 @pytest.mark.asyncio
 async def test_booking_confirm_pg_failure_releases_lock() -> None:
-    """acquire_slot_lock raises Exception → lock released, error message, Notion not written. (AC3)"""
+    """acquire_slot_lock raises Exception → lock released, error message, Notion not
+    written. (AC3)"""
     ctx = make_real_ctx(db=MagicMock())
     # notion_client must NOT be None — the Notion guard runs before acquire_slot_lock
     ctx.notion_client = MagicMock()
@@ -1236,7 +1249,8 @@ async def test_cancel_slot_no_bookings_releases_lock() -> None:
 
 @pytest.mark.asyncio
 async def test_cancel_slot_presents_cancellation_view() -> None:
-    """1 booking found in slot_locks + matching event → CancellationView presented, lock held. (AC1)"""
+    """1 booking found in slot_locks + matching event → CancellationView presented, lock
+    held. (AC1)"""
     from bot.ui.views import CancellationView, FallbackMenuView
 
     ctx = make_real_ctx(db=MagicMock())
@@ -1300,7 +1314,9 @@ async def test_cancel_confirm_keep_releases_lock() -> None:
     await lock.acquire()
 
     event = _make_event(event_id="evt-cancel-03", djs_booked=1)
-    view = CancelConfirmView(ctx, event=event, slot_index=0, slot_unix=1751414400, lock=lock, user_id=30005)
+    view = CancelConfirmView(
+        ctx, event=event, slot_index=0, slot_unix=1751414400, lock=lock, user_id=30005
+    )
 
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.response.send_message = AsyncMock()
@@ -1332,7 +1348,9 @@ async def test_cancel_confirm_confirm_releases_slot() -> None:
     await lock.acquire()
 
     event = _make_event(event_id="evt-cancel-04", djs_booked=1)
-    view = CancelConfirmView(ctx, event=event, slot_index=0, slot_unix=1751414400, lock=lock, user_id=30006)
+    view = CancelConfirmView(
+        ctx, event=event, slot_index=0, slot_unix=1751414400, lock=lock, user_id=30006
+    )
 
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.author = MagicMock()
@@ -1644,8 +1662,8 @@ async def test_booking_confirm_claims_slot_and_queues_the_mirror() -> None:
     lock = ctx.get_user_lock(40007)
     await lock.acquire()
     ctx.notion_client = MagicMock()
-    fake_events.list_events = AsyncMock(return_value=[])
     event = _gap_event()
+    fake_events.list_events = AsyncMock(return_value=[event])
     view = BookingConfirmView(
         ctx=ctx, event=event, slot_index=1, slot_unix=1751400000, lock=lock, user_id=40007
     )
@@ -2705,6 +2723,24 @@ async def test_booking_confirm_continues_when_the_event_reload_fails() -> None:
     )
     inter.acquire_slot_lock.assert_awaited_once()
     assert isinstance(inter.response.send_message.call_args.kwargs.get("embed"), BookedEmbed)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("events", ["deleted", "shrunk"])
+async def test_booking_confirm_refuses_a_slot_that_no_longer_exists(events) -> None:
+    """I5: the event was deleted, or its slot count dropped below the chosen slot."""
+    ctx = make_real_ctx(db=MagicMock())
+    remaining = [] if events == "deleted" else [
+        make_event(event_id="Gap Rave", page_id="evt-gap", slot_count=1, slots=[])
+    ]
+    inter, lock, _rel = await _run_booking(
+        ctx, 40093, list_events=AsyncMock(return_value=remaining)
+    )
+    inter.acquire_slot_lock.assert_not_awaited()
+    inter.response.send_message.assert_awaited_once()
+    assert inter.response.send_message.call_args[0][0] == texts.SLOT_NO_LONGER_EXISTS
+    assert inter.response.send_message.call_args.kwargs["ephemeral"] is True
+    assert not lock.locked()
 
 
 @pytest.mark.asyncio
