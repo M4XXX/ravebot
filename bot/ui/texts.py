@@ -431,6 +431,24 @@ SYNC_KEPT_POSTGRES = "The bot's version is kept and written to Notion."
 SYNC_KEPT_NOTION = "Notion's version is applied."
 SYNC_RESYNCED = "The bot's version is written to Notion again."
 
+IMPORT_UNREADABLE = "The file could not be read as a backup. Nothing was changed."
+IMPORT_NOT_A_BACKUP = "This file is not a bot backup. Nothing was changed."
+IMPORT_BAD_VERSION = "This backup file has an unsupported version ({version}). Nothing was changed."
+IMPORT_REVISION_MISMATCH = (
+    "This backup was made with database revision {file_revision}, but the bot runs "
+    "revision {running_revision}. Nothing was changed."
+)
+IMPORT_SCHEMA_MISMATCH = (
+    "This backup does not match the database tables ({detail}). Nothing was changed."
+)
+IMPORT_SAFETY_FAILED = "The safety backup could not be written, so the import was not started."
+IMPORT_DB_ERROR = "The import failed in the database and was rolled back. Nothing was changed."
+IMPORT_DONE = "The backup was restored."
+IMPORT_DONE_RESYNC_FAILED = (
+    "The backup was restored, but writing the data to Notion again failed. "
+    "The next poll tries again."
+)
+
 
 def sync_conflict_summary(label: str) -> str:
     return f"{label} was changed in the bot and in Notion."
