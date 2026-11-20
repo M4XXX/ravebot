@@ -164,7 +164,7 @@ The bot never applies a risky hand edit silently. It posts an entry in the log c
 
 Only that one booking, DJ or event waits; everything else keeps syncing. If nobody decides within 24 hours, the bot's version wins automatically and the log channel says `Postgres kept after 24 h`. While the bot is idle (before `/setup` is finished) conflicts do not expire.
 
-**Warning** (`Notion edit not applied`): the bot did not apply the edit and changed nothing. Typical cases are a deleted page, a changed event `ID`, `Discord ID` or `Slot number`, a duplicate page, a new row that fails the checks, a `Start` or `Slot length` change while a slot is booked, many records missing at once, or an empty or unreadable Notion. Fix it in Notion (the next poll tries again), or choose **Resync Postgres to Notion** on the admin page to write the bot's version back. A warning does not stop that record from syncing the bot's changes to Notion.
+**Warning** (`Notion edit not applied`): the bot did not apply the edit and changed nothing. Typical cases are a hand-made slot page that names another DJ than the one booked in the bot (the bot keeps its booking and overwrites the page), a change to a slot of a past event, a deleted page, a changed event `ID`, `Discord ID` or `Slot number`, a duplicate page, a new row that fails the checks, a `Start` or `Slot length` change while a slot is booked, many records missing at once, or an empty or unreadable Notion. Fix it in Notion (the next poll tries again), or choose **Resync Postgres to Notion** on the admin page to write the bot's version back. A warning does not stop that record from syncing the bot's changes to Notion.
 
 ### 2.10 Bot Data Is Read-Only
 
@@ -175,11 +175,11 @@ The fourth database, **Bot data**, is a backup of the bot's own state: settings,
 All four live on the [admin page](#77-the-admin-page). Each destructive action asks for a confirmation first.
 
 - **Download a backup:** one file (`ravebot-<date>.ravebot.json.gz`) with the whole database: events, slots, DJs with logos, settings and the admins added on the page. It works with or without Notion.
-- **Restore a backup:** upload such a file. The bot saves a safety backup of the current data first (in `/data/backups`, the newest 10 are kept; mount a volume there to keep them), then replaces the whole database in one step. Bookings and edits are refused while it runs, and a file from a newer bot version is refused. With Notion set up, everything is written to Notion again afterwards. Changes made since the backup are lost.
+- **Restore a backup:** upload such a file. The bot saves a safety backup of the current data first (in the folder `BACKUP_DIR`, default `/data/backups`, the newest 10 are kept; map that folder to a host folder or volume, or the safety backups are lost when the container is recreated), then replaces the whole database in one step. Bookings and edits are refused while it runs, and a file from a newer bot version, or one that unpacks to more than 1 GB, is refused. With Notion set up, everything is written to Notion again afterwards. Changes made since the backup are lost, also in Notion: on the first sync after the restore, events, DJs and slots that were added in Notion after the backup are moved to the Notion trash and listed as warnings (`... was made in Notion after the restored backup`). To keep one, restore its page from the Notion trash; the next sync takes it in as a hand edit.
 - **Rebuild from Notion:** for a lost PostgreSQL. The bot saves a safety backup, then replaces events, slots, DJs with logos, settings and Bot data with what Notion holds. Changes still waiting for Notion and open conflicts are dropped. Admins added on the page are not in Notion: the owners from `ADMIN_USER_IDS` keep working, the others come back only from a backup file. If the rebuild finds unusable rows (for example two events with the same `ID`), it changes nothing and lists them.
 - **Resync all to Notion:** writes every event, DJ and slot to Notion again. Use it after fixing a Notion problem; hand edits not yet taken over are overwritten.
 
-**First start after updating from a version that kept its data in Notion:** the bot saves a safety backup, imports events, slots and DJs from Notion once, and posts the result in the log channel (`Data imported from Notion`). Until the import works, booking and edits are paused and the Notion sync is off. If it fails, fix the listed rows in Notion and press **Retry the import from Notion** on the admin page, or restart the bot. If PostgreSQL is empty and Notion holds events, the bot rebuilds from Notion instead.
+**First start after updating from a version that kept its data in Notion:** the bot saves a safety backup, imports events, slots and DJs from Notion once, and posts the result in the log channel (`Data imported from Notion`). Until the import works, booking and edits are paused and the Notion sync is off. If it fails, fix the listed rows in Notion and press **Retry the import from Notion** on the admin page, or restart the bot. If the bot cannot find its Notion databases on this first start (for example the page is no longer shared with the integration), it stays paused too: share the page again and press **Retry the import from Notion**, or create new databases on the admin page. If PostgreSQL is empty and Notion holds events, the bot rebuilds from Notion instead. A booked slot whose DJ page cannot be read keeps the booking the bot already had; if there is none, the import stops and lists the slot.
 
 ---
 
@@ -197,6 +197,7 @@ Copy `.env.example` to `.env` and fill in your values. **Never commit `.env` to 
 | `ADMIN_PAGE_PASSWORD` | No | - | Password of the admin page. While empty, the page is off. Choose a long random value |
 | `ADMIN_PAGE_PORT` | No | `8080` | Port of the admin page inside the container (1 to 65535) |
 | `LOG_LEVEL` | No | `INFO` | Log verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+| `BACKUP_DIR` | No | `/data/backups` | Folder for the safety backups saved before a restore, a rebuild or the one-time import from Notion (the newest 10 are kept). Map it to a host folder or volume writable by user ID 1000 so the files survive a container recreate |
 | `DB_POOL_MIN` | No | `5` | Minimum asyncpg connection pool size |
 | `DB_POOL_MAX` | No | `20` | Maximum asyncpg connection pool size |
 
@@ -522,7 +523,7 @@ The bot applies an edit only after the same checks as the matching command, and 
 
 ### Booking and edits are paused after an update
 
-The one-time import from Notion failed. The log channel (`Import from Notion failed`) and the admin page list the rows to fix. Fix them in Notion, then press **Retry the import from Notion** on the admin page, or restart the bot (see [section 2.11](#211-backup-restore-rebuild-and-resync)).
+The one-time import from Notion failed, or the bot could not find its Notion databases before that import ran. The log channel (`Import from Notion failed`) and the admin page list the rows to fix. Fix them in Notion, then press **Retry the import from Notion** on the admin page, or restart the bot (see [section 2.11](#211-backup-restore-rebuild-and-resync)).
 
 ### The bot does not answer
 

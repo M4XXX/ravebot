@@ -8,6 +8,10 @@
 #   docker compose up -d        # start PostgreSQL
 #   docker compose down -v      # stop and remove volumes
 #
+# The natively run bot writes its safety backups to BACKUP_DIR (default /data/backups,
+# else ./backups when that is not writable). In a container, map /data/backups to a
+# volume (see README); this file runs no bot container, so it has no backup volume.
+#
 # [Source: architecture.md#Local Development: Native Python + PostgreSQL-only Docker Compose]
 
 services:

@@ -144,7 +144,8 @@ postgresql://ravebot:YOUR_PASSWORD@192.168.1.100:5432/ravebot
 2. **Name** `ravebot`, **Repository** `ghcr.io/m4xxx/ravebot:latest`, **Network Type** `bridge`.
 3. **Add another Path, Port, Variable…** → **Variable** for each row of the table below.
 4. Optional, for the admin page: add a **Port** (container port `8080`, any free host port) and the variable `ADMIN_PAGE_PASSWORD`.
-5. Click **Apply**.
+5. **Add another Path, Port, Variable…** → **Path**: container path `/data/backups`, host path for example `/mnt/user/appdata/ravebot/backups` (writable by user ID 1000). It keeps the safety backups across container updates.
+6. Click **Apply**.
 
 **Anywhere else (plain Docker)**
 
@@ -153,8 +154,11 @@ docker run -d --name ravebot --restart unless-stopped \
   -e DISCORD_BOT_TOKEN=... \
   -e POSTGRES_URL=postgresql://ravebot:PASSWORD@HOST:5432/ravebot \
   -e ADMIN_USER_IDS=123456789012345678 \
+  -v ravebot-backups:/data/backups \
   ghcr.io/m4xxx/ravebot:latest
 ```
+
+The volume keeps the safety backups the bot saves before a restore, a rebuild or the one-time import from Notion. Without it they are lost when the container is recreated.
 
 For the optional Notion mirror add `-e NOTION_API_KEY=...` and `-e NOTION_PARENT_PAGE_ID=...` before the image name.
 
@@ -168,6 +172,7 @@ For the optional Notion mirror add `-e NOTION_API_KEY=...` and `-e NOTION_PARENT
 | `ADMIN_PAGE_PASSWORD` | – | Turns the [admin page](#-admin-page) on. A long random password |
 | `ADMIN_PAGE_PORT` | – | Port of the admin page inside the container, default `8080` |
 | `LOG_LEVEL` | – | `INFO` (default), `DEBUG`, `WARNING`, `ERROR` |
+| `BACKUP_DIR` | – | Folder for the safety backups inside the container, default `/data/backups` (map it to a host folder or volume). The newest 10 are kept |
 
 > The package `ghcr.io/m4xxx/ravebot` must be **public** for Unraid to pull it without a login. The repository owner sets this once under *GitHub → Packages → ravebot → Package settings → Change visibility*.
 

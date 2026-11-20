@@ -7,7 +7,8 @@
 #   docker build -t ravebot .
 #   docker run --env-file .env ravebot
 #
-# All configuration is via environment variables — no config files mounted.
+# All configuration is via environment variables; mount /data/backups to keep the
+# safety exports (docker run -v ravebot-backups:/data/backups ...).
 # [Source: architecture.md#Infrastructure & Deployment]
 
 # ── Build stage ──────────────────────────────────────────────────────────────
@@ -51,8 +52,12 @@ COPY --from=builder /app/alembic.ini /app/LICENSE /app/NOTICE /app/COMMERCIAL-LI
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1
 
-# Non-root user for security
-RUN useradd --no-create-home --shell /bin/false ravebot
+# Non-root user for security (uid 1000: a mapped backup folder must be writable by it)
+RUN useradd --uid 1000 --no-create-home --shell /bin/false ravebot
+# Safety exports before a restore, rebuild or upgrade import (BACKUP_DIR). Map a host
+# folder or a named volume here so they survive a container recreate.
+RUN mkdir -p /data/backups && chown ravebot /data/backups && chmod 700 /data/backups
+VOLUME ["/data/backups"]
 USER ravebot
 
 # Admin page (default port 8080; change with ADMIN_PAGE_PORT and map it in the container settings)
