@@ -532,6 +532,19 @@ def sync_after_restore_summary(label: str) -> str:
     )
 
 
+SYNC_SLOT_OVERWRITTEN_TODO = (
+    "Nothing to do if the bot is right. To give the slot to the other DJ, change the "
+    "booking in the bot or edit the slot page again in Notion."
+)
+
+
+def sync_slot_overwritten_summary(label: str, notion_dj: str, bot_dj: str) -> str:
+    return (
+        f"A slot page made in Notion for {label} named DJ {notion_dj}, but the bot has "
+        f"DJ {bot_dj} booked there. The bot's booking was kept and the page overwritten."
+    )
+
+
 def sync_deleted_summary(label: str) -> str:
     return f"The Notion page of {label} was deleted. The bot keeps its record."
 

@@ -456,7 +456,8 @@ class SyncCycle:
 
         One page per such slot is adopted: same holder -> recorded as synced; a DJ
         on a free slot -> a booking through Intake; another holder -> Postgres wins
-        and the page is overwritten. Returns the rest and the adopted keys.
+        and the page is overwritten, with a warning when the page named a DJ (M2).
+        Returns the rest and the adopted keys.
         """
         candidates: dict[str, list[dict[str, Any]]] = {}
         for page in unmatched:
@@ -479,6 +480,19 @@ class SyncCycle:
                 await mirror.set_synced(self._db, "slot", key, page_id, payload)
                 changed(self._ctx, "slot", key)
                 self._counts.pushed += 1
+                if payload.get("discord_id") is not None:
+                    # R16 amended (M2): say that the page's DJ was replaced.
+                    await self._warn(
+                        "slot",
+                        key,
+                        texts.sync_slot_overwritten_summary(
+                            self._label("slot", key, current, None),
+                            self._value("slot", "discord_id", payload["discord_id"]),
+                            self._value("slot", "discord_id", current["discord_id"]),
+                        ),
+                        texts.SYNC_SLOT_OVERWRITTEN_TODO,
+                        payload,
+                    )
         return rest, set(adopted)
 
     async def _plan(

@@ -575,3 +575,35 @@ async def test_post_restore_flag_kept_when_the_read_fails(store) -> None:
     cycle, _ = make_cycle(read_error=RuntimeError("Notion down"))
     await cycle.run()
     assert store.config[cycle_mod.POST_RESTORE_KEY] == "1"
+
+
+async def test_hand_made_slot_page_naming_another_dj_is_overwritten_with_a_warning(
+    store,
+) -> None:
+    """M2: Postgres wins over a hand-made slot page with another DJ, and says so."""
+    B = 222222222222222222
+    store.event("u1", ev("Rave"), "pe1")
+    for did, name, page in ((A, "Alpha", "pd1"), (B, "Beta", "pd2")):
+        store.pg["dj"][str(did)] = {"discord_id": did, "dj_name": name, "vrchat_name": None,
+                                    "link": "https://a.example", "alt_link": None}
+        store.sync("dj", str(did), page, store.pg["dj"][str(did)])
+    store.pg["slot"]["u1:0"] = {"event_uid": "u1", "number": 1, "discord_id": A}
+    for i in range(1, 3):
+        store.sync("slot", f"u1:{i}", f"ps{i}", store.pg["slot"][f"u1:{i}"])
+    snap = snapshot(
+        events=[event_page("pe1", "Rave")],
+        slots=[slot_page("ps-hand", "pe1", 1, "pd2")]
+        + [slot_page(f"ps{i}", "pe1", i + 1) for i in range(1, 3)],
+        djs=[dj_page("pd1", "Alpha", A, link="https://a.example"),
+             dj_page("pd2", "Beta", B, link="https://a.example")],
+    )
+    cycle, ctx = make_cycle(snap)
+
+    await cycle.run()
+
+    assert FakeIntake.all_applied() == []
+    assert ("slot", "u1:0", "upsert") in store.changed
+    (warning,) = store.open("warning")
+    assert warning.entity_key == "u1:0"
+    assert "Beta" in warning.summary and "Alpha" in warning.summary
+    assert cycle_mod.texts.LOG_SYNC_WARNING_TITLE in attention_titles(ctx)
