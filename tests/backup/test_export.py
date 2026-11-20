@@ -50,3 +50,15 @@ async def test_safety_export_falls_back_when_unwritable(tmp_path: Path, monkeypa
     path = await export.write_safety_export(None, "x")
     assert path.parent == Path("backups")
     assert (tmp_path / "backups" / path.name).exists()
+
+
+async def test_safety_export_is_owner_only(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+    async def fake_export(pool):  # noqa: ANN001, ANN202
+        return b"x"
+
+    monkeypatch.setattr(export, "export_database", fake_export)
+    target = tmp_path / "new" / "backups"
+    monkeypatch.setenv("BACKUP_DIR", str(target))
+    path = await export.write_safety_export(None, "perm")
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert target.stat().st_mode & 0o777 == 0o700

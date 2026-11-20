@@ -129,17 +129,25 @@ async def export_database(pool: asyncpg.Pool) -> bytes:
     return gzip.compress(json.dumps(document, ensure_ascii=False).encode("utf-8"))
 
 
+def _make_private_dir(path: Path) -> None:
+    """Create the directory with mode 0o700; an existing directory keeps its mode."""
+    created = not path.exists()
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if created:
+        path.chmod(0o700)  # mkdir's mode is masked by the umask
+
+
 def _backup_dir() -> Path:
     """BACKUP_DIR (default /data/backups), or ./backups when it is not writable."""
     preferred = Path(os.environ.get("BACKUP_DIR") or DEFAULT_BACKUP_DIR)
     try:
-        preferred.mkdir(parents=True, exist_ok=True)
+        _make_private_dir(preferred)
         if os.access(preferred, os.W_OK):
             return preferred
     except OSError:
         pass
     fallback = Path(FALLBACK_BACKUP_DIR)
-    fallback.mkdir(parents=True, exist_ok=True)
+    _make_private_dir(fallback)
     log.warning("Backup directory %s is not writable, using %s", preferred, fallback)
     return fallback
 
@@ -150,7 +158,10 @@ def _write_file(data: bytes, reason: str) -> Path:
     safe_reason = re.sub(r"[^A-Za-z0-9_-]+", "-", reason).strip("-") or "backup"
     path = directory / f"ravebot-{stamp}-{safe_reason}{_SUFFIX}"
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_bytes(data)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(data)
+    tmp.chmod(0o600)  # a leftover tmp file keeps its old mode through O_TRUNC
     tmp.replace(path)
     files = sorted(p for p in directory.iterdir() if _FILE_RE.match(p.name))
     for old in files[:-KEEP_SAFETY_FILES]:
