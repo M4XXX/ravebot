@@ -9,6 +9,11 @@ A successful import is a full recovery, like a rebuild (R24): with Notion it mar
 upgrade import done (in the same transaction, after the restored config), it clears
 ``ctx.maintenance`` and ``ctx.sync_problem``, starts the Notion mirror if it was not
 running and queues everything for Notion. A failed import keeps the earlier pause.
+With Notion it also sets the post-restore flag: the next sync cycle moves Notion pages
+the restored mirror does not know (made after the backup) to the Notion trash with a
+warning instead of applying them.
+
+The file is unpacked in chunks and refused above ``MAX_UNPACKED`` bytes.
 """
 import asyncio
 import base64
@@ -16,6 +21,7 @@ import contextlib
 import datetime
 import decimal
 import gzip
+import io
 import json
 import logging
 import uuid
@@ -28,10 +34,15 @@ from bot.backup.export import FORMAT, VERSION, _quote, write_safety_export
 from bot.db.config import set_value
 from bot.results import ActionResult
 from bot.sync.mirror_start import ensure_mirror
-from bot.sync.notion_import import CONFIG_GUILD_ID, PG_TRUTH_IMPORTED_KEY
+from bot.sync.notion_import import CONFIG_GUILD_ID, PG_TRUTH_IMPORTED_KEY, POST_RESTORE_KEY
 from bot.ui import texts
 
 logger = logging.getLogger(__name__)
+
+# Most bytes a backup file may unpack to (a gzip bomb is refused, M1). An export of the
+# whole database stays far below this; uploads are limited to 512 MB packed.
+MAX_UNPACKED = 1024 * 1024 * 1024
+_CHUNK = 1024 * 1024
 
 
 class _Refusal(Exception):
@@ -65,9 +76,20 @@ def _decode(value: object, pg_type: str) -> object:
     return value
 
 
+def _unpack(data: bytes) -> bytes:
+    """Decompress in chunks; refuse once the output passes ``MAX_UNPACKED``."""
+    out = bytearray()
+    with gzip.GzipFile(fileobj=io.BytesIO(data)) as stream:
+        while chunk := stream.read(_CHUNK):
+            out += chunk
+            if len(out) > MAX_UNPACKED:
+                raise _Refusal(texts.IMPORT_TOO_LARGE)
+    return bytes(out)
+
+
 def _parse(data: bytes) -> dict[str, Any]:
     try:
-        document = json.loads(gzip.decompress(data).decode("utf-8"))
+        document = json.loads(_unpack(data).decode("utf-8"))
     except (OSError, EOFError, ValueError, UnicodeDecodeError):
         raise _Refusal(texts.IMPORT_UNREADABLE) from None
     if not isinstance(document, dict) or document.get("format") != FORMAT:
@@ -245,6 +267,9 @@ async def _import_database(ctx: Any, data: bytes) -> ActionResult:
                     if notion:
                         # After the restored config, so the file cannot drop the mark.
                         await set_value(conn, CONFIG_GUILD_ID, PG_TRUTH_IMPORTED_KEY, "1")
+                        # The next sync cycle trashes Notion pages newer than the backup
+                        # instead of taking them in (I4); survives a restart.
+                        await set_value(conn, CONFIG_GUILD_ID, POST_RESTORE_KEY, "1")
             except (asyncpg.PostgresError, asyncpg.InterfaceError):
                 logger.exception("The import from the backup file failed in the database")
                 return ActionResult(False, texts.IMPORT_DB_ERROR)

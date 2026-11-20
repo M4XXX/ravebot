@@ -98,3 +98,14 @@ async def test_refuses_while_another_operation_runs() -> None:
     assert not result.ok and result.message == texts.OPERATION_BUSY
     ctx.db.fetchval.assert_not_awaited()
     assert ctx.maintenance is None
+
+
+async def test_refuses_a_file_that_unpacks_too_large(monkeypatch) -> None:  # noqa: ANN001
+    """M1: decompression is bounded; a gzip bomb is refused with a message."""
+    monkeypatch.setattr(restore, "MAX_UNPACKED", 1000)
+    bomb = _file(created_at="x" * 5000)
+    assert len(bomb) < 1000  # small on the wire, large unpacked
+    result = await restore.import_database(_ctx(), bomb)
+    assert not result.ok and result.message == texts.IMPORT_TOO_LARGE
+    # just under the limit still reads
+    assert restore._unpack(gzip.compress(b"y" * 1000)) == b"y" * 1000

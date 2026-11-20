@@ -438,6 +438,9 @@ SYNC_RESYNCED = "The bot's version is written to Notion again."
 
 IMPORT_UNREADABLE = "The file could not be read as a backup. Nothing was changed."
 IMPORT_NOT_A_BACKUP = "This file is not a bot backup. Nothing was changed."
+IMPORT_TOO_LARGE = (
+    "This file unpacks to more than the bot reads from a backup. Nothing was changed."
+)
 IMPORT_BAD_VERSION = "This backup file has an unsupported version ({version}). Nothing was changed."
 IMPORT_REVISION_MISMATCH = (
     "This backup was made with database revision {file_revision}, but the bot runs "
@@ -514,6 +517,19 @@ def sync_conflict_text(summary: str, diffs: list[str]) -> str:
 
 def sync_diff_line(field: str, bot_value: str, notion_value: str) -> str:
     return f"{field}: bot {bot_value}, Notion {notion_value}"
+
+
+SYNC_AFTER_RESTORE_TODO = (
+    "Nothing was applied. If you want it, restore the page from the Notion trash: the "
+    "next poll takes it in as a hand edit."
+)
+
+
+def sync_after_restore_summary(label: str) -> str:
+    return (
+        f"{label} was made in Notion after the restored backup, so it was moved to the "
+        "Notion trash."
+    )
 
 
 def sync_deleted_summary(label: str) -> str:

@@ -529,3 +529,49 @@ async def test_worker_write_during_read_waits_for_cycle(store, monkeypatch) -> N
     applied = [(c.kind, c.key, c.notion) for c in FakeIntake.all_applied()]
     assert not applied, applied
     assert store.mirror[("slot", "u1:0")].synced_payload["discord_id"] == A
+
+
+async def test_first_cycle_after_restore_trashes_newer_notion_pages(store) -> None:
+    """I4: pages made after the backup are trashed with a warning, never applied."""
+    store.config[cycle_mod.POST_RESTORE_KEY] = "1"
+    store.event("u1", ev("Rave"), "pe1")
+    store.pg["dj"][str(A)] = {"discord_id": A, "dj_name": "Alpha", "vrchat_name": None,
+                              "link": "https://a.example", "alt_link": None}
+    store.sync("dj", str(A), "pd1", store.pg["dj"][str(A)])
+    for i in range(1, 3):
+        store.sync("slot", f"u1:{i}", f"ps{i}", store.pg["slot"][f"u1:{i}"])
+    snap = snapshot(
+        events=[event_page("pe1", "Rave"), event_page("pe-new", "Newer Rave")],
+        # slot 1 has no page in the mirror; a page made after the backup books Alpha
+        slots=[slot_page("ps-new", "pe1", 1, "pd1")]
+        + [slot_page(f"ps{i}", "pe1", i + 1) for i in range(1, 3)],
+        djs=[dj_page("pd1", "Alpha", A, link="https://a.example"),
+             dj_page("pd-new", "Newer DJ", 222222222222222222)],
+    )
+    cycle, ctx = make_cycle(snap)
+
+    await cycle.run()
+
+    assert FakeIntake.all_applied() == []
+    trashed = {(e, k) for e, k, op in store.changed if op == "delete"}
+    assert trashed == {
+        ("event", "stray:pe-new"), ("dj", "stray:pd-new"), ("slot", "stray:ps-new"),
+    }
+    warnings = store.open("warning")
+    assert len(warnings) == 3
+    assert all("after the restored backup" in w.summary for w in warnings)
+    assert store.config[cycle_mod.POST_RESTORE_KEY] == ""
+    assert ("slot", "u1:0", "upsert") in store.changed  # the bot's free slot gets its page
+
+    # The flag is spent: the next cycle treats a new page as a hand edit again.
+    FakeIntake.instances = []
+    store.changed.clear()
+    await cycle.run()
+    assert {c.key for c in FakeIntake.all_applied()} >= {None}
+
+
+async def test_post_restore_flag_kept_when_the_read_fails(store) -> None:
+    store.config[cycle_mod.POST_RESTORE_KEY] = "1"
+    cycle, _ = make_cycle(read_error=RuntimeError("Notion down"))
+    await cycle.run()
+    assert store.config[cycle_mod.POST_RESTORE_KEY] == "1"

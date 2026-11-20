@@ -424,3 +424,15 @@ async def test_slot_of_deleted_dj_is_mirrored_as_notion_holds_it(store: Store) -
 
     assert notion.calls == [("slot", "u1:0", "page-ev-u1", None, "RAVE-1")]
     assert store.synced[("slot", "u1:0")] == {"event_uid": "u1", "number": 1, "discord_id": None}
+
+
+@pytest.mark.parametrize("entity", ["event", "dj", "slot"])
+async def test_stray_page_is_trashed(store: Store, entity: str) -> None:
+    """I4: a page with no bot record (queued by the post-restore cycle) is trashed."""
+    store.add(entity, "stray:p9", "delete", "p9")
+    notion = FakeNotion()
+
+    assert await _worker(store, notion).drain_once() == 1
+
+    assert notion.calls == [("trash", "p9")]
+    assert store.failures == {}

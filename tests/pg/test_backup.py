@@ -287,3 +287,24 @@ async def test_import_with_running_mirror_resyncs_once(pool, tmp_path, monkeypat
     assert (await restore.import_database(ctx, data)).ok
     ctx.notion_start_mirror.assert_not_awaited()
     cycle.resync_all.assert_awaited_once()
+
+
+async def test_import_with_notion_marks_the_next_cycle_post_restore(
+    pool, tmp_path, monkeypatch  # noqa: ANN001
+) -> None:
+    """I4: the flag survives a restart (config guild 0) and is set only with Notion."""
+    from bot.sync.cycle import POST_RESTORE_KEY
+
+    monkeypatch.setenv("BACKUP_DIR", str(tmp_path))
+    await _seed(pool)
+    data = await export_database(pool)
+    ctx, _ = _paused_ctx(pool)
+    assert (await restore.import_database(ctx, data)).ok
+    flag = "SELECT value FROM config WHERE guild_id = 0 AND key = $1"
+    assert await pool.fetchval(flag, POST_RESTORE_KEY) == "1"
+    await pool.execute("DELETE FROM config WHERE guild_id = 0")
+    ctx, _ = _paused_ctx(pool)
+    ctx.notion_client = None
+    ctx.notion_start_mirror = None
+    assert (await restore.import_database(ctx, data)).ok
+    assert await pool.fetchval(flag, POST_RESTORE_KEY) is None

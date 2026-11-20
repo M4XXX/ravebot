@@ -15,6 +15,11 @@ Runs inside the Notion poll (bot/cogs/events.py), never during maintenance. Orde
 After them the "Bot data" pass pushes bot tables to the read-only mirror: it never applies
 and never conflicts, a hand edit is overwritten and a page without a row is trashed.
 
+After a backup import (``POST_RESTORE_KEY`` set, config guild 0) the first cycle that
+reads Notion moves every event, DJ and slot page the restored mirror does not know (made
+after the backup) to the Notion trash with a warning, instead of taking it in; then it
+clears the flag. Pages the bot can adopt (an event page with its Bot ID) are kept.
+
 Warnings are not repeated while an identical one is still open. Every database call
 uses its own short-lived pool connection; no row lock is held across a Notion call.
 The cycle holds the mirror worker's ``gate`` for its whole run: the worker waits, so
@@ -47,6 +52,7 @@ from bot.notion.models import (
 from bot.results import ActionResult
 from bot.sync.botdata import botdata_rows, is_oversized_page, parse_botdata_page
 from bot.sync.intake import Intake
+from bot.sync.notion_import import POST_RESTORE_KEY
 from bot.sync.payloads import (
     PROP_DJ_ALT_LINK,
     PROP_DJ_LINK,
@@ -64,7 +70,7 @@ from bot.sync.plan import Change, Side, plan
 from bot.sync.worker import changed
 from bot.ui import texts
 
-__all__ = ["CONFLICT_TTL", "CycleReport", "SyncCycle"]
+__all__ = ["CONFLICT_TTL", "POST_RESTORE_KEY", "CycleReport", "SyncCycle"]
 
 logger = logging.getLogger(__name__)
 
@@ -202,6 +208,7 @@ class SyncCycle:
         self._dj_names: dict[int, str] = {}
         self._known_warnings: set[tuple[str | None, str | None, str]] = set()
         self._stalled: set[tuple[str, str]] = set()
+        self._post_restore = False
 
     @property
     def _db(self) -> asyncpg.Pool:
@@ -258,6 +265,9 @@ class SyncCycle:
             if i.kind == "warning"
         }
         self._stalled = await mirror.open_issue_keys(self._db) | expired
+        self._post_restore = (
+            await config_db.get_value(self._db, CONFIG_GUILD_ID, POST_RESTORE_KEY) == "1"
+        )
         intake = Intake(self._ctx, self._bot)
         try:
             await self._event_pass(snapshot.events, intake)
@@ -266,6 +276,9 @@ class SyncCycle:
             await self._botdata_pass(snapshot.botdata)
         finally:
             await intake.flush_log()
+        if self._post_restore:
+            await config_db.set_value(self._db, CONFIG_GUILD_ID, POST_RESTORE_KEY, "")
+            self._post_restore = False
         now = datetime.datetime.now(datetime.UTC).isoformat()
         await config_db.set_value(self._db, CONFIG_GUILD_ID, LAST_RUN_KEY, now)
         await config_db.set_value(self._db, CONFIG_GUILD_ID, LAST_ERROR_KEY, "")
@@ -311,6 +324,13 @@ class SyncCycle:
             notion_event_payload,
             lambda page: {"_bot_id": _rich(page, PROP_EVENT_BOT_ID)},
         )
+
+        def adoptable(page: dict[str, Any]) -> bool:
+            bot_id = page.get("_bot_id")
+            known = rows.get(bot_id) if isinstance(bot_id, str) else None
+            return bot_id in pg and not (known and known.notion_page_id)
+
+        unmatched = await self._drop_after_restore("event", unmatched, adoptable)
         await self._plan("event", pg, side, rows, unmatched, unreadable, intake)
 
     async def _dj_pass(self, pages: list[dict[str, Any]], intake: Intake) -> None:
@@ -318,6 +338,7 @@ class SyncCycle:
         self._dj_names = {p["discord_id"]: p["dj_name"] for p in pg.values()}
         rows = await mirror.get_all(self._db, "dj")
         side, unmatched, unreadable = _match(pages, rows, _notion_dj)
+        unmatched = await self._drop_after_restore("dj", unmatched)
         await self._plan("dj", pg, side, rows, unmatched, unreadable, intake)
 
     async def _slot_pass(self, pages: list[dict[str, Any]], intake: Intake) -> None:
@@ -345,6 +366,7 @@ class SyncCycle:
         pg = await _load_pg(self._db, "slot")
         rows = await mirror.get_all(self._db, "slot")
         side, unmatched, unreadable = _match(pages, rows, parse)
+        unmatched = await self._drop_after_restore("slot", unmatched)
         unmatched, adopted = await self._adopt_slots(pg, rows, unmatched, intake)
         await self._plan("slot", pg, side, rows, unmatched, unreadable, intake, adopted)
 
@@ -389,6 +411,39 @@ class SyncCycle:
         for key in rows.keys() - pg.keys():
             if rows[key].notion_page_id not in page_ids:
                 await mirror.forget(self._db, "botdata", key)  # page and row both gone
+
+    async def _drop_after_restore(
+        self,
+        entity: str,
+        unmatched: list[dict[str, Any]],
+        keep: Callable[[dict[str, Any]], bool] | None = None,
+    ) -> list[dict[str, Any]]:
+        """First cycle after a backup import: trash pages newer than the backup (I4).
+
+        Returns the pages left for the planner (all of them outside that cycle).
+        """
+        if not self._post_restore:
+            return unmatched
+        kept: list[dict[str, Any]] = []
+        for page in unmatched:
+            if self._ctx.maintenance:
+                raise _Stopped
+            page_id = page.get("_page_id")
+            if not page_id or (keep is not None and keep(page)):
+                kept.append(page)
+                continue
+            payload = _strip(page)
+            # Its own outbox key: never replaces a queued write of a bot record.
+            changed(self._ctx, entity, f"stray:{page_id}", "delete", page_id)
+            self._counts.pushed += 1
+            await self._warn(
+                entity,
+                None,
+                texts.sync_after_restore_summary(self._label(entity, None, None, payload)),
+                texts.SYNC_AFTER_RESTORE_TODO,
+                payload,
+            )
+        return kept
 
     async def _adopt_slots(
         self,

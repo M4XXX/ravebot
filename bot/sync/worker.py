@@ -40,6 +40,8 @@ _LOGO_REQUESTS = 2  # file upload: create + send
 _ERROR_LIMIT = 500
 
 _ORDER = {"event": 0, "dj": 1, "slot": 2}
+# Outbox key of a Notion page without a bot record, queued only to be trashed.
+STRAY_PREFIX = "stray:"
 
 # changed() tasks, kept so they are not garbage collected before they finish.
 _pending: set[asyncio.Task[None]] = set()
@@ -170,7 +172,12 @@ class MirrorWorker:
         return True
 
     async def _write(self, row: outbox.OutboxRow) -> None:
-        if row.entity == "event":
+        if row.entity_key.startswith(STRAY_PREFIX):
+            # A Notion page with no bot record (e.g. made after a restored backup).
+            if row.op != "delete":
+                raise ValueError(f"stray {row.entity} page can only be deleted")
+            await self._trash(row.entity, row.entity_key, row.notion_page_id)
+        elif row.entity == "event":
             await self._sync_event(row.entity_key, row.op, row.notion_page_id)
         elif row.entity == "dj":
             await self._sync_dj(row.entity_key, row.op, row.notion_page_id)

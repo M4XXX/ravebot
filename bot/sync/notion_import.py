@@ -54,6 +54,7 @@ from bot.ui import texts
 
 __all__ = [
     "PG_TRUTH_IMPORTED_KEY",
+    "POST_RESTORE_KEY",
     "pause_if_import_pending",
     "ImportResult",
     "import_from_notion",
@@ -65,6 +66,8 @@ logger = logging.getLogger(__name__)
 
 # Global config key (guild 0, like the Notion database ids): "1" once the upgrade import ran.
 PG_TRUTH_IMPORTED_KEY = "pg_truth_imported"
+# Global config key: "1" after a backup import until one sync cycle has run (I4).
+POST_RESTORE_KEY = "sync_post_restore"
 CONFIG_GUILD_ID = 0
 
 _REPLACE_TABLES = "events, slot_locks, djs, notion_mirror, notion_outbox, sync_issues"
