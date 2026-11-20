@@ -13,9 +13,11 @@ from bot.notion.models import (
     PROP_DJ_DISCORD_ID,
     PROP_DJ_DISCORD_NAME,
     PROP_DJ_NAME,
+    PROP_EVENT_BOT_ID,
     PROP_EVENT_DATE,
     PROP_EVENT_GENRE,
     PROP_EVENT_ID,
+    PROP_EVENT_NOTES,
     PROP_EVENT_SLOT_LENGTH,
     PROP_EVENT_SLOTS,
     PROP_EVENT_START,
@@ -38,6 +40,7 @@ from bot.timezone import local_today
 __all__ = [
     "DuplicateEventError",
     "NotionClient",
+    "NotionSnapshot",
     "NotionWriteError",
     "SlotRowMissingError",
 ]
@@ -90,6 +93,14 @@ def _is_http_url(value: str | None) -> bool:
 
 def _url_prop(value: str | None) -> dict[str, Any]:
     return {"url": value.strip() if value and _is_http_url(value) else None}
+
+
+@dataclasses.dataclass
+class NotionSnapshot:
+    events: list[dict[str, Any]]
+    slots: list[dict[str, Any]]
+    djs: list[dict[str, Any]]
+    botdata: list[dict[str, Any]]
 
 
 class NotionClient:
@@ -333,25 +344,9 @@ class NotionClient:
         }
         logo_failed = False
         if upload_logo or existing is None:
-            if logo_image is not None:
-                try:
-                    upload_id = await self._api.upload_file(
-                        "logo.png", "image/png", logo_image, f"logo of DJ {discord_id}"
-                    )
-                except NotionWriteError:
-                    logger.warning("Logo upload of DJ %s failed", discord_id, exc_info=True)
-                    logo_failed = True
-                else:
-                    props[PROP_DJ_LOGO] = {"files": [
-                        {"name": "logo.png", "type": "file_upload",
-                         "file_upload": {"id": upload_id}}
-                    ]}
-            elif logo_url and _is_http_url(logo_url):
-                props[PROP_DJ_LOGO] = {"files": [
-                    {"name": "logo", "type": "external", "external": {"url": logo_url.strip()}}
-                ]}
-            else:
-                props[PROP_DJ_LOGO] = {"files": []}
+            logo_prop, logo_failed = await self._logo_prop(discord_id, logo_url, logo_image)
+            if logo_prop is not None:
+                props[PROP_DJ_LOGO] = logo_prop
         try:
             page_id = await self._write_dj(existing, props, discord_id)
         except NotionWriteError:
@@ -365,6 +360,31 @@ class NotionClient:
         if logo_failed:
             raise DjLogoUploadError(page_id)
         return page_id
+
+    async def _logo_prop(
+        self, discord_id: int, logo_url: str | None, logo_image: bytes | None
+    ) -> tuple[dict[str, Any] | None, bool]:
+        """The ``Logo`` property value and whether the image upload failed.
+
+        None means "leave the property out" (failed upload).
+        """
+        if logo_image is not None:
+            try:
+                upload_id = await self._api.upload_file(
+                    "logo.png", "image/png", logo_image, f"logo of DJ {discord_id}"
+                )
+            except NotionWriteError:
+                logger.warning("Logo upload of DJ %s failed", discord_id, exc_info=True)
+                return None, True
+            return {"files": [
+                {"name": "logo.png", "type": "file_upload",
+                 "file_upload": {"id": upload_id}}
+            ]}, False
+        if logo_url and _is_http_url(logo_url):
+            return {"files": [
+                {"name": "logo", "type": "external", "external": {"url": logo_url.strip()}}
+            ]}, False
+        return {"files": []}, False
 
     async def _write_dj(
         self, existing: dict[str, Any] | None, props: dict[str, Any], discord_id: int
@@ -387,10 +407,14 @@ class NotionClient:
 
     async def trash_dj_page(self, page_id: str) -> None:
         """Move a DJ row of the Notion DJs database to the trash (a 404 is fine)."""
+        await self.trash_page(page_id)
+
+    async def trash_page(self, page_id: str) -> None:
+        """Move any page to the Notion trash (a 404 is fine)."""
         try:
             await self._api.request(
                 "PATCH", f"/pages/{page_id}", {"in_trash": True},
-                f"trash DJ page {page_id}", tolerate=(404,),
+                f"trash page {page_id}", tolerate=(404,),
             )
         except NotionWriteError as exc:
             if exc.status_code != 404:
@@ -540,6 +564,142 @@ class NotionClient:
             page_id,
             current[:1],
             f"remove extra DJs from slot {slot_index + 1} of {event.event_id}",
+        )
+
+    # ---- mirror writes: Postgres is the truth, write exactly the payload ----
+
+    async def _page_alive(self, page_id: str | None) -> bool:
+        if page_id is None:
+            return False
+        try:
+            page = await self._api.request(
+                "GET", f"/pages/{page_id}", None, f"check page {page_id}",
+                tolerate=(404,),
+            )
+        except NotionWriteError as exc:
+            if exc.status_code == 404:
+                return False
+            raise
+        return not _is_trashed(page)
+
+    async def _mirror_page(
+        self, ds_id: str, props: dict[str, Any], page_id: str | None, context: str
+    ) -> str:
+        """PATCH the page when it is alive, else create a new one; return its id."""
+        if await self._page_alive(page_id):
+            await self._api.request(
+                "PATCH", f"/pages/{page_id}", {"properties": props}, f"update {context}"
+            )
+            return str(page_id)
+        page = await self._api.request(
+            "POST",
+            "/pages",
+            {"parent": self._parent(ds_id), "properties": props},
+            f"create {context}",
+        )
+        return str(page["id"])
+
+    async def mirror_event(self, uid: str, payload: dict[str, Any], page_id: str | None) -> str:
+        """Write the event payload to its Events row (created when missing)."""
+        props: dict[str, Any] = {
+            PROP_EVENT_ID: {"title": _text(payload["event_id"])},
+            PROP_EVENT_DATE: {"date": {"start": payload["date"]}},
+            PROP_EVENT_STATUS: {
+                "select": {"name": payload["status"]} if payload.get("status") else None
+            },
+            PROP_EVENT_SLOTS: {"number": payload["slot_count"]},
+            PROP_EVENT_START: {"rich_text": _text(payload["start"])},
+            PROP_EVENT_SLOT_LENGTH: {"number": payload["slot_minutes"]},
+            PROP_EVENT_GENRE: {
+                "rich_text": _text(payload["genre"]) if payload.get("genre") else []
+            },
+            PROP_EVENT_NOTES: {
+                "rich_text": _text(payload["notes"]) if payload.get("notes") else []
+            },
+            PROP_EVENT_BOT_ID: {"rich_text": _text(uid)},
+        }
+        return await self._mirror_page(
+            self._ids.events_ds, props, page_id, f"event {payload['event_id']}"
+        )
+
+    async def mirror_slot(
+        self,
+        payload: dict[str, Any],
+        event_page_id: str,
+        dj_page_id: str | None,
+        page_id: str | None,
+        *,
+        event_label: str | None = None,
+    ) -> str:
+        """Write the slot payload to its Slots row (created when missing).
+
+        ``event_label`` (the event ID) only feeds the row's ``Name`` title.
+        """
+        number = payload["number"]
+        name = f"{event_label} #{number}" if event_label else f"Slot {number}"
+        props: dict[str, Any] = {
+            PROP_SLOT_NAME: {"title": _text(name)},
+            PROP_SLOT_EVENT: {"relation": [{"id": event_page_id}]},
+            PROP_SLOT_NUMBER: {"number": number},
+            PROP_SLOT_DJ: {"relation": [{"id": dj_page_id}] if dj_page_id else []},
+        }
+        return await self._mirror_page(
+            self._ids.slots_ds, props, page_id, f"slot {number} of event {payload['event_uid']}"
+        )
+
+    async def mirror_dj(
+        self,
+        payload: dict[str, Any],
+        page_id: str | None,
+        *,
+        logo_image: bytes | None,
+        upload_logo: bool,
+    ) -> str:
+        """Write the DJ payload to its DJs row (created when missing).
+
+        Logo rules as in ``upsert_dj``: with ``upload_logo`` False an existing row keeps
+        its ``Logo``; a new row always gets it. A failed logo upload still writes the
+        row and then raises DjLogoUploadError(page_id).
+        """
+        discord_id = payload["discord_id"]
+        props: dict[str, Any] = {
+            PROP_DJ_NAME: {"title": _text(payload["dj_name"])},
+            PROP_DJ_DISCORD_ID: {"rich_text": _text(str(discord_id))},
+            PROP_DJ_VRCHAT_NAME: {
+                "rich_text": _text(payload["vrchat_name"]) if payload.get("vrchat_name") else []
+            },
+            PROP_DJ_LINK: _url_prop(payload.get("link")),
+            PROP_DJ_ALT_LINK: _url_prop(payload.get("alt_link")),
+        }
+        alive = await self._page_alive(page_id)
+        existing = {"id": page_id} if alive else None
+        logo_failed = False
+        if upload_logo or existing is None:
+            logo_prop, logo_failed = await self._logo_prop(
+                discord_id, payload.get("logo_url"), logo_image
+            )
+            if logo_prop is not None:
+                props[PROP_DJ_LOGO] = logo_prop
+        try:
+            new_id = await self._write_dj(existing, props, discord_id)
+        except NotionWriteError:
+            if logo_image is None or PROP_DJ_LOGO not in props:
+                raise
+            logger.warning("Writing DJ %s with logo failed; retrying without", discord_id)
+            del props[PROP_DJ_LOGO]
+            new_id = await self._write_dj(existing, props, discord_id)
+            logo_failed = True
+        if logo_failed:
+            raise DjLogoUploadError(new_id)
+        return new_id
+
+    async def read_all(self) -> "NotionSnapshot":
+        """All non-trashed pages of the mirrored databases (raw JSON)."""
+        return NotionSnapshot(
+            events=await self._rows(self._ids.events_ds),
+            slots=await self._rows(self._ids.slots_ds),
+            djs=await self._rows(self._ids.djs_ds),
+            botdata=[],
         )
 
     @staticmethod

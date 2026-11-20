@@ -90,6 +90,7 @@ def _events_props() -> dict[str, Any]:
         "Slots": {"number": {}},
         "Start": {"rich_text": {}},
         "Slot length": {"number": {}},
+        "Bot ID": {"rich_text": {}},
     }
 
 

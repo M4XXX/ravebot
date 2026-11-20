@@ -23,7 +23,7 @@ PARENT = "parent-page"
 EVENT_PROPS = {
     "ID": "title", "Date": "date", "Status": "select", "Genre": "rich_text",
     "Notes": "rich_text", "Slots": "number", "Start": "rich_text",
-    "Slot length": "number", "Slot rows": "relation",
+    "Slot length": "number", "Bot ID": "rich_text", "Slot rows": "relation",
 }
 SLOT_PROPS = {
     "Name": "title", "Event": "relation", "Slot number": "number", "DJ": "relation",
@@ -245,6 +245,7 @@ async def test_missing_property_is_added(store: dict) -> None:
     api, log = make(fake)
     await ensure_schema(api, object(), GUILD, PARENT)  # type: ignore[arg-type]
     del fake.ds_by_title("Events")["properties"]["Genre"]
+    del fake.ds_by_title("Events")["properties"]["Bot ID"]
     del fake.ds_by_title("DJs")["properties"]["Last booked"]
 
     await ensure_schema(api, object(), GUILD, PARENT)  # type: ignore[arg-type]

@@ -16,6 +16,7 @@ PROP_EVENT_NOTES = "Notes"
 PROP_EVENT_SLOTS = "Slots"
 PROP_EVENT_START = "Start"
 PROP_EVENT_SLOT_LENGTH = "Slot length"
+PROP_EVENT_BOT_ID = "Bot ID"
 # Slots properties
 PROP_SLOT_EVENT = "Event"
 PROP_SLOT_NUMBER = "Slot number"
