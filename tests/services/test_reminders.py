@@ -19,6 +19,7 @@ from bot.notion.models import EventInfo
 from bot.services.reminders import RemindersService
 from bot.ui.embeds import ErrorCode
 from tests.notion.factories import make_event
+from tests.fake_events import fake_events
 
 # Fixed reference: 2026-05-21 02:00 UTC
 # "2026-05-22" midnight = 22h away → squarely in the 20-28h window
@@ -49,7 +50,7 @@ def _make_service(list_events_result: list | None = None) -> RemindersService:
     bot = MagicMock()
     db = MagicMock()
     notion_client = MagicMock()
-    notion_client.list_events = AsyncMock(return_value=list_events_result or [])
+    fake_events.list_events = AsyncMock(return_value=list_events_result or [])
     log_service = MagicMock()
     log_service.post_error = AsyncMock()
     return RemindersService(
@@ -89,7 +90,7 @@ def test_is_in_reminder_window_false_for_past_event():
 async def test_send_reminders_skips_on_notion_failure():
     """list_events raises → no crash, no reminders sent."""
     svc = _make_service()
-    svc.notion_client.list_events = AsyncMock(side_effect=Exception("API down"))
+    fake_events.list_events = AsyncMock(side_effect=Exception("API down"))
 
     with patch("bot.services.reminders.get_booked_djs_for_event", new=AsyncMock()) as mock_get:
         await svc.send_reminders(guild_id=1, ctx=MagicMock(), _now=FIXED_NOW)

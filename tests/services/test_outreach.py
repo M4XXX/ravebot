@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from bot.notion.models import EventInfo
 from bot.services.outreach import OutreachService
 from tests.notion.factories import make_event, make_slot
+from tests.fake_events import fake_events
 
 
 # ---------------------------------------------------------------------------
@@ -54,7 +55,7 @@ def _make_service(list_events_result: list | None = None) -> OutreachService:
     bot.guilds = [MagicMock(id=1)]
     db = MagicMock()
     notion_client = MagicMock()
-    notion_client.list_events = AsyncMock(return_value=list_events_result or [])
+    fake_events.list_events = AsyncMock(return_value=list_events_result or [])
     log_service = MagicMock()
     log_service.post_error = AsyncMock()
     return OutreachService(bot=bot, db=db, notion_client=notion_client, log_service=log_service)
@@ -72,7 +73,7 @@ def _active_seq(last_contact_at=None) -> dict:
 @pytest.mark.asyncio
 async def test_run_gap_detection_returns_empty_on_notion_failure():
     svc = _make_service()
-    svc.notion_client.list_events = AsyncMock(side_effect=Exception("Notion down"))
+    fake_events.list_events = AsyncMock(side_effect=Exception("Notion down"))
     with patch("bot.services.outreach.get_value", new=AsyncMock(return_value=None)):
         result = await svc.run_gap_detection(guild_id=1)
     assert result == []

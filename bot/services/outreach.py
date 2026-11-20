@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 import disnake
 
+from bot.db import events as db_events
 from bot.db.config import get_value
 from bot.db.djs import get_active_booking_djs
 from bot.db.djs import update_last_contacted_at as update_dj_last_contacted_at
@@ -122,9 +123,9 @@ class OutreachService:
         except Exception:  # a bad value or a database error: use the default
             cooldown_hours = _DEFAULT_COOLDOWN_HOURS
 
-        # Fetch all future events from Notion (AC1)
+        # Fetch all future events (AC1)
         try:
-            events = await self.notion_client.list_events()
+            events = await db_events.list_events(self.db)
         except Exception as exc:
             logger.warning("OutreachService.run_gap_detection: list_events failed: %s", exc)
             return []

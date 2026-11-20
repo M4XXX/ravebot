@@ -23,6 +23,7 @@ from disnake.ext import commands
 
 from bot.context import BotContext
 from bot.db import config as db_config
+from bot.db import events as db_events
 from bot.db.bookings import init_event_slots
 from bot.db.djs import get_all_djs
 from bot.db.manual_events import mark_manual
@@ -386,7 +387,7 @@ class AdminCog(commands.Cog):
         await inter.response.defer(ephemeral=True)
 
         try:
-            events = await self.ctx.notion_client.list_events()
+            events = await db_events.list_events(self.ctx.db)
         except Exception:
             logger.exception("post_lineup_update: list_events() failed")
             await inter.followup.send(
@@ -451,7 +452,7 @@ class AdminCog(commands.Cog):
         ):
             return []
         try:
-            events = await self.ctx.notion_client.list_events()
+            events = await db_events.list_events(self.ctx.db)
         except Exception:
             logger.warning("event autocomplete: list_events() failed", exc_info=True)
             return []

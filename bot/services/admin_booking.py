@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 
 import disnake
 
+from bot.db import events as db_events
 from bot.db.bookings import admin_force_book_slot, get_slot_lock_holder, release_slot_lock
 from bot.db.djs import update_active_booking
 from bot.notion.client import NotionWriteError, SlotRowMissingError
@@ -134,7 +135,7 @@ class AdminBookingService:
 
         # Step 1: fetch future events
         try:
-            events = await self.notion_client.list_events()
+            events = await db_events.list_events(self.db)
         except Exception:
             logger.exception("admin book: list_events failed")
             return False, "Could not fetch events from Notion. Please try again in a moment."
@@ -222,7 +223,7 @@ class AdminBookingService:
                 admin_name, "booked", dj_name, event, slot_index
             )
 
-        await recheck_fully_booked(self.db, self.log_service, self.notion_client)
+        await recheck_fully_booked(self.db, self.log_service)
 
         return True, ""
 
@@ -254,7 +255,7 @@ class AdminBookingService:
 
         # Step 1: fetch future events
         try:
-            events = await self.notion_client.list_events()
+            events = await db_events.list_events(self.db)
         except Exception:
             logger.exception("admin cancel: list_events failed")
             return False, "Could not fetch events from Notion. Please try again in a moment."
@@ -330,7 +331,7 @@ class AdminBookingService:
                 admin_name, "removed", dj_name, event, slot_index
             )
 
-        await recheck_fully_booked(self.db, self.log_service, self.notion_client)
+        await recheck_fully_booked(self.db, self.log_service)
 
         return True, ""
 

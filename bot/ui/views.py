@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 import disnake
 
+from bot.db import events as db_events
 from bot.db.djs import get_dj_by_discord_id, update_active_booking
 from bot.notion.models import FINISHED_STATUSES
 from bot.services.roles import get_dj_role, get_invites_role
@@ -338,9 +339,9 @@ class FallbackMenuView(GatedView):
             )
             return
 
-        # Fetch Notion events to get names and slot times
+        # Fetch events to get names and slot times
         try:
-            events = await self.ctx.notion_client.list_events()
+            events = await db_events.list_events(self.ctx.db)
         except Exception:
             logger.exception("cancel_slot: list_events() failed")
             lock.release()
@@ -523,12 +524,8 @@ class FallbackMenuView(GatedView):
         from bot.services.lineup import _today, future_events, upcoming_event
         from bot.ui.embeds import LineupUpdateEmbed
 
-        if self.ctx.notion_client is None:
-            await inter.response.send_message(texts.GENERIC_ERROR, ephemeral=True)
-            return
-
         try:
-            events = await self.ctx.notion_client.list_events()
+            events = await db_events.list_events(self.ctx.db)
         except Exception:
             logger.exception("show_lineup: list_events() failed")
             await inter.response.send_message(texts.GENERIC_ERROR, ephemeral=True)
@@ -647,9 +644,7 @@ class LineupEventPickView(GatedView):
         from bot.ui.embeds import LineupUpdateEmbed
 
         try:
-            if self.ctx.notion_client is None:
-                raise RuntimeError("no Notion client")
-            events = await self.ctx.notion_client.list_events()
+            events = await db_events.list_events(self.ctx.db)
         except Exception:
             logger.exception("lineup_pick: list_events() failed")
             await inter.response.send_message(texts.GENERIC_ERROR, ephemeral=True)
@@ -721,9 +716,9 @@ async def prepare_booking(
         return BookingStart(texts.FLOW_OPEN, "", None)
     await lock.acquire()
     try:
-        if ctx.notion_client is None:
-            raise RuntimeError("notion_client is not configured")
-        events = await ctx.notion_client.list_events()
+        if ctx.db is None:
+            raise RuntimeError("db is not configured")
+        events = await db_events.list_events(ctx.db)
         if not events:
             lock.release()
             return BookingStart(texts.NO_EVENTS, "", None)
@@ -1183,19 +1178,16 @@ class BookingConfirmView(FlowView):
                     "BookingConfirmView: failed to post ERR_SLOT_CONFLICT"
                 )
 
-        # AC1: Get fresh event data from Notion — best-effort, fall back to stale self._event
+        # AC1: Get fresh event data — best-effort, fall back to stale self._event
         event_for_refresh = self._event
-        if self._ctx.notion_client is not None:
-            try:
-                fresh_events = await self._ctx.notion_client.list_events()
-                for fresh_event in fresh_events:
-                    if fresh_event.page_id == event_id:
-                        event_for_refresh = fresh_event
-                        break
-            except Exception:
-                logger.exception(
-                    "BookingConfirmView: failed to refresh events for slot conflict view"
-                )
+        try:
+            fresh_event = await db_events.get_event(self._ctx.db, event_id)
+            if fresh_event is not None:
+                event_for_refresh = fresh_event
+        except Exception:
+            logger.exception(
+                "BookingConfirmView: failed to refresh events for slot conflict view"
+            )
 
         # Compute remaining open slots from (possibly fresh) event data
         remaining = [
@@ -1268,14 +1260,7 @@ class BookingConfirmView(FlowView):
         # The event may have been canceled (or finished) since the menu was opened:
         # check before any lock is taken. A failed read does not block the booking.
         try:
-            current = next(
-                (
-                    e
-                    for e in await self._ctx.notion_client.list_events()
-                    if e.page_id == event_id
-                ),
-                None,
-            )
+            current = await db_events.get_event(self._ctx.db, event_id)
         except Exception:
             logger.warning("BookingConfirmView: could not re-read the event", exc_info=True)
             current = None
@@ -1427,12 +1412,10 @@ class BookingConfirmView(FlowView):
         self._release_flow()
 
         # Announce the event when this booking filled it, clear the flag when a slot opened.
-        # After the lock release: the Notion read can be slow and must not hold the DJ's flow.
+        # After the lock release: the event read must not hold the DJ's flow.
         from bot.services.fully_booked import recheck_fully_booked
 
-        await recheck_fully_booked(
-            self._ctx.db, self._ctx.log_service, self._ctx.notion_client
-        )
+        await recheck_fully_booked(self._ctx.db, self._ctx.log_service)
 
 
 # ---------------------------------------------------------------------------
@@ -1735,12 +1718,10 @@ class CancelConfirmView(FlowView):
         self._release_flow()
 
         # Announce the event when this booking filled it, clear the flag when a slot opened.
-        # After the lock release: the Notion read can be slow and must not hold the DJ's flow.
+        # After the lock release: the event read must not hold the DJ's flow.
         from bot.services.fully_booked import recheck_fully_booked
 
-        await recheck_fully_booked(
-            self._ctx.db, self._ctx.log_service, self._ctx.notion_client
-        )
+        await recheck_fully_booked(self._ctx.db, self._ctx.log_service)
 
 
 # ---------------------------------------------------------------------------
@@ -1855,16 +1836,14 @@ class OutreachView(GatedView):
             except Exception as exc:
                 logger.warning("OutreachView.accept: DB update failed: %s", exc)
 
-        # Fetch fresh event data; fall back to cached if Notion unavailable
+        # Fetch fresh event data; fall back to cached if the database read fails
         event = self._event
-        if self._ctx.notion_client is not None:
-            try:
-                events = await self._ctx.notion_client.list_events()
-                fresh = next((e for e in events if e.page_id == event_id), None)
-                if fresh is not None:
-                    event = fresh
-            except Exception as exc:
-                logger.warning("OutreachView.accept: list_events failed: %s", exc)
+        try:
+            fresh = await db_events.get_event(self._ctx.db, event_id)
+            if fresh is not None:
+                event = fresh
+        except Exception as exc:
+            logger.warning("OutreachView.accept: get_event failed: %s", exc)
 
         # The event was canceled (or finished) after the invite went out
         if event.status in FINISHED_STATUSES:

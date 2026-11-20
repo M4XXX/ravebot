@@ -17,6 +17,7 @@ from disnake.ext import commands, tasks
 
 from bot.cogs.loop_support import first_guild_id, guard_db, prepare_loop, run_cycle
 from bot.context import BotContext
+from bot.db import events as db_events
 from bot.notion.client import NotionWriteError
 from bot.notion.models import EventInfo
 from bot.services import activation
@@ -124,19 +125,18 @@ class EventsCog(commands.Cog):
         # Reconcile hand edits in Notion with Postgres before reading the events
         await self._run_sync_cycle(guild_id)
 
-        # Fetch events from Notion (AC1, AC4)
+        # Fetch events from Postgres (AC1, AC4)
         listed_at = datetime.datetime.now(datetime.UTC)
         try:
-            events = await self.ctx.notion_client.list_events()
+            events = await db_events.list_events(self.ctx.db)
         except Exception as exc:
-            logger.warning("Notion poll failed — skipping cycle: %s", exc)
-            # A NotionWriteError was already posted by NotionApi.
-            if self.ctx.log_service is not None and not isinstance(exc, NotionWriteError):
+            logger.warning("Event poll failed — skipping cycle: %s", exc)
+            if self.ctx.log_service is not None:
                 await self.ctx.log_service.log_attention(
                     texts.LOG_FAILED_TITLE,
-                    "The bot could not read the events from Notion. "
+                    "The bot could not read the events from the database. "
                     "It tries again on the next poll.",
-                    "Check that the Notion integration still has access to the pages.",
+                    "Check that the database is reachable.",
                 )
             return
 

@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 import asyncpg
 
+from bot.db import events as db_events
 from bot.db.bookings import get_dj_slot_locks
 from bot.db.djs import (
     delete_dj,
@@ -119,13 +120,13 @@ class DjAdminService:
 
     async def future_bookings(self, dj_id: int) -> "list[tuple[EventInfo, int]]":
         """The DJ's bookings in events that are still upcoming: (event, slot_index)."""
-        db, notion = self._ctx.db, self._ctx.notion_client
-        if db is None or notion is None:
+        db = self._ctx.db
+        if db is None:
             return []
         locks = await get_dj_slot_locks(db, dj_id)
         if not locks:
             return []
-        events = {e.page_id: e for e in await notion.list_events()}
+        events = {e.page_id: e for e in await db_events.list_events(db)}
         found = [(events[x["event_id"]], x["slot_index"]) for x in locks if x["event_id"] in events]
         return sorted(found, key=lambda item: (item[0].date, item[1]))
 

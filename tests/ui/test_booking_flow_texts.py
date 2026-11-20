@@ -17,6 +17,7 @@ from bot.ui.views import (
 )
 from tests.conftest import make_real_ctx
 from tests.notion.factories import make_event, make_slot
+from tests.fake_events import fake_events
 
 
 def _event(booked: int = 0, slots: int = 4):
@@ -77,7 +78,7 @@ def test_booked_embed_texts() -> None:
 async def test_prepare_booking_event_list_and_errors() -> None:
     ctx = make_real_ctx(db=MagicMock())
     ctx.notion_client = MagicMock()
-    ctx.notion_client.list_events = AsyncMock(return_value=[_event(booked=1)])
+    fake_events.list_events = AsyncMock(return_value=[_event(booked=1)])
     start = await prepare_booking(ctx, 5)
     assert start.content == ""
     assert start.embed.title == "Which event do you want to play?"
@@ -95,13 +96,13 @@ async def test_prepare_booking_event_list_and_errors() -> None:
     # no events / all booked / error
     ctx2 = make_real_ctx(db=MagicMock())
     ctx2.notion_client = MagicMock()
-    ctx2.notion_client.list_events = AsyncMock(return_value=[])
+    fake_events.list_events = AsyncMock(return_value=[])
     assert (await prepare_booking(ctx2, 6)).error == "There are no upcoming events yet."
-    ctx2.notion_client.list_events = AsyncMock(return_value=[_event(booked=4)])
+    fake_events.list_events = AsyncMock(return_value=[_event(booked=4)])
     assert (await prepare_booking(ctx2, 6)).error == (
         "All slots are booked. I'll message you if one opens up."
     )
-    ctx2.notion_client.list_events = AsyncMock(side_effect=RuntimeError("x"))
+    fake_events.list_events = AsyncMock(side_effect=RuntimeError("x"))
     assert (await prepare_booking(ctx2, 6)).error == texts.GENERIC_ERROR
 
 
@@ -150,7 +151,7 @@ async def _confirm(ctx, uid, *, acquire=True, assign=True, ensure="dj-me", event
 def _ctx_with_notion(events=None):
     ctx = make_real_ctx(db=MagicMock())
     ctx.notion_client = MagicMock()
-    ctx.notion_client.list_events = AsyncMock(return_value=events or [])
+    fake_events.list_events = AsyncMock(return_value=events or [])
     ctx.log_service = None
     ctx.lineup_service = None
     return ctx
@@ -250,7 +251,7 @@ async def test_cancel_slot_entry_texts() -> None:
         await FallbackMenuView(ctx).cancel_slot.callback(inter)
     assert _msg(inter) == texts.GENERIC_ERROR
     ctx = _ctx_with_notion()
-    ctx.notion_client.list_events = AsyncMock(side_effect=RuntimeError)
+    fake_events.list_events = AsyncMock(side_effect=RuntimeError)
     inter = _inter()
     with patch("bot.db.bookings.get_dj_slot_locks", new=AsyncMock(return_value=rows)):
         await FallbackMenuView(ctx).cancel_slot.callback(inter)

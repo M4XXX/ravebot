@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from disnake.ext import commands
+from tests.fake_events import fake_events
 
 
 def make_mock_ctx(admin_ids: frozenset[int]) -> MagicMock:
@@ -781,7 +782,7 @@ def _lineup_cog(monkeypatch: pytest.MonkeyPatch, events, post_ok: bool = True):
     monkeypatch.setattr(admin_mod, "_today", lambda: _TODAY)
     ctx = make_mock_ctx(frozenset({1}))
     ctx.notion_client = MagicMock()
-    ctx.notion_client.list_events = AsyncMock(return_value=events)
+    fake_events.list_events = AsyncMock(return_value=events)
     ctx.lineup_service = MagicMock()
     ctx.lineup_service.post_event = AsyncMock(return_value=post_ok)
     return AdminCog(ctx), ctx
@@ -870,7 +871,7 @@ async def test_lineup_post_not_ready(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.mark.asyncio
 async def test_lineup_post_notion_error(monkeypatch: pytest.MonkeyPatch) -> None:
     cog, ctx = _lineup_cog(monkeypatch, [])
-    ctx.notion_client.list_events = AsyncMock(side_effect=RuntimeError("boom"))
+    fake_events.list_events = AsyncMock(side_effect=RuntimeError("boom"))
     inter = make_mock_inter(user_id=1)
     await cog.post_lineup_update.callback(cog, inter, None)
     ctx.lineup_service.post_event.assert_not_awaited()
@@ -900,7 +901,7 @@ async def test_lineup_autocomplete_max_25_and_errors(
 ) -> None:
     cog, ctx = _lineup_cog(monkeypatch, [_lineup_event(f"E{i}", i) for i in range(40)])
     assert len(await cog.post_event_autocomplete(make_mock_inter(1), "")) == 25
-    ctx.notion_client.list_events = AsyncMock(side_effect=RuntimeError("x"))
+    fake_events.list_events = AsyncMock(side_effect=RuntimeError("x"))
     assert await cog.post_event_autocomplete(make_mock_inter(1), "") == []
 
 

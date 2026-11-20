@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 import disnake
 
+from bot.db import events as db_events
 from bot.db.bookings import get_booked_djs_for_event
 from bot.db.reminders import (
     forget_reminder_sent,
@@ -100,7 +101,7 @@ class RemindersService:
         """
         # Step 1: fetch events
         try:
-            events = await self.notion_client.list_events()
+            events = await db_events.list_events(self.db)
         except Exception as exc:
             logger.warning("RemindersService.send_reminders: list_events failed: %s", exc)
             return

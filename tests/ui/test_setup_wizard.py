@@ -10,6 +10,7 @@ from bot.db.setup_drafts import SetupDraft
 from bot.services import activation as _activation
 from bot.ui import setup_wizard as sw
 from bot.ui import texts
+from tests.fake_events import fake_events
 
 REAL_IS_ACTIVE = _activation.is_active  # captured before the autouse conftest patch
 
@@ -99,7 +100,7 @@ def make_ctx(events=None):
     ctx.is_admin = lambda user_id: user_id == ADMIN
     ctx.db = MagicMock()
     ctx.db.fetchval = AsyncMock(return_value=1)
-    ctx.notion_client.list_events = AsyncMock(return_value=events or [])
+    fake_events.list_events = AsyncMock(return_value=events or [])
     ctx.lineup_service.refresh = AsyncMock(return_value=True)
     return ctx
 
@@ -224,7 +225,7 @@ async def test_welcome_shows_checks_and_start(store):
     draft = store.drafts[GUILD]
     view = await sw.render_step(ctx, make_guild(), draft)
     assert "Discord connection" in view.content and "Database" in view.content
-    assert "Notion: Events, Slots and DJs found" in view.content
+    assert "Events, slots and DJs found" in view.content
     assert view.next_label == "Start" and not view.next_disabled
     assert sw.ID_BACK not in view.visible
 
@@ -232,10 +233,10 @@ async def test_welcome_shows_checks_and_start(store):
 @pytest.mark.asyncio
 async def test_welcome_failed_check_disables_start(store):
     ctx = make_ctx()
-    ctx.notion_client.list_events = AsyncMock(side_effect=RuntimeError("x"))
+    fake_events.list_events = AsyncMock(side_effect=RuntimeError("x"))
     view = await sw.render_step(ctx, make_guild(), SetupDraft(GUILD, 55, 7, 0, {}))
     assert view.next_disabled
-    assert "✗ Notion" in view.content
+    assert "✗ Events" in view.content
 
 
 @pytest.mark.asyncio

@@ -15,6 +15,7 @@ from bot.services.notion_sync import SyncAction
 from bot.services.outreach import OutreachService
 from bot.services.reminders import RemindersService
 from tests.notion.factories import make_event, make_slot
+from tests.fake_events import fake_events
 
 DM_TODO = (
     "Tell {name} yourself. They need to allow DMs from server members "
@@ -77,10 +78,11 @@ async def welcome_blocked(log: Recorder) -> None:
 
 
 async def reminder_blocked(log: Recorder) -> None:
+    fake_events.list_events = AsyncMock(return_value=[EVENT])
     svc = RemindersService(
         bot=MagicMock(),
         db=MagicMock(),
-        notion_client=MagicMock(list_events=AsyncMock(return_value=[EVENT])),
+        notion_client=MagicMock(),
         log_service=log,
     )
     user = MagicMock(send=AsyncMock(side_effect=forbidden()))
@@ -192,7 +194,7 @@ async def poll_read_failed(log: Recorder) -> None:
 
     ctx = MagicMock(log_service=log, notion_sync_service=None, maintenance=None)
     ctx.db.fetchval = AsyncMock(return_value=1)
-    ctx.notion_client.list_events = AsyncMock(side_effect=httpx.RequestError("timeout"))
+    fake_events.list_events = AsyncMock(side_effect=httpx.RequestError("timeout"))
     cog = EventsCog(ctx)
     cog.bot = MagicMock(guilds=[MagicMock(id=1)])
     from bot.cogs.events import EventsCog as C
@@ -236,7 +238,7 @@ CASES = [
     pytest.param(notion_read_failed, "Something failed", None, ["read from Notion"],
                  id="notion-read"),
     pytest.param(sync_cycle_failed, "Something failed", None, ["Notion"], id="sync-cycle"),
-    pytest.param(poll_read_failed, "Something failed", None, ["Notion"], id="poll-read"),
+    pytest.param(poll_read_failed, "Something failed", None, ["database"], id="poll-read"),
     pytest.param(no_dj_channel, "Something failed", DJ_CHANNEL_TODO, ["lineup"],
                  id="no-dj-channel"),
 ]

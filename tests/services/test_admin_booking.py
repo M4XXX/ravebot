@@ -15,6 +15,7 @@ from bot.notion.client import NotionWriteError, SlotRowMissingError
 from bot.notion.models import EventInfo
 from bot.ui import texts
 from tests.notion.factories import make_event, make_slot
+from tests.fake_events import fake_events
 
 EVENT_PAGE_ID = "evt-page-001"
 
@@ -49,7 +50,7 @@ def _make_service(**overrides):
     bot.fetch_user = AsyncMock(return_value=user)
 
     notion_client = MagicMock()
-    notion_client.list_events = AsyncMock(return_value=[_make_event()])
+    fake_events.list_events = AsyncMock(return_value=[_make_event()])
     notion_client.force_assign_slot = AsyncMock()
     notion_client.clear_slot = AsyncMock(return_value=True)
 
@@ -106,7 +107,7 @@ async def test_book_slot_override_success(monkeypatch):
     assert msg == ""
     force.assert_awaited_once_with(svc.db, EVENT_PAGE_ID, 1, 42)
     ensure.assert_awaited_once_with(svc.db, svc.notion_client, 42, "DJ Scope")
-    event = svc.notion_client.list_events.return_value[0]
+    event = fake_events.list_events.return_value[0]
     svc.notion_client.force_assign_slot.assert_awaited_once_with(event, 1, "dj-notion-id")
     release.assert_not_awaited()
     dm = svc.bot.get_user.return_value.send.call_args[0][0]
@@ -152,7 +153,7 @@ async def test_book_slot_override_replaces_displaced_holder(monkeypatch):
 async def test_book_slot_override_event_not_found(monkeypatch):
     """Returns (False, error) when event name doesn't match any Notion event."""
     svc = _make_service()
-    svc.notion_client.list_events = AsyncMock(return_value=[])
+    fake_events.list_events = AsyncMock(return_value=[])
 
     success, msg = await svc.book_slot_override(
         admin_name="Admin", dj_id=42, dj_name="DJ X", event_name="Ghost Event", slot_num=1
@@ -166,7 +167,7 @@ async def test_book_slot_override_event_not_found(monkeypatch):
 @pytest.mark.asyncio
 async def test_book_slot_override_list_events_fails(monkeypatch):
     svc = _make_service()
-    svc.notion_client.list_events = AsyncMock(side_effect=RuntimeError("down"))
+    fake_events.list_events = AsyncMock(side_effect=RuntimeError("down"))
 
     success, msg = await svc.book_slot_override(
         admin_name="Admin", dj_id=42, dj_name="DJ X", event_name=EVENT_NAME, slot_num=1
@@ -398,7 +399,7 @@ async def test_cancel_slot_override_success(monkeypatch):
     assert success is True
     assert msg == ""
     ensure.assert_awaited_once_with(svc.db, svc.notion_client, 42, "DJ Scope")
-    event = svc.notion_client.list_events.return_value[0]
+    event = fake_events.list_events.return_value[0]
     svc.notion_client.clear_slot.assert_awaited_once_with(event, 1, "dj-notion-id")
     release.assert_awaited_once_with(svc.db, EVENT_PAGE_ID, 1, expected_holder=42)
     dm = svc.bot.get_user.return_value.send.call_args[0][0]
@@ -508,7 +509,7 @@ async def test_cancel_slot_override_notion_row_held_by_other_dj_still_succeeds(m
 async def test_cancel_slot_override_event_not_found(monkeypatch):
     """Returns (False, error) when event name doesn't match."""
     svc = _make_service()
-    svc.notion_client.list_events = AsyncMock(return_value=[])
+    fake_events.list_events = AsyncMock(return_value=[])
 
     success, msg = await svc.cancel_slot_override(
         admin_name="Admin", dj_id=42, dj_name="DJ X", event_name="Ghost Event", slot_num=1
@@ -652,7 +653,7 @@ async def test_organizer_booking_last_slot_logs_fully_booked(monkeypatch):
         slots=[make_slot(1, dj_page_id="a"), make_slot(2, dj_page_id="b")],
     )
     svc = _make_service()
-    svc.notion_client.list_events = AsyncMock(side_effect=[[_make_event()], [full]])
+    fake_events.list_events = AsyncMock(side_effect=[[_make_event()], [full]])
     ok, _ = await svc.book_slot_override("Admin", 42, "DJ Scope", EVENT_NAME, 2)
     assert ok is True
     svc.log_service.log_fully_booked.assert_awaited_once_with(full)

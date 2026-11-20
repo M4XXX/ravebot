@@ -9,6 +9,7 @@ from bot.notion.models import EventInfo
 from bot.ui import texts
 from tests.conftest import make_real_ctx
 from tests.notion.factories import make_event, make_slot
+from tests.fake_events import fake_events
 
 # ---------------------------------------------------------------------------
 # Story 2.4: pass_for_now + FallbackMenuView
@@ -286,7 +287,7 @@ async def test_show_lineup_sends_embed_for_first_event() -> None:
 
     ctx = make_real_ctx(db=MagicMock())
     notion_client = MagicMock()
-    notion_client.list_events = AsyncMock(return_value=[_lineup_event("Friday Night Rave", 2)])
+    fake_events.list_events = AsyncMock(return_value=[_lineup_event("Friday Night Rave", 2)])
     ctx.notion_client = notion_client
     view = FallbackMenuView(ctx)
 
@@ -311,7 +312,7 @@ async def test_show_lineup_sends_no_events_message_when_empty() -> None:
 
     ctx = make_real_ctx(db=MagicMock())
     notion_client = MagicMock()
-    notion_client.list_events = AsyncMock(return_value=[])
+    fake_events.list_events = AsyncMock(return_value=[])
     ctx.notion_client = notion_client
     view = FallbackMenuView(ctx)
 
@@ -330,36 +331,13 @@ async def test_show_lineup_sends_no_events_message_when_empty() -> None:
 
 
 @pytest.mark.asyncio
-async def test_show_lineup_handles_notion_client_none() -> None:
-    """notion_client is None → friendly fallback message sent, no crash."""
-    from bot.ui.views import FallbackMenuView
-
-    ctx = make_real_ctx(db=MagicMock())
-    ctx.notion_client = None
-    view = FallbackMenuView(ctx)
-
-    inter = MagicMock(spec=disnake.MessageInteraction)
-    inter.response.send_message = AsyncMock()
-    inter.response.defer = AsyncMock()
-    # answers after a defer go through the followup; tests read both the same way
-    inter.followup.send = inter.response.send_message
-
-    await view.show_lineup.callback(inter)
-
-    inter.response.send_message.assert_awaited_once()
-    call_args = inter.response.send_message.call_args
-    msg = call_args[0][0] if call_args[0] else call_args.kwargs.get("content", "")
-    assert msg == texts.GENERIC_ERROR
-
-
-@pytest.mark.asyncio
 async def test_show_lineup_handles_poll_exception() -> None:
     """list_events raises → 'Something went wrong' message sent, no crash."""
     from bot.ui.views import FallbackMenuView
 
     ctx = make_real_ctx(db=MagicMock())
     notion_client = MagicMock()
-    notion_client.list_events = AsyncMock(side_effect=Exception("Notion down"))
+    fake_events.list_events = AsyncMock(side_effect=Exception("Notion down"))
     ctx.notion_client = notion_client
     view = FallbackMenuView(ctx)
 
@@ -391,7 +369,7 @@ async def test_show_lineup_single_event_has_no_pick_view() -> None:
 
     ctx = make_real_ctx(db=MagicMock())
     ctx.notion_client = MagicMock()
-    ctx.notion_client.list_events = AsyncMock(return_value=[_lineup_event("E1", 3)])
+    fake_events.list_events = AsyncMock(return_value=[_lineup_event("E1", 3)])
     view = FallbackMenuView(ctx)
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.response.send_message = AsyncMock()
@@ -410,7 +388,7 @@ async def test_show_lineup_single_event_has_no_pick_view() -> None:
 def _pick_ctx(events):
     ctx = make_real_ctx(db=MagicMock())
     ctx.notion_client = MagicMock()
-    ctx.notion_client.list_events = AsyncMock(return_value=events)
+    fake_events.list_events = AsyncMock(return_value=events)
     return ctx
 
 
@@ -512,7 +490,7 @@ async def test_pick_when_notion_fails_replies_privately_and_keeps_the_message() 
     from bot.ui.views import LineupEventPickView
 
     ctx = _pick_ctx([])
-    ctx.notion_client.list_events = AsyncMock(side_effect=RuntimeError("down"))
+    fake_events.list_events = AsyncMock(side_effect=RuntimeError("down"))
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.response.edit_message = AsyncMock()
     inter.response.send_message = AsyncMock()
@@ -540,7 +518,7 @@ async def test_show_lineup_ignores_past_events() -> None:
 
     ctx = make_real_ctx(db=MagicMock())
     ctx.notion_client = MagicMock()
-    ctx.notion_client.list_events = AsyncMock(return_value=[_lineup_event("OLD", -3)])
+    fake_events.list_events = AsyncMock(return_value=[_lineup_event("OLD", -3)])
     view = FallbackMenuView(ctx)
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.response.send_message = AsyncMock()
@@ -661,7 +639,7 @@ async def test_book_slot_list_events_raises_releases_lock() -> None:
 
     ctx = make_real_ctx(db=MagicMock())
     notion_client = MagicMock()
-    notion_client.list_events = AsyncMock(side_effect=Exception("Notion down"))
+    fake_events.list_events = AsyncMock(side_effect=Exception("Notion down"))
     ctx.notion_client = notion_client
     view = FallbackMenuView(ctx)
 
@@ -686,7 +664,7 @@ async def test_book_slot_all_events_full_releases_lock() -> None:
     ctx = make_real_ctx(db=MagicMock())
     notion_client = MagicMock()
     # Event with all 6 slots booked
-    notion_client.list_events = AsyncMock(return_value=[_make_event(slots=6, djs_booked=6)])
+    fake_events.list_events = AsyncMock(return_value=[_make_event(slots=6, djs_booked=6)])
     ctx.notion_client = notion_client
     view = FallbackMenuView(ctx)
 
@@ -713,7 +691,7 @@ async def test_book_slot_no_events_at_all_releases_lock() -> None:
 
     ctx = make_real_ctx(db=MagicMock())
     notion_client = MagicMock()
-    notion_client.list_events = AsyncMock(return_value=[])
+    fake_events.list_events = AsyncMock(return_value=[])
     ctx.notion_client = notion_client
     view = FallbackMenuView(ctx)
 
@@ -737,7 +715,7 @@ async def test_book_slot_open_slots_shows_event_selection_view() -> None:
 
     ctx = make_real_ctx(db=MagicMock())
     notion_client = MagicMock()
-    notion_client.list_events = AsyncMock(
+    fake_events.list_events = AsyncMock(
         return_value=[_make_event(slots=6, djs_booked=2)]
     )
     ctx.notion_client = notion_client
@@ -955,7 +933,7 @@ async def test_booking_confirm_slot_taken_presents_slot_selection_view() -> None
 
     ctx = make_real_ctx(db=MagicMock())
     ctx.notion_client = MagicMock()  # must pass notion_client guard to reach slot-lock check
-    ctx.notion_client.list_events = AsyncMock(return_value=[])  # Story 4.3: poll called in slot-taken path
+    fake_events.list_events = AsyncMock(return_value=[])  # Story 4.3: poll called in slot-taken path
     lock = ctx.get_user_lock(20003)
     await lock.acquire()
     view = _make_booking_confirm_view(ctx, lock, user_id=20003)
@@ -1023,7 +1001,7 @@ async def test_booking_confirm_success_sends_confirmed_embed() -> None:
 
     notion_client = MagicMock()
     notion_client.assign_slot = AsyncMock(return_value=True)
-    notion_client.list_events = AsyncMock(return_value=[])
+    fake_events.list_events = AsyncMock(return_value=[])
     ctx.notion_client = notion_client
 
     view = _make_booking_confirm_view(ctx, lock, user_id=20005)
@@ -1055,7 +1033,7 @@ async def test_booking_confirm_success_triggers_lineup_post() -> None:
     fresh_events = [_make_event()]
     notion_client = MagicMock()
     notion_client.assign_slot = AsyncMock(return_value=True)
-    notion_client.list_events = AsyncMock(return_value=fresh_events)
+    fake_events.list_events = AsyncMock(return_value=fresh_events)
     ctx.notion_client = notion_client
 
     lineup_service = MagicMock()
@@ -1086,7 +1064,7 @@ async def test_booking_confirm_success_posts_admin_log() -> None:
 
     notion_client = MagicMock()
     notion_client.assign_slot = AsyncMock(return_value=True)
-    notion_client.list_events = AsyncMock(return_value=[])
+    fake_events.list_events = AsyncMock(return_value=[])
     ctx.notion_client = notion_client
 
     log_service = MagicMock()
@@ -1145,7 +1123,7 @@ async def test_booking_confirm_slot_conflict_logs_err_slot_conflict() -> None:
 
     ctx = make_real_ctx(db=MagicMock())
     ctx.notion_client = MagicMock()
-    ctx.notion_client.list_events = AsyncMock(return_value=[])
+    fake_events.list_events = AsyncMock(return_value=[])
     log_service = MagicMock()
     log_service.post_error = AsyncMock()
     ctx.log_service = log_service
@@ -1180,7 +1158,7 @@ async def test_booking_confirm_slot_conflict_uses_fresh_notion_data() -> None:
     ctx.notion_client = MagicMock()
     # Return a fresh event with the same ID but updated data (8 slots instead of 6)
     fresh_event = _make_event(event_id="evt-001", name="Fresh Rave", slots=8, djs_booked=2)
-    ctx.notion_client.list_events = AsyncMock(return_value=[fresh_event])
+    fake_events.list_events = AsyncMock(return_value=[fresh_event])
     lock = ctx.get_user_lock(20010)
     await lock.acquire()
     view = _make_booking_confirm_view(ctx, lock, user_id=20010)
@@ -1194,7 +1172,7 @@ async def test_booking_confirm_slot_conflict_uses_fresh_notion_data() -> None:
     with patch("bot.db.bookings.acquire_slot_lock", new=AsyncMock(return_value=False)):
         await view._handle_confirm(inter)
 
-    assert ctx.notion_client.list_events.await_count == 2  # status check, then the refresh
+    assert fake_events.list_events.await_count == 2  # status check, then the refresh
     call_kwargs = inter.response.send_message.call_args.kwargs
     presented_view = call_kwargs.get("view")
     assert isinstance(presented_view, SlotSelectionView)
@@ -1209,7 +1187,7 @@ async def test_booking_confirm_slot_conflict_all_slots_taken() -> None:
     ctx = make_real_ctx(db=MagicMock())
     ctx.notion_client = MagicMock()
     # All 6 slots booked — remaining will be [] after excluding the conflicting slot_index=2
-    ctx.notion_client.list_events = AsyncMock(
+    fake_events.list_events = AsyncMock(
         return_value=[_make_event(event_id="evt-001", slots=6, djs_booked=6)]
     )
     lock = ctx.get_user_lock(20012)
@@ -1296,7 +1274,7 @@ async def test_cancel_slot_no_bookings_releases_lock() -> None:
 
     ctx = make_real_ctx(db=MagicMock())
     ctx.notion_client = MagicMock()
-    ctx.notion_client.list_events = AsyncMock(return_value=[])
+    fake_events.list_events = AsyncMock(return_value=[])
     view = FallbackMenuView(ctx)
 
     inter = MagicMock(spec=disnake.MessageInteraction)
@@ -1323,7 +1301,7 @@ async def test_cancel_slot_presents_cancellation_view() -> None:
     ctx = make_real_ctx(db=MagicMock())
     event = _make_event(event_id="evt-cancel-01", djs_booked=1)
     ctx.notion_client = MagicMock()
-    ctx.notion_client.list_events = AsyncMock(return_value=[event])
+    fake_events.list_events = AsyncMock(return_value=[event])
     view = FallbackMenuView(ctx)
 
     inter = MagicMock(spec=disnake.MessageInteraction)
@@ -1404,7 +1382,7 @@ async def test_cancel_confirm_confirm_calls_clear_slot() -> None:
 
     ctx = make_real_ctx(db=MagicMock())
     ctx.notion_client = MagicMock()
-    ctx.notion_client.list_events = AsyncMock(
+    fake_events.list_events = AsyncMock(
         return_value=[_make_event(event_id="evt-cancel-04", djs_booked=1)]
     )
     ctx.notion_client.clear_slot = AsyncMock(return_value=True)
@@ -1443,7 +1421,7 @@ async def test_cancel_confirm_notion_write_error_releases_lock() -> None:
 
     ctx = make_real_ctx(db=MagicMock())
     ctx.notion_client = MagicMock()
-    ctx.notion_client.list_events = AsyncMock(
+    fake_events.list_events = AsyncMock(
         return_value=[_make_event(event_id="evt-cancel-05", djs_booked=1)]
     )
     ctx.notion_client.clear_slot = AsyncMock(side_effect=NotionWriteError("write failed"))
@@ -1481,7 +1459,7 @@ async def test_cancel_slot_list_events_failure_releases_lock() -> None:
 
     ctx = make_real_ctx(db=MagicMock())
     ctx.notion_client = MagicMock()
-    ctx.notion_client.list_events = AsyncMock(side_effect=RuntimeError("network error"))
+    fake_events.list_events = AsyncMock(side_effect=RuntimeError("network error"))
     view = FallbackMenuView(ctx)
 
     inter = MagicMock(spec=disnake.MessageInteraction)
@@ -1509,7 +1487,7 @@ async def test_cancel_slot_all_events_expired_releases_lock() -> None:
     ctx = make_real_ctx(db=MagicMock())
     ctx.notion_client = MagicMock()
     # list_events returns an event with a DIFFERENT id — no match for the slot_lock row
-    ctx.notion_client.list_events = AsyncMock(
+    fake_events.list_events = AsyncMock(
         return_value=[_make_event(event_id="evt-other-99", djs_booked=0)]
     )
     view = FallbackMenuView(ctx)
@@ -1676,7 +1654,7 @@ async def test_book_slot_lists_event_name_and_start_timestamp() -> None:
     ctx = make_real_ctx(db=MagicMock())
     event = _gap_event()
     ctx.notion_client = MagicMock()
-    ctx.notion_client.list_events = AsyncMock(return_value=[event])
+    fake_events.list_events = AsyncMock(return_value=[event])
     view = FallbackMenuView(ctx)
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.author.id = 40004
@@ -1735,7 +1713,7 @@ async def test_booking_confirm_lost_lock_lists_open_slots_from_fresh_event() -> 
     )
     other = make_event(page_id="evt-other", slot_count=4)
     ctx.notion_client = MagicMock()
-    ctx.notion_client.list_events = AsyncMock(return_value=[other, fresh])
+    fake_events.list_events = AsyncMock(return_value=[other, fresh])
     lock = ctx.get_user_lock(40006)
     await lock.acquire()
     view = BookingConfirmView(
@@ -1767,7 +1745,7 @@ async def test_booking_confirm_assigns_slot_with_dj_page_id() -> None:
     await lock.acquire()
     ctx.notion_client = MagicMock()
     ctx.notion_client.assign_slot = AsyncMock(return_value=True)
-    ctx.notion_client.list_events = AsyncMock(return_value=[])
+    fake_events.list_events = AsyncMock(return_value=[])
     event = _gap_event()
     view = BookingConfirmView(
         ctx=ctx, event=event, slot_index=1, slot_unix=1751400000, lock=lock, user_id=40007
@@ -1804,7 +1782,7 @@ async def _run_booking(
         slots=[make_slot(1, dj_page_id="dj-a"), make_slot(2, dj_page_id="dj-x"),
                make_slot(3, dj_page_id="dj-b")],
     )
-    ctx.notion_client.list_events = list_events or AsyncMock(return_value=[fresh])
+    fake_events.list_events = list_events or AsyncMock(return_value=[fresh])
     ctx.log_service = None
     ctx.lineup_service = None
     view = BookingConfirmView(
@@ -1853,7 +1831,7 @@ async def test_booking_confirm_assign_false_logs_slot_conflict() -> None:
     await lock.acquire()
     ctx.notion_client = MagicMock()
     ctx.notion_client.assign_slot = AsyncMock(return_value=False)
-    ctx.notion_client.list_events = AsyncMock(return_value=[_gap_event()])
+    fake_events.list_events = AsyncMock(return_value=[_gap_event()])
     ctx.log_service = log
     from bot.ui.views import BookingConfirmView
     view = BookingConfirmView(
@@ -1911,7 +1889,7 @@ async def test_cancel_slot_matches_lock_rows_by_page_id_and_slot_time() -> None:
     ctx = make_real_ctx(db=MagicMock())
     event = make_event(page_id="evt-c", event_id="Cancel Rave", slot_minutes=30)
     ctx.notion_client = MagicMock()
-    ctx.notion_client.list_events = AsyncMock(return_value=[event])
+    fake_events.list_events = AsyncMock(return_value=[event])
     view = FallbackMenuView(ctx)
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.author.id = 40008
@@ -1942,7 +1920,7 @@ async def _run_cancel(user_id, *, ensure, clear, lineup=None):
     ctx = make_real_ctx(db=MagicMock())
     event = _gap_event()
     ctx.notion_client = MagicMock()
-    ctx.notion_client.list_events = AsyncMock(return_value=[event])
+    fake_events.list_events = AsyncMock(return_value=[event])
     ctx.notion_client.clear_slot = clear
     ctx.log_service = None
     ctx.lineup_service = lineup
@@ -2018,7 +1996,7 @@ async def test_outreach_accept_offers_open_slots_from_fresh_event() -> None:
         page_id="evt-o", slot_count=3, slots=[make_slot(2, dj_page_id="dj-x")]
     )
     ctx.notion_client = MagicMock()
-    ctx.notion_client.list_events = AsyncMock(return_value=[fresh])
+    fake_events.list_events = AsyncMock(return_value=[fresh])
     view = OutreachView(ctx=ctx, event=stale, discord_user_id=40010)
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.author.id = 40010
@@ -2042,7 +2020,7 @@ async def test_outreach_accept_full_event_releases_lock() -> None:
     ctx = make_real_ctx(db=None)
     full = _make_event(event_id="evt-of", slots=2, djs_booked=2)
     ctx.notion_client = MagicMock()
-    ctx.notion_client.list_events = AsyncMock(return_value=[full])
+    fake_events.list_events = AsyncMock(return_value=[full])
     view = OutreachView(ctx=ctx, event=full, discord_user_id=40011)
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.author.id = 40011
@@ -2076,7 +2054,7 @@ async def test_outreach_pick_slot_sends_lineup_and_open_slot_buttons() -> None:
         slots=[make_slot(2, dj_page_id="dj-x", dj_name="Booked Bob")],
     )
     ctx.notion_client = MagicMock()
-    ctx.notion_client.list_events = AsyncMock(return_value=[event])
+    fake_events.list_events = AsyncMock(return_value=[event])
     view = OutreachView(ctx=ctx, event=event, discord_user_id=40050)
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.author.id = 40050
@@ -2172,7 +2150,7 @@ async def test_booking_confirm_assign_false_log_names_user_not_none_holder() -> 
     await lock.acquire()
     ctx.notion_client = MagicMock()
     ctx.notion_client.assign_slot = AsyncMock(return_value=False)
-    ctx.notion_client.list_events = AsyncMock(return_value=[_gap_event()])
+    fake_events.list_events = AsyncMock(return_value=[_gap_event()])
     order: list[str] = []
 
     async def holder(*a):
@@ -2229,7 +2207,7 @@ async def _drive_booking(user_id, *, assign, send=None, present=None):
     await lock.acquire()
     ctx.notion_client = MagicMock()
     ctx.notion_client.assign_slot = assign
-    ctx.notion_client.list_events = AsyncMock(return_value=[_gap_event()])
+    fake_events.list_events = AsyncMock(return_value=[_gap_event()])
     ctx.log_service = None
     ctx.lineup_service = None
     view = BookingConfirmView(
@@ -2337,9 +2315,9 @@ def _ctx_with_events(events: list[EventInfo] | Exception):
     ctx = make_real_ctx(db=MagicMock())
     ctx.notion_client = MagicMock()
     if isinstance(events, Exception):
-        ctx.notion_client.list_events = AsyncMock(side_effect=events)
+        fake_events.list_events = AsyncMock(side_effect=events)
     else:
-        ctx.notion_client.list_events = AsyncMock(return_value=events)
+        fake_events.list_events = AsyncMock(return_value=events)
     ctx.log_service = MagicMock()
     ctx.log_service.post_error = AsyncMock()
     return ctx
@@ -2542,7 +2520,7 @@ async def test_picker_note_only_when_slots_hidden(slot_count: int, note: bool) -
 
     ctx2 = make_real_ctx(db=None)
     ctx2.notion_client = MagicMock()
-    ctx2.notion_client.list_events = AsyncMock(return_value=[event])
+    fake_events.list_events = AsyncMock(return_value=[event])
     inter2 = MagicMock(spec=disnake.MessageInteraction)
     inter2.author.id = 40061
     inter2.response.send_message = AsyncMock()
@@ -2565,7 +2543,7 @@ async def test_post_button_not_onboarded_gets_no_profile_dm_and_no_lock() -> Non
 
     inter.author.send.assert_awaited_once_with(texts.NO_PROFILE)
     inter.followup.send.assert_awaited_once_with(texts.POST_DM_SENT, ephemeral=True)
-    ctx.notion_client.list_events.assert_not_awaited()
+    fake_events.list_events.assert_not_awaited()
     assert not ctx.get_user_lock(77).locked()
 
 
@@ -2632,7 +2610,7 @@ async def test_post_button_dj_role_without_profile_starts_onboarding_in_dm() -> 
     assert sent == [texts.ONBOARD_BEFORE_BOOKING, texts.Q_NAME]
     ctx.dj_conversations.start_onboarding.assert_awaited_once_with(77, 99999)
     inter.followup.send.assert_awaited_once_with(texts.POST_DM_SENT, ephemeral=True)
-    ctx.notion_client.list_events.assert_not_awaited()
+    fake_events.list_events.assert_not_awaited()
     assert not ctx.get_user_lock(77).locked()
 
 
@@ -2694,7 +2672,7 @@ async def test_dm_book_slot_dj_role_without_profile_starts_onboarding() -> None:
     texts_sent = [c.args[0] for c in inter.followup.send.await_args_list]
     assert texts_sent == [texts.ONBOARD_BEFORE_BOOKING, texts.Q_NAME]
     ctx.dj_conversations.start_onboarding.assert_awaited_once_with(88888, 99999)
-    ctx.notion_client.list_events.assert_not_awaited()
+    fake_events.list_events.assert_not_awaited()
     assert not ctx.get_user_lock(88888).locked()
 
 
@@ -2714,7 +2692,7 @@ async def test_dm_book_slot_without_dj_role_and_profile_gets_no_profile() -> Non
     assert inter.followup.send.call_args[0][0] == texts.NO_PROFILE
     assert inter.followup.send.call_args.kwargs["ephemeral"] is True
     ctx.dj_conversations.start_onboarding.assert_not_awaited()
-    ctx.notion_client.list_events.assert_not_awaited()
+    fake_events.list_events.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -2726,7 +2704,7 @@ async def test_dm_book_slot_with_profile_books_as_before() -> None:
     inter = _dm_book_inter(member, guild)
     await FallbackMenuView(ctx).book_slot.callback(inter)  # profile exists (autouse fixture)
     ctx.dj_conversations.start_onboarding.assert_not_awaited()
-    ctx.notion_client.list_events.assert_awaited_once()
+    fake_events.list_events.assert_awaited_once()
     inter.response.defer.assert_awaited_once()
     inter.followup.send.assert_awaited_once()
 
@@ -2741,7 +2719,7 @@ async def test_dm_book_slot_profile_lookup_failure_lets_booking_decide() -> None
     with patch("bot.ui.views.get_dj_by_discord_id", new=AsyncMock(side_effect=RuntimeError("db"))):
         await FallbackMenuView(ctx).book_slot.callback(inter)
     ctx.dj_conversations.start_onboarding.assert_not_awaited()
-    ctx.notion_client.list_events.assert_awaited_once()
+    fake_events.list_events.assert_awaited_once()
 
 
 def test_open_slot_indices_uses_lowest_page_id_row() -> None:
@@ -2805,7 +2783,7 @@ async def test_booking_confirm_success_without_log_service() -> None:
     await lock.acquire()
     ctx.notion_client = MagicMock()
     ctx.notion_client.assign_slot = AsyncMock(return_value=True)
-    ctx.notion_client.list_events = AsyncMock(return_value=[])
+    fake_events.list_events = AsyncMock(return_value=[])
     ctx.log_service = None
     view = _make_booking_confirm_view(ctx, lock, user_id=20008, slot_index=2)
     inter = MagicMock(spec=disnake.MessageInteraction)
@@ -2843,7 +2821,7 @@ async def test_booking_by_last_open_slot_logs_fully_booked(monkeypatch) -> None:
     )
     ctx.notion_client = MagicMock()
     ctx.notion_client.assign_slot = AsyncMock(return_value=True)
-    ctx.notion_client.list_events = AsyncMock(return_value=[full])
+    fake_events.list_events = AsyncMock(return_value=[full])
     ctx.log_service = MagicMock()
     ctx.log_service.log_booked = AsyncMock()
     ctx.log_service.log_fully_booked = AsyncMock()
@@ -2877,7 +2855,7 @@ async def test_cancellation_reopens_event_and_clears_fully_booked(monkeypatch) -
     opened = make_event(
         page_id="evt-open", slot_count=2, slots=[make_slot(1, dj_page_id="d1"), make_slot(2)]
     )
-    ctx.notion_client.list_events = AsyncMock(return_value=[opened])
+    fake_events.list_events = AsyncMock(return_value=[opened])
     ctx.log_service = MagicMock()
     ctx.log_service.log_cancelled = AsyncMock()
     ctx.log_service.log_fully_booked = AsyncMock()
@@ -3116,7 +3094,7 @@ async def test_outreach_accept_refuses_a_canceled_event() -> None:
     stale = make_event(page_id="evt-oc", slot_count=3)
     canceled = make_event(page_id="evt-oc", slot_count=3, status="Canceled")
     ctx.notion_client = MagicMock()
-    ctx.notion_client.list_events = AsyncMock(return_value=[canceled])
+    fake_events.list_events = AsyncMock(return_value=[canceled])
     view = OutreachView(ctx=ctx, event=stale, discord_user_id=40093)
     inter = MagicMock(spec=disnake.MessageInteraction)
     inter.author.id = 40093

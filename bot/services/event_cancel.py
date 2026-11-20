@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 import disnake
 
+from bot.db import events as db_events
 from bot.db.bookings import get_slot_locks_for_events, release_slot_lock
 from bot.db.config import get_value
 from bot.db.djs import get_dj_row
@@ -92,7 +93,7 @@ class EventCancelService:
 
     async def _find_event(self, event_name: str) -> EventInfo | None:
         """The cancelable event with that ID: today or later, not Done/Canceled."""
-        events = await self._ctx.notion_client.list_events()  # type: ignore[union-attr]
+        events = await db_events.list_events(self._ctx.db)  # type: ignore[arg-type]
         wanted = event_name.strip().casefold()
         for event in future_events(events, _today()):
             if event.event_id.casefold() == wanted:

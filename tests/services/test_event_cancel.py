@@ -15,6 +15,7 @@ from bot.notion.client import NotionWriteError
 from bot.services.event_cancel import EventCancelService
 from bot.ui import texts
 from bot.ui.embeds import ErrorCode
+from tests.fake_events import fake_events
 from tests.notion.factories import make_event, make_slot
 
 PAGE = "evt-page"
@@ -64,7 +65,7 @@ class Env:
         self.bot.get_channel = MagicMock(return_value=self.channel)
 
         self.notion = MagicMock()
-        self.notion.list_events = AsyncMock(return_value=[self.event])
+        fake_events.list_events = AsyncMock(return_value=[self.event])
         self.notion.set_event_status = AsyncMock()
         self.notion.empty_slot = AsyncMock()
 
@@ -377,7 +378,7 @@ async def test_second_cancel_of_the_same_event_sends_nothing(monkeypatch):
     env = _two_djs(monkeypatch)
 
     async def mark_canceled(event, status):
-        env.notion.list_events.return_value = [dataclasses.replace(env.event, status=status)]
+        fake_events.list_events.return_value = [dataclasses.replace(env.event, status=status)]
 
     env.notion.set_event_status.side_effect = mark_canceled
     first = await env.svc.cancel_event("Max", EVENT_ID)
@@ -398,7 +399,7 @@ async def test_two_cancels_at_once_notify_once(monkeypatch):
 
     async def mark_canceled(event, status):
         await asyncio.sleep(0)
-        env.notion.list_events.return_value = [dataclasses.replace(env.event, status=status)]
+        fake_events.list_events.return_value = [dataclasses.replace(env.event, status=status)]
 
     env.notion.set_event_status.side_effect = mark_canceled
     results = await asyncio.gather(
@@ -452,9 +453,9 @@ async def test_preview_returns_none_for_an_unknown_event(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_notion_read_failure_gives_a_generic_error(monkeypatch):
+async def test_event_read_failure_gives_a_generic_error(monkeypatch):
     env = Env(monkeypatch)
-    env.notion.list_events.side_effect = RuntimeError("down")
+    fake_events.list_events.side_effect = RuntimeError("down")
     result = await env.svc.cancel_event("Max", EVENT_ID)
     assert (result.ok, result.message) == (False, texts.GENERIC_ERROR)
     assert await env.svc.preview(EVENT_ID) is None

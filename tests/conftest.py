@@ -67,3 +67,23 @@ def _bot_is_active(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPat
 
     monkeypatch.setattr(activation, "is_active", AsyncMock(return_value=True))
     monkeypatch.setattr(activation, "bot_is_active", AsyncMock(return_value=True))
+
+
+@pytest.fixture(autouse=True)
+def _fake_event_reads(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Event reads come from Postgres: seed them through tests.fake_events.fake_events.
+
+    Tests of the repository itself (db, pg, sync) use the real functions.
+    """
+    if request.module.__name__.startswith(("tests.db", "tests.pg", "tests.sync")):
+        return
+    from bot.db import events as db_events
+    from tests.fake_events import fake_events
+
+    fake_events.reset()
+
+    async def list_events(db: object, *, include_past: bool = False):
+        return await fake_events.list_events(db)
+
+    monkeypatch.setattr(db_events, "list_events", list_events)
+    monkeypatch.setattr(db_events, "get_event", fake_events.get_event)

@@ -8,6 +8,7 @@ from PIL import Image
 from bot.services import dj_admin as mod
 from bot.services.dj_admin import DjAdminService, check_link, is_guest, parse_discord_id
 from tests.conftest import make_real_ctx
+from tests.fake_events import fake_events
 
 ROW = {
     "discord_user_id": -1, "dj_name": "Moonbeat", "vrchat_name": None,
@@ -184,7 +185,7 @@ def _event(page_id="p1", name="Rave"):
 async def test_delete_cancels_future_bookings_trashes_notion_and_deletes() -> None:
     booking = MagicMock(cancel_slot_override=AsyncMock(return_value=(True, "")))
     service, ctx = _service(admin_booking_service=booking)
-    ctx.notion_client.list_events = AsyncMock(return_value=[_event("p1", "Rave One")])
+    fake_events.list_events = AsyncMock(return_value=[_event("p1", "Rave One")])
     ctx.notion_client.trash_dj_page = AsyncMock()
     locks = AsyncMock(return_value=[
         {"event_id": "p1", "slot_index": 1}, {"event_id": "old", "slot_index": 0},
@@ -207,7 +208,7 @@ async def test_delete_cancels_future_bookings_trashes_notion_and_deletes() -> No
 async def test_delete_stops_when_a_cancel_fails() -> None:
     booking = MagicMock(cancel_slot_override=AsyncMock(return_value=(False, "Notion down")))
     service, ctx = _service(admin_booking_service=booking)
-    ctx.notion_client.list_events = AsyncMock(return_value=[_event("p1", "Rave One")])
+    fake_events.list_events = AsyncMock(return_value=[_event("p1", "Rave One")])
     delete = AsyncMock()
     with patch.object(
         mod, "get_dj_slot_locks", new=AsyncMock(return_value=[{"event_id": "p1", "slot_index": 0}])
@@ -249,7 +250,7 @@ async def test_delete_waits_for_a_dj_who_is_booking() -> None:
 async def test_delete_db_error_is_reported() -> None:
     booking = MagicMock(cancel_slot_override=AsyncMock())
     service, ctx = _service(admin_booking_service=booking)
-    ctx.notion_client.list_events = AsyncMock(return_value=[])
+    fake_events.list_events = AsyncMock(return_value=[])
     ctx.notion_client.trash_dj_page = AsyncMock()
     with patch.object(mod, "get_dj_row", new=AsyncMock(return_value=ROW)), \
          patch.object(mod, "get_dj_slot_locks", new=AsyncMock(return_value=[])), \

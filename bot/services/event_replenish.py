@@ -10,6 +10,7 @@ from collections.abc import Iterator
 from datetime import timedelta
 from itertools import count, islice
 
+from bot.db import events as db_events
 from bot.db.bookings import init_event_slots
 from bot.db.config import get_value, set_value
 from bot.db.manual_events import get_manual_page_ids
@@ -86,9 +87,7 @@ async def replenish_events(
     """
     async with _replenish_lock():
         if events is None:
-            if notion_client is None:
-                return 0
-            loaded: list[EventInfo] = await notion_client.list_events()
+            loaded: list[EventInfo] = await db_events.list_events(db)
         else:
             loaded = events
         return await _replenish(db, notion_client, guild_id, loaded)
