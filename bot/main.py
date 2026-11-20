@@ -17,7 +17,7 @@ Startup sequence:
   9. Create the services (incl. NotionSyncService) and load the cogs
  10. Start bot (Discord connects only AFTER DB and Notion are ready)
  11. With a Notion client and the import done: start the Notion mirror worker
-     (bot/sync/worker.py)
+     (bot/sync/worker.py) and queue the DJs whose logo is not in Notion yet
  12. On shutdown: stop the mirror worker, close pool and Notion API client
 
 [Source: architecture.md#Implementation Sequence]
@@ -45,7 +45,7 @@ from bot.notion.schema import (
 )
 from bot.notion.views import ensure_views
 from bot.services import activation
-from bot.services.dj_sync import retry_unsynced_logos
+from bot.services.dj_sync import queue_unsynced_logos
 from bot.sync.notion_import import post_upgrade_result, run_upgrade_import_if_needed
 from bot.sync.worker import MirrorWorker
 from bot.timezone import load_stored_timezone
@@ -108,21 +108,12 @@ async def notify_admins_if_idle(bot: commands.Bot, db: object, admin_ids: object
             logger.warning("Could not send the setup DM to admin %s", admin_id, exc_info=True)
 
 
-async def _retry_logos_if_active(bot: commands.Bot, ctx: BotContext) -> None:
-    """Retry the Notion upload of logos that are not synced yet (once per process)."""
-    try:
-        if not await activation.bot_is_active(bot, ctx.db):
-            return
-        await retry_unsynced_logos(ctx, bot.guilds[0] if bot.guilds else None)
-    except Exception:
-        logger.warning("Retrying unsynced DJ logos failed", exc_info=True)
-
-
-def _start_mirror(ctx: BotContext) -> None:
+async def _start_mirror(ctx: BotContext) -> None:
     """Start the Notion mirror worker once a Notion client exists (never without Notion).
 
     Not during maintenance: until the upgrade import succeeded ctx.mirror stays None,
-    so changed() queues nothing and Notion is not written.
+    so changed() queues nothing and Notion is not written. Once started, every DJ
+    whose logo is not in Notion yet is queued, so the worker retries the upload.
     """
     if (
         ctx.mirror is None
@@ -132,6 +123,7 @@ def _start_mirror(ctx: BotContext) -> None:
     ):
         ctx.mirror = MirrorWorker(ctx.db, ctx.notion_client, ctx.log_service)
         ctx.mirror.start()
+        await queue_unsynced_logos(ctx)
 
 
 async def main() -> None:
@@ -188,7 +180,7 @@ async def main() -> None:
             ctx.notion_problem = None
             await run_upgrade_import_if_needed(ctx)
             await post_upgrade_result(ctx)
-            _start_mirror(ctx)
+            await _start_mirror(ctx)
             logger.info("New Notion databases created after an admin approved it")
             return None
 
@@ -206,7 +198,7 @@ async def main() -> None:
             sys.exit(f"{NOTION_SETUP_FAILED} (Cause: {exc})")
         ctx.notion_recover = recover_notion
         await run_upgrade_import_if_needed(ctx)
-        _start_mirror(ctx)
+        await _start_mirror(ctx)
 
     # Story 3.2: init LineupService after DB and log_service are ready
     from bot.services.lineup import LineupService
@@ -313,7 +305,6 @@ async def main() -> None:
             except Exception:
                 logger.warning("Could not load the added admins", exc_info=True)
             await notify_admins_if_idle(bot, ctx.db, ctx.admin_ids())
-            await _retry_logos_if_active(bot, ctx)
             if ctx.notion_problem and ctx.log_service is not None:
                 try:
                     await ctx.log_service.log_attention(

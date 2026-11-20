@@ -213,7 +213,7 @@ async def test_auto_create_events_delegates_to_replenish_events() -> None:
     with patch("bot.cogs.events.replenish_events", new=AsyncMock(return_value=3)) as rep:
         result = await cog._auto_create_events(events, 99999)
     assert result == 3
-    rep.assert_awaited_once_with(cog.ctx.db, cog.ctx.notion_client, 99999, events)
+    rep.assert_awaited_once_with(cog.ctx, 99999, events)
 
 
 @pytest.mark.asyncio

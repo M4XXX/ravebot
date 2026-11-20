@@ -1018,16 +1018,15 @@ async def _run_effects(ctx: "BotContext", guild_id: int) -> tuple[int, bool]:
     """Create the missing future events and post the first Lineup Update.
 
     The event list is loaded by replenish_events inside its lock, so a poll running at
-    the same time cannot leave this call with a stale list.
+    the same time cannot leave this call with a stale list. During maintenance (an
+    import replaces the events) replenish_events creates nothing.
     Returns (events created, whether the Lineup Update was posted).
     """
-    created = 0
+    created = await replenish_events(ctx, guild_id)
     posted = False
-    if ctx.notion_client is not None:
-        created = await replenish_events(_db(ctx), ctx.notion_client, guild_id)
-        if ctx.lineup_service is not None:
-            events = await db_events.list_events(_db(ctx))
-            posted = bool(await ctx.lineup_service.refresh(events))
+    if ctx.lineup_service is not None:
+        events = await db_events.list_events(_db(ctx))
+        posted = bool(await ctx.lineup_service.refresh(events))
     return created, posted
 
 

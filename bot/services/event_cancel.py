@@ -1,10 +1,11 @@
 """EventCancelService: cancel one upcoming event and tell everyone concerned.
 
-Behind /cancel event. Order of one run: read the bookings, set the Notion Status
-to Canceled (a failure stops the run, nothing else changes), empty the Notion
-slot rows and free the slot locks, DM the booked DJs, report DJs the bot cannot
-reach, post the log entry, announce in the DJ channel if a DJ was booked, and
-refresh the lineup post.
+Behind /cancel event. Order of one run: read the bookings, set the event status
+to Canceled in Postgres (a failure stops the run, nothing else changes), empty
+the booked slots in Postgres, queue the event and the emptied slots for the
+Notion mirror, DM the booked DJs, report DJs the bot cannot reach, post the log
+entry, announce in the DJ channel if a DJ was booked, and refresh the lineup post.
+Notion is never called here; it follows in the background (changed()).
 """
 import asyncio
 import datetime
@@ -21,6 +22,7 @@ from bot.db.djs import get_dj_row
 from bot.notion.models import STATUS_CANCELED, EventInfo
 from bot.services.dm import dm_user
 from bot.services.lineup import future_events
+from bot.sync.worker import changed
 from bot.timezone import local_today
 from bot.ui import texts
 from bot.ui.embeds import ErrorCode
@@ -44,8 +46,8 @@ def _today() -> datetime.date:
 class BookedDj:
     """One DJ booked on the event, with all their slots.
 
-    dj_id: Discord id; zero or below is a guest; None is a DJ found only in a
-    Notion slot row whose DJ page has no Discord ID.
+    dj_id: Discord id; zero or below is a guest; None is a DJ shown in a slot
+    without a Discord ID.
     """
 
     dj_id: int | None
@@ -77,11 +79,11 @@ class CancelResult:
 class _Bookings:
     djs: tuple[BookedDj, ...]
     lock_indexes: tuple[int, ...]  # slots with a lock holder
-    notion_indexes: tuple[int, ...]  # slots whose Notion row holds a DJ
+    row_indexes: tuple[int, ...]  # slots whose event row shows a DJ
 
 
 class EventCancelService:
-    """Cancels events. Reads db, Notion and the other services from ctx at call time."""
+    """Cancels events. Reads db and the other services from ctx at call time."""
 
     def __init__(self, ctx: "BotContext", bot: "commands.Bot") -> None:
         self._ctx = ctx
@@ -101,7 +103,7 @@ class EventCancelService:
         return None
 
     async def _bookings(self, event: EventInfo) -> _Bookings:
-        """Booked DJs from the slot locks plus DJs only in the Notion slot rows."""
+        """Booked DJs from the slot locks plus DJs only shown in the event's slot rows."""
         db = self._ctx.db
         locks = await get_slot_locks_for_events(db, [event.page_id])  # type: ignore[arg-type]
         holders = {
@@ -110,7 +112,7 @@ class EventCancelService:
             if page_id == event.page_id and lock.discord_user_id is not None
         }
         rows = {number - 1: row for number, row in event.resolved_slots().items()}
-        notion_indexes = sorted(
+        row_indexes = sorted(
             index for index, row in rows.items() if row.dj_page_id or row.extra_dj_page_ids
         )
 
@@ -123,7 +125,7 @@ class EventCancelService:
             holder = holders.get(index)
             row_name = row.dj_name if row is not None else None
             if holder is None and row is not None:
-                holder = row.discord_id  # in Notion only (hand edit not yet synced)
+                holder = row.discord_id  # in the slot row only (read between two writes)
             elif row is not None and row.discord_id != holder:
                 row_name = None  # the row shows another DJ than the lock holder
             key: tuple[str, object]
@@ -144,11 +146,11 @@ class EventCancelService:
                 name = (dj_row or {}).get("dj_name") or str(dj_id)
             djs.append(BookedDj(dj_id, name or _UNKNOWN_DJ, tuple(indexes)))
         djs.sort(key=lambda dj: dj.slot_indexes[0])
-        return _Bookings(tuple(djs), tuple(sorted(holders)), tuple(notion_indexes))
+        return _Bookings(tuple(djs), tuple(sorted(holders)), tuple(row_indexes))
 
     async def preview(self, event_name: str) -> CancelPreview | None:
         """The event and its booked DJs, or None if it cannot be canceled. Changes nothing."""
-        if self._ctx.db is None or self._ctx.notion_client is None:
+        if self._ctx.db is None:
             return None
         try:
             event = await self._find_event(event_name)
@@ -163,7 +165,7 @@ class EventCancelService:
 
     async def cancel_event(self, admin_name: str, event_name: str) -> CancelResult:
         """Cancel the event and notify. Never raises."""
-        if self._ctx.db is None or self._ctx.notion_client is None:
+        if self._ctx.db is None:
             return CancelResult(False, texts.GENERIC_ERROR)
         async with self._lock:
             try:
@@ -173,8 +175,6 @@ class EventCancelService:
                 return CancelResult(False, texts.GENERIC_ERROR)
 
     async def _cancel(self, admin_name: str, event_name: str) -> CancelResult:
-        notion = self._ctx.notion_client
-        assert notion is not None
         try:
             event = await self._find_event(event_name)
         except Exception:
@@ -192,10 +192,11 @@ class EventCancelService:
             return CancelResult(False, texts.GENERIC_ERROR)
 
         try:
-            await notion.set_event_status(event, STATUS_CANCELED)
+            await db_events.set_event_status(self._ctx.db, event.page_id, STATUS_CANCELED)  # type: ignore[arg-type]
         except Exception:
             logger.exception("cancel event: status write for %s failed", event.event_id)
-            return CancelResult(False, texts.EVENT_CANCEL_NOTION_FAILED)
+            return CancelResult(False, texts.EVENT_CANCEL_SAVE_FAILED)
+        changed(self._ctx, "event", event.page_id)
 
         # From here on the event is canceled: every later step runs whatever fails.
         failed_slots = await self._remove_bookings(event, bookings)
@@ -224,24 +225,18 @@ class EventCancelService:
         )
 
     async def _remove_bookings(self, event: EventInfo, bookings: _Bookings) -> list[int]:
-        """Empty the Notion rows and free the locks; return the slots Notion kept."""
-        notion = self._ctx.notion_client
+        """Empty the booked slots and queue each for the mirror; return the slots kept."""
         failed: list[int] = []
-        for index in bookings.notion_indexes:
-            try:
-                await notion.empty_slot(event, index)  # type: ignore[union-attr]
-            except Exception:
-                logger.exception(
-                    "cancel event: emptying slot %s of %s failed", index + 1, event.event_id
-                )
-                failed.append(index)
-        for index in bookings.lock_indexes:
+        for index in sorted(set(bookings.lock_indexes) | set(bookings.row_indexes)):
             try:
                 await release_slot_lock(self._ctx.db, event.page_id, index)  # type: ignore[arg-type]
             except Exception:
                 logger.exception(
                     "cancel event: freeing slot %s of %s failed", index + 1, event.event_id
                 )
+                failed.append(index)
+                continue
+            changed(self._ctx, "slot", f"{event.page_id}:{index}")
         return failed
 
     async def _tell(self, dj: BookedDj, event: EventInfo) -> bool:

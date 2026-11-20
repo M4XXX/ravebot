@@ -5,7 +5,8 @@ account. The djs table is keyed by Discord user id, so a guest gets a negative i
 made up by the bot (see next_guest_id); Discord ids are positive. The bot never
 contacts guests (no invites, reminders or booking notices).
 
-Every method returns a DjResult and never raises for expected problems.
+Every method returns a DjResult and never raises for expected problems. Changes are
+written to Postgres; the Notion mirror follows in the background (changed()).
 """
 import asyncio
 import logging
@@ -15,13 +16,13 @@ from typing import TYPE_CHECKING, Any
 import asyncpg
 
 from bot.db import events as db_events
+from bot.db import mirror as db_mirror
 from bot.db.bookings import get_dj_slot_locks
 from bot.db.djs import (
     delete_dj,
     dj_name_exists,
     get_all_dj_rows,
     get_dj_row,
-    get_notion_dj_page_id,
     insert_dj,
     next_guest_id,
     update_dj_fields,
@@ -36,6 +37,7 @@ from bot.services.dj_validation import (
     normalize_link,
 )
 from bot.services.logo import LogoError, process_logo_async
+from bot.sync.worker import changed
 
 if TYPE_CHECKING:
     from bot.context import BotContext
@@ -215,15 +217,9 @@ class DjAdminService:
                 )
             except asyncpg.UniqueViolationError as exc:
                 return DjResult(False, _duplicate_text(exc, clean_name))
-        synced = await sync_dj(self._ctx, dj_id, self._discord_name(dj_id, clean_name))
+        await sync_dj(self._ctx, dj_id, self._discord_name(dj_id, clean_name))
         await self._log(admin_name, "added", clean_name)
         what = "guest DJ" if is_guest(dj_id) else "DJ"
-        if not synced:
-            return DjResult(
-                True,
-                f"Added the {what} {clean_name}, but Notion could not be updated. "
-                "The Notion entry is created when the DJ is booked.",
-            )
         return DjResult(True, f"Added the {what} {clean_name}.")
 
     # --- edit ---
@@ -288,12 +284,8 @@ class DjAdminService:
                 return DjResult(False, UNKNOWN_DJ)
         fresh = await get_dj_row(db, dj_id)
         name = fresh["dj_name"] if fresh is not None else row["dj_name"]
-        synced = await sync_dj(self._ctx, dj_id, self._discord_name(dj_id, name))
+        await sync_dj(self._ctx, dj_id, self._discord_name(dj_id, name))
         await self._log(admin_name, "edited", name)
-        if not synced:
-            return DjResult(
-                True, f"Saved {name}, but Notion could not be updated. The bot tries again later."
-            )
         return DjResult(True, f"Saved {name}.")
 
     # --- delete ---
@@ -303,9 +295,9 @@ class DjAdminService:
 
         If a booking cannot be cancelled, nothing is deleted. Past bookings stay.
         """
-        db, notion = self._ctx.db, self._ctx.notion_client
+        db = self._ctx.db
         booking = self._ctx.admin_booking_service
-        if db is None or notion is None or booking is None:
+        if db is None or booking is None:
             return DjResult(False, NOT_READY)
         row = await get_dj_row(db, dj_id)
         if row is None:
@@ -326,14 +318,14 @@ class DjAdminService:
                 flow.release()
 
     async def _delete(self, admin_name: str, dj_id: int, name: str) -> DjResult:
-        db, notion = self._ctx.db, self._ctx.notion_client
+        db = self._ctx.db
         booking = self._ctx.admin_booking_service
-        assert db is not None and notion is not None and booking is not None
+        assert db is not None and booking is not None
         try:
             bookings = await self.future_bookings(dj_id)
         except Exception:
             logger.warning("Could not list the bookings of DJ %s", dj_id, exc_info=True)
-            return DjResult(False, "Could not read the bookings from Notion. Try again.")
+            return DjResult(False, "Could not read the bookings. Try again.")
         for event, slot_index in bookings:
             ok, message = await booking.cancel_slot_override(
                 admin_name=admin_name,
@@ -348,22 +340,18 @@ class DjAdminService:
                     f"Could not cancel {name} in {event.event_id}: {message} "
                     "The DJ was not deleted.",
                 )
+        key = str(dj_id)
         try:
-            page_id = await get_notion_dj_page_id(db, dj_id)
-            if page_id:
-                await notion.trash_dj_page(page_id)
-        except Exception:
-            logger.warning("Could not trash the Notion page of DJ %s", dj_id, exc_info=True)
-            return DjResult(False, "Notion could not be updated. The DJ was not deleted.")
-        try:
+            # Read before the delete: the worker trashes this Notion page afterwards
+            known = await db_mirror.get(db, "dj", key)
             await delete_dj(db, dj_id)
         except Exception:
             logger.exception("Deleting DJ %s failed", dj_id)
-            return DjResult(
-                False,
-                "The database could not be updated. The DJ was not deleted; their Notion "
-                "entry is in the Notion trash and comes back when you save the DJ again.",
-            )
+            return DjResult(False, "The database could not be updated. The DJ was not deleted.")
+        changed(
+            self._ctx, "dj", key, op="delete",
+            notion_page_id=known.notion_page_id if known is not None else None,
+        )
         await self._log(admin_name, "removed", name)
         count = len(bookings)
         extra = f" {count} upcoming booking{'s' if count != 1 else ''} cancelled." if count else ""

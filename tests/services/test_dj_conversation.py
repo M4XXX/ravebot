@@ -506,6 +506,35 @@ async def test_confirm_inserts_assigns_role_logs_once_and_syncs(
     assert A not in fake.convs
 
 
+async def test_confirm_queues_the_new_dj_for_notion_without_calling_it(
+    service, fake, ctx, monkeypatch
+):
+    from bot.services import dj_sync
+
+    monkeypatch.setattr(svc_mod, "sync_dj", dj_sync.sync_dj)  # the real one
+    changed = MagicMock()
+    monkeypatch.setattr(dj_sync, "changed", changed)
+    await _to_summary(service)
+    assert (await service.confirm(A, 7)).kind == "done"
+    fake.insert_dj.assert_awaited_once()
+    changed.assert_called_once_with(ctx, "dj", str(A))
+    assert ctx.notion_client.method_calls == []
+
+
+async def test_edit_queues_the_dj_for_notion_without_calling_it(service, fake, ctx, monkeypatch):
+    from bot.services import dj_sync
+
+    monkeypatch.setattr(svc_mod, "sync_dj", dj_sync.sync_dj)  # the real one
+    changed = MagicMock()
+    monkeypatch.setattr(dj_sync, "changed", changed)
+    _dj(fake)
+    await service.start_edit(A, GUILD, "vrchat")
+    assert (await service.handle_message(msg(A, "newvr"))).kind == "overview"
+    assert fake.djs[A]["vrchat_name"] == "newvr"
+    changed.assert_called_once_with(ctx, "dj", str(A))
+    assert ctx.notion_client.method_calls == []
+
+
 async def test_confirm_with_logo_stores_bytes(service, fake, download):
     await onboard_to(service, A, "logo")
     await service.handle_message(msg(A, "", attachments=1))

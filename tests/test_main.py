@@ -58,6 +58,12 @@ class _Startup:
         self._schema_error = schema_error
         self.while_running = None  # async callback run while main() is running
         self.import_fails = False  # the upgrade import leaves the bot in maintenance
+        self.queued_with_mirror: list[object] = []  # ctx.mirror at each logo-queue call
+
+    async def _queue_logos(self, ctx):  # noqa: ANN001, ANN202
+        self.calls.append("queue_logos")
+        self.queued_with_mirror.append(ctx.mirror)
+        return 0
 
     async def _upgrade_import(self, ctx):  # noqa: ANN001, ANN202
         self.calls.append("upgrade_import")
@@ -116,6 +122,7 @@ class _Startup:
              patch.object(
                  main_mod, "run_upgrade_import_if_needed", side_effect=self._upgrade_import
              ), \
+             patch.object(main_mod, "queue_unsynced_logos", side_effect=self._queue_logos), \
              patch.object(main_mod, "stop_admin_page", new=self.stop_page):
             self.api_cls = api_cls
             await main_mod.main()
@@ -127,8 +134,8 @@ async def test_startup_ensures_schema_then_views_for_guild_zero() -> None:
     await s.run()
 
     assert s.calls == [
-        "ensure_schema", "ensure_views", "client", "upgrade_import", "page_start", "start",
-        "page_stop",
+        "ensure_schema", "ensure_views", "client", "upgrade_import", "queue_logos",
+        "page_start", "start", "page_stop",
     ]
     assert s.api_cls.call_args.args[0] == "key"
 
@@ -264,29 +271,45 @@ async def test_startup_registers_dj_profile_and_menu_views() -> None:
             assert view.ctx is s.ctx
 
 
-async def _ready(s: "_Startup", active: bool, times: int) -> AsyncMock:
+async def _ready(s: "_Startup", active: bool, times: int) -> None:
     from bot import main as main_mod
 
-    guild = MagicMock()
-    s.bot.guilds = [guild]
-    retry = AsyncMock(return_value=0)
-    with patch.object(main_mod, "retry_unsynced_logos", new=retry), \
-         patch.object(main_mod, "load_stored_timezone", new=AsyncMock()), \
+    s.bot.guilds = [MagicMock()]
+    with patch.object(main_mod, "load_stored_timezone", new=AsyncMock()), \
          patch.object(main_mod, "notify_admins_if_idle", new=AsyncMock()), \
          patch.object(main_mod.activation, "bot_is_active", new=AsyncMock(return_value=active)):
         on_ready = s.bot.event.call_args.args[0]
         for _ in range(times):
             await on_ready()
-    retry.guild = guild
-    return retry
 
 
 @pytest.mark.asyncio
-async def test_on_ready_retries_unsynced_logos_once_per_process() -> None:
+async def test_unsynced_logos_are_queued_once_the_mirror_runs() -> None:
+    """The worker uploads unsynced logos: startup queues those DJs after it starts."""
+    from bot.sync.worker import MirrorWorker
+
     s = _Startup()
     await s.run()
-    retry = await _ready(s, active=True, times=2)
-    retry.assert_awaited_once_with(s.ctx, retry.guild)
+    assert len(s.queued_with_mirror) == 1
+    assert isinstance(s.queued_with_mirror[0], MirrorWorker)
+    assert s.calls.index("upgrade_import") < s.calls.index("queue_logos") < s.calls.index("start")
+    await _ready(s, active=True, times=2)  # on_ready no longer retries logos itself
+    assert len(s.queued_with_mirror) == 1
+
+
+@pytest.mark.asyncio
+async def test_unsynced_logos_not_queued_without_the_mirror() -> None:
+    for s in (_Startup(notion_enabled=False), _Startup()):
+        s.import_fails = True
+        await s.run()
+        assert "queue_logos" not in s.calls
+
+
+def test_main_no_longer_retries_logos_inline() -> None:
+    from bot import main as main_mod
+
+    assert not hasattr(main_mod, "_retry_logos_if_active")
+    assert not hasattr(main_mod, "retry_unsynced_logos")
 
 
 @pytest.mark.asyncio
@@ -305,16 +328,8 @@ async def test_on_ready_survives_a_failing_admin_registry_load() -> None:
     await s.run()
     s.ctx.admins = MagicMock()
     s.ctx.admins.ensure_loaded = AsyncMock(side_effect=RuntimeError("db"))
-    retry = await _ready(s, active=True, times=1)
-    retry.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_on_ready_skips_logo_retry_while_idle() -> None:
-    s = _Startup()
-    await s.run()
-    retry = await _ready(s, active=False, times=1)
-    retry.assert_not_awaited()
+    await _ready(s, active=True, times=1)
+    s.ctx.admins.ensure_loaded.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -341,7 +356,6 @@ async def test_startup_dm_goes_to_owners_plus_added_admins() -> None:
     s.bot.guilds = []
     notify = AsyncMock()
     with patch.object(main_mod, "notify_admins_if_idle", new=notify), \
-         patch.object(main_mod, "retry_unsynced_logos", new=AsyncMock(return_value=0)), \
          patch.object(main_mod.activation, "bot_is_active", new=AsyncMock(return_value=False)):
         await s.bot.event.call_args.args[0]()
     notify.assert_awaited_once_with(s.bot, s.ctx.db, [10, 30, 7])
@@ -521,8 +535,7 @@ async def test_on_ready_posts_the_upgrade_result() -> None:
     s.ctx.log_service = MagicMock()
     s.ctx.log_service.log_notice = AsyncMock()
     on_ready = s.bot.event.call_args.args[0]
-    with patch("bot.main.notify_admins_if_idle", new=AsyncMock()), \
-         patch("bot.main._retry_logos_if_active", new=AsyncMock()):
+    with patch("bot.main.notify_admins_if_idle", new=AsyncMock()):
         await on_ready()
         await on_ready()
     s.ctx.log_service.log_notice.assert_awaited_once()

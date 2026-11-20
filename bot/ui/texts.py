@@ -659,14 +659,16 @@ SETUP_NOT_IN_GUILD = "Please use this command in a server channel."
 
 LOG_EVENT_CANCELED_TITLE = "Event canceled"
 EVENT_CANCELED_ANYWAY = "The event was canceled anyway."
-EVENT_CANCEL_CLEANUP_TODO = "Remove the DJs from these Slots rows in Notion."
+EVENT_CANCEL_CLEANUP_TODO = (
+    "The event is canceled, so these slots cannot be booked. Nothing else needs to be done."
+)
 EVENT_CANCEL_POST_FAILED = "The cancel notice could not be posted in the DJ channel."
 EVENT_CANCEL_KEPT = "Nothing was canceled."
 EVENT_NOT_CANCELABLE = (
     "That event was not found, is in the past, or is already done or canceled."
 )
-EVENT_CANCEL_NOTION_FAILED = (
-    "Notion could not be updated. The event was not canceled and nobody was told."
+EVENT_CANCEL_SAVE_FAILED = (
+    "The database could not be updated. The event was not canceled and nobody was told."
 )
 EVENT_WAS_CANCELED = "This event was canceled. Open the menu again to pick another event."
 
@@ -725,7 +727,7 @@ def tell_canceled_todo(name: str) -> str:
 def event_cancel_cleanup_failed(event: EventInfo, slot_indexes: Sequence[int]) -> str:
     numbers = ", ".join(str(index + 1) for index in slot_indexes)
     return (
-        f"{_ev(event)} was canceled, but these slots could not be emptied in Notion: {numbers}."
+        f"{_ev(event)} was canceled, but these slots could not be emptied: {numbers}."
     )
 
 
@@ -775,5 +777,5 @@ def event_cancel_done(
         names = ", ".join(_capped([escape_text(name) for name in by_hand]))
         text += f" Tell these DJs yourself: {names}."
     if failed_slots:
-        text += " Some slots could not be emptied in Notion, see the log channel."
+        text += " Some slots could not be emptied, see the log channel."
     return text

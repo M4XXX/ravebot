@@ -52,7 +52,7 @@ class EventsCog(commands.Cog):
         return first_guild_id(self.bot)
 
     async def _auto_create_events(self, events: list[EventInfo], guild_id: int) -> int:
-        """Create Notion events to maintain the configured look-ahead count.
+        """Create events (Postgres) to maintain the configured look-ahead count.
 
         Thin wrapper around bot.services.event_replenish.replenish_events (shared
         with the setup wizard). Done, canceled and past events do not count.
@@ -61,12 +61,11 @@ class EventsCog(commands.Cog):
         lineup refresh. Returns how many events were created; the caller's event
         list does not include them, so a non-zero count makes it reload for the refresh.
 
-        On NotionWriteError: ERR_NOTION_WRITE is already posted by NotionApi.request.
-        Logs a warning and continues — remaining events in the loop still attempted.
+        A failed creation is logged and the remaining dates are still attempted.
 
         [Source: epics.md#Story 7.1 AC1-AC4]
         """
-        return await replenish_events(self.ctx.db, self.ctx.notion_client, guild_id, events)
+        return await replenish_events(self.ctx, guild_id, events)
 
     async def _run_sync_cycle(self, guild_id: int) -> None:
         """Run one NotionSyncService cycle; a failure is logged and never raised.

@@ -100,6 +100,8 @@ def make_ctx(events=None):
     ctx.is_admin = lambda user_id: user_id == ADMIN
     ctx.db = MagicMock()
     ctx.db.fetchval = AsyncMock(return_value=1)
+    ctx.maintenance = None
+    ctx.mirror = None
     fake_events.list_events = AsyncMock(return_value=events or [])
     ctx.lineup_service.refresh = AsyncMock(return_value=True)
     return ctx
@@ -331,7 +333,7 @@ async def test_activate_writes_keys_flag_and_runs_effects_once_on_double_press(s
         await i2.response.defer()
         await asyncio.gather(sw.activate_from_draft(ctx, i1), sw.activate_from_draft(ctx, i2))
     assert rep.await_count == 1
-    assert rep.await_args.args[2] == GUILD
+    assert rep.await_args.args == (ctx, GUILD)
     assert ctx.lineup_service.refresh.await_count == 1
     c = {k: v for (g, k), v in store.config.items()}
     assert c["dj_channel"] == "100" and c["log_channel"] == "200"
@@ -1114,7 +1116,7 @@ async def test_activate_loads_events_inside_replenish_not_before(store):
     await inter.response.defer()
     with patch("bot.ui.setup_wizard.replenish_events", AsyncMock(return_value=2)) as rep:
         await sw.activate_from_draft(ctx, inter)
-    assert rep.await_args.args == (ctx.db, ctx.notion_client, GUILD)  # no stale list passed
+    assert rep.await_args.args == (ctx, GUILD)  # no stale list passed
     # the lineup refresh uses a list loaded after replenishing
     ctx.lineup_service.refresh.assert_awaited_once()
 
@@ -1294,6 +1296,27 @@ async def test_activate_with_schedule_off_creates_no_events_and_posts_lineup(sto
     assert store.config[(GUILD, "first_event_date")] == "2099-01-02"
     ctx.notion_client.create_event.assert_not_awaited()
     ctx.lineup_service.refresh.assert_awaited_once()
+    assert store.config[(GUILD, "bot_active")] == "true"
+
+
+@pytest.mark.asyncio
+async def test_activate_in_maintenance_creates_no_events(store):
+    """An import replaces the events: activation does not replenish during it."""
+    ctx = make_ctx()
+    ctx.maintenance = "restoring"
+    seed(store, SUMMARY, FULL)
+    inter = make_inter(make_guild())
+    await inter.response.defer()
+    insert = AsyncMock()
+    with patch("bot.services.event_replenish.get_value", store.get_value), patch(
+        "bot.services.event_defaults.get_value", store.get_value
+    ), patch(
+        "bot.services.event_replenish.get_manual_page_ids", AsyncMock(return_value=set())
+    ), patch(
+        "bot.services.event_replenish.db_events.event_id_exists", AsyncMock(return_value=False)
+    ), patch("bot.services.event_replenish.db_events.insert_event", insert):
+        await sw.activate_from_draft(ctx, inter)
+    insert.assert_not_awaited()
     assert store.config[(GUILD, "bot_active")] == "true"
 
 

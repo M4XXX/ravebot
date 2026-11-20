@@ -24,14 +24,12 @@ from disnake.ext import commands
 from bot.context import BotContext
 from bot.db import config as db_config
 from bot.db import events as db_events
-from bot.db.bookings import init_event_slots
 from bot.db.djs import get_all_djs
 from bot.db.manual_events import mark_manual
-from bot.notion.client import DuplicateEventError, NotionWriteError
 from bot.services import activation
 from bot.services.dj_admin import UNKNOWN_DJ, is_guest
 from bot.services.event_defaults import default_event_shape
-from bot.services.event_replenish import replenish_guard
+from bot.services.event_replenish import mirror_new_event, replenish_guard
 from bot.services.lineup import future_events, upcoming_event
 from bot.services.logo import MAX_LOGO_BYTES
 from bot.services.outreach import parse_outreach_enabled
@@ -221,7 +219,7 @@ class AdminCog(commands.Cog):
         pass
 
     @create_base.sub_command(
-        name="event", description="Manually create a new event in Notion"
+        name="event", description="Manually create a new event"
     )
     async def create_event(
         self,
@@ -245,7 +243,7 @@ class AdminCog(commands.Cog):
             le=LIMITS["slot_duration_minutes"],
         ),
     ) -> None:
-        """Create a new event page in Notion on the specified future date.
+        """Create a new event (Postgres, mirrored to Notion) on the specified future date.
 
         Validates date format and that it is strictly in the future.
         Event ID is auto-generated: "YYYY-MM-DD Rave Night"; start, slot length and
@@ -257,7 +255,7 @@ class AdminCog(commands.Cog):
         """
         if await refuse_in_maintenance(inter, self.ctx):
             return
-        if self.ctx.notion_client is None or self.ctx.db is None:
+        if self.ctx.db is None:
             await inter.response.send_message(
                 "The bot is not ready yet. Please try again in a moment.", ephemeral=True
             )
@@ -308,33 +306,28 @@ class AdminCog(commands.Cog):
             event_start = start_time if start_time is not None else shape.start
             slot_count = slots if slots is not None else shape.slot_count
             slot_length = slot_minutes if slot_minutes is not None else shape.slot_minutes
+            draft = db_events.EventDraft(
+                event_id=event_id,
+                date=event_date,
+                start=event_start,
+                slot_minutes=slot_length,
+                slot_count=slot_count,
+            )
             try:
-                event = await self.ctx.notion_client.create_event(
-                    event_id, event_date, event_start, slot_count, slot_length
-                )
-            except DuplicateEventError:
+                # Writes the event and its slot rows in one transaction
+                event = await db_events.insert_event(self.ctx.db, draft)
+            except db_events.DuplicateEventError:
                 await inter.followup.send(
                     "An event with that ID already exists.", ephemeral=True
                 )
                 return
-            except NotionWriteError:
-                logger.exception("create_event: create_event() failed for %s", event_date)
+            except Exception:
+                logger.exception("create_event: insert_event() failed for %s", event_date)
                 await inter.followup.send(
-                    "Could not create the event in Notion. Please try again in a moment.",
+                    "Could not create the event. Please try again in a moment.",
                     ephemeral=True,
                 )
                 return
-
-            # Pre-initialize slot_locks rows, as the auto-create path does (Story 7.3 AC2)
-            try:
-                await init_event_slots(self.ctx.db, event.page_id, slot_count)
-            except Exception as exc:
-                logger.warning(
-                    "create_event: init_event_slots failed for %r: %s"
-                    " — slots will be lazily created on booking",
-                    event_id,
-                    exc,
-                )
             # Manual events are ignored by the event scheduler
             marked = True
             try:
@@ -345,9 +338,10 @@ class AdminCog(commands.Cog):
                     "create_event: could not record %r as manual", event_id, exc_info=True
                 )
 
+        mirror_new_event(self.ctx, event)
         note = "" if marked else texts.CREATE_EVENT_NOT_MARKED
         await inter.followup.send(
-            f"Event created in Notion for {texts.fmt_slot_when(event, 0)}.{note}",
+            f"Event created for {texts.fmt_slot_when(event, 0)}.{note}",
             ephemeral=True
         )
 
@@ -374,11 +368,7 @@ class AdminCog(commands.Cog):
         ),
     ) -> None:
         """Post a new lineup message. Admin-only through the cog check."""
-        if (
-            self.ctx.notion_client is None
-            or self.ctx.db is None
-            or self.ctx.lineup_service is None
-        ):
+        if self.ctx.db is None or self.ctx.lineup_service is None:
             await inter.response.send_message(
                 "Bot is not ready. Please try again.", ephemeral=True
             )
@@ -391,7 +381,7 @@ class AdminCog(commands.Cog):
         except Exception:
             logger.exception("post_lineup_update: list_events() failed")
             await inter.followup.send(
-                "Could not fetch events from Notion. Please try again.", ephemeral=True
+                "Could not fetch the events. Please try again.", ephemeral=True
             )
             return
 
@@ -445,8 +435,7 @@ class AdminCog(commands.Cog):
             return []
         guild_id = inter.guild_id
         if (
-            self.ctx.notion_client is None
-            or self.ctx.db is None
+            self.ctx.db is None
             or guild_id is None
             or not await activation.is_active(self.ctx.db, guild_id)
         ):

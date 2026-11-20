@@ -130,11 +130,16 @@ async def test_add_rejects_taken_name_and_existing_discord_user() -> None:
     assert not result.ok and "already a DJ" in result.message
 
 
-async def test_add_reports_notion_failure_but_keeps_the_dj() -> None:
-    service, _ = _service()
-    with _Patched(sync_dj=AsyncMock(return_value=False)):
-        result = await service.add_dj(admin_name="A", name="Nova", link="https://a.b")
-    assert result.ok and "Notion could not be updated" in result.message
+async def test_add_and_edit_work_without_notion() -> None:
+    service, ctx = _service(notion_client=None)
+    with _Patched(sync_dj=AsyncMock(return_value=True)) as fns:
+        added = await service.add_dj(admin_name="A", name="Nova", link="https://a.b")
+    assert added.ok and added.message == "Added the guest DJ Nova."
+    fns["insert_dj"].assert_awaited_once()
+    update = AsyncMock(return_value=True)
+    with _Patched(get_dj_row=AsyncMock(return_value=ROW), update_dj_fields=update):
+        edited = await service.edit_dj(admin_name="A", dj_id=-1, fields={"vrchat": "Mo"})
+    assert edited.ok and edited.message == "Saved Moonbeat."
 
 
 async def test_edit_changes_fields_and_syncs() -> None:
@@ -182,27 +187,45 @@ def _event(page_id="p1", name="Rave"):
     return make_event(event_id=name, page_id=page_id)
 
 
-async def test_delete_cancels_future_bookings_trashes_notion_and_deletes() -> None:
+async def test_delete_cancels_future_bookings_deletes_and_queues_the_notion_trash() -> None:
     booking = MagicMock(cancel_slot_override=AsyncMock(return_value=(True, "")))
     service, ctx = _service(admin_booking_service=booking)
     fake_events.list_events = AsyncMock(return_value=[_event("p1", "Rave One")])
-    ctx.notion_client.trash_dj_page = AsyncMock()
     locks = AsyncMock(return_value=[
         {"event_id": "p1", "slot_index": 1}, {"event_id": "old", "slot_index": 0},
     ])
-    delete = AsyncMock(return_value=True)
+    order: list[str] = []
+    delete = AsyncMock(side_effect=lambda *a: order.append("delete"))
+    known = AsyncMock(return_value=MagicMock(notion_page_id="np"))
     with patch.object(mod, "get_dj_slot_locks", new=locks), patch.object(
-        mod, "get_notion_dj_page_id", new=AsyncMock(return_value="np")
+        mod.db_mirror, "get", new=known
     ), patch.object(mod, "delete_dj", new=delete), patch.object(
         mod, "get_dj_row", new=AsyncMock(return_value=ROW)
-    ):
+    ), patch.object(mod, "changed", side_effect=lambda *a, **k: order.append("changed")) as ch:
         result = await service.delete_dj(admin_name="A", dj_id=-1)
     assert result.ok and "1 upcoming booking cancelled" in result.message
     booking.cancel_slot_override.assert_awaited_once_with(
         admin_name="A", dj_id=-1, dj_name="Moonbeat", event_name="Rave One", slot_num=2
     )
-    ctx.notion_client.trash_dj_page.assert_awaited_once_with("np")
     delete.assert_awaited_once_with(ctx.db, -1)
+    known.assert_awaited_once_with(ctx.db, "dj", "-1")
+    ch.assert_called_once_with(ctx, "dj", "-1", op="delete", notion_page_id="np")
+    assert order == ["delete", "changed"]
+    assert ctx.notion_client.method_calls == []
+
+
+async def test_delete_works_without_notion_and_without_a_mirror_row() -> None:
+    booking = MagicMock(cancel_slot_override=AsyncMock(return_value=(True, "")))
+    service, ctx = _service(admin_booking_service=booking, notion_client=None)
+    fake_events.list_events = AsyncMock(return_value=[])
+    with patch.object(mod, "get_dj_slot_locks", new=AsyncMock(return_value=[])), \
+         patch.object(mod.db_mirror, "get", new=AsyncMock(return_value=None)), \
+         patch.object(mod, "delete_dj", new=AsyncMock(return_value=True)), \
+         patch.object(mod, "get_dj_row", new=AsyncMock(return_value=ROW)), \
+         patch.object(mod, "changed") as ch:
+        result = await service.delete_dj(admin_name="A", dj_id=-1)
+    assert result.ok and result.message == "Deleted Moonbeat."
+    ch.assert_called_once_with(ctx, "dj", "-1", op="delete", notion_page_id=None)
 
 
 async def test_delete_stops_when_a_cancel_fails() -> None:
@@ -251,10 +274,13 @@ async def test_delete_db_error_is_reported() -> None:
     booking = MagicMock(cancel_slot_override=AsyncMock())
     service, ctx = _service(admin_booking_service=booking)
     fake_events.list_events = AsyncMock(return_value=[])
-    ctx.notion_client.trash_dj_page = AsyncMock()
     with patch.object(mod, "get_dj_row", new=AsyncMock(return_value=ROW)), \
          patch.object(mod, "get_dj_slot_locks", new=AsyncMock(return_value=[])), \
-         patch.object(mod, "get_notion_dj_page_id", new=AsyncMock(return_value=None)), \
-         patch.object(mod, "delete_dj", new=AsyncMock(side_effect=OSError("db"))):
+         patch.object(mod.db_mirror, "get", new=AsyncMock(return_value=None)), \
+         patch.object(mod, "delete_dj", new=AsyncMock(side_effect=OSError("db"))), \
+         patch.object(mod, "changed") as ch:
         result = await service.delete_dj(admin_name="A", dj_id=-1)
-    assert not result.ok and "not deleted" in result.message
+    assert not result.ok
+    assert result.message == "The database could not be updated. The DJ was not deleted."
+    ch.assert_not_called()
+    assert ctx.notion_client.method_calls == []
