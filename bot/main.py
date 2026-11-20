@@ -7,7 +7,7 @@ Startup sequence:
   4. Run Alembic migrations (subprocess: alembic upgrade head) — exits on failure
   5. Open asyncpg pool — exits if PostgreSQL unreachable
   6. Create disnake Bot with correct intents and the AdminLogService
-  7. Notion: NotionApi -> ensure_schema -> ensure_views -> NotionClient. The schema
+  7. Notion (only when both NOTION_* are set): NotionApi -> ensure_schema -> ensure_views -> NotionClient. The schema
      and view config keys live under guild_id 0 (global), so this runs before
      Discord connects. Exits with a clear message if the parent page is unusable.
   8. Create the services (incl. NotionSyncService) and load the cogs
@@ -139,43 +139,45 @@ async def main() -> None:
 
     ctx.log_service = AdminLogService(bot=bot, db=ctx.db)
 
-    # Notion: ensure databases and views exist before Discord connects (Ruling 29)
-    notion_api = NotionApi(config.notion_api_key, ctx.log_service)
+    notion_api: NotionApi | None = None
+    if config.notion_enabled:
+        # Notion: ensure databases and views exist before Discord connects (Ruling 29)
+        notion_api = NotionApi(config.notion_api_key, ctx.log_service)
 
-    async def setup_notion() -> NotionClient:
-        ids = await ensure_schema(
-            notion_api, db, NOTION_CONFIG_GUILD_ID, config.notion_parent_page_id
-        )
-        await ensure_views(notion_api, db, NOTION_CONFIG_GUILD_ID, ids)
-        return NotionClient(notion_api, ids)
+        async def setup_notion() -> NotionClient:
+            ids = await ensure_schema(
+                notion_api, db, NOTION_CONFIG_GUILD_ID, config.notion_parent_page_id
+            )
+            await ensure_views(notion_api, db, NOTION_CONFIG_GUILD_ID, ids)
+            return NotionClient(notion_api, ids)
 
-    async def recover_notion() -> str | None:
-        """Admin page: create a new set of databases now. Returns an error text or None."""
-        await set_value(db, NOTION_CONFIG_GUILD_ID, RECREATE_APPROVED_KEY, "1")
+        async def recover_notion() -> str | None:
+            """Admin page: create a new set of databases now. Returns an error text or None."""
+            await set_value(db, NOTION_CONFIG_GUILD_ID, RECREATE_APPROVED_KEY, "1")
+            try:
+                client = await setup_notion()
+            except (NotionSchemaError, NotionWriteError) as exc:
+                logger.error("Creating new Notion databases failed: %s", exc)
+                await set_value(db, NOTION_CONFIG_GUILD_ID, RECREATE_APPROVED_KEY, "0")
+                return str(exc)
+            ctx.attach_notion(client)
+            ctx.notion_problem = None
+            logger.info("New Notion databases created after an admin approved it")
+            return None
+
         try:
-            client = await setup_notion()
+            ctx.notion_client = await setup_notion()
+        except NotionDatabasesMissing as exc:
+            # Do not replace the databases on our own (a 404 can be a lost share): keep
+            # running without Notion and let an admin decide on the admin page.
+            logger.error("Notion databases missing, waiting for an admin: %s", exc.detail)
+            ctx.notion_problem = exc.detail
         except (NotionSchemaError, NotionWriteError) as exc:
-            logger.error("Creating new Notion databases failed: %s", exc)
-            await set_value(db, NOTION_CONFIG_GUILD_ID, RECREATE_APPROVED_KEY, "0")
-            return str(exc)
-        ctx.attach_notion(client)
-        ctx.notion_problem = None
-        logger.info("New Notion databases created after an admin approved it")
-        return None
-
-    try:
-        ctx.notion_client = await setup_notion()
-    except NotionDatabasesMissing as exc:
-        # Do not replace the databases on our own (a 404 can be a lost share): keep
-        # running without Notion and let an admin decide on the admin page.
-        logger.error("Notion databases missing, waiting for an admin: %s", exc.detail)
-        ctx.notion_problem = exc.detail
-    except (NotionSchemaError, NotionWriteError) as exc:
-        logger.error("Notion setup failed: %s", exc)
-        await db.close()
-        await notion_api.close()
-        sys.exit(f"{NOTION_SETUP_FAILED} (Cause: {exc})")
-    ctx.notion_recover = recover_notion
+            logger.error("Notion setup failed: %s", exc)
+            await db.close()
+            await notion_api.close()
+            sys.exit(f"{NOTION_SETUP_FAILED} (Cause: {exc})")
+        ctx.notion_recover = recover_notion
 
     # Story 3.2: init LineupService after DB and log_service are ready
     from bot.services.lineup import LineupService
@@ -301,8 +303,9 @@ async def main() -> None:
         if ctx.db is not None:
             await ctx.db.close()
             logger.info("asyncpg pool closed.")
-        await notion_api.close()
-        logger.info("Notion API client closed.")
+        if notion_api is not None:
+            await notion_api.close()
+            logger.info("Notion API client closed.")
 
 
 if __name__ == "__main__":

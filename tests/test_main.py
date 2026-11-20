@@ -34,10 +34,13 @@ _IDS = NotionIds(
 class _Startup:
     """Patches every external dependency of main() and records the call order."""
 
-    def __init__(self, schema_error: Exception | None = None) -> None:
+    def __init__(
+        self, schema_error: Exception | None = None, notion_enabled: bool = True
+    ) -> None:
         self.calls: list[str] = []
         self.config = MagicMock()
         self.config.log_level = "INFO"
+        self.config.notion_enabled = notion_enabled
         self.config.notion_api_key = "key"
         self.config.notion_parent_page_id = "parent"
         self.config.discord_bot_token = "token"
@@ -415,3 +418,22 @@ async def test_startup_builds_the_event_cancel_service() -> None:
 
     assert s.ctx is not None
     assert isinstance(s.ctx.event_cancel_service, EventCancelService)
+
+
+@pytest.mark.asyncio
+async def test_main_without_notion_skips_setup() -> None:
+    s = _Startup(notion_enabled=False)
+    await s.run()
+
+    assert "ensure_schema" not in s.calls
+    assert "ensure_views" not in s.calls
+    assert "client" not in s.calls
+    s.api_cls.assert_not_called()
+    ctx = s.ctx
+    assert ctx.notion_client is None
+    assert ctx.notion_recover is None
+    assert ctx.notion_problem is None
+    assert ctx.outreach_service.notion_client is None
+    s.pool.close.assert_awaited_once()
+    on_ready = s.bot.event.call_args.args[0]
+    await on_ready()

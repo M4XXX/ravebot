@@ -19,14 +19,19 @@ class Config:
 
     discord_bot_token: str = field(repr=False)
     postgres_url: str = field(repr=False)
-    notion_api_key: str = field(repr=False)
-    notion_parent_page_id: str
+    notion_api_key: str = field(repr=False)  # "" = Notion off
+    notion_parent_page_id: str  # "" = Notion off
     admin_user_ids: frozenset[int]
     log_level: str
     db_pool_min: int
     db_pool_max: int
     admin_page_password: str = field(default="", repr=False)
     admin_page_port: str = "8080"
+
+    @property
+    def notion_enabled(self) -> bool:
+        """True when both Notion settings are present; otherwise the bot runs on Postgres alone."""
+        return bool(self.notion_api_key and self.notion_parent_page_id)
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -46,12 +51,15 @@ class Config:
 
         discord_bot_token = require("DISCORD_BOT_TOKEN")
         postgres_url = require("POSTGRES_URL")
-        notion_api_key = require("NOTION_API_KEY")
-        notion_parent_page_id = require("NOTION_PARENT_PAGE_ID")
         raw_admin_ids = require("ADMIN_USER_IDS")
 
         if missing:
             sys.exit(f"Missing required environment variables: {', '.join(missing)}")
+
+        notion_api_key = os.getenv("NOTION_API_KEY", "").strip()
+        notion_parent_page_id = os.getenv("NOTION_PARENT_PAGE_ID", "").strip()
+        if bool(notion_api_key) != bool(notion_parent_page_id):
+            sys.exit("Set both NOTION_API_KEY and NOTION_PARENT_PAGE_ID, or neither")
 
         try:
             admin_ids = frozenset(
