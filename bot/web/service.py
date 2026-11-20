@@ -9,6 +9,7 @@ from typing import Any
 import disnake
 
 from bot.context import BotContext
+from bot.results import ActionResult as ActionResult  # re-export; lives in bot.results
 from bot.services.activation import bot_is_active
 from bot.services.admin_registry import AdminRegistry
 from bot.services.dj_admin import parse_discord_id
@@ -42,12 +43,6 @@ class ServerInfo:
 class AdminRow:
     info: UserInfo
     is_owner: bool
-
-
-@dataclass(frozen=True)
-class ActionResult:
-    ok: bool
-    message: str
 
 
 def _clean_name(name: str | None) -> str | None:

@@ -89,6 +89,8 @@ class BotContext:
                       DM conversation (None until set in main.py).
         mirror:       MirrorWorker that pushes queued Postgres changes to Notion
                       (None while Notion is disabled or not set up).
+        sync_cycle:   SyncCycle the Notion poll runs (read Notion, apply hand edits,
+                      conflicts and warnings); None while Notion is disabled or not set up.
         maintenance:  Text for users while an import replaces the data; bookings and
                       edits are refused while it is set (bot/ui/gates.py).
         sync_problem: Last sync or import failure for the admins, or None.
@@ -123,6 +125,8 @@ class BotContext:
     upgrade_import: "Any | None" = None
     dj_conversations: "Any | None" = None
     mirror: "Any | None" = None
+    # SyncCycle run by the Notion poll (None while Notion is disabled or not set up).
+    sync_cycle: "Any | None" = None
     admins: "Any | None" = None
     user_locks: dict[int, FlowLock] = field(default_factory=dict)
 

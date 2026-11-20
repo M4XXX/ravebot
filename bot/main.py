@@ -17,7 +17,8 @@ Startup sequence:
   9. Create the services and load the cogs
  10. Start bot (Discord connects only AFTER DB and Notion are ready)
  11. With a Notion client and the import done: start the Notion mirror worker
-     (bot/sync/worker.py) and queue the DJs whose logo is not in Notion yet
+     (bot/sync/worker.py), queue the DJs whose logo is not in Notion yet and set
+     ctx.sync_cycle (bot/sync/cycle.py), which the 5-minute Notion poll runs
  12. On shutdown: stop the mirror worker, close pool and Notion API client
 
 [Source: architecture.md#Implementation Sequence]
@@ -46,6 +47,7 @@ from bot.notion.schema import (
 from bot.notion.views import ensure_views
 from bot.services import activation
 from bot.services.dj_sync import queue_unsynced_logos
+from bot.sync.cycle import SyncCycle
 from bot.sync.notion_import import post_upgrade_result, run_upgrade_import_if_needed
 from bot.sync.worker import MirrorWorker
 from bot.timezone import load_stored_timezone
@@ -114,6 +116,7 @@ async def _start_mirror(ctx: BotContext, bot: commands.Bot) -> None:
     Not during maintenance: until the upgrade import succeeded ctx.mirror stays None,
     so changed() queues nothing and Notion is not written. Once started, every DJ
     whose logo is not in Notion yet is queued, so the worker retries the upload.
+    The sync cycle (hand edits from Notion) is set up together with the worker.
     """
     if (
         ctx.mirror is None
@@ -129,6 +132,8 @@ async def _start_mirror(ctx: BotContext, bot: commands.Bot) -> None:
         )
         ctx.mirror.start()
         await queue_unsynced_logos(ctx)
+    if ctx.mirror is not None and ctx.sync_cycle is None:
+        ctx.sync_cycle = SyncCycle(ctx, bot)
 
 
 async def main() -> None:

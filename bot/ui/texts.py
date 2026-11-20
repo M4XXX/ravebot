@@ -398,6 +398,99 @@ def log_notion_applied_text(lines: list[str]) -> str:
     return text[:3500]
 
 
+# --- Notion sync cycle (summaries are plain text; the sync cycle escapes before posting) ---
+
+LOG_SYNC_CONFLICT_TITLE = "Changed in the bot and in Notion"
+LOG_SYNC_WARNING_TITLE = "Notion edit not applied"
+LOG_SYNC_EXPIRED_TITLE = "Postgres kept after 24 h"
+LOG_SYNC_READ_FAILED_TITLE = "Notion could not be read"
+SYNC_CONFLICT_TODO = (
+    "Keep the bot's version or Notion's: choose on the admin page. Until then this record "
+    "is not synced. Without a decision the bot's version wins after 24 h."
+)
+SYNC_RESYNC_TODO = (
+    "Fix it in Notion (the next poll tries again), or choose resync on the admin page to "
+    "write the bot's version to Notion."
+)
+SYNC_DELETED_TODO = (
+    "To bring the Notion page back, choose resync on the admin page. To remove the record "
+    "for good, remove it in the bot."
+)
+SYNC_DUPLICATE_TODO = "Delete the extra page in Notion."
+SYNC_MASS_TODO = (
+    "Check that the integration still has access to the Notion page, then choose resync "
+    "on the admin page to write everything to Notion again."
+)
+SYNC_READ_FAILED_TODO = (
+    "Check that Notion is reachable and the integration still has access. The next poll "
+    "tries again."
+)
+SYNC_ISSUE_NOT_OPEN = "This conflict or warning is no longer open."
+SYNC_WRONG_CHOICE = "This choice does not fit this entry."
+SYNC_KEPT_POSTGRES = "The bot's version is kept and written to Notion."
+SYNC_KEPT_NOTION = "Notion's version is applied."
+SYNC_RESYNCED = "The bot's version is written to Notion again."
+
+
+def sync_conflict_summary(label: str) -> str:
+    return f"{label} was changed in the bot and in Notion."
+
+
+def sync_conflict_text(summary: str, diffs: list[str]) -> str:
+    return "\n".join([summary, *diffs])[:3500]
+
+
+def sync_diff_line(field: str, bot_value: str, notion_value: str) -> str:
+    return f"{field}: bot {bot_value}, Notion {notion_value}"
+
+
+def sync_deleted_summary(label: str) -> str:
+    return f"The Notion page of {label} was deleted. The bot keeps its record."
+
+
+def sync_key_changed_summary(label: str, field: str) -> str:
+    return f"The {field} of {label} was changed in Notion. The bot keeps its record."
+
+
+def sync_duplicate_summary(label: str) -> str:
+    return f"A Notion page for {label} repeats a record the bot already has. It was not applied."
+
+
+def sync_mass_summary(what: str) -> str:
+    return f"Many {what} are missing in Notion. The bot changed nothing."
+
+
+def sync_unreadable_summary(label: str) -> str:
+    return (
+        f"The Notion page of {label} has an empty required field or points to a page the "
+        "bot does not know. The bot ignores the page until it is fixed."
+    )
+
+
+def sync_rejected_summary(label: str, reasons: list[str], *, new: bool) -> str:
+    what = f"A new {label} in Notion" if new else f"A Notion edit of {label}"
+    return f"{what} was not applied: {' '.join(reasons)}"
+
+
+def sync_expired_text(summary: str) -> str:
+    return (
+        f"{summary} Nobody chose a version within 24 h, so the bot's version is written "
+        "to Notion again."
+    )
+
+
+def sync_read_failed_text(error: str) -> str:
+    return f"The Notion poll could not read the databases ({error}). Nothing was changed."
+
+
+def sync_notion_rejected(reasons: list[str]) -> str:
+    return f"Notion's version cannot be applied: {' '.join(reasons)} The conflict stays open."
+
+
+def sync_resync_all_done(count: int) -> str:
+    return f"{count} records are queued for Notion."
+
+
 def log_upgrade_done_text(events: int, slots: int, djs: int, notes: list[str]) -> str:
     text = (
         "The bot now keeps events, slots and DJs in its own database; Notion is a backup. "

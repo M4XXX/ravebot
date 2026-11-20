@@ -71,10 +71,11 @@ class EventsCog(commands.Cog):
         await run_cycle("notion poll", self._poll_notion_cycle)
 
     async def _poll_notion_cycle(self) -> None:
-        """Event poll — reads the events from Postgres, replenishes, updates the lineup.
+        """Event poll: syncs Notion, reads the events from Postgres, replenishes, refreshes lineup.
 
-        Order per cycle: (1) list_events(), (2) auto-create events, (3) fully-booked
-        check, (4) lineup refresh. Notion is not read here.
+        Order per cycle: (0) the Notion sync cycle when Notion is set up
+        (ctx.sync_cycle), (1) list_events(), (2) auto-create events, (3) fully-booked
+        check, (4) lineup refresh.
 
         On DB unavailability: skips cycle (guard handles logging).
         On a failed event read: logs a warning, posts to the log channel, skips cycle.
@@ -95,6 +96,8 @@ class EventsCog(commands.Cog):
         if not await activation.is_active(self.ctx.db, guild_id):
             logger.debug("_poll_notion: bot is idle, skipping cycle")
             return
+
+        await self._sync_notion()
 
         # Fetch events from Postgres (AC1, AC4)
         listed_at = datetime.datetime.now(datetime.UTC)
@@ -131,6 +134,21 @@ class EventsCog(commands.Cog):
                 await self.ctx.lineup_service.refresh(events)
         except Exception as exc:
             logger.warning("Lineup refresh failed — retrying next cycle: %s", exc)
+
+    async def _sync_notion(self) -> None:
+        """Notion sync cycle (hand edits, conflicts, warnings); only with Notion set up.
+
+        A failure is logged and never stops the replenish and lineup part of the poll.
+        """
+        cycle = self.ctx.sync_cycle
+        if cycle is None or self.ctx.notion_client is None or self.ctx.maintenance:
+            return
+        try:
+            report = await cycle.run()
+        except Exception:
+            logger.exception("_poll_notion: the Notion sync cycle failed")
+            return
+        logger.debug("_poll_notion: sync cycle %s", report)
 
     @_poll_notion.before_loop
     async def _before_poll_notion(self) -> None:
