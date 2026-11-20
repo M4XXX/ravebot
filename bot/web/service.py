@@ -167,7 +167,7 @@ class AdminPageService:
             )
         return ActionResult(
             True,
-            "New Notion databases were created. Booking and the lineup work again. The old "
+            "New Notion databases were created. Changes reach Notion again. The old "
             "data stays in the old databases.",
         )
 
@@ -252,12 +252,20 @@ class AdminPageService:
         recovery checks run.
         """
         ctx = self._ctx
-        if ctx.notion_client is None or ctx.db is None:
+        connect = ctx.notion_connect
+        if ctx.db is None or (ctx.notion_client is None and connect is None):
             return ActionResult(False, RETRY_NO_NOTION)
         if not ctx.sync_problem:
             return ActionResult(False, RETRY_NOTHING)
         if maintenance_ops.running():
             return ActionResult(False, texts.OPERATION_BUSY)
+        if ctx.notion_client is None:
+            # The databases could not be read at startup: try them again first.
+            error = await connect()
+            if error is not None or ctx.notion_client is None:
+                return ActionResult(
+                    False, RETRY_FAILED.format(problem=(error or RETRY_ERROR)[:300])
+                )
         try:
             if not await run_startup_rebuild_if_needed(ctx):
                 await run_upgrade_import_if_needed(ctx)

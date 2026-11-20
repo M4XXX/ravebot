@@ -201,3 +201,12 @@ def test_cancel_event_texts_have_no_em_dash() -> None:
     ):
         assert isinstance(getattr(texts, name), str) and getattr(texts, name)
     assert texts.LOG_EVENT_CANCELED_TITLE == "Event canceled"
+
+
+def test_log_notion_missing_text_says_paused_only_when_paused() -> None:
+    """M3: the log entry matches reality (paused only before the one-time import)."""
+    from bot.ui import texts as t
+
+    assert "paused" not in t.log_notion_missing_text("gone")
+    assert "keep working" in t.log_notion_missing_text("gone")
+    assert "paused" in t.log_notion_missing_text("gone", paused=True)

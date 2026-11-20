@@ -61,6 +61,7 @@ class _Startup:
         self.queued_with_mirror: list[object] = []  # ctx.mirror at each logo-queue call
         self.recovery_mirrors: list[object] = []  # ctx.mirror at each startup-case check
         self.rebuild_instead = False  # the startup rebuild replaced the upgrade import
+        self.pause_checks: list[object] = []  # ctx.notion_client at each pending-import check
 
     async def _queue_logos(self, ctx):  # noqa: ANN001, ANN202
         self.calls.append("queue_logos")
@@ -71,6 +72,9 @@ class _Startup:
         self.calls.append("upgrade_import")
         if self.import_fails:
             ctx.maintenance = "restoring"
+
+    async def _pause_check(self, ctx):  # noqa: ANN001, ANN202
+        self.pause_checks.append(ctx.notion_client)
 
     async def _startup_rebuild(self, ctx):  # noqa: ANN001, ANN202
         self.calls.append("startup_rebuild")
@@ -139,6 +143,7 @@ class _Startup:
              patch.object(
                  main_mod, "run_startup_rebuild_if_needed", side_effect=self._startup_rebuild
              ), \
+             patch.object(main_mod, "pause_if_import_pending", side_effect=self._pause_check), \
              patch.object(main_mod, "stop_admin_page", new=self.stop_page):
             self.api_cls = api_cls
             await main_mod.main()
@@ -427,6 +432,8 @@ async def test_missing_databases_keep_the_bot_running_until_an_admin_decides() -
     assert ctx.notion_client is s.client
     assert seen_mirror == [None]
     assert ctx.mirror is not None and ctx.mirror.notion_client is s.client
+    assert s.pause_checks == [None]  # checked once, with no Notion client (C2)
+    assert ctx.notion_connect is not None
 
 
 @pytest.mark.asyncio
@@ -477,6 +484,8 @@ async def test_main_without_notion_skips_setup() -> None:
     assert ctx.notion_recover is None
     assert ctx.notion_problem is None
     assert ctx.mirror is None
+    assert s.pause_checks == []  # decision 10: no pause without Notion
+    assert ctx.maintenance is None
     assert ctx.admin_booking_service is not None
     s.pool.close.assert_awaited_once()
     on_ready = s.bot.event.call_args.args[0]

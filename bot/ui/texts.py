@@ -322,6 +322,11 @@ LOG_NOTION_MISSING_TODO = (
 )
 LOG_NEW_DATABASES_TITLE = "New Notion databases created"
 MAINTENANCE = "The bot is restoring its data. Please try again in a few minutes."
+UPGRADE_WAITS_FOR_NOTION = (
+    "The Notion databases could not be read, so the one-time import from Notion has not "
+    "run. Booking and edits are paused until it is done. Share the Notion page with the "
+    "integration again and retry the import, or create new databases."
+)
 LOG_UPGRADE_DONE_TITLE = "Data imported from Notion"
 LOG_UPGRADE_FAILED_TITLE = "Import from Notion failed"
 LOG_UPGRADE_FAILED_TODO = (
@@ -579,11 +584,15 @@ def log_upgrade_failed_text(problems: list[str]) -> str:
     )[:3500]
 
 
-def log_notion_missing_text(detail: str) -> str:
-    return (
-        "The bot cannot find its Notion databases, so booking and the lineup are paused. "
-        f"Details: {detail[:500]}"
+def log_notion_missing_text(detail: str, *, paused: bool = False) -> str:
+    """Paused only while the one-time import from Notion has not run (C2)."""
+    effect = (
+        "The one-time import from Notion has not run, so booking and edits are paused."
+        if paused
+        else "Booking and the lineup keep working; changes reach Notion again once the "
+        "databases are back."
     )
+    return f"The bot cannot find its Notion databases. {effect} Details: {detail[:500]}"
 
 
 def log_message_title(display_name: str, dj_name: str | None) -> str:

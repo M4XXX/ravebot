@@ -260,3 +260,13 @@ def test_new_pages_have_no_em_dash_or_script() -> None:
     ):
         assert chr(0x2014) not in page
         assert "<script" not in page.lower()
+
+
+def test_missing_databases_card_says_paused_only_when_paused() -> None:
+    """M3: after the upgrade import, missing databases do not pause booking."""
+    page = render_dashboard(SERVER, [], "tok", notion_problem="gone")
+    assert "Notion databases not found" in page
+    assert "paused" not in page
+    assert "Booking and the lineup keep working" in page
+    page = render_dashboard(SERVER, [], "tok", notion_problem="gone", notion_paused=True)
+    assert "booking and edits are paused" in page

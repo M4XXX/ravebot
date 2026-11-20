@@ -118,6 +118,9 @@ class BotContext:
     # the reason, and the coroutine function the admin page calls to create a new set.
     notion_problem: str | None = None
     notion_recover: "Any | None" = None
+    # Builds the Notion client again from the stored databases (lost share fixed);
+    # returns an error text or None. None without Notion.
+    notion_connect: "Any | None" = None
     # Starts the Notion mirror worker and sync cycle (main._start_mirror) once a rebuild
     # ended a pause; None without Notion.
     notion_start_mirror: "Any | None" = None

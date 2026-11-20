@@ -566,3 +566,42 @@ async def test_retry_import_refused_without_problem_or_while_busy() -> None:
         ctx.notion_client = None
         assert not (await svc.retry_import()).ok
     upgrade.assert_not_awaited()
+
+
+async def test_retry_import_reconnects_notion_first() -> None:
+    """C2: the databases were missing at startup; retry reconnects, then imports."""
+    svc, ctx = _notion_svc()
+    client = ctx.notion_client
+    ctx.notion_client = None
+    ctx.notion_problem = "Events database not found"
+    ctx.maintenance = texts.MAINTENANCE
+    ctx.sync_problem = texts.UPGRADE_WAITS_FOR_NOTION
+    ctx.notion_start_mirror = AsyncMock()
+
+    async def connect():
+        ctx.notion_client = client
+        ctx.notion_problem = None
+        return None
+
+    ctx.notion_connect = connect
+    a, b, c, d, e = _patch_retry(True, ctx)
+    with a, b as upgrade, c, d, e:
+        result = await svc.retry_import()
+    assert result.ok
+    upgrade.assert_awaited_once_with(ctx)
+    ctx.notion_start_mirror.assert_awaited_once()
+
+
+async def test_retry_import_reconnect_fails_keeps_the_pause() -> None:
+    svc, ctx = _notion_svc()
+    ctx.notion_client = None
+    ctx.notion_problem = "Events database not found"
+    ctx.maintenance = texts.MAINTENANCE
+    ctx.sync_problem = texts.UPGRADE_WAITS_FOR_NOTION
+    ctx.notion_connect = AsyncMock(return_value="still not shared")
+    a, b, c, d, e = _patch_retry(True, ctx)
+    with a, b as upgrade, c, d, e:
+        result = await svc.retry_import()
+    assert not result.ok and "still not shared" in result.message
+    upgrade.assert_not_awaited()
+    assert ctx.maintenance == texts.MAINTENANCE

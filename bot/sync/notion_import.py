@@ -54,6 +54,7 @@ from bot.ui import texts
 
 __all__ = [
     "PG_TRUTH_IMPORTED_KEY",
+    "pause_if_import_pending",
     "ImportResult",
     "import_from_notion",
     "post_upgrade_result",
@@ -472,6 +473,28 @@ async def run_upgrade_import_if_needed(ctx: Any) -> None:
         else:
             ctx.sync_problem = "; ".join(result.problems[:10])
             logger.error("The import from Notion failed: %s", ctx.sync_problem)
+
+
+async def pause_if_import_pending(ctx: Any) -> None:
+    """Decision 8: Notion is set up but its databases could not be read at startup.
+
+    While the one-time upgrade import has not run, the bot must not work on an empty
+    or partial database (replenish would create events, outreach would DM DJs): pause
+    like a failed import (``ctx.maintenance``, ``ctx.sync_problem``). The pause ends
+    when the import succeeds (admin page: retry the import or create new databases,
+    or the next start). Only called when Notion is configured (decision 10).
+    """
+    db = ctx.db
+    if ctx.notion_client is not None or db is None:
+        return
+    try:
+        if await get_value(db, CONFIG_GUILD_ID, PG_TRUTH_IMPORTED_KEY) == "1":
+            return
+    except Exception:
+        logger.exception("Reading the upgrade import mark failed; pausing to be safe")
+    ctx.maintenance = texts.MAINTENANCE
+    ctx.sync_problem = texts.UPGRADE_WAITS_FOR_NOTION
+    logger.error("Notion databases missing before the one-time import: the bot is paused")
 
 
 async def _export_and_import(ctx: Any) -> ImportResult:

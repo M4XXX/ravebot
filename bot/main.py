@@ -54,7 +54,11 @@ from bot.notion.views import ensure_views
 from bot.services import activation
 from bot.services.dj_sync import queue_unsynced_logos
 from bot.sync.cycle import SyncCycle
-from bot.sync.notion_import import post_upgrade_result, run_upgrade_import_if_needed
+from bot.sync.notion_import import (
+    pause_if_import_pending,
+    post_upgrade_result,
+    run_upgrade_import_if_needed,
+)
 from bot.sync.rebuild import (
     post_rebuild_result,
     run_startup_rebuild_if_needed,
@@ -220,7 +224,22 @@ async def main() -> None:
             await db.close()
             await notion_api.close()
             sys.exit(f"{NOTION_SETUP_FAILED} (Cause: {exc})")
+        async def connect_notion() -> str | None:
+            """Admin page retry: read the stored databases again. Error text or None."""
+            try:
+                client = await setup_notion()
+            except NotionDatabasesMissing as exc:
+                return exc.detail
+            except (NotionSchemaError, NotionWriteError) as exc:
+                return str(exc)
+            ctx.attach_notion(client)
+            ctx.notion_problem = None
+            return None
+
         ctx.notion_recover = recover_notion
+        ctx.notion_connect = connect_notion
+        # Databases missing before the one-time import: paused until it ran (decision 8).
+        await pause_if_import_pending(ctx)
         # An empty Postgres with events in Notion is rebuilt instead (R19).
         if not await run_startup_rebuild_if_needed(ctx):
             await run_upgrade_import_if_needed(ctx)
@@ -331,7 +350,9 @@ async def main() -> None:
                 try:
                     await ctx.log_service.log_attention(
                         texts.LOG_NOTION_MISSING_TITLE,
-                        texts.log_notion_missing_text(ctx.notion_problem),
+                        texts.log_notion_missing_text(
+                            ctx.notion_problem, paused=ctx.maintenance is not None
+                        ),
                         texts.LOG_NOTION_MISSING_TODO,
                     )
                 except Exception:

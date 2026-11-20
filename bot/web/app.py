@@ -247,8 +247,10 @@ def create_app(
         rows = await service.list_admins()
         problem = _notion_problem(service)
         sync = await _sync_status(service)
+        paused = getattr(service, "maintenance", None)
         page = render_dashboard(
-            service.server_info(), rows, request["session"].csrf, message, problem, sync
+            service.server_info(), rows, request["session"].csrf, message, problem, sync,
+            notion_paused=bool(paused()) if callable(paused) else False,
         )
         return _html(page, status)
 

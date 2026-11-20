@@ -252,3 +252,38 @@ async def test_upgrade_holds_the_claim_while_it_runs() -> None:
         await run_upgrade_import_if_needed(ctx)
     assert seen == ["upgrade"]
     assert maintenance.running() is None
+
+
+async def test_missing_databases_before_the_import_pause_the_bot() -> None:
+    """C2: Notion configured, its databases unreadable, upgrade import not done: paused."""
+    ctx, config = _ctx()
+    ctx.notion_client = None  # NotionDatabasesMissing at startup
+    p = _Patches(config)
+    with patch.object(notion_import, "get_value", new=p.get_value):
+        await notion_import.pause_if_import_pending(ctx)
+    assert ctx.maintenance == texts.MAINTENANCE
+    assert ctx.sync_problem == texts.UPGRADE_WAITS_FOR_NOTION
+    assert p.calls == []
+
+
+async def test_missing_databases_after_the_import_do_not_pause() -> None:
+    ctx, config = _ctx(stored="1")
+    ctx.notion_client = None
+    p = _Patches(config)
+    with patch.object(notion_import, "get_value", new=p.get_value):
+        await notion_import.pause_if_import_pending(ctx)
+    assert ctx.maintenance is None
+    assert ctx.sync_problem is None
+
+
+async def test_pending_import_pause_ends_when_the_import_succeeds() -> None:
+    ctx, config = _ctx()
+    ctx.notion_client = None
+    p = _Patches(config)
+    with patch.object(notion_import, "get_value", new=p.get_value):
+        await notion_import.pause_if_import_pending(ctx)
+    ctx.notion_client = MagicMock()  # databases reachable again (retry / recreate)
+    await _run(ctx, p)
+    assert ctx.maintenance is None
+    assert ctx.sync_problem is None
+    assert config[PG_TRUTH_IMPORTED_KEY] == "1"
