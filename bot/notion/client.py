@@ -60,10 +60,10 @@ PROP_DJ_ALT_LINK = "Alternative link"
 
 
 class DjLogoUploadError(Exception):
-    """upsert_dj wrote the DJ row but not its logo image.
+    """mirror_dj wrote the DJ row but not its logo image.
 
-    ``page_id`` is the written row; the caller keeps it (bookings work) and marks
-    the logo unsynced so it is sent again later.
+    ``page_id`` is the written row; the mirror worker records it and retries the
+    logo through the outbox backoff (``logo_synced`` stays false).
     """
 
     def __init__(self, page_id: str) -> None:
@@ -115,8 +115,6 @@ class NotionClient:
     def __init__(self, api: NotionApi, ids: NotionIds) -> None:
         self._api = api
         self._ids = ids
-        # upsert_dj is query-then-create: one at a time per DJ, or two parallel
-        # calls (a booking and a profile sync) would both create a row
 
     async def _rows(self, data_source_id: str) -> list[dict[str, Any]]:
         pages = await self._api.query_all(data_source_id)

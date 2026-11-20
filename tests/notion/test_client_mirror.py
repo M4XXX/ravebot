@@ -272,3 +272,12 @@ async def test_mirror_dj_without_upload_logo_still_sends_image_for_new_row(env):
     client._api.upload_file.assert_awaited_once()
     body = fake.requests_to("POST", "/pages")[-1][2]
     assert body["properties"]["Logo"]["files"][0]["file_upload"] == {"id": "up-3"}
+
+
+def test_client_names_no_removed_upsert_dj() -> None:
+    """M4: upsert_dj is gone; docstrings and comments must not point to it."""
+    import inspect
+
+    from bot.notion import client as client_mod
+
+    assert "upsert_dj" not in inspect.getsource(client_mod)
