@@ -15,6 +15,8 @@ Startup sequence:
      Postgres as the source of truth, a safety export, then events, slots and DJs are
      imported from Notion once. Until it succeeds the bot is in maintenance (bookings and
      edits refused) and the mirror worker stays off. The result is posted in on_ready.
+     When Postgres is empty (no DJs, no events) and Notion holds events, a rebuild from
+     Notion (bot/sync/rebuild.py) runs instead and marks the upgrade done (R19).
   9. Create the services and load the cogs
  10. Start bot (Discord connects only AFTER DB and Notion are ready)
  11. With a Notion client and the import done: start the Notion mirror worker
@@ -53,7 +55,11 @@ from bot.services import activation
 from bot.services.dj_sync import queue_unsynced_logos
 from bot.sync.cycle import SyncCycle
 from bot.sync.notion_import import post_upgrade_result, run_upgrade_import_if_needed
-from bot.sync.rebuild import post_rebuild_result, run_startup_recovery
+from bot.sync.rebuild import (
+    post_rebuild_result,
+    run_startup_rebuild_if_needed,
+    run_startup_recovery,
+)
 from bot.sync.worker import MirrorWorker
 from bot.timezone import load_stored_timezone
 from bot.ui import texts
@@ -193,7 +199,8 @@ async def main() -> None:
                 return str(exc)
             ctx.attach_notion(client)
             ctx.notion_problem = None
-            await run_upgrade_import_if_needed(ctx)
+            if not await run_startup_rebuild_if_needed(ctx):
+                await run_upgrade_import_if_needed(ctx)
             await post_upgrade_result(ctx)
             await _start_mirror(ctx, bot)
             await run_startup_recovery(ctx)
@@ -214,7 +221,9 @@ async def main() -> None:
             await notion_api.close()
             sys.exit(f"{NOTION_SETUP_FAILED} (Cause: {exc})")
         ctx.notion_recover = recover_notion
-        await run_upgrade_import_if_needed(ctx)
+        # An empty Postgres with events in Notion is rebuilt instead (R19).
+        if not await run_startup_rebuild_if_needed(ctx):
+            await run_upgrade_import_if_needed(ctx)
         await _start_mirror(ctx, bot)
         await run_startup_recovery(ctx)  # never raises
 

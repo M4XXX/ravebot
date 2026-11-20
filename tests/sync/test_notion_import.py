@@ -221,3 +221,34 @@ def test_logo_file_takes_the_first_notion_or_external_file() -> None:
     odd = dj_page("d", "D", 1)
     odd["properties"]["Logo"] = {"files": [{"type": "file_upload", "file_upload": {"id": "u"}}]}
     assert logo(odd) is None
+
+
+async def test_upgrade_waits_for_the_next_start_while_another_operation_runs() -> None:
+    from bot import maintenance
+
+    ctx, config = _ctx()
+    p = _Patches(config)
+    claim = maintenance.try_claim("import")
+    assert claim is not None
+    with claim:
+        await _run(ctx, p)
+    assert p.calls == []  # no export, no import
+    assert ctx.upgrade_import is None
+
+
+async def test_upgrade_holds_the_claim_while_it_runs() -> None:
+    from bot import maintenance
+
+    ctx, config = _ctx()
+    p = _Patches(config)
+    seen: list = []
+
+    async def imp(pool, client, *, mode):  # noqa: ANN001, ANN202
+        seen.append(maintenance.running())
+        return p.result
+
+    a, b, c, _d = p.apply(ctx)
+    with a, b, c, patch.object(notion_import, "import_from_notion", new=imp):
+        await run_upgrade_import_if_needed(ctx)
+    assert seen == ["upgrade"]
+    assert maintenance.running() is None

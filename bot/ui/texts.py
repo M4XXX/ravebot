@@ -450,7 +450,7 @@ IMPORT_DONE_RESYNC_FAILED = (
 )
 
 REBUILD_NO_NOTION = "Notion is not set up, so there is nothing to rebuild from."
-REBUILD_BUSY = "An import or rebuild is already running. Try again when it is done."
+OPERATION_BUSY = "An import or rebuild is already running. Try again when it is done."
 REBUILD_SAFETY_FAILED = (
     "The safety backup could not be written, so the rebuild was not started."
 )

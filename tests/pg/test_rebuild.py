@@ -128,3 +128,77 @@ async def test_rebuild_failure_keeps_old_data(pool, tmp_path, monkeypatch) -> No
     good = snapshot(events=[event_page("ev-1", "Rave One", slots=1)], djs=[dj_page("d", "D", A)])
     assert not (await rebuild.rebuild_from_notion(_ctx(pool, good))).ok
     assert await _state(pool) == before
+
+
+async def test_startup_with_empty_pg_rebuilds_and_marks_the_upgrade_done(
+    pool, tmp_path, monkeypatch  # noqa: ANN001
+) -> None:
+    """Total loss: no upgrade mark, no rows; Notion holds the data (R19)."""
+    monkeypatch.setenv("BACKUP_DIR", str(tmp_path))
+    monkeypatch.setattr(rebuild, "download_logo_file", AsyncMock(return_value=b"logo"))
+    snap = snapshot(
+        events=[event_page("ev-1", "Rave One", slots=1)],
+        slots=[slot_page("sl-1", "ev-1", 1, "dj-a")],
+        djs=[dj_page("dj-a", "DJ A", A, logo="https://files.example/a.png")],
+    )
+    ctx = _ctx(pool, snap)
+    ctx.notion_client.has_rows = AsyncMock(return_value=True)
+    ctx.sync_problem = None
+    assert await rebuild.run_startup_rebuild_if_needed(ctx) is True
+    assert await pool.fetchval(
+        "SELECT value FROM config WHERE guild_id = 0 AND key = $1", rebuild.PG_TRUTH_IMPORTED_KEY
+    ) == "1"
+    assert (await get_event(pool, "ev-1")).slots[0].discord_id == A
+    assert ctx.maintenance is None and ctx.rebuild_report is not None
+    # The upgrade import then has nothing to do
+    assert await rebuild.run_startup_rebuild_if_needed(ctx) is False
+
+
+async def test_total_loss_finds_the_notion_databases_and_rebuilds(
+    pool, tmp_path, monkeypatch  # noqa: ANN001
+) -> None:
+    """R18 + R19: Postgres is recreated empty; the bot finds its databases and rebuilds."""
+    import datetime
+
+    from bot.notion.api import NotionApi
+    from bot.notion.client import NotionClient
+    from bot.notion.schema import ensure_schema
+    from bot.sync.payloads import dj_payload, event_payload, slot_payload
+    from tests.notion.fake_notion import FakeNotion
+    from tests.pg.conftest import TABLES
+
+    monkeypatch.setenv("BACKUP_DIR", str(tmp_path))
+    fake = FakeNotion()
+    log = MagicMock()
+    log.post_error = AsyncMock()
+    log.log_attention = AsyncMock()
+    api = NotionApi("key", log, transport=fake.transport)
+    ids = await ensure_schema(api, pool, 0, "parent")
+    client = NotionClient(api, ids)
+    event_page_id = await client.mirror_event("uid-1", event_payload({
+        "event_id": "Rave One", "date": datetime.date(2030, 1, 2), "start": "20:00",
+        "slot_minutes": 60, "slot_count": 2, "status": None, "genre": None, "notes": None,
+    }), None)
+    dj_page_id = await client.mirror_dj(dj_payload({
+        "discord_user_id": A, "dj_name": "DJ A", "vrchat_name": None,
+        "stream_url_primary": None, "stream_url_backup": None,
+    }), None, logo_image=None, upload_logo=False)
+    await client.mirror_slot(slot_payload("uid-1", 0, A), event_page_id, dj_page_id, None)
+
+    async with pool.acquire() as conn:  # Postgres lost: every table empty, ids gone
+        await conn.execute(f"TRUNCATE {TABLES} RESTART IDENTITY CASCADE")
+    databases_before = len(fake.databases)
+
+    found = await ensure_schema(api, pool, 0, "parent")
+    assert found == ids and len(fake.databases) == databases_before
+    ctx = _ctx(pool, None)
+    ctx.notion_client = NotionClient(api, found)
+    ctx.sync_problem = None
+    assert await rebuild.run_startup_rebuild_if_needed(ctx) is True
+    assert ctx.maintenance is None, ctx.sync_problem
+    ev = await get_event(pool, "uid-1")
+    assert ev.event_id == "Rave One" and [s.discord_id for s in ev.slots] == [A, None]
+    assert await pool.fetchval(
+        "SELECT value FROM config WHERE guild_id = 0 AND key = $1", rebuild.PG_TRUTH_IMPORTED_KEY
+    ) == "1"
+    await api.close()

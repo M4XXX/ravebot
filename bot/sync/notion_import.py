@@ -20,6 +20,7 @@ from typing import Any, Literal
 
 import asyncpg
 
+from bot import maintenance
 from bot.backup.export import write_safety_export
 from bot.db import mirror, outbox
 from bot.db.config import get_value, set_value
@@ -434,7 +435,8 @@ async def _set_holders(
 async def run_upgrade_import_if_needed(ctx: Any) -> None:
     """First start after the upgrade: safety export, then the import from Notion.
 
-    Does nothing without Notion or once the import ran (config key, guild 0). While it
+    Does nothing without Notion, once the import ran (config key, guild 0) or while
+    another import or rebuild holds the claim (bot/maintenance.py, R20). While it
     runs, and after a failure, ``ctx.maintenance`` is set: bookings and edits are refused
     and the Notion mirror stays off. A failed import is retried on the next start.
     The result waits in ``ctx.upgrade_import`` for ``post_upgrade_result``.
@@ -444,27 +446,32 @@ async def run_upgrade_import_if_needed(ctx: Any) -> None:
         return
     if await get_value(db, CONFIG_GUILD_ID, PG_TRUTH_IMPORTED_KEY) == "1":
         return
-    ctx.maintenance = texts.MAINTENANCE
-    result = await _export_and_import(ctx)
-    if result.ok:
-        try:
-            await set_value(db, CONFIG_GUILD_ID, PG_TRUTH_IMPORTED_KEY, "1")
-        except Exception as exc:
-            logger.exception("Recording the finished Notion import failed")
-            result = dataclasses.replace(
-                result, ok=False, problems=[f"Recording the finished import failed: {exc}"]
+    claim = maintenance.try_claim("upgrade")
+    if claim is None:  # a backup import or rebuild runs (admin page): the next start
+        logger.warning("Another import or rebuild is running; the upgrade import waits")
+        return
+    with claim:
+        ctx.maintenance = texts.MAINTENANCE
+        result = await _export_and_import(ctx)
+        if result.ok:
+            try:
+                await set_value(db, CONFIG_GUILD_ID, PG_TRUTH_IMPORTED_KEY, "1")
+            except Exception as exc:
+                logger.exception("Recording the finished Notion import failed")
+                result = dataclasses.replace(
+                    result, ok=False, problems=[f"Recording the finished import failed: {exc}"]
+                )
+        ctx.upgrade_import = result
+        if result.ok:
+            ctx.maintenance = None
+            ctx.sync_problem = None
+            logger.info(
+                "Imported %d events, %d slots and %d DJs from Notion",
+                result.events, result.slots, result.djs,
             )
-    ctx.upgrade_import = result
-    if result.ok:
-        ctx.maintenance = None
-        ctx.sync_problem = None
-        logger.info(
-            "Imported %d events, %d slots and %d DJs from Notion",
-            result.events, result.slots, result.djs,
-        )
-    else:
-        ctx.sync_problem = "; ".join(result.problems[:10])
-        logger.error("The import from Notion failed: %s", ctx.sync_problem)
+        else:
+            ctx.sync_problem = "; ".join(result.problems[:10])
+            logger.error("The import from Notion failed: %s", ctx.sync_problem)
 
 
 async def _export_and_import(ctx: Any) -> ImportResult:

@@ -60,6 +60,7 @@ class _Startup:
         self.import_fails = False  # the upgrade import leaves the bot in maintenance
         self.queued_with_mirror: list[object] = []  # ctx.mirror at each logo-queue call
         self.recovery_mirrors: list[object] = []  # ctx.mirror at each startup-case check
+        self.rebuild_instead = False  # the startup rebuild replaced the upgrade import
 
     async def _queue_logos(self, ctx):  # noqa: ANN001, ANN202
         self.calls.append("queue_logos")
@@ -70,6 +71,10 @@ class _Startup:
         self.calls.append("upgrade_import")
         if self.import_fails:
             ctx.maintenance = "restoring"
+
+    async def _startup_rebuild(self, ctx):  # noqa: ANN001, ANN202
+        self.calls.append("startup_rebuild")
+        return self.rebuild_instead
 
     async def _startup_recovery(self, ctx):  # noqa: ANN001, ANN202
         self.calls.append("startup_recovery")
@@ -131,6 +136,9 @@ class _Startup:
              patch.object(
                  main_mod, "run_startup_recovery", side_effect=self._startup_recovery
              ), \
+             patch.object(
+                 main_mod, "run_startup_rebuild_if_needed", side_effect=self._startup_rebuild
+             ), \
              patch.object(main_mod, "stop_admin_page", new=self.stop_page):
             self.api_cls = api_cls
             await main_mod.main()
@@ -142,8 +150,8 @@ async def test_startup_ensures_schema_then_views_for_guild_zero() -> None:
     await s.run()
 
     assert s.calls == [
-        "ensure_schema", "ensure_views", "client", "upgrade_import", "queue_logos",
-        "startup_recovery", "page_start", "start", "page_stop",
+        "ensure_schema", "ensure_views", "client", "startup_rebuild", "upgrade_import",
+        "queue_logos", "startup_recovery", "page_start", "start", "page_stop",
     ]
     assert s.api_cls.call_args.args[0] == "key"
 
@@ -606,3 +614,29 @@ async def test_on_ready_posts_the_rebuild_result() -> None:
         await on_ready()
     s.ctx.log_service.log_notice.assert_awaited_once()
     assert s.ctx.rebuild_report is None
+
+
+@pytest.mark.asyncio
+async def test_startup_rebuild_runs_instead_of_the_upgrade_import() -> None:
+    s = _Startup()
+    s.rebuild_instead = True
+    await s.run()
+    assert "upgrade_import" not in s.calls
+    assert s.calls.index("startup_rebuild") < s.calls.index("queue_logos")
+
+
+@pytest.mark.asyncio
+async def test_startup_rebuild_checked_after_recovered_notion() -> None:
+    from bot.notion.schema import NotionDatabasesMissing
+
+    s = _Startup(schema_error=NotionDatabasesMissing("gone"))
+
+    async def admin_approves() -> None:
+        s._schema_error = None
+        assert await s.ctx.notion_recover() is None
+
+    s.while_running = admin_approves
+    with patch("bot.main.set_value", new=AsyncMock()):
+        await s.run()
+    assert s.calls.count("startup_rebuild") == 2
+    assert s.calls.index("startup_rebuild") < s.calls.index("upgrade_import")

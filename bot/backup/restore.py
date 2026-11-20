@@ -3,7 +3,7 @@
 ``import_database`` is the inverse of ``export_database``: it validates the file,
 writes a safety export, then replaces every exported table in one transaction.
 Refusals return an ``ActionResult`` and change nothing (no safety export, no
-maintenance mode).
+maintenance mode); another import or rebuild running is one of them.
 """
 import asyncio
 import base64
@@ -18,6 +18,7 @@ from typing import Any
 
 import asyncpg
 
+from bot import maintenance
 from bot.backup.export import FORMAT, VERSION, _quote, write_safety_export
 from bot.results import ActionResult
 from bot.ui import texts
@@ -187,7 +188,18 @@ async def _write(
 
 
 async def import_database(ctx: Any, data: bytes) -> ActionResult:
-    """Replace the database content with the backup file; see the module docstring."""
+    """Replace the database content with the backup file; see the module docstring.
+
+    Refused at once while another import or rebuild runs (bot/maintenance.py, R20).
+    """
+    claim = maintenance.try_claim("import")
+    if claim is None:
+        return ActionResult(False, texts.OPERATION_BUSY)
+    with claim:
+        return await _import_database(ctx, data)
+
+
+async def _import_database(ctx: Any, data: bytes) -> ActionResult:
     pool = ctx.db
     try:
         document, converted = await asyncio.to_thread(_prepare, data)

@@ -46,6 +46,7 @@ def _ctx(*, notion: bool = True, cycle: bool = True, pool: MagicMock | None = No
         mirror=None,
         log_service=SimpleNamespace(log_notice=AsyncMock(), log_attention=AsyncMock()),
         rebuild_report=None,
+        sync_problem=None,
     )
 
 
@@ -78,13 +79,51 @@ async def test_rebuild_refuses_without_notion(patched) -> None:  # noqa: ANN001
     patched.imp.assert_not_awaited()
 
 
-async def test_rebuild_refuses_while_in_maintenance(patched) -> None:  # noqa: ANN001
+async def test_second_operation_is_refused_while_one_runs(patched) -> None:  # noqa: ANN001
+    from bot import maintenance
+
     ctx = _ctx()
-    ctx.maintenance = "restoring"
-    result = await rebuild.rebuild_from_notion(ctx)
-    assert not result.ok and result.message == texts.REBUILD_BUSY
+    claim = maintenance.try_claim("import")
+    assert claim is not None
+    with claim:
+        result = await rebuild.rebuild_from_notion(ctx)
+    assert not result.ok and result.message == texts.OPERATION_BUSY
     patched.export.assert_not_awaited()
-    assert ctx.maintenance == "restoring"
+    assert ctx.maintenance is None
+
+
+async def test_rebuild_holds_the_claim_while_it_runs(patched) -> None:  # noqa: ANN001
+    from bot import maintenance
+
+    seen: list = []
+
+    async def imp(pool, client, *, mode):  # noqa: ANN001, ANN202
+        seen.append(maintenance.running())
+        second = await rebuild.rebuild_from_notion(_ctx())
+        seen.append(second.message)
+        return ImportResult(True, 0, 0, 0, [])
+
+    patched.imp.side_effect = imp
+    assert (await rebuild.rebuild_from_notion(_ctx())).ok
+    assert seen == ["rebuild", texts.OPERATION_BUSY]
+    assert maintenance.running() is None
+
+
+async def test_rebuild_is_allowed_after_a_failed_upgrade_import(patched) -> None:  # noqa: ANN001
+    ctx = _ctx()
+    ctx.maintenance, ctx.sync_problem = texts.MAINTENANCE, "Two events titled 'x'"
+    result = await rebuild.rebuild_from_notion(ctx)
+    assert result.ok, result.message
+    assert ctx.maintenance is None and ctx.sync_problem is None
+
+
+async def test_failed_rebuild_keeps_the_failed_upgrade_pause(patched) -> None:  # noqa: ANN001
+    patched.imp.return_value = ImportResult(False, 0, 0, 0, ["bad"])
+    ctx = _ctx()
+    ctx.maintenance, ctx.sync_problem = texts.MAINTENANCE, "old problem"
+    result = await rebuild.rebuild_from_notion(ctx)
+    assert not result.ok
+    assert ctx.maintenance == texts.MAINTENANCE and ctx.sync_problem == "old problem"
 
 
 async def test_rebuild_stops_when_the_safety_export_fails(patched) -> None:  # noqa: ANN001
@@ -200,6 +239,47 @@ async def test_rebuild_report_waits_when_not_posted(patched) -> None:  # noqa: A
     assert ctx.rebuild_report is None
     await rebuild.post_rebuild_result(ctx)  # posted once
     ctx.log_service.log_notice.assert_awaited_once()
+
+
+# ---- startup: rebuild instead of the upgrade import (R19) ----
+
+
+async def test_startup_rebuild_replaces_the_upgrade_import(patched, monkeypatch) -> None:  # noqa: ANN001
+    patched.get_value.return_value = None  # upgrade import never ran (or Postgres was lost)
+    ctx = _ctx(pool=_pool(pg_has_data=False))
+    rebuild_mock = AsyncMock(return_value=rebuild.ActionResult(True, "ok"))
+    monkeypatch.setattr(rebuild, "rebuild_from_notion", rebuild_mock)
+    assert await rebuild.run_startup_rebuild_if_needed(ctx) is True
+    rebuild_mock.assert_awaited_once_with(ctx, post_result=False)
+    assert ctx.maintenance is None
+
+
+async def test_failed_startup_rebuild_pauses_like_a_failed_upgrade(patched, monkeypatch) -> None:  # noqa: ANN001
+    patched.get_value.return_value = None
+    ctx = _ctx(pool=_pool(pg_has_data=False))
+    ctx.sync_problem = None
+    patched.imp.return_value = ImportResult(False, 0, 0, 0, ["Two events titled 'x'"])
+    assert await rebuild.run_startup_rebuild_if_needed(ctx) is True
+    assert ctx.maintenance == texts.MAINTENANCE
+    assert "Two events" in ctx.sync_problem
+    patched.set_value.assert_not_awaited()  # the next start retries
+
+
+async def test_startup_rebuild_not_needed(patched, monkeypatch) -> None:  # noqa: ANN001
+    rebuild_mock = AsyncMock()
+    monkeypatch.setattr(rebuild, "rebuild_from_notion", rebuild_mock)
+    assert await rebuild.run_startup_rebuild_if_needed(_ctx(notion=False)) is False
+    assert await rebuild.run_startup_rebuild_if_needed(_ctx()) is False  # upgrade done
+    patched.get_value.return_value = None
+    filled = _ctx(pool=_pool(pg_has_data=True))  # an upgrade: Postgres has DJs
+    assert await rebuild.run_startup_rebuild_if_needed(filled) is False
+    empty_notion = _ctx(pool=_pool(pg_has_data=False))
+    empty_notion.notion_client.has_rows = AsyncMock(return_value=False)
+    assert await rebuild.run_startup_rebuild_if_needed(empty_notion) is False
+    broken = _ctx(pool=_pool(pg_has_data=False))
+    broken.notion_client.has_rows = AsyncMock(side_effect=RuntimeError("down"))
+    assert await rebuild.run_startup_rebuild_if_needed(broken) is False
+    rebuild_mock.assert_not_awaited()
 
 
 # ---- startup cases ----

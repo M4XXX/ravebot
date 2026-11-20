@@ -8,7 +8,9 @@ summary in the admin log. ``web_admins`` is never touched. Logos normally flow f
 Postgres to Notion only; this is the one exception, and the restored logos are marked
 synced so the mirror does not upload them again.
 
-``run_startup_recovery`` runs after the upgrade import:
+``run_startup_rebuild_if_needed`` runs instead of the upgrade import when Postgres is
+empty and Notion holds events (R19). ``run_startup_recovery`` runs after the upgrade
+import:
 - Postgres empty (no DJs, no events) and Notion holds events: rebuild.
 - Postgres filled and Notion empty (no events, no DJs, e.g. a fresh set of databases):
   forget the stale mirror rows and queue everything for Notion (``resync_all``).
@@ -21,6 +23,7 @@ from typing import Any
 
 import httpx
 
+from bot import maintenance
 from bot.backup.export import write_safety_export
 from bot.db.config import get_value, set_value
 from bot.results import ActionResult
@@ -38,6 +41,7 @@ __all__ = [
     "RebuildReport",
     "post_rebuild_result",
     "rebuild_from_notion",
+    "run_startup_rebuild_if_needed",
     "run_startup_recovery",
 ]
 
@@ -62,31 +66,41 @@ class RebuildReport:
 async def rebuild_from_notion(ctx: Any, *, post_result: bool = True) -> ActionResult:
     """Replace the database content with Notion's; see the module docstring.
 
-    Refusals (no Notion, maintenance already on, failed safety export) change nothing.
+    Refusals (no Notion, another import or rebuild running (R20), failed safety export)
+    change nothing. A rebuild is allowed while the bot is paused after a failed upgrade
+    import; a successful one ends that pause (maintenance and sync_problem cleared), a
+    failed one keeps it.
     With ``post_result`` False the summary waits in ``ctx.rebuild_report`` for
     ``post_rebuild_result`` (startup: Discord is not connected yet).
     """
     pool, client = ctx.db, ctx.notion_client
     if pool is None or client is None:
         return ActionResult(False, texts.REBUILD_NO_NOTION)
-    if ctx.maintenance:
-        return ActionResult(False, texts.REBUILD_BUSY)
-    # Claim maintenance before the first await, so a second rebuild or import is refused.
-    ctx.maintenance = texts.MAINTENANCE
-    try:
+    claim = maintenance.try_claim("rebuild")
+    if claim is None:
+        return ActionResult(False, texts.OPERATION_BUSY)
+    with claim:
+        paused = ctx.maintenance  # set after a failed upgrade import
+        report = None
+        ctx.maintenance = texts.MAINTENANCE
         try:
-            path = await write_safety_export(pool, SAFETY_EXPORT_REASON)
-        except Exception:
-            logger.exception("The safety export before the rebuild failed")
-            return ActionResult(False, texts.REBUILD_SAFETY_FAILED)
-        logger.info("Safety export written to %s", path)
-        async with contextlib.AsyncExitStack() as stack:
-            if ctx.sync_cycle is not None:
-                # A running Notion cycle must not compare its snapshot with the new data.
-                await stack.enter_async_context(ctx.sync_cycle.exclusive())
-            report = await _import_and_restore_logos(ctx)
-    finally:
-        ctx.maintenance = None
+            try:
+                path = await write_safety_export(pool, SAFETY_EXPORT_REASON)
+            except Exception:
+                logger.exception("The safety export before the rebuild failed")
+                return ActionResult(False, texts.REBUILD_SAFETY_FAILED)
+            logger.info("Safety export written to %s", path)
+            async with contextlib.AsyncExitStack() as stack:
+                if ctx.sync_cycle is not None:
+                    # A running Notion cycle must not compare its snapshot with the new data.
+                    await stack.enter_async_context(ctx.sync_cycle.exclusive())
+                report = await _import_and_restore_logos(ctx)
+        finally:
+            if report is not None and report.result.ok:
+                ctx.maintenance = None
+                ctx.sync_problem = None
+            else:
+                ctx.maintenance = paused
     ctx.rebuild_report = report
     if post_result:
         await post_rebuild_result(ctx)
@@ -119,7 +133,11 @@ async def _import_and_restore_logos(ctx: Any) -> RebuildReport:
         await set_value(pool, CONFIG_GUILD_ID, PG_TRUTH_IMPORTED_KEY, "1")
     except Exception:
         logger.exception("Recording the finished rebuild failed")
-    failures = await _restore_logos(pool, result.logos)
+    try:
+        failures = await _restore_logos(pool, result.logos)
+    except Exception:
+        logger.exception("Restoring the logos from Notion failed")
+        failures = [f"{len(result.logos)} logos: the restore failed"]
     if ctx.mirror is not None:
         ctx.mirror.notify()  # rows the import queued (new guest ids, missing slot rows)
     return RebuildReport(result, failures)
@@ -194,6 +212,47 @@ async def post_rebuild_result(ctx: Any) -> None:
 # --- startup cases ---
 
 
+async def _pg_empty(pool: Any) -> bool:
+    return not await pool.fetchval(
+        "SELECT EXISTS (SELECT 1 FROM djs) OR EXISTS (SELECT 1 FROM events)"
+    )
+
+
+async def run_startup_rebuild_if_needed(ctx: Any) -> bool:
+    """R19: before the upgrade import, an empty Postgres with events in Notion is rebuilt.
+
+    Applies while the upgrade import has not finished (a lost database has lost that
+    mark too): no ``djs`` and no ``events`` rows and Notion holds events. The rebuild
+    replaces the upgrade import and, once it succeeds, marks the upgrade done. A failed
+    rebuild pauses the bot like a failed upgrade import (maintenance, sync_problem) and
+    leaves the mark unset, so the next start tries again. Returns True when it ran (the
+    caller then skips the upgrade import). Never raises.
+    """
+    pool, client = ctx.db, ctx.notion_client
+    if pool is None or client is None:
+        return False
+    try:
+        if await get_value(pool, CONFIG_GUILD_ID, PG_TRUTH_IMPORTED_KEY) == "1":
+            return False
+        if not await _pg_empty(pool) or not await client.has_rows("events"):
+            return False
+    except Exception:
+        logger.exception("The startup check for a rebuild from Notion failed")
+        return False
+    logger.warning("The database is empty and Notion holds events: rebuilding from Notion")
+    try:
+        result = await rebuild_from_notion(ctx, post_result=False)
+    except Exception as exc:
+        logger.exception("The startup rebuild from Notion failed")
+        result = ActionResult(False, str(exc))
+    if not result.ok:
+        report = ctx.rebuild_report
+        problems = report.result.problems if report is not None else [result.message]
+        ctx.maintenance = texts.MAINTENANCE
+        ctx.sync_problem = "; ".join(problems[:10]) or result.message
+    return True
+
+
 async def run_startup_recovery(ctx: Any) -> None:
     """The two startup cases of the module docstring. Never raises."""
     pool, client = ctx.db, ctx.notion_client
@@ -202,10 +261,7 @@ async def run_startup_recovery(ctx: Any) -> None:
     try:
         if await get_value(pool, CONFIG_GUILD_ID, PG_TRUTH_IMPORTED_KEY) != "1":
             return  # the upgrade import has not finished
-        pg_filled = await pool.fetchval(
-            "SELECT EXISTS (SELECT 1 FROM djs) OR EXISTS (SELECT 1 FROM events)"
-        )
-        if not pg_filled:
+        if await _pg_empty(pool):
             if await client.has_rows("events"):
                 logger.warning("The database is empty and Notion holds events: rebuilding")
                 await rebuild_from_notion(ctx, post_result=False)

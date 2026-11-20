@@ -401,3 +401,105 @@ async def test_three_stored_databases_get_only_bot_data_created(store: dict) -> 
     assert new.botdata_ds == fake.ds_by_title("Bot data")["id"] != ids.botdata_ds
     assert (new.events_ds, new.djs_ds) == (ids.events_ds, ids.djs_ds)
     assert store[(GUILD, "notion_views_created")] == "0"
+
+
+# ---- R18: adopt existing databases under the parent page when no ids are stored ----
+
+
+def _forget_ids(store: dict) -> None:
+    """A lost Postgres: no Notion ids (or any other guild-0 key) are stored."""
+    store.clear()
+
+
+async def test_no_stored_ids_adopts_the_databases_under_the_parent_page(
+    store: dict, clear_ids: AsyncMock
+) -> None:
+    from bot.notion.views import ensure_views
+
+    fake = FakeNotion()
+    api, _ = make(fake)
+    with (
+        patch("bot.notion.views.get_value", new=_store_get(store)),
+        patch("bot.notion.views.set_value", new=_store_put(store)),
+    ):
+        first = await _run(api)
+        await ensure_views(api, object(), GUILD, first)  # type: ignore[arg-type]
+        views_before = len(fake.views)
+        _forget_ids(store)
+        fake.views_page_size = 1  # also exercise view paging
+        adopted = await _run(api)
+        await ensure_views(api, object(), GUILD, adopted)  # type: ignore[arg-type]
+    assert adopted == first
+    assert len(fake.databases) == 4  # nothing created
+    assert len(fake.views) == views_before  # ensure_views only adds missing views
+    assert store[(GUILD, "notion_events_ds")] == first.events_ds
+    assert store[(GUILD, "notion_botdata_db")] == first.botdata_db
+    assert store[(GUILD, "notion_schema_complete")] == "1"
+    clear_ids.assert_not_awaited()
+
+
+async def test_adoption_creates_only_the_missing_databases(store: dict) -> None:
+    fake = FakeNotion()
+    api, _ = make(fake)
+    first = await _run(api)
+    fake.trash_database(first.botdata_db)  # trashed: never adopted
+    _forget_ids(store)
+    adopted = await _run(api)
+    assert (adopted.events_ds, adopted.slots_ds, adopted.djs_ds) == (
+        first.events_ds, first.slots_ds, first.djs_ds
+    )
+    assert adopted.botdata_ds not in ("", first.botdata_ds)
+    assert len(fake.databases) == 5
+
+
+async def test_slots_are_adopted_only_with_their_events_and_djs(store: dict) -> None:
+    fake = FakeNotion()
+    api, _ = make(fake)
+    first = await _run(api)
+    fake.trash_database(first.djs_db)
+    _forget_ids(store)
+    adopted = await _run(api)
+    assert adopted.events_ds == first.events_ds and adopted.botdata_ds == first.botdata_ds
+    # the old Slots relate to the trashed DJs: a new pair is created
+    assert adopted.djs_ds != first.djs_ds and adopted.slots_ds != first.slots_ds
+
+
+async def test_duplicate_title_takes_none_and_creates_a_fresh_set(
+    store: dict, caplog: pytest.LogCaptureFixture
+) -> None:
+    fake = FakeNotion()
+    api, _ = make(fake)
+    first = await _run(api)
+    fake._create_database({
+        "title": [{"type": "text", "text": {"content": "Events"}}],
+        "parent": {"type": "page_id", "page_id": PARENT},
+        "initial_data_source": {"properties": {"ID": {"title": {}}}},
+    })
+    _forget_ids(store)
+    with caplog.at_level(logging.WARNING, logger="bot.notion.schema"):
+        fresh = await _run(api)
+    assert {fresh.events_ds, fresh.slots_ds, fresh.djs_ds, fresh.botdata_ds}.isdisjoint(
+        {first.events_ds, first.slots_ds, first.djs_ds, first.botdata_ds}
+    )
+    assert "Events" in caplog.text and "more than one" in caplog.text
+
+
+async def test_stored_ids_never_search_the_parent_page(store: dict) -> None:
+    fake = FakeNotion()
+    api, _ = make(fake)
+    await _run(api)
+    fake.requests.clear()
+    await _run(api)
+    assert fake.requests_to("GET", "/blocks/") == []
+
+
+async def test_slots_relating_elsewhere_are_not_adopted(store: dict) -> None:
+    fake = FakeNotion()
+    api, _ = make(fake)
+    first = await _run(api)
+    slots = fake.data_sources[first.slots_ds]
+    slots["properties"]["Event"]["relation"]["data_source_id"] = "someone-else"
+    _forget_ids(store)
+    adopted = await _run(api)
+    assert (adopted.events_ds, adopted.djs_ds) == (first.events_ds, first.djs_ds)
+    assert adopted.slots_ds != first.slots_ds

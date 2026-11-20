@@ -292,6 +292,93 @@ async def _check(api: NotionApi, ds_id: str, label: str) -> str | None:
     return "is trashed" if _is_trashed(ds) else None
 
 
+async def _child_databases(api: NotionApi, parent_page_id: str) -> list[dict[str, Any]]:
+    """Every child_database block of the parent page (paginated)."""
+    blocks: list[dict[str, Any]] = []
+    cursor: str | None = None
+    while True:
+        path = f"/blocks/{parent_page_id}/children?page_size=100"
+        if cursor:
+            path += f"&start_cursor={cursor}"
+        page = await api.request("GET", path, None, "list the databases of the parent page")
+        blocks.extend(b for b in page.get("results", []) if b.get("type") == "child_database")
+        cursor = page.get("next_cursor")
+        if not page.get("has_more") or not cursor:
+            return blocks
+
+
+async def _slots_fit(api: NotionApi, picked: dict[str, tuple[str, str]]) -> bool:
+    """True when the found Slots relate to the found Events and DJs."""
+    if "events" not in picked or "djs" not in picked:
+        return False
+    slots = await api.request(
+        "GET", f"/data_sources/{picked['slots'][1]}", None, "retrieve Slots data source"
+    )
+    props = slots.get("properties", {})
+
+    def target(name: str) -> str | None:
+        return (props.get(name, {}).get("relation") or {}).get("data_source_id")
+
+    return target("Event") == picked["events"][1] and target("DJ") == picked["djs"][1]
+
+
+async def _adopt(
+    api: NotionApi, db: asyncpg.Pool, guild_id: int, parent_page_id: str, labels: dict[str, str]
+) -> dict[str, str | None]:
+    """Find the Events, Slots, DJs and Bot data databases under the parent page.
+
+    Trashed or archived databases are skipped. Two live databases with the same title
+    make every match ambiguous: none is adopted and a fresh set is created. Slots are
+    adopted only together with Events and DJs (their relations point there). The ids
+    of each adopted database are stored at once, like a created one.
+    """
+    found: dict[str, list[str]] = {}
+    titles = {title: name for name, title in labels.items()}
+    for block in await _child_databases(api, parent_page_id):
+        title = ((block.get("child_database") or {}).get("title") or "").strip()
+        if title in titles and not _is_trashed(block):
+            found.setdefault(titles[title], []).append(block["id"])
+    adopted: dict[str, str | None] = {n: None for n in labels}
+    duplicates = [labels[n] for n, ids in found.items() if len(ids) > 1]
+    if duplicates:
+        logger.warning(
+            "Notion schema: more than one database titled %s under the parent page; "
+            "adopting none and creating a fresh set", ", ".join(sorted(duplicates)),
+        )
+        return adopted
+    picked: dict[str, tuple[str, str]] = {}
+    for name, (db_id,) in found.items():
+        try:
+            database = await api.request(
+                "GET", f"/databases/{db_id}", None, f"read {labels[name]} database",
+                tolerate=(404,),
+            )
+        except NotionWriteError as exc:
+            if exc.status_code != 404:
+                raise
+            continue
+        sources = database.get("data_sources") or []
+        if _is_trashed(database) or not sources:
+            continue
+        ds_id = sources[0]["id"]
+        if await _check(api, ds_id, labels[name]) is None:
+            picked[name] = (db_id, ds_id)
+    if "slots" in picked and not await _slots_fit(api, picked):
+        del picked["slots"]
+    for name, (db_id, ds_id) in picked.items():
+        await set_value(db, guild_id, _KEYS[f"{name}_db"], db_id)
+        await set_value(db, guild_id, _KEYS[f"{name}_ds"], ds_id)
+        adopted[name] = ds_id
+    if picked:
+        logger.warning(
+            "Notion schema: adopted the existing %s database(s) under the parent page",
+            ", ".join(labels[n] for n in picked),
+        )
+        # ensure_views checks the adopted databases and adds only the missing views.
+        await set_value(db, guild_id, VIEWS_MARKER_KEY, "0")
+    return adopted
+
+
 async def ensure_schema(
     api: NotionApi, db: asyncpg.Pool, guild_id: int, parent_page_id: str
 ) -> NotionIds:
@@ -301,6 +388,10 @@ async def ensure_schema(
         n: (await get_value(db, guild_id, _KEYS[f"{n}_ds"])) or None for n in labels
     }
     complete = await get_value(db, guild_id, _COMPLETE_KEY) == "1"
+    if all(v is None for v in stored.values()):
+        # Nothing stored (first start, or a lost Postgres): adopt the databases already
+        # under the parent page before creating any (R18).
+        stored = await _adopt(api, db, guild_id, parent_page_id, labels)
 
     # If any stored database is gone, abandon the whole set and start a fresh one.
     problems = []

@@ -85,3 +85,16 @@ async def test_refuses_other_revision_naming_both(file_revision: str) -> None:
     assert not result.ok
     assert file_revision in result.message and "0017" in result.message
     assert ctx.maintenance is None
+
+
+async def test_refuses_while_another_operation_runs() -> None:
+    from bot import maintenance
+
+    claim = maintenance.try_claim("rebuild")
+    assert claim is not None
+    ctx = _ctx()
+    with claim:
+        result = await restore.import_database(ctx, _file())
+    assert not result.ok and result.message == texts.OPERATION_BUSY
+    ctx.db.fetchval.assert_not_awaited()
+    assert ctx.maintenance is None
