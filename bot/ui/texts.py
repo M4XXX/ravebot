@@ -809,7 +809,7 @@ def setup_summary(lines: list[str], rerun: bool, total: int = 6) -> str:
 def setup_active_message(created: int, posted: bool, channel: str | None) -> str:
     parts = []
     if created > 0:
-        parts.append(f"I created your first {created} events in Notion")
+        parts.append(f"I created your first {created} events")
     if posted:
         where = f" in {channel}" if channel else ""
         parts.append(f"posted the Lineup Update{where}")

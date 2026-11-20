@@ -44,7 +44,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-GUEST_NAME = "Guest (no Discord)"
 NOT_READY = "The bot is not ready yet. Please try again in a moment."
 UNKNOWN_DJ = "There is no DJ with this name."
 _LOGO_TEXT = {
@@ -179,7 +178,7 @@ class DjAdminService:
                 )
             except asyncpg.UniqueViolationError as exc:
                 return DjResult(False, _duplicate_text(exc, clean_name))
-        await sync_dj(self._ctx, dj_id, self._discord_name(dj_id, clean_name))
+        await sync_dj(self._ctx, dj_id)
         await self._log(admin_name, "added", clean_name)
         what = "guest DJ" if is_guest(dj_id) else "DJ"
         return DjResult(True, f"Added the {what} {clean_name}.")
@@ -246,7 +245,7 @@ class DjAdminService:
                 return DjResult(False, UNKNOWN_DJ)
         fresh = await get_dj_row(db, dj_id)
         name = fresh["dj_name"] if fresh is not None else row["dj_name"]
-        await sync_dj(self._ctx, dj_id, self._discord_name(dj_id, name))
+        await sync_dj(self._ctx, dj_id)
         await self._log(admin_name, "edited", name)
         return DjResult(True, f"Saved {name}.")
 
@@ -320,12 +319,6 @@ class DjAdminService:
         return DjResult(True, f"Deleted {name}.{extra}")
 
     # --- helpers ---
-
-    def _discord_name(self, dj_id: int, fallback: str) -> str:
-        if is_guest(dj_id):
-            return GUEST_NAME
-        user = self._bot.get_user(dj_id) if self._bot is not None else None
-        return getattr(user, "display_name", None) or fallback
 
     async def _log(self, admin_name: str, action: str, dj_name: str) -> None:
         service = self._ctx.log_service

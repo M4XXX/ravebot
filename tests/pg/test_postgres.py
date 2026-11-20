@@ -56,7 +56,7 @@ async def test_admin_force_returns_previous_holder(pool) -> None:
 
 async def test_dj_slot_locks_are_ordered(pool) -> None:
     for event, index in (("e2", 1), ("e1", 0), ("e1", 2)):
-        await bookings.admin_force_book_slot(pool, event, index, A)
+        await bookings.force_slot_holder(pool, event, index, A)
     rows = await bookings.get_dj_slot_locks(pool, A)
     assert len(rows) == 3
 
@@ -93,7 +93,7 @@ async def test_guest_ids_count_down_and_are_never_reused(pool) -> None:
 
 async def test_delete_dj_removes_what_the_bot_keeps_about_them(pool) -> None:
     await _dj(pool, A, "Nova")
-    await bookings.admin_force_book_slot(pool, "past", 0, A)
+    await bookings.force_slot_holder(pool, "past", 0, A)
     await reminders.record_reminder_sent(pool, "past", A, 0)
     await outreach.upsert_sequence(pool, "past")
     await outreach.record_outreach_contact(pool, "past", A)

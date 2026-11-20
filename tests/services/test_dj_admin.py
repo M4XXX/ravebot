@@ -81,7 +81,7 @@ async def test_add_guest_gets_negative_id_and_is_inactive() -> None:
     assert kwargs["active_booking"] is False
     assert kwargs["stream_url_primary"] == "https://twitch.tv/moon"
     assert kwargs["logo_image"].startswith(b"\x89PNG")
-    fns["sync_dj"].assert_awaited_once_with(ctx, -1, mod.GUEST_NAME)
+    fns["sync_dj"].assert_awaited_once_with(ctx, -1)
     ctx.log_service.log_dj_list_change.assert_awaited_once_with("Admin", "added", "Moon beat")
 
 

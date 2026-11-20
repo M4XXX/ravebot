@@ -6,8 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- PostgreSQL is now the source of truth for events, slots, DJs and settings; this reverses the earlier decision to keep Notion as the source of truth. The bot reads and writes only PostgreSQL, and no Discord reply waits for Notion any more. Notion is an optional live mirror that the bot keeps up to date in the background.
+- Notion is optional: without `NOTION_API_KEY` and `NOTION_PARENT_PAGE_ID` the bot runs on PostgreSQL alone, with no Notion calls and no startup failure. Both variables are no longer required.
+- Hand edits in Notion (a changed value, a booking, a new DJ, a new event) are checked like the matching command, applied and logged as `Applied from Notion`. A risky edit (a deleted page, a changed key, a failed check, many records missing) is only reported as a warning. A conflict with an unsynced bot change waits for a choice, Keep Postgres or Keep Notion, on the admin page; after 24 hours the bot's version wins.
+- A new read-only Notion database, Bot data, mirrors the bot's own state (settings, invite and reminder history, drafts). Hand edits there are overwritten.
+- The first start after the update saves a safety backup and imports events, slots and DJs from Notion once. Booking and edits are paused until it works; a failed import can be retried on the admin page.
+- Database migration 0018 drops `djs.notion_dj_page_id` (the page ids live in `notion_mirror` since 0017) and the unused `event_shapes` table.
+
 ### Added
 
+- Admin page: download a backup of the whole database and restore it from a file (with a safety backup first), a Notion sync card (last sync, waiting changes, errors, conflicts and warnings with Keep Postgres, Keep Notion and resync choices), resync all to Notion, and rebuild PostgreSQL from Notion after a data loss.
 - `/cancel event`: cancel one upcoming event after a confirm step. The event gets the status
   `Canceled` in Notion and its bookings are removed. Booked DJs are told by DM, the log
   channel names DJs to tell by hand (closed DMs, guests without Discord), and the DJ channel

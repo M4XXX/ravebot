@@ -1,5 +1,4 @@
 """Notion client for the Events, Slots and DJs data sources (new schema)."""
-import asyncio
 import dataclasses
 import datetime
 import json
@@ -118,7 +117,6 @@ class NotionClient:
         self._ids = ids
         # upsert_dj is query-then-create: one at a time per DJ, or two parallel
         # calls (a booking and a profile sync) would both create a row
-        self._dj_locks: dict[int, asyncio.Lock] = {}
 
     async def _rows(self, data_source_id: str) -> list[dict[str, Any]]:
         pages = await self._api.query_all(data_source_id)
@@ -298,78 +296,6 @@ class NotionClient:
                 f"trash slot row {row.number} ({row.page_id})",
             )
 
-    async def upsert_dj(self, discord_id: int, *args: Any, **kwargs: Any) -> str:
-        """See _upsert_dj; calls for the same DJ run one after the other."""
-        lock = self._dj_locks.setdefault(discord_id, asyncio.Lock())
-        async with lock:
-            return await self._upsert_dj(discord_id, *args, **kwargs)
-
-    async def _upsert_dj(
-        self,
-        discord_id: int,
-        dj_name: str,
-        discord_name: str,
-        *,
-        vrchat_name: str | None,
-        logo_url: str | None,
-        link: str | None,
-        alt_link: str | None,
-        logo_image: bytes | None = None,
-        upload_logo: bool = True,
-    ) -> str:
-        """Create or update the DJs row matched by ``Discord ID``; return its page id.
-
-        Never creates a duplicate. ``Logo``/``Link``/``Alternative link`` are only
-        written for http(s) URLs, otherwise left empty. A ``logo_image`` is uploaded
-        to Notion (file upload) and takes precedence over ``logo_url``. Rollups are
-        never written.
-
-        With ``upload_logo`` False an existing row keeps its ``Logo`` untouched (it
-        is left out of the update); a new row always gets the logo. If the image
-        cannot be uploaded or the row write rejects it, the row is written without
-        ``Logo`` and DjLogoUploadError(page_id) is raised afterwards.
-        """
-        digits = str(discord_id)
-        pages = await self._api.query_all(
-            self._ids.djs_ds,
-            {"filter": {"property": PROP_DJ_DISCORD_ID, "rich_text": {"equals": digits}}},
-        )
-        # Compare again: do not rely on the server applying the filter.
-        existing = next(
-            (
-                p
-                for p in pages
-                if not _is_trashed(p) and parse_dj(p).discord_id == discord_id
-            ),
-            None,
-        )
-        props: dict[str, Any] = {
-            PROP_DJ_NAME: {"title": _text(dj_name)},
-            PROP_DJ_DISCORD_NAME: {"rich_text": _text(discord_name) if discord_name else []},
-            PROP_DJ_DISCORD_ID: {"rich_text": _text(digits)},
-            PROP_DJ_VRCHAT_NAME: {"rich_text": _text(vrchat_name) if vrchat_name else []},
-            PROP_DJ_LINK: _url_prop(link),
-            PROP_DJ_ALT_LINK: _url_prop(alt_link),
-        }
-        logo_failed = False
-        if upload_logo or existing is None:
-            logo_prop, logo_failed = await self._logo_prop(discord_id, logo_url, logo_image)
-            if logo_prop is not None:
-                props[PROP_DJ_LOGO] = logo_prop
-        try:
-            page_id = await self._write_dj(existing, props, discord_id)
-        except NotionWriteError:
-            if logo_image is None or PROP_DJ_LOGO not in props:
-                raise
-            # The row write may have rejected the uploaded file: write it without.
-            logger.warning("Writing DJ %s with logo failed; retrying without", discord_id)
-            del props[PROP_DJ_LOGO]
-            page_id = await self._write_dj(existing, props, discord_id)
-            logo_failed = True
-        if logo_failed:
-            raise DjLogoUploadError(page_id)
-        return page_id
-
     async def _logo_prop(
         self, discord_id: int, logo_url: str | None, logo_image: bytes | None
     ) -> tuple[dict[str, Any] | None, bool]:
@@ -429,32 +355,6 @@ class NotionClient:
             if exc.status_code != 404:
                 raise
 
-    async def dj_page_alive(self, page_id: str) -> bool:
-        """True if the DJ page exists and is not in the trash.
-
-        GET /pages/{id}: 404 or ``in_trash``/``is_archived`` give False (a 404 is
-        not posted to the admin log). Other failures raise NotionWriteError.
-        """
-        try:
-            page = await self._api.request(
-                "GET", f"/pages/{page_id}", None, f"check DJ page {page_id}",
-                tolerate=(404,),
-            )
-        except NotionWriteError as exc:
-            if exc.status_code == 404:
-                return False
-            raise
-        return not _is_trashed(page)
-
-    async def refresh_discord_name(self, dj_page_id: str, discord_name: str) -> None:
-        """PATCH only the ``Discord name`` property of a DJ row."""
-        await self._api.request(
-            "PATCH",
-            f"/pages/{dj_page_id}",
-            {"properties": {PROP_DJ_DISCORD_NAME: {"rich_text": _text(discord_name)}}},
-            f"refresh Discord name of DJ page {dj_page_id}",
-        )
-
     @staticmethod
     def _slot_row(event: EventInfo, number: int) -> SlotInfo:
         """The event's Slots row with this number; duplicates resolve to the lowest
@@ -487,42 +387,6 @@ class NotionClient:
             what,
         )
 
-    async def assign_slot(self, event: EventInfo, slot_index: int, dj_page_id: str) -> bool:
-        """Put the DJ on the slot row; False (nothing written) if it already has any DJ.
-
-        Re-reads the row right before writing, so a stale ``event`` cannot
-        overwrite a booking made in the meantime. The remaining gap between the
-        GET and the PATCH is closed for DJ bookings by the Postgres FOR UPDATE
-        slot lock taken before this call; callers that do not take that lock
-        (admin bookings, Task 11) must take it or accept the race. Raises SlotRowMissingError if
-        the event has no row for the slot, NotionWriteError after failed retries.
-        """
-        page_id, current = await self._fresh_slot_dj_ids(event, slot_index)
-        if current:
-            return False
-        await self._write_slot_djs(
-            page_id, [dj_page_id], f"book slot {slot_index + 1} of {event.event_id}"
-        )
-        return True
-
-    async def clear_slot(self, event: EventInfo, slot_index: int, dj_page_id: str) -> bool:
-        """Remove only this DJ from the slot row.
-
-        True if the DJ was removed or the row was already empty; False (nothing
-        written) if the row holds only other DJs. Re-reads the row first.
-        """
-        page_id, current = await self._fresh_slot_dj_ids(event, slot_index)
-        if not current:
-            return True
-        if dj_page_id not in current:
-            return False
-        await self._write_slot_djs(
-            page_id,
-            [i for i in current if i != dj_page_id],
-            f"cancel slot {slot_index + 1} of {event.event_id}",
-        )
-        return True
-
     async def empty_slot(self, event: EventInfo, slot_index: int) -> None:
         """Remove every DJ from the slot row (also DJs added by hand).
 
@@ -542,21 +406,6 @@ class NotionClient:
             f"/pages/{event.page_id}",
             {"properties": {PROP_EVENT_STATUS: {"select": {"name": status}}}},
             f"set status of {event.event_id} to {status}",
-        )
-
-    async def force_assign_slot(
-        self, event: EventInfo, slot_index: int, dj_page_id: str
-    ) -> None:
-        """Set the slot row's DJ relation to exactly this DJ (admin override only).
-
-        Unconditionally replaces any holder and any extra DJs; no re-read, no
-        conflict check. Raises SlotRowMissingError if the event has no row for
-        the slot, NotionWriteError after failed retries.
-        """
-        number = slot_index + 1
-        row = self._slot_row(event, number)
-        await self._write_slot_djs(
-            row.page_id, [dj_page_id], f"admin book slot {number} of {event.event_id}"
         )
 
     async def keep_first_dj(self, event: EventInfo, slot_index: int) -> None:
@@ -671,7 +520,7 @@ class NotionClient:
         The logo is not part of the payload: pass ``logo_url``/``logo_image`` separately.
         ``discord_name`` (not compared either) is written to "Discord name" when given;
         None leaves the cell as it is.
-        Logo rules as in ``upsert_dj``: with ``upload_logo`` False an existing row keeps
+        Logo rules: with ``upload_logo`` False an existing row keeps
         its ``Logo``; a new row always gets it. A failed logo upload still writes the
         row and then raises DjLogoUploadError(page_id).
         """

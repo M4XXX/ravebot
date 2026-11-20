@@ -485,7 +485,7 @@ class AdminCog(commands.Cog):
             default=None, description="Or a DJ from the DJ list (guests without Discord)"
         ),
     ) -> None:
-        """Force-book a DJ into a slot, writing directly to Notion without confirmation.
+        """Force-book a DJ into a slot in Postgres without confirmation.
 
         Uses AdminBookingService.book_slot_override().
         Protected by cog_slash_command_check — admin-only.
@@ -500,7 +500,7 @@ class AdminCog(commands.Cog):
                 "The bot is not ready yet. Please try again in a moment.", ephemeral=True
             )
             return
-        # Notion work can exceed Discord's 3 s response deadline: defer first.
+        # The database work can exceed Discord's 3 s response deadline: defer first.
         await inter.response.defer(ephemeral=True)
         target = await self._resolve_dj(inter, dj, guest)
         if target is None:
@@ -548,7 +548,7 @@ class AdminCog(commands.Cog):
             default=None, description="Or a DJ from the DJ list (guests without Discord)"
         ),
     ) -> None:
-        """Force-cancel a DJ's booking, removing it from Notion and slot_locks.
+        """Force-cancel a DJ's booking, freeing the slot in Postgres.
 
         Uses AdminBookingService.cancel_slot_override().
         Returns 'No booking found' if the slot is not held by this DJ (AC3).
@@ -564,7 +564,7 @@ class AdminCog(commands.Cog):
                 "The bot is not ready yet. Please try again in a moment.", ephemeral=True
             )
             return
-        # Notion work can exceed Discord's 3 s response deadline: defer first.
+        # The database work can exceed Discord's 3 s response deadline: defer first.
         await inter.response.defer(ephemeral=True)
         target = await self._resolve_dj(inter, dj, guest)
         if target is None:

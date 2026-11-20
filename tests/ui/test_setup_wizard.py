@@ -895,7 +895,7 @@ async def test_save_refuses_first_run_draft(store):
 
 def test_active_text_only_claims_what_happened():
     both = texts.setup_active_message(6, True, "<#1>")
-    assert "I created your first 6 events in Notion" in both
+    assert "I created your first 6 events" in both
     assert "posted the Lineup Update in <#1>" in both
     none = texts.setup_active_message(0, False, "<#1>")
     assert "created" not in none and "Lineup Update" not in none

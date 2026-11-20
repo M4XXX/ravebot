@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from bot.notion.api import NotionApi
-from bot.notion.client import NotionClient
+from bot.notion.client import DjLogoUploadError, NotionClient, NotionWriteError
 from bot.notion.schema import NotionIds
 from bot.sync.payloads import (
     dj_payload,
@@ -179,3 +179,96 @@ async def test_has_rows_reads_one_page_and_skips_trashed(env):
     assert not await client.has_rows("djs") and not await client.has_rows("slots")
     fake.trash_page(page_id)
     assert not await client.has_rows("events")
+
+
+def _dj_pages(fake, nids):
+    return [p for p in fake.pages.values() if p["parent"]["data_source_id"] == nids.djs_ds]
+
+
+@pytest.mark.parametrize("url,written", [
+    ("https://x.test/a", True),
+    ("javascript:alert(1)", False),
+])
+async def test_mirror_dj_logo_and_links_only_for_http_urls(env, url, written):
+    fake, client, _ = env
+    row = {**DJ_ROW, "logo_url": url, "stream_url_primary": url, "stream_url_backup": url}
+    pid = await client.mirror_dj(
+        dj_payload(row), None, logo_image=None, upload_logo=True, logo_url=url)
+    props = fake.pages[pid]["properties"]
+    if written:
+        assert props["Logo"] == {"files": [
+            {"name": "logo", "type": "external", "external": {"url": url}}]}
+        assert props["Link"] == {"url": url}
+        assert props["Alternative link"] == {"url": url}
+    else:
+        assert props["Logo"] == {"files": []}
+        assert props["Link"] == {"url": None}
+        assert props["Alternative link"] == {"url": None}
+
+
+async def test_mirror_dj_logo_image_writes_file_upload(env):
+    fake, client, _ = env
+    client._api.upload_file = AsyncMock(return_value="up-9")
+    await client.mirror_dj(dj_payload(DJ_ROW), None, logo_image=b"img", upload_logo=True)
+    client._api.upload_file.assert_awaited_once()
+    assert client._api.upload_file.await_args.args[:3] == ("logo.png", "image/png", b"img")
+    body = fake.requests_to("POST", "/pages")[-1][2]
+    assert body["properties"]["Logo"]["files"] == [
+        {"name": "logo.png", "type": "file_upload", "file_upload": {"id": "up-9"}}]
+
+
+async def test_mirror_dj_create_with_failing_upload_creates_row_without_logo(env):
+    fake, client, nids = env
+    client._api.upload_file = AsyncMock(side_effect=NotionWriteError("too big", 413))
+    with pytest.raises(DjLogoUploadError) as e:
+        await client.mirror_dj(dj_payload(DJ_ROW), None, logo_image=b"img", upload_logo=True)
+    pages = _dj_pages(fake, nids)
+    assert len(pages) == 1
+    assert e.value.page_id == pages[0]["id"]
+    body = fake.requests_to("POST", "/pages")[-1][2]
+    assert "Logo" not in body["properties"]
+    assert body["properties"]["DJ name"]["title"][0]["text"]["content"] == "DJ A"
+
+
+async def test_mirror_dj_update_with_failing_upload_leaves_logo_untouched(env):
+    fake, client, nids = env
+    first = await client.mirror_dj(
+        dj_payload(DJ_ROW), None, logo_image=None, upload_logo=True, logo_url=DJ_ROW["logo_url"])
+    client._api.upload_file = AsyncMock(side_effect=NotionWriteError("too big", 413))
+    changed = {**DJ_ROW, "dj_name": "DJ B"}
+    with pytest.raises(DjLogoUploadError) as e:
+        await client.mirror_dj(dj_payload(changed), first, logo_image=b"img", upload_logo=True)
+    assert e.value.page_id == first
+    body = fake.requests_to("PATCH", f"/pages/{first}")[-1][2]
+    assert "Logo" not in body["properties"]
+    assert fake.pages[first]["properties"]["DJ name"]["title"][0]["plain_text"] == "DJ B"
+    assert len(_dj_pages(fake, nids)) == 1
+
+
+async def test_mirror_dj_write_rejecting_the_file_is_retried_without_logo(env):
+    fake, client, nids = env
+    client._api.upload_file = AsyncMock(return_value="up-1")
+    fake.fail_once("POST", "/pages", 400)
+    with pytest.raises(DjLogoUploadError) as e:
+        await client.mirror_dj(dj_payload(DJ_ROW), None, logo_image=b"img", upload_logo=True)
+    bodies = [r[2] for r in fake.requests_to("POST", "/pages")]
+    assert "Logo" in bodies[-2]["properties"]
+    assert "Logo" not in bodies[-1]["properties"]
+    assert e.value.page_id == _dj_pages(fake, nids)[0]["id"]
+
+
+async def test_mirror_dj_write_failure_without_logo_still_raises_write_error(env):
+    fake, client, _ = env
+    fake.fail_once("POST", "/pages", 400)
+    with pytest.raises(NotionWriteError):
+        await client.mirror_dj(dj_payload(DJ_ROW), None, logo_image=None, upload_logo=True)
+    assert len(fake.requests_to("POST", "/pages")) == 1
+
+
+async def test_mirror_dj_without_upload_logo_still_sends_image_for_new_row(env):
+    fake, client, _ = env
+    client._api.upload_file = AsyncMock(return_value="up-3")
+    await client.mirror_dj(dj_payload(DJ_ROW), None, logo_image=b"img", upload_logo=False)
+    client._api.upload_file.assert_awaited_once()
+    body = fake.requests_to("POST", "/pages")[-1][2]
+    assert body["properties"]["Logo"]["files"][0]["file_upload"] == {"id": "up-3"}

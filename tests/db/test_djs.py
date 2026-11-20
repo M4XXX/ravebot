@@ -210,16 +210,6 @@ async def test_get_all_djs_returns_empty_when_no_djs():
 
 
 @pytest.mark.asyncio
-async def test_clear_all_notion_dj_page_ids_clears_every_row() -> None:
-    from bot.db.djs import clear_all_notion_dj_page_ids
-
-    pool = MagicMock()
-    pool.execute = AsyncMock()
-    await clear_all_notion_dj_page_ids(pool)
-    pool.execute.assert_awaited_once_with("UPDATE djs SET notion_dj_page_id = NULL")
-
-
-@pytest.mark.asyncio
 async def test_insert_dj_logo_image_sets_unsynced() -> None:
     from bot.db.djs import insert_dj
 
@@ -383,3 +373,15 @@ async def test_active_booking_pool_excludes_guests() -> None:
     pool.fetch = AsyncMock(return_value=[])
     await get_active_booking_djs(pool)
     assert "discord_user_id > 0" in pool.fetch.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_mark_only_applies_to_the_logo_that_was_uploaded():
+    from bot.db.djs import mark_logo_synced_if_unchanged
+
+    pool = MagicMock()
+    pool.execute = AsyncMock()
+    await mark_logo_synced_if_unchanged(pool, 1, b"img")
+    sql, user_id, image = pool.execute.call_args.args
+    assert "logo_image IS NOT DISTINCT FROM $2" in sql
+    assert (user_id, image) == (1, b"img")

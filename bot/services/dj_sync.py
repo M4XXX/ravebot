@@ -15,11 +15,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-async def sync_dj(ctx: "BotContext", discord_user_id: int, discord_name: str) -> bool:
+async def sync_dj(ctx: "BotContext", discord_user_id: int) -> bool:
     """Queue the DJ for the Notion mirror after a Postgres write; returns True.
 
-    Never calls Notion and never raises. ``discord_name`` is kept for the callers;
-    the mirror reads everything it writes from the djs row.
+    Never calls Notion and never raises. The mirror reads everything it writes from
+    the djs row.
     """
     changed(ctx, "dj", str(discord_user_id))
     return True

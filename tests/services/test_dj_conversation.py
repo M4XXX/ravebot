@@ -502,7 +502,7 @@ async def test_confirm_inserts_assigns_role_logs_once_and_syncs(
     ctx.log_service.log_new_dj.assert_awaited_once_with("Neon Fox", "foxvr")
     member.add_roles.assert_awaited_once()
     assert member.add_roles.await_args.args[0] is role
-    sync.assert_awaited_once_with(ctx, A, "alice")
+    sync.assert_awaited_once_with(ctx, A)
     assert A not in fake.convs
 
 
@@ -658,7 +658,7 @@ async def test_edit_own_name_accepted(service, fake, sync, ctx):
     assert r.kind == "overview"
     assert texts.edit_saved(texts.FIELD_LABELS["name"]) in r.text
     assert fake.djs[A]["dj_name"] == "neon fox"
-    sync.assert_awaited_once_with(ctx, A, "alice")
+    sync.assert_awaited_once_with(ctx, A)
     assert A not in fake.convs
 
 

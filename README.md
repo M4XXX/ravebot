@@ -39,7 +39,7 @@
 | 🗓️ **Self-service booking** | DJs book and cancel slots with buttons. Two DJs can never take the same slot. |
 | 📨 **Automatic invites** | DJs in the *Active DJ Booking Group* get a message when slots stay open. Cooldowns keep it friendly, reminders go out the day before. |
 | 📋 **Live lineup post** | A new *Lineup Update* appears in your DJ channel whenever the lineup changes, with a *Book a slot* button. |
-| 🗂️ **Notion as the control room** | Events, slots and DJs live in three Notion databases the bot creates itself. Edit a slot in Notion and the bot syncs it. |
+| 🗂️ **Postgres first, Notion optional** | Events, slots and DJs live in the PostgreSQL database. With a Notion integration the bot mirrors them into Notion databases it creates itself, and hand edits there are synced back. |
 | 🛰️ **Guided setup** | `/setup` walks you through channels, roles, event defaults, time zone and invites. The bot stays idle until you press *Activate*. |
 | 🔔 **Quiet admin log** | Only what matters: bookings, new DJs, problems and the DMs people send the bot, with a *Reply* button. |
 | 🪐 **Admin page** | An optional password protected web page to add and remove admins without touching the container. |
@@ -51,20 +51,21 @@
 ```mermaid
 flowchart LR
     DJ([🎧 DJ]) -- "gets the DJ role" --> ONB["Welcome DM<br/>5 questions + logo"]
-    ONB --> N[("🗂️ Notion<br/>Events · Slots · DJs")]
+    ONB --> N[("🗄️ PostgreSQL<br/>Events · Slots · DJs")]
     DJ -- "buttons in DMs" --> BOOK["Book / cancel a slot"]
     BOOK --> N
     N -- "open slots" --> INV["Automatic invites<br/>+ day-before reminders"]
     INV --> DJ
     N -- "every change" --> LINE["📋 Lineup Update<br/>#dj-lineup"]
     BOOK --> LOG["🔔 #rave-log<br/>bookings · new DJs · problems"]
+    N -. "optional mirror" .-> NO[("🗂️ Notion")]
     ORG([🛠️ Organizer]) -- "/setup · commands · admin page" --> N
 ```
 
 1. **A DJ joins.** The DJ role triggers a welcome DM. The DJ answers a few questions and joins the *Active DJ Booking Group*, or books alone.
 2. **They book.** A button menu in the DMs shows events and slots. Booking is race-condition safe.
 3. **Gaps get filled.** Before each event the bot invites DJs who have not been asked recently and sends reminders the day before.
-4. **You stay in control.** The lineup post, the log channel and Notion show the same truth. Organizers can force-book or free any slot with a command.
+4. **You stay in control.** The lineup post, the log channel and the optional Notion mirror show the same truth. Organizers can force-book or free any slot with a command.
 
 ---
 
@@ -87,7 +88,7 @@ flowchart LR
 
 ## 🚀 Quick start
 
-> **TL;DR** Create a Discord bot, a Notion integration and a PostgreSQL 16 database, start the container `ghcr.io/m4xxx/ravebot:latest` with six variables, then run `/setup` in your server.
+> **TL;DR** Create a Discord bot and a PostgreSQL 16 database, start the container `ghcr.io/m4xxx/ravebot:latest` with three variables, then run `/setup` in your server. A Notion integration is optional.
 
 You need about 20 minutes. The steps below use Unraid; Docker, Docker Compose and Podman work the same way (see the [user guide](docs/user-guide.md#5-deployment-docker-compose)).
 
@@ -106,13 +107,15 @@ You need about 20 minutes. The steps below use Unraid; Docker, Docker Compose an
 5. Open the link and add the bot to your server.
 6. In Discord, turn on **Settings → Advanced → Developer Mode**, right-click your name → **Copy User ID**. This is your `ADMIN_USER_IDS`.
 
-### Step 2: Create the Notion integration
+### Step 2: Create the Notion integration (optional)
+
+Skip this step to run on PostgreSQL alone: without `NOTION_API_KEY` and `NOTION_PARENT_PAGE_ID` the bot makes no Notion calls and starts normally.
 
 1. Go to [notion.so/my-integrations](https://www.notion.so/my-integrations) → **New integration** (type **Internal**, capabilities *Read*, *Insert* and *Update content*). Copy the secret. This is your `NOTION_API_KEY`.
 2. Create one **empty page** (for example "RaveBot"), open `...` → **Connections** and add your integration.
 3. Copy the page link. The 32 characters at the end of the URL are your `NOTION_PARENT_PAGE_ID`.
 
-The bot creates the Events, Slots and DJs databases under that page by itself.
+The bot creates the Events, Slots, DJs and Bot data databases under that page by itself and keeps them in line with PostgreSQL. PostgreSQL stays the source of truth.
 
 ### Step 3: Prepare the database
 
@@ -149,18 +152,18 @@ postgresql://ravebot:YOUR_PASSWORD@192.168.1.100:5432/ravebot
 docker run -d --name ravebot --restart unless-stopped \
   -e DISCORD_BOT_TOKEN=... \
   -e POSTGRES_URL=postgresql://ravebot:PASSWORD@HOST:5432/ravebot \
-  -e NOTION_API_KEY=... \
-  -e NOTION_PARENT_PAGE_ID=... \
   -e ADMIN_USER_IDS=123456789012345678 \
   ghcr.io/m4xxx/ravebot:latest
 ```
+
+For the optional Notion mirror add `-e NOTION_API_KEY=...` and `-e NOTION_PARENT_PAGE_ID=...` before the image name.
 
 | Variable | Required | What to put in |
 |---|:---:|---|
 | `DISCORD_BOT_TOKEN` | ✅ | Bot token from step 1 |
 | `POSTGRES_URL` | ✅ | Connection string from step 3 |
-| `NOTION_API_KEY` | ✅ | Integration secret from step 2 |
-| `NOTION_PARENT_PAGE_ID` | ✅ | Page ID from step 2 |
+| `NOTION_API_KEY` | – | Integration secret from step 2. Set together with `NOTION_PARENT_PAGE_ID` to turn the Notion mirror on |
+| `NOTION_PARENT_PAGE_ID` | – | Page ID from step 2 |
 | `ADMIN_USER_IDS` | ✅ | Your Discord user ID (several: separated by commas) |
 | `ADMIN_PAGE_PASSWORD` | – | Turns the [admin page](#-admin-page) on. A long random password |
 | `ADMIN_PAGE_PORT` | – | Port of the admin page inside the container, default `8080` |
@@ -178,13 +181,13 @@ asyncpg pool opened successfully.
 Bot ready
 ```
 
-If the bot exits instead, the log says why (a missing variable, an unreachable database or a Notion page that is not shared with the integration). See [Troubleshooting](docs/user-guide.md#8-troubleshooting).
+If the bot exits instead, the log says why (a missing variable, an unreachable database or, with Notion turned on, a page that is not shared with the integration). See [Troubleshooting](docs/user-guide.md#8-troubleshooting).
 
 ### Step 6: Set it up in Discord
 
 1. In your server run **`/setup`** in a channel only you can see.
 2. Follow the six steps: DJ channel, log channel, roles, event defaults, time zone and automatic invites.
-3. Press **Activate**. The bot creates your first events in Notion and posts the first Lineup Update.
+3. Press **Activate**. The bot creates your first events and posts the first Lineup Update.
 
 Until you press *Activate* the bot stays idle on purpose: no posts, no invites, no events. Give someone the DJ role to try the onboarding.
 
@@ -219,7 +222,7 @@ All admin commands work on the server only (not in DMs).
 |---|---|---|
 | `/setup` | Admin | Guided setup; run it again to change settings |
 | `/config show` | Admin | Show all settings and the bot status |
-| `/create event` | Admin | Create an event in Notion for a date |
+| `/create event` | Admin | Create an event for a date |
 | `/post lineup update` | Admin | Post the lineup of the next (or a chosen future) event |
 | `/book dj slot` | Admin | Book a slot for any DJ, also a guest |
 | `/cancel dj slot` | Admin | Free any booking |
@@ -234,7 +237,7 @@ DJs do not use commands: they talk to the bot in the DMs and press buttons.
 
 ## 📚 Documentation
 
-- [User guide](docs/user-guide.md): prerequisites, Notion setup, deployment (Unraid, Compose, Podman), setup walkthrough, troubleshooting
+- [User guide](docs/user-guide.md): prerequisites, optional Notion mirror, deployment (Unraid, Compose, Podman), setup walkthrough, troubleshooting
 - [Developer guide](docs/developer-guide.md): local setup, tests, project structure, migrations, releases
 - [Changelog](CHANGELOG.md)
 

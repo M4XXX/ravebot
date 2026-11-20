@@ -4,21 +4,10 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 from bot.services.dj_sync import queue_unsynced_logos, sync_dj
 
 
-async def test_mark_only_applies_to_the_logo_that_was_uploaded():
-    from bot.db.djs import mark_logo_synced_if_unchanged
-
-    pool = MagicMock()
-    pool.execute = AsyncMock()
-    await mark_logo_synced_if_unchanged(pool, 1, b"img")
-    sql, user_id, image = pool.execute.call_args.args
-    assert "logo_image IS NOT DISTINCT FROM $2" in sql
-    assert (user_id, image) == (1, b"img")
-
-
 async def test_sync_dj_queues_the_dj_and_never_calls_notion():
     ctx = MagicMock()
     with patch("bot.services.dj_sync.changed") as changed:
-        assert await sync_dj(ctx, 42, "alice") is True
+        assert await sync_dj(ctx, 42) is True
     changed.assert_called_once_with(ctx, "dj", "42")
     assert ctx.notion_client.method_calls == []
     assert ctx.db.method_calls == []
@@ -26,7 +15,7 @@ async def test_sync_dj_queues_the_dj_and_never_calls_notion():
 
 async def test_sync_dj_works_without_notion():
     ctx = MagicMock(notion_client=None, mirror=None)
-    assert await sync_dj(ctx, -3, "Guest (no Discord)") is True
+    assert await sync_dj(ctx, -3) is True
 
 
 async def test_unsynced_logos_are_queued_for_the_worker():

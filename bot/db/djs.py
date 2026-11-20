@@ -75,61 +75,6 @@ async def insert_dj(
     )
 
 
-async def get_notion_dj_page_id(
-    pool: asyncpg.Pool,
-    discord_user_id: int,
-) -> str | None:
-    """Return the stored Notion page ID for this DJ, or None if not set.
-
-    Used to look up the DJ's row in the Notion DJs database (see ensure_dj_page).
-
-    None is returned for DJs without a Notion row yet (migration 0007 cleared the
-    IDs of the old Notion database). ensure_dj_page creates the row on demand.
-
-    Ownership-scoped: only returns data for the requesting user's ID.
-    [Source: epics.md#Story 4.2 AC2]
-    [Source: architecture.md#DJ Data Isolation: Ownership-Scoped Queries]
-    """
-    row = await pool.fetchrow(
-        "SELECT notion_dj_page_id FROM djs WHERE discord_user_id = $1",
-        discord_user_id,
-    )
-    if row is None:
-        return None
-    return row["notion_dj_page_id"]
-
-
-async def set_notion_dj_page_id(
-    pool: asyncpg.Pool,
-    discord_user_id: int,
-    notion_page_id: str,
-) -> None:
-    """Store the Notion page ID for this DJ after onboarding Notion sync.
-
-    Called by the DJ conversation service after NotionClient.upsert_dj() succeeds,
-    and by ensure_dj_page(). The ID points to a row in the Notion DJs database.
-
-    Ownership-scoped: WHERE discord_user_id = $2.
-    [Source: epics.md#Story 4.2 AC2]
-    [Source: architecture.md#DJ Data Isolation: Ownership-Scoped Queries]
-    """
-    await pool.execute(
-        "UPDATE djs SET notion_dj_page_id = $1 WHERE discord_user_id = $2",
-        notion_page_id,
-        discord_user_id,
-    )
-
-
-async def clear_all_notion_dj_page_ids(pool: asyncpg.Pool) -> None:
-    """Clear every stored Notion DJ page id (all DJs).
-
-    Called by ensure_schema when it creates a fresh set of Notion databases: the
-    stored ids point into the abandoned DJs database. ensure_dj_page recreates
-    the rows on demand.
-    """
-    await pool.execute("UPDATE djs SET notion_dj_page_id = NULL")
-
-
 async def get_active_booking_djs(pool: asyncpg.Pool) -> list[dict]:
     """Return all DJs with active_booking=true, sorted by last_contacted_at ASC NULLS FIRST.
 

@@ -4,7 +4,7 @@
 config table, verifies every property, adds what is missing, recreates data
 sources that no longer exist (404) and refuses to touch properties that have
 the wrong type (reported to the admin log, raises NotionSchemaError).
-A fresh set of databases also clears the stored DJ page ids and the views
+A fresh set of databases also clears the notion_mirror table and the views
 marker, so ensure_views creates the views in the new databases.
 
 Request shapes and formula expressions come from the API spike
@@ -18,7 +18,6 @@ from urllib.parse import unquote
 import asyncpg
 
 from bot.db.config import get_value, set_value
-from bot.db.djs import clear_all_notion_dj_page_ids
 from bot.notion.api import NotionApi, NotionWriteError
 from bot.ui import texts
 
@@ -379,6 +378,15 @@ async def _adopt(
     return adopted
 
 
+async def clear_mirror(db: asyncpg.Pool) -> None:
+    """Forget every stored page id and synced state: they point into abandoned databases.
+
+    The SQL lives here, not in bot.db.mirror, which would import the sync package and
+    close an import cycle with this module.
+    """
+    await db.execute("DELETE FROM notion_mirror")
+
+
 async def ensure_schema(
     api: NotionApi, db: asyncpg.Pool, guild_id: int, parent_page_id: str
 ) -> NotionIds:
@@ -428,8 +436,8 @@ async def ensure_schema(
         await set_value(db, guild_id, VIEWS_MARKER_KEY, "0")
         for key in _KEYS.values():
             await set_value(db, guild_id, key, "")
-        # Stored DJ page ids point into the abandoned DJs database.
-        await clear_all_notion_dj_page_ids(db)
+        # Stored page ids point into the abandoned databases.
+        await clear_mirror(db)
         stored = {n: None for n in labels}
     elif not complete:
         await set_value(db, guild_id, _COMPLETE_KEY, "0")

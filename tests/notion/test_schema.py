@@ -15,6 +15,9 @@ from bot.notion.schema import (
     NotionSchemaError,
     ensure_schema,
 )
+from bot.notion.schema import (
+    clear_mirror as _REAL_CLEAR_MIRROR,  # the fixture patches the module name
+)
 from tests.notion.fake_notion import FakeNotion
 
 GUILD = 42
@@ -58,7 +61,7 @@ def store() -> Iterator[dict[tuple[int, str], str]]:
 @pytest.fixture(autouse=True)
 def clear_ids() -> Iterator[AsyncMock]:
     mock = AsyncMock()
-    with patch("bot.notion.schema.clear_all_notion_dj_page_ids", new=mock, create=True):
+    with patch("bot.notion.schema.clear_mirror", new=mock, create=True):
         yield mock
 
 
@@ -503,3 +506,10 @@ async def test_slots_relating_elsewhere_are_not_adopted(store: dict) -> None:
     adopted = await _run(api)
     assert (adopted.events_ds, adopted.djs_ds) == (first.events_ds, first.djs_ds)
     assert adopted.slots_ds != first.slots_ds
+
+
+async def test_clear_mirror_forgets_every_mirror_row() -> None:
+    pool = MagicMock()
+    pool.execute = AsyncMock()
+    await _REAL_CLEAR_MIRROR(pool)
+    pool.execute.assert_awaited_once_with("DELETE FROM notion_mirror")

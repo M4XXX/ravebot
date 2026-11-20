@@ -56,7 +56,7 @@ class EventsCog(commands.Cog):
         Thin wrapper around bot.services.event_replenish.replenish_events (shared
         with the setup wizard). Done, canceled and past events do not count.
 
-        Called from _poll_notion() after list_events() succeeds, before the
+        Called from _poll_notion_cycle() after the events are read from Postgres, before the
         lineup refresh. Returns how many events were created; the caller's event
         list does not include them, so a non-zero count makes it reload for the refresh.
 
