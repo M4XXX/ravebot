@@ -203,12 +203,20 @@ async def test_apply_event_field_change(env) -> None:
     assert await env.intake.apply(change) == "applied"
     assert env.store.edits == [("u1", {"slot_count": 5, "genre": "Techno"})]
     assert env.store.synced[("event", "u1")] == ("page-e1", notion)
-    # the two new slots get Notion pages
-    assert ("slot", "u1:3") in env.store.changed and ("slot", "u1:4") in env.store.changed
+    # added slots are left to the sync cycle's slot pass
+    assert not any(entity == "slot" for entity, _ in env.store.changed)
     await env.intake.flush_log()
     env.log.log_notion_applied.assert_awaited_once()
     text = env.log.log_notion_applied.await_args.args[0]
     assert "Rave Night" in text and "genre" in text
+
+
+async def test_slot_count_shrink_queues_removed_slots(env) -> None:
+    env.store.add_event("u1", slot_count=5)
+    old = event_payload(slot_count=5)
+    change = Change("apply", "event", "u1", old, event_payload(slot_count=3), "pe")
+    assert await env.intake.apply(change) == "applied"
+    assert env.store.changed == [("slot", "u1:3"), ("slot", "u1:4")]
 
 
 async def test_reject_slot_count_below_booking(env) -> None:
@@ -244,7 +252,7 @@ async def test_new_event_gets_uid_and_bot_id_pushed(env) -> None:
     (uid,) = env.store.events
     assert env.store.synced[("event", uid)] == ("page-new", notion)
     assert ("event", uid) in env.store.changed
-    assert {("slot", f"{uid}:0"), ("slot", f"{uid}:1")} <= set(env.store.changed)
+    assert not any(entity == "slot" for entity, _ in env.store.changed)
     assert env.store.manual == [uid]
 
 

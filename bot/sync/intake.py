@@ -178,9 +178,9 @@ class Intake:
                 raise _Rejected(
                     "Start and slot length cannot change while slots are booked."
                 ) from exc
-            # Slot pages to add or trash in Notion (the worker trashes indexes past the count)
-            low, high = sorted((current.slot_count, draft.slot_count))
-            for index in range(low, high):
+            # Removed slots: the worker trashes their pages. Added slots are left to the
+            # sync cycle's slot pass (adopts hand-made pages, pushes missing ones).
+            for index in range(draft.slot_count, current.slot_count):
                 changed(self._ctx, "slot", f"{uid}:{index}")
         await self._synced("event", uid, change.page_id, notion)
         if fields:
@@ -205,9 +205,9 @@ class Intake:
         uid = event.page_id
         assert change.notion is not None
         await self._synced("event", uid, change.page_id, change.notion)
-        changed(self._ctx, "event", uid)  # writes the Bot ID to the Notion page
-        for index in range(event.slot_count):
-            changed(self._ctx, "slot", f"{uid}:{index}")
+        # Writes the Bot ID to the Notion page. Its slots are left to the sync cycle's
+        # slot pass, which adopts hand-made slot pages and pushes the missing ones.
+        changed(self._ctx, "event", uid)
         self._applied.append(f"New event {_ev(draft.event_id)}.")
 
     # --- DJs ---
