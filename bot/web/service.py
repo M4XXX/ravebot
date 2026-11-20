@@ -91,6 +91,8 @@ class SyncStatus:
     ``enabled`` is True while a Notion client is attached (Notion configured and its
     databases usable); without it the page hides the Notion card (decision 10).
     ``maintenance`` names a running import or rebuild, or the pause text.
+    ``can_retry`` is True while the startup import from Notion failed and Notion is
+    configured, also when its databases could not be reached (no client attached).
     """
 
     enabled: bool
@@ -100,6 +102,7 @@ class SyncStatus:
     issues: list[IssueRow]
     problem: str | None
     maintenance: str | None
+    can_retry: bool = False
 
 
 def _parse_time(raw: str | None) -> datetime.datetime | None:
@@ -180,9 +183,13 @@ class AdminPageService:
         ctx = self._ctx
         running = maintenance_ops.running()
         busy = _OPERATIONS.get(running, ctx.maintenance) if running else ctx.maintenance
+        can_retry = bool(ctx.sync_problem) and ctx.db is not None and (
+            self.notion_enabled() or getattr(ctx, "notion_connect", None) is not None
+        )
         if not self.notion_enabled() or ctx.db is None:
             return SyncStatus(
-                False, None, None, OutboxStats(0, None, None), [], ctx.sync_problem, busy
+                False, None, None, OutboxStats(0, None, None), [], ctx.sync_problem, busy,
+                can_retry,
             )
         db = ctx.db
         last_run = await config_db.get_value(db, CONFIG_GUILD_ID, LAST_RUN_KEY)
@@ -195,6 +202,7 @@ class AdminPageService:
             issues=await issues.list_open(db),
             problem=ctx.sync_problem,
             maintenance=busy,
+            can_retry=can_retry,
         )
 
     async def export_backup(self) -> bytes:
@@ -261,7 +269,11 @@ class AdminPageService:
             return ActionResult(False, texts.OPERATION_BUSY)
         if ctx.notion_client is None:
             # The databases could not be read at startup: try them again first.
-            error = await connect()
+            try:
+                error = await connect()
+            except Exception:
+                logger.exception("Connecting to Notion for the import retry failed")
+                return ActionResult(False, RETRY_ERROR)
             if error is not None or ctx.notion_client is None:
                 return ActionResult(
                     False, RETRY_FAILED.format(problem=(error or RETRY_ERROR)[:300])

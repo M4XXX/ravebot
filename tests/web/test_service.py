@@ -420,6 +420,20 @@ async def test_sync_status_disabled_without_notion() -> None:
     list_open.assert_not_awaited()
 
 
+async def test_sync_status_can_retry_while_notion_not_connected() -> None:
+    svc = _svc()
+    ctx = svc._ctx
+    assert (await svc.sync_status()).can_retry is False
+    ctx.sync_problem = "The Notion databases are missing"
+    assert (await svc.sync_status()).can_retry is False  # Notion not configured
+    ctx.notion_connect = AsyncMock(return_value=None)
+    status = await svc.sync_status()
+    assert status.enabled is False and status.can_retry is True
+    assert status.problem == "The Notion databases are missing"
+    ctx.sync_problem = None
+    assert (await svc.sync_status()).can_retry is False
+
+
 async def test_sync_status_maps_empty_error_to_none() -> None:
     svc, ctx = _notion_svc()
     ctx.sync_problem = "Duplicate title"
@@ -603,5 +617,19 @@ async def test_retry_import_reconnect_fails_keeps_the_pause() -> None:
     with a, b as upgrade, c, d, e:
         result = await svc.retry_import()
     assert not result.ok and "still not shared" in result.message
+    upgrade.assert_not_awaited()
+    assert ctx.maintenance == texts.MAINTENANCE
+
+
+async def test_retry_import_reconnect_error_returns_result() -> None:
+    svc, ctx = _notion_svc()
+    ctx.notion_client = None
+    ctx.maintenance = texts.MAINTENANCE
+    ctx.sync_problem = texts.UPGRADE_WAITS_FOR_NOTION
+    ctx.notion_connect = AsyncMock(side_effect=OSError("network down"))
+    a, b, c, d, e = _patch_retry(True, ctx)
+    with a, b as upgrade, c, d, e:
+        result = await svc.retry_import()
+    assert not result.ok
     upgrade.assert_not_awaited()
     assert ctx.maintenance == texts.MAINTENANCE

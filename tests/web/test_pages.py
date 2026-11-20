@@ -191,6 +191,16 @@ def test_notion_card_hidden_when_disabled() -> None:
     assert 'href="/sync/resync"' in page
 
 
+def test_retry_card_shown_while_notion_not_connected() -> None:
+    sync = _status(enabled=False, problem="Databases <missing>", can_retry=True)
+    page = render_dashboard(SERVER, [], "tok", sync=sync)
+    assert 'href="/sync/retry-import"' in page
+    assert "Databases &lt;missing&gt;" in page and "<missing>" not in page
+    assert 'href="/sync/rebuild"' not in page and 'href="/sync/resync"' not in page
+    page = render_dashboard(SERVER, [], "tok", sync=_status(enabled=False, problem="x"))
+    assert "/sync/" not in page
+
+
 def test_notion_card_status_and_issue_buttons() -> None:
     sync = _status(
         issues=[_issue(), _issue(8, "warning", "Deleted in Notion")],

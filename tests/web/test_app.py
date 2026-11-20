@@ -602,13 +602,14 @@ class SyncFakeService(FakeService):
         self.enabled = enabled
         self.issues = [_issue(), _issue(8, "warning", "Event deleted in Notion")]
         self.problem: str | None = None
+        self.can_retry = False
         self.uploads: list[bytes] = []
 
     async def sync_status(self):
         return SyncStatus(
             enabled=self.enabled, last_run=NOW, last_error=None,
             outbox=OutboxStats(3, NOW, None), issues=self.issues if self.enabled else [],
-            problem=self.problem, maintenance=None,
+            problem=self.problem, maintenance=None, can_retry=self.can_retry,
         )
 
     async def export_backup(self) -> bytes:
@@ -849,6 +850,28 @@ async def test_retry_button_only_with_sync_problem() -> None:
         text = await (await client.get("/", headers=headers)).text()
         assert 'href="/sync/retry-import"' in text
         assert "<b>X</b>" not in text and "&lt;b&gt;X&lt;/b&gt;" in text
+
+
+async def test_retry_reachable_while_notion_not_connected() -> None:
+    sessions = SessionManager(secret=b"k" * 32)
+    headers, csrf = _auth(sessions)
+    service = SyncFakeService(enabled=False)
+    service.problem = "The Notion databases are missing"
+    async with make_client(service, sessions) as client:
+        resp = await client.get("/sync/retry-import", headers=headers, allow_redirects=False)
+        assert resp.status == 303
+        service.can_retry = True
+        text = await (await client.get("/", headers=headers)).text()
+        assert 'href="/sync/retry-import"' in text
+        resp = await client.get("/sync/retry-import", headers=headers, allow_redirects=False)
+        assert resp.status == 200
+        assert "The Notion databases are missing" in await resp.text()
+        for path in ("/sync/rebuild", "/sync/resync"):
+            resp = await client.get(path, headers=headers, allow_redirects=False)
+            assert resp.status == 303, path
+        ok = await client.post("/sync/retry-import", headers=headers, data={"csrf": csrf})
+        assert ok.status == 200
+    assert ("retry_import",) in service.calls
 
 
 @pytest.mark.parametrize(
