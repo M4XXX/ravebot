@@ -203,7 +203,7 @@ async def admin_force_book_slot(
 
 
 async def init_event_slots(
-    pool: asyncpg.Pool,
+    pool: asyncpg.Pool | asyncpg.Connection,
     event_id: str,
     slots_per_event: int,
 ) -> None:

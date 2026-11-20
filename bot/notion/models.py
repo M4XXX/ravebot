@@ -48,7 +48,7 @@ class SlotInfo:
 
 @dataclass(frozen=True)
 class EventInfo:
-    page_id: str
+    page_id: str  # bot event key (events.uid); a Notion page id only for imported events
     event_id: str
     date: datetime.date
     status: str | None

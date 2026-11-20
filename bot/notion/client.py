@@ -6,6 +6,7 @@ import logging
 import urllib.parse
 from typing import Any
 
+from bot.db.events import DuplicateEventError
 from bot.notion.api import NotionApi, NotionWriteError
 from bot.notion.models import (
     MAX_SLOTS,
@@ -49,14 +50,6 @@ PROP_DJ_VRCHAT_NAME = "VRChat name"
 PROP_DJ_LOGO = "Logo"
 PROP_DJ_LINK = "Link"
 PROP_DJ_ALT_LINK = "Alternative link"
-
-
-class DuplicateEventError(Exception):
-    """An event with this ID already exists."""
-
-    def __init__(self, event_id: str) -> None:
-        super().__init__(f"Event ID already exists: {event_id}")
-        self.event_id = event_id
 
 
 class DjLogoUploadError(Exception):
