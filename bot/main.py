@@ -10,10 +10,15 @@ Startup sequence:
   7. Notion (only when both NOTION_* are set): NotionApi -> ensure_schema -> ensure_views -> NotionClient. The schema
      and view config keys live under guild_id 0 (global), so this runs before
      Discord connects. Exits with a clear message if the parent page is unusable.
-  8. Create the services (incl. NotionSyncService) and load the cogs
-  9. Start bot (Discord connects only AFTER DB and Notion are ready)
- 10. With a Notion client: start the Notion mirror worker (bot/sync/worker.py)
- 11. On shutdown: stop the mirror worker, close pool and Notion API client
+  8. Upgrade import (bot/sync/notion_import.py): on the first start after the switch to
+     Postgres as the source of truth, a safety export, then events, slots and DJs are
+     imported from Notion once. Until it succeeds the bot is in maintenance (bookings and
+     edits refused) and the mirror worker stays off. The result is posted in on_ready.
+  9. Create the services (incl. NotionSyncService) and load the cogs
+ 10. Start bot (Discord connects only AFTER DB and Notion are ready)
+ 11. With a Notion client and the import done: start the Notion mirror worker
+     (bot/sync/worker.py)
+ 12. On shutdown: stop the mirror worker, close pool and Notion API client
 
 [Source: architecture.md#Implementation Sequence]
 [Source: architecture.md#Decision Impact Analysis]
@@ -41,6 +46,7 @@ from bot.notion.schema import (
 from bot.notion.views import ensure_views
 from bot.services import activation
 from bot.services.dj_sync import retry_unsynced_logos
+from bot.sync.notion_import import post_upgrade_result, run_upgrade_import_if_needed
 from bot.sync.worker import MirrorWorker
 from bot.timezone import load_stored_timezone
 from bot.ui import texts
@@ -113,8 +119,17 @@ async def _retry_logos_if_active(bot: commands.Bot, ctx: BotContext) -> None:
 
 
 def _start_mirror(ctx: BotContext) -> None:
-    """Start the Notion mirror worker once a Notion client exists (never without Notion)."""
-    if ctx.mirror is None and ctx.notion_client is not None and ctx.db is not None:
+    """Start the Notion mirror worker once a Notion client exists (never without Notion).
+
+    Not during maintenance: until the upgrade import succeeded ctx.mirror stays None,
+    so changed() queues nothing and Notion is not written.
+    """
+    if (
+        ctx.mirror is None
+        and ctx.notion_client is not None
+        and ctx.db is not None
+        and ctx.maintenance is None
+    ):
         ctx.mirror = MirrorWorker(ctx.db, ctx.notion_client, ctx.log_service)
         ctx.mirror.start()
 
@@ -170,8 +185,10 @@ async def main() -> None:
                 await set_value(db, NOTION_CONFIG_GUILD_ID, RECREATE_APPROVED_KEY, "0")
                 return str(exc)
             ctx.attach_notion(client)
-            _start_mirror(ctx)
             ctx.notion_problem = None
+            await run_upgrade_import_if_needed(ctx)
+            await post_upgrade_result(ctx)
+            _start_mirror(ctx)
             logger.info("New Notion databases created after an admin approved it")
             return None
 
@@ -188,6 +205,7 @@ async def main() -> None:
             await notion_api.close()
             sys.exit(f"{NOTION_SETUP_FAILED} (Cause: {exc})")
         ctx.notion_recover = recover_notion
+        await run_upgrade_import_if_needed(ctx)
         _start_mirror(ctx)
 
     # Story 3.2: init LineupService after DB and log_service are ready
@@ -305,6 +323,7 @@ async def main() -> None:
                     )
                 except Exception:
                     logger.warning("Could not post the missing Notion databases", exc_info=True)
+            await post_upgrade_result(ctx)
 
     runner = await start_admin_page(ctx, bot)
     try:

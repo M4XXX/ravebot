@@ -1,7 +1,8 @@
 """Events repository: the bot's own events (Postgres is the source of truth).
 
 An event's key is ``events.uid``; ``EventInfo.page_id`` carries it. Slots live in
-``slot_locks`` (rows 0..slot_count-1), shown as slot numbers 1..slot_count.
+``slot_locks`` keyed by the event uid (rows 0..slot_count-1), shown as slot
+numbers 1..slot_count.
 Functions accept a Pool or a Connection; ``insert_event`` opens its own
 transaction only when given a Pool.
 """
@@ -90,12 +91,12 @@ def _event(row: asyncpg.Record, slots: tuple[SlotInfo, ...]) -> EventInfo:
 async def _slots_by_event(
     db: Executor, event_ids: list[str]
 ) -> dict[str, list[tuple[str, SlotInfo]]]:
-    """Slots per bot event_id (not uid), one query for all events."""
+    """Slots per event uid (slot_locks.event_id is the event uid), one query for all events."""
     rows = await db.fetch(
         """
         SELECT e.uid, s.slot_index, s.discord_user_id, d.dj_name
         FROM events e
-        JOIN slot_locks s ON s.event_id = e.event_id AND s.slot_index < e.slot_count
+        JOIN slot_locks s ON s.event_id = e.uid AND s.slot_index < e.slot_count
         LEFT JOIN djs d ON d.discord_user_id = s.discord_user_id
         WHERE e.event_id = ANY($1::text[])
         ORDER BY e.uid, s.slot_index
@@ -168,7 +169,7 @@ async def _insert(db: asyncpg.Connection, draft: EventDraft, uid: str) -> None:
         )
     except asyncpg.UniqueViolationError as exc:
         raise DuplicateEventError(draft.event_id) from exc
-    await init_event_slots(db, draft.event_id, draft.slot_count)
+    await init_event_slots(db, uid, draft.slot_count)
 
 
 async def insert_event(

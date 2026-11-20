@@ -82,6 +82,10 @@ class AdminPageService:
         """Why the Notion databases are unusable, or None when they are fine."""
         return self._ctx.notion_problem
 
+    def maintenance(self) -> str | None:
+        """The text for refused writes while an import replaces the data, else None."""
+        return self._ctx.maintenance
+
     async def recreate_notion(self) -> ActionResult:
         recover = self._ctx.notion_recover
         if self._ctx.notion_problem is None or recover is None:

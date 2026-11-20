@@ -60,7 +60,7 @@ async def test_insert_event_creates_slots() -> None:
     conn.transaction.assert_called_once()
     assert "INSERT INTO events" in conn.execute.await_args_list[0].args[0]
     rows = conn.executemany.await_args.args[1]
-    assert rows == [("RAVE-1", 0), ("RAVE-1", 1), ("RAVE-1", 2)]
+    assert rows == [("u1", 0), ("u1", 1), ("u1", 2)]
     assert event.page_id == "u1"
     assert [s.number for s in event.slots] == [1, 2, 3]
     assert all(s.discord_id is None for s in event.slots)

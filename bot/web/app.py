@@ -138,6 +138,13 @@ def _notion_problem(service: Any) -> str | None:
     return getter() if callable(getter) else None
 
 
+def _maintenance(service: Any) -> ActionResult | None:
+    """The refusal for a write while an import replaces the data, or None."""
+    getter = getattr(service, "maintenance", None)
+    text = getter() if callable(getter) else None
+    return ActionResult(False, text) if text else None
+
+
 def _logo_bytes(form: MultiDictProxy[Any]) -> bytes | None:
     """The uploaded logo file, or None when no file was chosen."""
     value = form.get("logo")
@@ -276,6 +283,8 @@ def create_app(
         return await djs_page(request)
 
     async def post_dj_add(request: web.Request) -> web.Response:
+        if refused := _maintenance(service):
+            return await djs_page(request, refused, 503)
         form = await _read_form(request)
         values = _dj_values(form)
         raw_discord = values["discord_id"].strip()
@@ -311,6 +320,8 @@ def create_app(
         return _html(render_edit_dj(row, request["session"].csrf))
 
     async def post_dj_edit(request: web.Request) -> web.Response:
+        if refused := _maintenance(service):
+            return await djs_page(request, refused, 503)
         form = await _read_form(request)
         row = await _dj_or_none(_field(form, "id"))
         if row is None:
@@ -342,6 +353,8 @@ def create_app(
         return _html(render_confirm_delete_dj(row, bookings, request["session"].csrf))
 
     async def post_dj_delete(request: web.Request) -> web.Response:
+        if refused := _maintenance(service):
+            return await djs_page(request, refused, 503)
         row = await _dj_or_none(_field(await _read_form(request), "id"))
         if row is None:
             return await djs_page(request, ActionResult(False, NO_DJ_MESSAGE), 404)

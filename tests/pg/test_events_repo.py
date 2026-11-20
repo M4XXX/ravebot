@@ -32,7 +32,7 @@ async def test_list_events_matches_notion_shape(pool) -> None:
     )
     day = local_today() + datetime.timedelta(days=3)
     created = await insert_event(pool, _draft("E1", day, slots=3), uid="u1")
-    await bookings.acquire_slot_lock(pool, "E1", 1, A)
+    await bookings.acquire_slot_lock(pool, "u1", 1, A)
     events = await list_events(pool)
     assert len(events) == 1
     ev = events[0]
@@ -73,7 +73,9 @@ async def test_insert_duplicate_event_id_raises(pool) -> None:
 
 async def test_insert_event_creates_slots(pool) -> None:
     ev = await insert_event(pool, _draft("S", local_today(), slots=4))
-    n = await pool.fetchval("SELECT count(*) FROM slot_locks WHERE event_id = 'S'")
+    n = await pool.fetchval(
+        "SELECT count(*) FROM slot_locks WHERE event_id = $1", ev.page_id
+    )
     assert n == 4 and len(ev.slots) == 4
     assert ev.page_id  # generated uuid
 

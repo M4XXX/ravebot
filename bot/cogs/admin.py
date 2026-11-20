@@ -38,7 +38,7 @@ from bot.services.roles import DJ_ROLE_KEY, INVITES_ROLE_KEY
 from bot.timezone import DEFAULT_TIMEZONE, local_today
 from bot.ui import texts
 from bot.ui.embeds import EmbedColors
-from bot.ui.gates import ADMIN_IDLE_REPLY
+from bot.ui.gates import ADMIN_IDLE_REPLY, refuse_in_maintenance
 from bot.ui.setup_options import FIELD_LABELS, LIMITS, parse_hhmm
 
 logger = logging.getLogger(__name__)
@@ -254,6 +254,8 @@ class AdminCog(commands.Cog):
 
         [Source: epics.md#Story 7.1 AC5, AC6, AC7 — FR40]
         """
+        if await refuse_in_maintenance(inter, self.ctx):
+            return
         if self.ctx.notion_client is None or self.ctx.db is None:
             await inter.response.send_message(
                 "The bot is not ready yet. Please try again in a moment.", ephemeral=True
@@ -500,6 +502,8 @@ class AdminCog(commands.Cog):
         [Source: epics.md#Story 6.3 AC1, AC4]
         [Source: bot/services/admin_booking.py -- AdminBookingService.book_slot_override()]
         """
+        if await refuse_in_maintenance(inter, self.ctx):
+            return
         if self.ctx.admin_booking_service is None:
             await inter.response.send_message(
                 "The bot is not ready yet. Please try again in a moment.", ephemeral=True
@@ -562,6 +566,8 @@ class AdminCog(commands.Cog):
         [Source: epics.md#Story 6.3 AC2, AC3, AC4]
         [Source: bot/services/admin_booking.py -- AdminBookingService.cancel_slot_override()]
         """
+        if await refuse_in_maintenance(inter, self.ctx):
+            return
         if self.ctx.admin_booking_service is None:
             await inter.response.send_message(
                 "The bot is not ready yet. Please try again in a moment.", ephemeral=True
@@ -612,6 +618,8 @@ class AdminCog(commands.Cog):
 
         Nothing is changed or sent before the admin presses "Cancel event".
         """
+        if await refuse_in_maintenance(inter, self.ctx):
+            return
         service = self.ctx.event_cancel_service
         if service is None:
             await inter.response.send_message(
@@ -848,6 +856,8 @@ class AdminCog(commands.Cog):
             default=None, description="The DJ's Discord account. Leave empty for a guest."
         ),
     ) -> None:
+        if await refuse_in_maintenance(inter, self.ctx):
+            return
         service = self.ctx.dj_admin_service
         if service is None:
             await inter.response.send_message(
@@ -886,6 +896,8 @@ class AdminCog(commands.Cog):
             default=None, description="New logo (PNG or JPEG, up to 5 MB)"
         ),
     ) -> None:
+        if await refuse_in_maintenance(inter, self.ctx):
+            return
         service = self.ctx.dj_admin_service
         if service is None:
             await inter.response.send_message(
@@ -920,6 +932,8 @@ class AdminCog(commands.Cog):
         inter: disnake.ApplicationCommandInteraction,
         dj: str = commands.Param(description="The DJ to delete"),
     ) -> None:
+        if await refuse_in_maintenance(inter, self.ctx):
+            return
         service = self.ctx.dj_admin_service
         if service is None:
             await inter.response.send_message(
@@ -977,6 +991,8 @@ class _ConfirmDelete(disnake.ui.View):
         self, button: disnake.ui.Button, inter: disnake.MessageInteraction
     ) -> None:
         self.stop()
+        if await refuse_in_maintenance(inter, self._ctx):
+            return
         await inter.response.defer()
         try:
             result = await self._service.delete_dj(
@@ -1029,6 +1045,8 @@ class _ConfirmCancelEvent(disnake.ui.View):
         self, button: disnake.ui.Button, inter: disnake.MessageInteraction
     ) -> None:
         self.stop()
+        if await refuse_in_maintenance(inter, self._ctx):
+            return
         await inter.response.defer()
         try:
             result = await self._service.cancel_event(

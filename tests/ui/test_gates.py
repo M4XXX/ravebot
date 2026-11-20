@@ -111,3 +111,87 @@ async def test_gate_fails_closed_when_check_raises(monkeypatch) -> None:
     inter = _inter()
     assert await view.interaction_check(inter) is False
     inter.response.send_message.assert_awaited_once_with(IDLE_REPLY, ephemeral=True)
+
+
+# --- maintenance gate ---
+
+
+def _flow_inter(user_id: int = 1) -> MagicMock:
+    inter = MagicMock(spec=disnake.MessageInteraction)
+    inter.author = MagicMock()
+    inter.author.id = user_id
+    inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    inter.response.is_done = MagicMock(return_value=False)
+    inter.followup.send = AsyncMock()
+    return inter
+
+
+async def test_refuse_in_maintenance_only_while_set() -> None:
+    from bot.ui import texts
+    from bot.ui.gates import refuse_in_maintenance
+    from tests.conftest import make_real_ctx
+
+    ctx = make_real_ctx(db=MagicMock())
+    inter = _flow_inter()
+    assert await refuse_in_maintenance(inter, ctx) is False
+    inter.response.send_message.assert_not_awaited()
+    ctx.maintenance = texts.MAINTENANCE
+    assert await refuse_in_maintenance(inter, ctx) is True
+    inter.response.send_message.assert_awaited_once_with(texts.MAINTENANCE, ephemeral=True)
+
+
+async def test_booking_refused_in_maintenance(monkeypatch) -> None:
+    from bot.db import bookings
+    from bot.ui import texts
+    from tests.conftest import make_real_ctx
+    from tests.notion.factories import make_event
+
+    acquire = AsyncMock(return_value=True)
+    monkeypatch.setattr(bookings, "acquire_slot_lock", acquire)
+    ctx = make_real_ctx(db=MagicMock())
+    ctx.notion_client = MagicMock()
+    ctx.maintenance = texts.MAINTENANCE
+    lock = ctx.get_user_lock(1)
+    await lock.acquire()
+    view = views.BookingConfirmView(ctx, make_event(page_id="e1"), 0, 1, lock, 1)
+    inter = _flow_inter()
+    await view._handle_confirm(inter)
+    inter.response.send_message.assert_awaited_once_with(texts.MAINTENANCE, ephemeral=True)
+    acquire.assert_not_awaited()
+    assert not lock.locked()
+
+
+async def test_cancel_refused_in_maintenance(monkeypatch) -> None:
+    from bot.db import bookings
+    from bot.ui import texts
+    from tests.conftest import make_real_ctx
+    from tests.notion.factories import make_event
+
+    release = AsyncMock(return_value=True)
+    monkeypatch.setattr(bookings, "release_slot_lock", release)
+    ctx = make_real_ctx(db=MagicMock())
+    ctx.maintenance = texts.MAINTENANCE
+    lock = ctx.get_user_lock(1)
+    await lock.acquire()
+    view = views.CancelConfirmView(ctx, make_event(page_id="e1"), 0, 1, lock, 1)
+    inter = _flow_inter()
+    await view._handle_confirm(inter)
+    inter.response.send_message.assert_awaited_once_with(texts.MAINTENANCE, ephemeral=True)
+    release.assert_not_awaited()
+    assert not lock.locked()
+
+
+async def test_profile_edit_refused_in_maintenance() -> None:
+    from bot.ui import texts
+    from tests.conftest import make_real_ctx
+
+    ctx = make_real_ctx(db=MagicMock())
+    ctx.maintenance = texts.MAINTENANCE
+    ctx.dj_conversations = MagicMock()
+    ctx.dj_conversations.start_edit = AsyncMock()
+    view = dj_profile.OverviewView(ctx, in_group=True)
+    inter = _flow_inter()
+    await view._edit(inter, "name")
+    inter.response.send_message.assert_awaited_once_with(texts.MAINTENANCE, ephemeral=True)
+    ctx.dj_conversations.start_edit.assert_not_awaited()

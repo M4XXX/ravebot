@@ -14,6 +14,7 @@ def make_ctx(db: object = None, log: object = None) -> MagicMock:
     ctx = MagicMock()
     ctx.db = db
     ctx.log_service = log
+    ctx.maintenance = None
     return ctx
 
 
@@ -106,6 +107,7 @@ def _make_cog_with_bot(guilds: list = None) -> "EventsCog":
     ctx = MagicMock()
     ctx.db = mock_db
     ctx.log_service = log
+    ctx.maintenance = None
     ctx.notion_client = notion
     sync = MagicMock()
     sync.run_cycle = AsyncMock(return_value=[])

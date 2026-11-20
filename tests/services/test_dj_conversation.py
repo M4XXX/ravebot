@@ -142,6 +142,7 @@ def client(member: MagicMock) -> MagicMock:
 def ctx() -> MagicMock:
     c = MagicMock()
     c.db = MagicMock(name="pool")
+    c.maintenance = None
     c.log_service = MagicMock()
     c.log_service.log_new_dj = AsyncMock()
     return c
@@ -1049,3 +1050,23 @@ async def test_has_open_conversation_delete_failure_is_only_logged(service, fake
 async def test_has_open_conversation_without_db(ctx, client, fake, sync, roles):
     ctx.db = None
     assert await DjConversationService(ctx, client=client).has_open_conversation(A) is False
+
+
+async def test_edit_save_refused_in_maintenance(service, fake, ctx):
+    _dj(fake)
+    await service.start_edit(A, GUILD, "vrchat")
+    ctx.maintenance = texts.MAINTENANCE
+    r = await service.handle_message(msg(A, "newvr"))
+    assert r is not None and r.kind == "error" and r.text == texts.MAINTENANCE
+    assert fake.djs[A]["vrchat_name"] == "foxvr"
+    ctx.maintenance = None
+    r = await service.handle_message(msg(A, "newvr"))  # the question is still open
+    assert r.kind == "overview" and fake.djs[A]["vrchat_name"] == "newvr"
+
+
+async def test_onboarding_confirm_refused_in_maintenance(service, fake, ctx):
+    await _to_summary(service)
+    ctx.maintenance = texts.MAINTENANCE
+    r = await service.confirm(A, 7)
+    assert r.kind == "summary" and r.text.startswith(texts.MAINTENANCE)
+    assert A not in fake.djs

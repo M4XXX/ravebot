@@ -92,6 +92,10 @@ class BotContext:
                       DM conversation (None until set in main.py).
         mirror:       MirrorWorker that pushes queued Postgres changes to Notion
                       (None while Notion is disabled or not set up).
+        maintenance:  Text for users while an import replaces the data; bookings and
+                      edits are refused while it is set (bot/ui/gates.py).
+        sync_problem: Last sync or import failure for the admins, or None.
+        upgrade_import: Upgrade import result waiting to be posted in the admin log.
         admins:       AdminRegistry (owners plus added admins; None falls back to config).
         log_service:  AdminLogService (set in Story 1.3 main.py, None until then).
         user_locks:   Per-user asyncio.Lock dict — keyed by discord_user_id.
@@ -115,6 +119,12 @@ class BotContext:
     # the reason, and the coroutine function the admin page calls to create a new set.
     notion_problem: str | None = None
     notion_recover: "Any | None" = None
+    # Set while an import replaces the data (the text users get), None otherwise.
+    maintenance: str | None = None
+    # The last sync or import failure shown to admins, None when there is none.
+    sync_problem: str | None = None
+    # The upgrade import result still to post in the admin log (posted once in on_ready).
+    upgrade_import: "Any | None" = None
     dj_conversations: "Any | None" = None
     mirror: "Any | None" = None
     admins: "Any | None" = None

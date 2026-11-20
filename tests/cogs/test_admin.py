@@ -14,6 +14,7 @@ def make_mock_ctx(admin_ids: frozenset[int]) -> MagicMock:
     ctx.config.admin_user_ids = admin_ids
     ctx.is_admin = lambda user_id: user_id in admin_ids
     ctx.db = MagicMock()
+    ctx.maintenance = None
     return ctx
 
 
@@ -1790,3 +1791,34 @@ def test_cancel_event_is_a_sub_command_of_cancel() -> None:
     from bot.cogs.admin import AdminCog
 
     assert AdminCog.cancel_event.qualified_name == "cancel event"
+
+
+@pytest.mark.parametrize(
+    ("command", "args"),
+    [
+        ("create_event", ("2099-01-01", None, None, None)),
+        ("book_dj_slot", ("Rave", 1, None, "Guest")),
+        ("cancel_dj_slot", ("Rave", 1, None, "Guest")),
+        ("cancel_event", ("Rave",)),
+        ("dj_add", ()),
+        ("dj_edit", ()),
+        ("dj_remove", ()),
+    ],
+)
+async def test_admin_writes_refused_in_maintenance(command, args) -> None:
+    from bot.cogs.admin import AdminCog
+    from bot.ui import texts
+
+    ctx = make_mock_ctx(frozenset({1}))
+    ctx.maintenance = texts.MAINTENANCE
+    cog = AdminCog(ctx)
+    inter = make_mock_inter(1)
+    cmd = getattr(cog, command)
+    params = list(cmd.callback.__code__.co_varnames[2:cmd.callback.__code__.co_argcount])
+    call_args = list(args) + [None] * (len(params) - len(args))
+    await cmd.callback(cog, inter, *call_args)
+    inter.response.send_message.assert_awaited_once_with(texts.MAINTENANCE, ephemeral=True)
+    assert inter.order == ["send_message"]
+    ctx.admin_booking_service.book_slot_override.assert_not_called()
+    ctx.event_cancel_service.preview.assert_not_called()
+    ctx.dj_admin_service.add_dj.assert_not_called()

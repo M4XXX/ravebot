@@ -267,6 +267,10 @@ class AdminLogService:
             )
         )
 
+    async def log_notice(self, title: str, what: str) -> None:
+        """A finished bot operation the admins should know about (green entry)."""
+        await self._post_built(lambda: LogEntryEmbed(title, what, EmbedColors.SUCCESS_GREEN))
+
     async def log_attention(self, title: str, what: str, todo: str | None = None) -> None:
         await self._post_built(lambda: LogEntryEmbed(title, what, EmbedColors.IMPERIAL_RED, todo))
 

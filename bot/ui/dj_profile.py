@@ -18,7 +18,7 @@ import disnake
 
 from bot.services.dj_conversation import STEPS, Reply
 from bot.ui import texts
-from bot.ui.gates import GatedView
+from bot.ui.gates import GatedView, refuse_in_maintenance
 
 if TYPE_CHECKING:
     from bot.context import BotContext
@@ -287,6 +287,8 @@ class OverviewView(GatedView):
             self.remove_item(self.join_button if in_group else self.leave_button)
 
     async def _edit(self, inter: disnake.MessageInteraction, field: str) -> None:
+        if await refuse_in_maintenance(inter, self.ctx):
+            return
         user_id = inter.author.id
         guild_id = _guild_id(inter)
         await respond(self.ctx, inter, lambda s: s.start_edit(user_id, guild_id, field))

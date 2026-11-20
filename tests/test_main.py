@@ -57,6 +57,12 @@ class _Startup:
         self.stop_page = AsyncMock(side_effect=self._stop_page)
         self._schema_error = schema_error
         self.while_running = None  # async callback run while main() is running
+        self.import_fails = False  # the upgrade import leaves the bot in maintenance
+
+    async def _upgrade_import(self, ctx):  # noqa: ANN001, ANN202
+        self.calls.append("upgrade_import")
+        if self.import_fails:
+            ctx.maintenance = "restoring"
 
     async def _start(self, token: str) -> None:
         self.calls.append("start")
@@ -107,6 +113,9 @@ class _Startup:
              patch.object(main_mod, "ensure_views", side_effect=self._ensure_views), \
              patch.object(main_mod, "NotionClient", side_effect=self._make_client), \
              patch.object(main_mod, "start_admin_page", new=self.start_page), \
+             patch.object(
+                 main_mod, "run_upgrade_import_if_needed", side_effect=self._upgrade_import
+             ), \
              patch.object(main_mod, "stop_admin_page", new=self.stop_page):
             self.api_cls = api_cls
             await main_mod.main()
@@ -118,7 +127,8 @@ async def test_startup_ensures_schema_then_views_for_guild_zero() -> None:
     await s.run()
 
     assert s.calls == [
-        "ensure_schema", "ensure_views", "client", "page_start", "start", "page_stop",
+        "ensure_schema", "ensure_views", "client", "upgrade_import", "page_start", "start",
+        "page_stop",
     ]
     assert s.api_cls.call_args.args[0] == "key"
 
@@ -462,3 +472,58 @@ async def test_mirror_worker_runs_while_the_bot_runs() -> None:
     assert seen["running"] is True
     assert seen["client"] is s.client
     assert seen["mirror"]._task is None  # stopped on shutdown
+
+
+@pytest.mark.asyncio
+async def test_upgrade_import_runs_before_discord_and_the_mirror() -> None:
+    s = _Startup()
+    seen: dict = {}
+
+    async def check() -> None:
+        seen["mirror"] = s.ctx.mirror
+
+    s.while_running = check
+    await s.run()
+    assert s.calls.index("client") < s.calls.index("upgrade_import") < s.calls.index("start")
+    assert seen["mirror"] is not None
+
+
+@pytest.mark.asyncio
+async def test_failed_upgrade_import_keeps_the_mirror_off() -> None:
+    s = _Startup()
+    s.import_fails = True
+    seen: dict = {}
+
+    async def check() -> None:
+        seen["mirror"] = s.ctx.mirror
+
+    s.while_running = check
+    await s.run()
+    assert seen["mirror"] is None
+    assert s.ctx.maintenance == "restoring"
+
+
+@pytest.mark.asyncio
+async def test_main_without_notion_does_not_enter_maintenance() -> None:
+    s = _Startup(notion_enabled=False)
+    await s.run()
+    assert "upgrade_import" not in s.calls
+    assert s.ctx.maintenance is None
+
+
+@pytest.mark.asyncio
+async def test_on_ready_posts_the_upgrade_result() -> None:
+    from bot.sync.notion_import import ImportResult
+
+    s = _Startup()
+    await s.run()
+    s.ctx.upgrade_import = ImportResult(ok=True, events=1, slots=2, djs=3, problems=[])
+    s.ctx.log_service = MagicMock()
+    s.ctx.log_service.log_notice = AsyncMock()
+    on_ready = s.bot.event.call_args.args[0]
+    with patch("bot.main.notify_admins_if_idle", new=AsyncMock()), \
+         patch("bot.main._retry_logos_if_active", new=AsyncMock()):
+        await on_ready()
+        await on_ready()
+    s.ctx.log_service.log_notice.assert_awaited_once()
+    assert s.ctx.upgrade_import is None

@@ -320,6 +320,13 @@ LOG_NOTION_MISSING_TODO = (
     "Create new databases."
 )
 LOG_NEW_DATABASES_TITLE = "New Notion databases created"
+MAINTENANCE = "The bot is restoring its data. Please try again in a few minutes."
+LOG_UPGRADE_DONE_TITLE = "Data imported from Notion"
+LOG_UPGRADE_FAILED_TITLE = "Import from Notion failed"
+LOG_UPGRADE_FAILED_TODO = (
+    "Fix these rows in Notion, then restart the bot. The import runs again on the next "
+    "start. Until then booking and edits stay paused."
+)
 NOTION_RETRY_TODO = "Check the Slots rows in Notion. The next sync retries."
 DJ_CHANNEL_TODO = "Run /setup again to set the DJ channel."
 
@@ -380,6 +387,27 @@ def log_admin_added_text(name: str, user_id: int) -> str:
 
 def log_dj_list_text(admin: str, action: str, dj_name: str) -> str:
     return f"{admin} {action} the DJ {dj_name}."
+
+
+def log_upgrade_done_text(events: int, slots: int, djs: int, notes: list[str]) -> str:
+    text = (
+        "The bot now keeps events, slots and DJs in its own database; Notion is a backup. "
+        f"Imported {events} events, {slots} slots and {djs} DJs."
+    )
+    if notes:
+        shown = "; ".join(notes[:10])
+        more = f" (and {len(notes) - 10} more)" if len(notes) > 10 else ""
+        text += f" Skipped or changed: {shown}{more}."
+    return text[:3500]
+
+
+def log_upgrade_failed_text(problems: list[str]) -> str:
+    shown = "; ".join(problems[:10])
+    more = f" (and {len(problems) - 10} more)" if len(problems) > 10 else ""
+    return (
+        "Nothing was imported from Notion, so booking and edits are paused. "
+        f"Problems: {shown}{more}."
+    )[:3500]
 
 
 def log_notion_missing_text(detail: str) -> str:

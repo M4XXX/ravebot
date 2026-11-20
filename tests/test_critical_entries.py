@@ -190,7 +190,7 @@ async def sync_cycle_failed(log: Recorder) -> None:
 async def poll_read_failed(log: Recorder) -> None:
     from bot.cogs.events import EventsCog
 
-    ctx = MagicMock(log_service=log, notion_sync_service=None)
+    ctx = MagicMock(log_service=log, notion_sync_service=None, maintenance=None)
     ctx.db.fetchval = AsyncMock(return_value=1)
     ctx.notion_client.list_events = AsyncMock(side_effect=httpx.RequestError("timeout"))
     cog = EventsCog(ctx)

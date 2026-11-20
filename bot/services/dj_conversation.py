@@ -433,6 +433,10 @@ class DjConversationService:
         await save_conversation(db, conv)
 
     async def _finish_onboarding(self, db: asyncpg.Pool, conv: Conversation) -> Reply:
+        if self._ctx.maintenance:  # an import replaces the DJ list: try again later
+            summary = _summary(conv)
+            summary.text = f"{texts.MAINTENANCE}\n\n{summary.text}"
+            return summary
         user_id = conv.discord_user_id
         data = conv.data
         name = data.get("name")
@@ -487,6 +491,8 @@ class DjConversationService:
             logger.warning("Deleting the conversation of %s failed", user_id, exc_info=True)
 
     async def _finish_edit(self, db: asyncpg.Pool, conv: Conversation, value: Any) -> Reply:
+        if self._ctx.maintenance:  # an import replaces the DJ list: the question stays open
+            return _error(conv, texts.MAINTENANCE)
         user_id = conv.discord_user_id
         field = conv.step
         if field == "name":

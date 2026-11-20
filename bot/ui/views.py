@@ -25,7 +25,7 @@ from bot.services.roles import get_dj_role, get_invites_role
 from bot.ui import texts
 from bot.ui.dj_profile import respond, start_onboarding_dm
 from bot.ui.embeds import ErrorCode
-from bot.ui.gates import GatedView
+from bot.ui.gates import GatedView, refuse_in_maintenance
 
 if TYPE_CHECKING:
     from bot.context import BotContext
@@ -1238,6 +1238,9 @@ class BookingConfirmView(FlowView):
 
         if await self._stale(inter):
             return
+        if await refuse_in_maintenance(inter, self._ctx):
+            self._release_flow()
+            return
         self._busy = True  # a second press while this runs gets FLOW_BUSY
         # Notion calls below can take longer than Discord's 3 second answer limit
         await inter.response.defer(ephemeral=True)
@@ -1616,6 +1619,9 @@ class CancelConfirmView(FlowView):
         from bot.services.dj_pages import ensure_dj_page
 
         if await self._stale(inter):
+            return
+        if await refuse_in_maintenance(inter, self._ctx):
+            self._release_flow()
             return
         self._busy = True
         await inter.response.defer(ephemeral=True)

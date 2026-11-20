@@ -51,6 +51,18 @@ async def test_poll_notion_active_runs() -> None:
 
 
 @pytest.mark.asyncio
+async def test_poll_notion_skips_while_in_maintenance() -> None:
+    from bot.cogs.events import EventsCog
+
+    cog = _make_cog_with_bot()
+    cog.ctx.maintenance = "restoring"
+    cog.ctx.lineup_service = MagicMock(refresh=AsyncMock())
+    await EventsCog._poll_notion.coro(cog)
+    cog.ctx.notion_sync_service.run_cycle.assert_not_called()
+    cog.ctx.notion_client.list_events.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_check_reminders_idle_and_active(monkeypatch) -> None:
     from bot.cogs.events import EventsCog
 

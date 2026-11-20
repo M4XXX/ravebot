@@ -110,6 +110,9 @@ class EventsCog(commands.Cog):
         """
         if not await self._guard_db("notion_poll"):
             return
+        if self.ctx.maintenance:  # an import replaces the data: no writes until it is done
+            logger.debug("_poll_notion: maintenance, skipping cycle")
+            return
 
         guild_id = self._get_guild_id()
         if guild_id is None:
