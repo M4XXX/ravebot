@@ -4,6 +4,11 @@
 writes a safety export, then replaces every exported table in one transaction.
 Refusals return an ``ActionResult`` and change nothing (no safety export, no
 maintenance mode); another import or rebuild running is one of them.
+
+A successful import is a full recovery, like a rebuild (R24): with Notion it marks the
+upgrade import done (in the same transaction, after the restored config), it clears
+``ctx.maintenance`` and ``ctx.sync_problem``, starts the Notion mirror if it was not
+running and queues everything for Notion. A failed import keeps the earlier pause.
 """
 import asyncio
 import base64
@@ -20,7 +25,10 @@ import asyncpg
 
 from bot import maintenance
 from bot.backup.export import FORMAT, VERSION, _quote, write_safety_export
+from bot.db.config import set_value
 from bot.results import ActionResult
+from bot.sync.mirror_start import ensure_mirror
+from bot.sync.notion_import import CONFIG_GUILD_ID, PG_TRUTH_IMPORTED_KEY
 from bot.ui import texts
 
 logger = logging.getLogger(__name__)
@@ -221,6 +229,9 @@ async def _import_database(ctx: Any, data: bytes) -> ActionResult:
         logger.exception("The safety export before the import failed")
         return ActionResult(False, texts.IMPORT_SAFETY_FAILED)
 
+    previous = (ctx.maintenance, getattr(ctx, "sync_problem", None))
+    notion = getattr(ctx, "notion_client", None) is not None
+    written = False
     ctx.maintenance = texts.MAINTENANCE
     try:
         async with contextlib.AsyncExitStack() as stack:
@@ -231,17 +242,28 @@ async def _import_database(ctx: Any, data: bytes) -> ActionResult:
             try:
                 async with pool.acquire() as conn, conn.transaction():
                     await _write(conn, converted, document["sequences"])
+                    if notion:
+                        # After the restored config, so the file cannot drop the mark.
+                        await set_value(conn, CONFIG_GUILD_ID, PG_TRUTH_IMPORTED_KEY, "1")
             except (asyncpg.PostgresError, asyncpg.InterfaceError):
                 logger.exception("The import from the backup file failed in the database")
                 return ActionResult(False, texts.IMPORT_DB_ERROR)
+            written = True
             if ctx.admins is not None:
                 await ctx.admins.load()
+            result = ActionResult(True, texts.IMPORT_DONE)
             if ctx.sync_cycle is not None:
                 try:
                     await ctx.sync_cycle.resync_all()
                 except Exception:
                     logger.exception("Writing the restored data to Notion failed")
-                    return ActionResult(True, texts.IMPORT_DONE_RESYNC_FAILED)
-            return ActionResult(True, texts.IMPORT_DONE)
+                    result = ActionResult(True, texts.IMPORT_DONE_RESYNC_FAILED)
     finally:
-        ctx.maintenance = None
+        if written:
+            ctx.maintenance = None
+            ctx.sync_problem = None
+        else:
+            ctx.maintenance, ctx.sync_problem = previous
+    # A bot paused by a failed upgrade import has no mirror yet: start it and queue all.
+    await ensure_mirror(ctx, "the backup import")
+    return result

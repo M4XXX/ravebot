@@ -10,7 +10,7 @@ from bot.backup import export
 
 def test_encode_values() -> None:
     assert export._encode(b"\x00\xff", "bytea") == base64.b64encode(b"\x00\xff").decode()
-    when = datetime.datetime(2026, 1, 2, 3, 4, 5, tzinfo=datetime.timezone.utc)
+    when = datetime.datetime(2026, 1, 2, 3, 4, 5, tzinfo=datetime.UTC)
     assert export._encode(when, "timestamp with time zone") == when.isoformat()
     assert export._encode(datetime.date(2026, 1, 2), "date") == "2026-01-02"
     assert export._encode('{"a": [1]}', "jsonb") == {"a": [1]}
@@ -62,3 +62,41 @@ async def test_safety_export_is_owner_only(tmp_path: Path, monkeypatch) -> None:
     path = await export.write_safety_export(None, "perm")
     assert path.stat().st_mode & 0o777 == 0o600
     assert target.stat().st_mode & 0o777 == 0o700
+
+
+async def test_export_encodes_off_the_event_loop(monkeypatch) -> None:  # noqa: ANN001
+    """R23: the database reads are awaited; encoding, json and gzip run in a thread."""
+    import threading
+    from unittest.mock import AsyncMock, MagicMock
+
+    conn = MagicMock()
+    conn.transaction = MagicMock()
+    conn.transaction.return_value.__aenter__ = AsyncMock()
+    conn.transaction.return_value.__aexit__ = AsyncMock(return_value=False)
+    conn.fetchval = AsyncMock(return_value="0017")
+    tables = [{"table_name": "djs"}]
+    cols = [{"name": "logo", "type": "bytea"}]
+    rows = [{"logo": b"\x00\xff"}]
+    sequences: list = []
+    conn.fetch = AsyncMock(side_effect=[tables, cols, rows, sequences])
+    pool = MagicMock()
+    pool.acquire.return_value.__aenter__ = AsyncMock(return_value=conn)
+    pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+
+    loop_thread = threading.get_ident()
+    threads: list[int] = []
+    real_build = export._build_file
+
+    def build(*args):  # noqa: ANN002, ANN202
+        threads.append(threading.get_ident())
+        return real_build(*args)
+
+    monkeypatch.setattr(export, "_build_file", build)
+    data = await export.export_database(pool)
+    assert threads and threads[0] != loop_thread
+    doc = json.loads(gzip.decompress(data))
+    assert doc["tables"]["djs"] == {
+        "columns": [{"name": "logo", "type": "bytea"}],
+        "rows": [[base64.b64encode(b"\x00\xff").decode()]],
+    }
+    assert doc["alembic_revision"] == "0017" and doc["sequences"] == {}

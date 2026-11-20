@@ -28,6 +28,7 @@ from bot.backup.export import write_safety_export
 from bot.db.config import get_value, set_value
 from bot.results import ActionResult
 from bot.services.logo import LogoError, download_logo_file
+from bot.sync.mirror_start import ensure_mirror
 from bot.sync.notion_import import (
     CONFIG_GUILD_ID,
     PG_TRUTH_IMPORTED_KEY,
@@ -103,7 +104,7 @@ async def rebuild_from_notion(ctx: Any, *, post_result: bool = True) -> ActionRe
                 ctx.maintenance = paused
     ctx.rebuild_report = report
     if report.result.ok:
-        await _ensure_mirror(ctx)
+        await ensure_mirror(ctx, "the rebuild")
     if post_result:
         await post_rebuild_result(ctx)
     result = report.result
@@ -115,25 +116,6 @@ async def rebuild_from_notion(ctx: Any, *, post_result: bool = True) -> ActionRe
             result.events, result.slots, result.djs, len(report.logo_failures)
         ),
     )
-
-
-async def _ensure_mirror(ctx: Any) -> None:
-    """After a rebuild that ended a pause: start the mirror and queue a full resync.
-
-    The mirror and the sync cycle never started while the bot was paused (failed
-    upgrade import or failed startup rebuild), so edits since then were not queued.
-    ``ctx.notion_start_mirror`` (set by main.py) starts them the way startup does.
-    """
-    start = getattr(ctx, "notion_start_mirror", None)
-    if ctx.mirror is not None or start is None:
-        return
-    try:
-        await start()
-        if ctx.sync_cycle is not None:
-            count = await ctx.sync_cycle.resync_all()
-            logger.info("Notion mirror started after the rebuild; %d records queued", count)
-    except Exception:
-        logger.exception("Starting the Notion mirror after the rebuild failed")
 
 
 async def _import_and_restore_logos(ctx: Any) -> RebuildReport:

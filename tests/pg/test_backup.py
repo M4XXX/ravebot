@@ -200,3 +200,90 @@ async def test_import_waits_for_running_cycle_and_keeps_maintenance_until_resync
     assert result.ok, result.message
     assert seen and seen[0]  # maintenance still set when the resync ran
     assert ctx.maintenance is None
+
+
+# ---- R24: a successful import recovers a paused bot ----
+
+from bot.sync.notion_import import PG_TRUTH_IMPORTED_KEY  # noqa: E402
+from bot.ui import texts  # noqa: E402
+
+
+def _paused_ctx(pool):  # noqa: ANN001, ANN202
+    """A bot after a failed upgrade import: paused, no mirror, no sync cycle."""
+    ctx = SimpleNamespace(
+        db=pool, maintenance=texts.MAINTENANCE, sync_problem="Two events named E1",
+        admins=SimpleNamespace(load=AsyncMock()), sync_cycle=None, mirror=None,
+        notion_client=object(),
+    )
+    cycle = _FakeCycle()
+
+    async def start() -> None:
+        assert ctx.maintenance is None  # main._start_mirror refuses during maintenance
+        ctx.mirror = object()
+        ctx.sync_cycle = cycle
+
+    ctx.notion_start_mirror = AsyncMock(side_effect=start)
+    return ctx, cycle
+
+
+async def _mark(pool) -> str | None:  # noqa: ANN001
+    return await pool.fetchval(
+        "SELECT value FROM config WHERE guild_id = 0 AND key = $1", PG_TRUTH_IMPORTED_KEY
+    )
+
+
+async def test_import_after_failed_upgrade_recovers(pool, tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setenv("BACKUP_DIR", str(tmp_path))
+    await _seed(pool)
+    data = await export_database(pool)  # the file has no upgrade mark
+    ctx, cycle = _paused_ctx(pool)
+    result = await restore.import_database(ctx, data)
+    assert result.ok, result.message
+    assert await _mark(pool) == "1"
+    assert ctx.maintenance is None and ctx.sync_problem is None
+    ctx.notion_start_mirror.assert_awaited_once()
+    cycle.resync_all.assert_awaited_once()
+
+
+async def test_import_mark_survives_a_file_with_the_mark_unset(
+    pool, tmp_path, monkeypatch  # noqa: ANN001
+) -> None:
+    monkeypatch.setenv("BACKUP_DIR", str(tmp_path))
+    await _seed(pool)
+    await pool.execute(
+        "INSERT INTO config (guild_id, key, value) VALUES (0, $1, '0')", PG_TRUTH_IMPORTED_KEY
+    )
+    data = await export_database(pool)
+    ctx, _ = _paused_ctx(pool)
+    assert (await restore.import_database(ctx, data)).ok
+    assert await _mark(pool) == "1"
+
+
+async def test_failed_import_keeps_the_pause(pool, tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setenv("BACKUP_DIR", str(tmp_path))
+    await _seed(pool)
+    doc = json.loads(_gzip.decompress(await export_database(pool)))
+    doc["tables"]["djs"]["rows"].append(doc["tables"]["djs"]["rows"][0])  # duplicate key
+    ctx, cycle = _paused_ctx(pool)
+    result = await restore.import_database(ctx, _gzip.compress(json.dumps(doc).encode()))
+    assert result == restore.ActionResult(False, texts.IMPORT_DB_ERROR)
+    assert ctx.maintenance == texts.MAINTENANCE
+    assert ctx.sync_problem == "Two events named E1"
+    assert await _mark(pool) is None
+    ctx.notion_start_mirror.assert_not_awaited()
+    cycle.resync_all.assert_not_awaited()
+    # A refused file (unreadable) changes nothing either.
+    assert not (await restore.import_database(ctx, b"garbage")).ok
+    assert ctx.maintenance == texts.MAINTENANCE and ctx.sync_problem == "Two events named E1"
+
+
+async def test_import_with_running_mirror_resyncs_once(pool, tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setenv("BACKUP_DIR", str(tmp_path))
+    await _seed(pool)
+    data = await export_database(pool)
+    ctx, cycle = _paused_ctx(pool)
+    ctx.maintenance, ctx.sync_problem = None, None
+    ctx.mirror, ctx.sync_cycle = object(), cycle
+    assert (await restore.import_database(ctx, data)).ok
+    ctx.notion_start_mirror.assert_not_awaited()
+    cycle.resync_all.assert_awaited_once()

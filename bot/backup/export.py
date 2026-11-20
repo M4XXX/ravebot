@@ -77,13 +77,18 @@ def _encode(value: object, pg_type: str) -> object:
 
 
 async def export_database(pool: asyncpg.Pool) -> bytes:
-    """Return the gzip-compressed JSON export of every table in schema public."""
-    tables: dict[str, dict] = {}
+    """Return the gzip-compressed JSON export of every table in schema public.
+
+    The database reads stay on the event loop (async); encoding, ``json.dumps`` and
+    gzip run in a worker thread (``_build_file``) so a large export never blocks the
+    bot's Discord handling (decision 9, R23).
+    """
+    raw_tables: dict[str, tuple[list[tuple[str, str]], list[asyncpg.Record]]] = {}
     sequences: dict[str, dict] = {}
     async with pool.acquire() as conn:
         async with conn.transaction(isolation="repeatable_read", readonly=True):
             revision = await conn.fetchval("SELECT version_num FROM alembic_version")
-            created_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            created_at = datetime.datetime.now(datetime.UTC).isoformat()
             names = [
                 r["table_name"]
                 for r in await conn.fetch(
@@ -99,14 +104,8 @@ async def export_database(pool: asyncpg.Pool) -> bytes:
                     "AND a.attnum > 0 AND NOT a.attisdropped ORDER BY a.attnum",
                     f"public.{_quote(name)}",
                 )
-                types = [c["type"] for c in cols]
                 rows = await conn.fetch(f"SELECT * FROM public.{_quote(name)}")
-                tables[name] = {
-                    "columns": [{"name": c["name"], "type": c["type"]} for c in cols],
-                    "rows": [
-                        [_encode(row[c["name"]], t) for c, t in zip(cols, types)] for row in rows
-                    ],
-                }
+                raw_tables[name] = ([(c["name"], c["type"]) for c in cols], rows)
             for rec in await conn.fetch(
                 "SELECT sequencename FROM pg_sequences WHERE schemaname = 'public' "
                 "ORDER BY sequencename"
@@ -118,6 +117,22 @@ async def export_database(pool: asyncpg.Pool) -> bytes:
                 sequences[seq] = {
                     "last_value": state["last_value"], "is_called": state["is_called"]
                 }
+    return await asyncio.to_thread(_build_file, revision, created_at, raw_tables, sequences)
+
+
+def _build_file(
+    revision: str,
+    created_at: str,
+    raw_tables: dict[str, tuple[list[tuple[str, str]], list]],
+    sequences: dict[str, dict],
+) -> bytes:
+    """Encode the rows and return the gzip-compressed JSON document (CPU only)."""
+    tables: dict[str, dict] = {}
+    for name, (cols, rows) in raw_tables.items():
+        tables[name] = {
+            "columns": [{"name": c, "type": t} for c, t in cols],
+            "rows": [[_encode(row[c], t) for c, t in cols] for row in rows],
+        }
     document = {
         "format": FORMAT,
         "version": VERSION,
@@ -154,7 +169,7 @@ def _backup_dir() -> Path:
 
 def _write_file(data: bytes, reason: str) -> Path:
     directory = _backup_dir()
-    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%S")
+    stamp = datetime.datetime.now(datetime.UTC).strftime("%Y%m%d-%H%M%S")
     safe_reason = re.sub(r"[^A-Za-z0-9_-]+", "-", reason).strip("-") or "backup"
     path = directory / f"ravebot-{stamp}-{safe_reason}{_SUFFIX}"
     tmp = path.with_name(path.name + ".tmp")
