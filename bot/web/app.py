@@ -486,7 +486,7 @@ def create_app(
 
     async def get_sync_retry(request: web.Request) -> web.Response:
         sync = await _sync_status(service)
-        if sync is None or not sync.enabled or not sync.problem:
+        if sync is None or not sync.problem or not (sync.enabled or sync.can_retry):
             return _redirect("/")
         return _html(render_confirm_retry_import(sync.problem, request["session"].csrf))
 

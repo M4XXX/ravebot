@@ -228,17 +228,27 @@ def _issue_row(issue: IssueRow) -> str:
     )
 
 
+def _retry_block(problem: str) -> str:
+    return (
+        f'<p class="msg err">{_e(problem)}</p>'
+        '<p>Booking and the Notion sync are paused until the import from Notion '
+        "works. Fix the data in Notion, then retry, or rebuild from Notion.</p>"
+        '<a class="btn red" href="/sync/retry-import">Retry the import from Notion</a>'
+    )
+
+
 def _sync_card(sync: SyncStatus | None) -> str:
-    if sync is None or not sync.enabled:
+    if sync is None:
         return ""
-    problem = ""
-    if sync.problem:
-        problem = (
-            f'<p class="msg err">{_e(sync.problem)}</p>'
-            '<p>Booking and the Notion sync are paused until the import from Notion '
-            "works. Fix the data in Notion, then retry, or rebuild from Notion.</p>"
-            '<a class="btn red" href="/sync/retry-import">Retry the import from Notion</a>'
+    if not sync.enabled:
+        if not (sync.can_retry and sync.problem):
+            return ""
+        # Notion is configured but its databases could not be reached at startup.
+        return (
+            '<section class="card"><h3>Notion sync</h3>'
+            f"{_retry_block(sync.problem)}</section>"
         )
+    problem = _retry_block(sync.problem) if sync.problem else ""
     box = sync.outbox
     waiting = f"{box.count} waiting"
     if box.oldest is not None:
