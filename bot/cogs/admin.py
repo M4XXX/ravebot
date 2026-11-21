@@ -350,17 +350,23 @@ class AdminCog(commands.Cog):
                 )
 
         given_values = {k: v for k, v in values.items() if clean_value(k, v) is not None}
-        if given_values and self.ctx.schedule_service is not None:
+        values_saved = True
+        if given_values:
             try:
+                if self.ctx.schedule_service is None:
+                    raise RuntimeError("schedule service is not ready")
                 event = await self.ctx.schedule_service.set_event_values(
                     inter.guild_id, event.page_id, **given_values
                 )
             except Exception:
+                values_saved = False
                 logger.warning(
                     "create_event: could not set the values of %r", event_id, exc_info=True
                 )
         mirror_new_event(self.ctx, event)
-        note_text = "" if marked else texts.CREATE_EVENT_NOT_MARKED
+        note_text = ("" if marked else texts.CREATE_EVENT_NOT_MARKED) + (
+            "" if values_saved else texts.CREATE_EVENT_VALUES_NOT_SAVED
+        )
         await inter.followup.send(
             f"Event created for {texts.slot_when(event, 0)}.{note_text}",
             ephemeral=True

@@ -52,7 +52,9 @@ async def test_apply_view_apply_all() -> None:
     ctx, view = _view(2)
     inter = _inter()
     await view.apply_all.callback(inter)
-    ctx.schedule_service.apply.assert_awaited_once_with(111, None)
+    ctx.schedule_service.apply.assert_awaited_once_with(
+        111, [("uid-0", "genre"), ("uid-1", "genre")]
+    )
     assert inter.edit_original_message.call_args.kwargs["content"] == texts.apply_done(2)
 
 
@@ -120,3 +122,20 @@ async def test_view_times_out_after_fifteen_minutes() -> None:
 async def test_content_stays_within_discord_limit() -> None:
     _, view = _view(200)
     assert len(view.content("intro")) <= 2000
+
+
+@pytest.mark.asyncio
+async def test_apply_all_covers_listed_changes_beyond_the_select_cap() -> None:
+    ctx, view = _view(30)
+    await view.apply_all.callback(_inter())
+    picks = ctx.schedule_service.apply.call_args.args[1]
+    assert len(picks) == 30
+
+
+@pytest.mark.asyncio
+async def test_apply_all_skips_changes_that_became_pending_after_the_view() -> None:
+    ctx, view = _view(1)  # the view lists uid-0 only
+    await view.apply_all.callback(_inter())
+    picks = ctx.schedule_service.apply.call_args.args[1]
+    assert picks is not None
+    assert ("uid-late", "genre") not in picks and picks == [("uid-0", "genre")]

@@ -67,7 +67,8 @@ class ApplyChangesView(disnake.ui.View):
     async def apply_all(
         self, button: disnake.ui.Button, inter: disnake.MessageInteraction
     ) -> None:
-        await self._apply(inter, None)
+        # Only what the admin saw: changes that became pending since stay untouched
+        await self._apply(inter, [(c.event.page_id, c.field) for c in self._changes])
 
     @disnake.ui.button(label=texts.APPLY_PICK, style=disnake.ButtonStyle.primary)
     async def pick_events(

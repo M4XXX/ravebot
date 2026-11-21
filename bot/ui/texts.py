@@ -1081,6 +1081,9 @@ def event_cancel_done(
 EDIT_EVENT_NEEDS_OPTION = "Give at least one of genre, location, note or clear."
 EDIT_EVENT_CLEAR_CONFLICT = "Use either a value or clear for the same field, not both."
 EDIT_EVENT_NOT_FOUND = "That event no longer exists. Pick one from the list."
+CREATE_EVENT_VALUES_NOT_SAVED = (
+    " The genre, location and note were not saved. Set them with /edit event."
+)
 
 
 def edit_event_done(event: EventInfo) -> str:

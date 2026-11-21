@@ -1935,3 +1935,33 @@ async def test_create_event_refuses_too_long_genre(monkeypatch: pytest.MonkeyPat
     _, inter, _, insert = await _create(monkeypatch, genre="g" * 41)
     insert.assert_not_called()
     assert inter.response.send_message.call_args.args[0] == texts.GENRE_TOO_LONG
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("service_down", [False, True])
+async def test_create_event_warns_when_values_not_saved(
+    monkeypatch: pytest.MonkeyPatch, service_down: bool
+) -> None:
+    import datetime
+
+    from bot.cogs.admin import AdminCog
+    from bot.ui import texts
+    from tests.notion.factories import make_event
+
+    ctx = make_mock_ctx(frozenset({1}))
+    day = datetime.date.today() + datetime.timedelta(days=2)
+    _, insert = _add_event_patches(monkeypatch)
+    insert.return_value = make_event(page_id="manual-page", event_id="x", date=day)
+    if service_down:
+        ctx.schedule_service = None
+    else:
+        ctx.schedule_service = MagicMock()
+        ctx.schedule_service.set_event_values = AsyncMock(side_effect=RuntimeError("db"))
+    cog = AdminCog(ctx)
+    inter = make_mock_inter(user_id=1)
+    await cog.create_event.callback(
+        cog, inter, day.isoformat(), None, None, None, "Techno", None, None
+    )
+    reply, _ = assert_deferred_reply(inter)
+    assert reply.startswith("Event created for")
+    assert reply.endswith(texts.CREATE_EVENT_VALUES_NOT_SAVED)
