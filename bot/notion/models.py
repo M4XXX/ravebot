@@ -86,6 +86,9 @@ class EventInfo:
     start: datetime.time
     slot_minutes: int
     slots: tuple[SlotInfo, ...]
+    location: str | None = None
+    genre_by_hand: bool = False
+    location_by_hand: bool = False
 
     def resolved_slots(self) -> dict[int, SlotInfo]:
         """One slot row per number; duplicates resolve to the lowest page id.
