@@ -16,6 +16,7 @@ from bot.db import events as db_events
 from bot.db.config import get_value, set_value
 from bot.db.manual_events import get_manual_page_ids
 from bot.notion.models import FINISHED_STATUSES, EventInfo
+from bot.services import schedule as schedule_service
 from bot.services.event_defaults import default_event_shape
 from bot.sync.worker import changed
 from bot.timezone import local_today
@@ -52,6 +53,12 @@ def mirror_new_event(ctx: "BotContext", event: EventInfo) -> None:
 
 
 FIRST_DATE_KEY = "first_event_date"
+
+
+def scheduled_event_id(day: datetime.date) -> str:
+    """The event ID replenish gives the event on `day`."""
+    return f"{day.isoformat()} Rave Night"
+
 # Extra dates tried beyond `missing` when some dates already hold an event.
 _SKIP_ALLOWANCE = 52
 
@@ -121,6 +128,8 @@ async def _replenish(ctx: "BotContext", guild_id: int, events: list[EventInfo]) 
     after max(latest scheduled event date, today). A date held by a manual event is
     skipped and the next date is used; a date held by any other event is spent without
     a creation. first_event_date is cleared once it was used or found unusable.
+    Each new event gets the genre and location the schedule rules and defaults give
+    its date (rules read once per run), hand markers false.
     Returns the number created.
     """
     db = ctx.db
@@ -144,6 +153,7 @@ async def _replenish(ctx: "BotContext", guild_id: int, events: list[EventInfo]) 
         first = None
     base: datetime.date = max([e.date for e in scheduled] + [today])
     shape = await default_event_shape(db, guild_id)
+    resolved = await schedule_service.load_resolver(db, guild_id, interval_days)
     manual_dates = {e.date for e in events if e.page_id in manual}
 
     created = 0
@@ -151,7 +161,7 @@ async def _replenish(ctx: "BotContext", guild_id: int, events: list[EventInfo]) 
     for new_date in islice(_candidate_dates(first, base, interval_days), missing + _SKIP_ALLOWANCE):
         if attempts >= missing:
             break
-        event_id = f"{new_date.isoformat()} Rave Night"
+        event_id = scheduled_event_id(new_date)
         counted = False
         try:
             if await db_events.event_id_exists(db, event_id):
@@ -169,6 +179,8 @@ async def _replenish(ctx: "BotContext", guild_id: int, events: list[EventInfo]) 
                 start=shape.start,
                 slot_minutes=shape.slot_minutes,
                 slot_count=shape.slot_count,
+                genre=resolved("genre", new_date),
+                location=resolved("location", new_date),
             )
             event = await db_events.insert_event(db, draft)
             logger.info("Auto-created event: %r", event_id)

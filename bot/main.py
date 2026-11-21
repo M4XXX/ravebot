@@ -285,6 +285,9 @@ async def main() -> None:
         db=ctx.db,
         log_service=ctx.log_service,
     )
+    from bot.services.schedule import ScheduleService
+
+    ctx.schedule_service = ScheduleService(ctx)
 
     # Story 5.1: init OutreachService after log_service is ready
     from bot.services.outreach import OutreachService

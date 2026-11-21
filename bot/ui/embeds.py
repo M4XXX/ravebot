@@ -11,7 +11,6 @@ Classes:
     LineupUpdateEmbed      — "Lineup Update" post for the DJ channel (one per change)
 """
 import enum
-import re
 
 import disnake
 
@@ -92,13 +91,6 @@ _TITLE_ICON = "\U0001f3b6"
 _BOOKED_ICON = "\U0001f3a7"
 _OPEN_ICON = "\u25ab\ufe0f"
 _MAX_TITLE = 256
-_DATED_ID = re.compile(r"^\d{4}-\d{2}-\d{2}\s+(?P<name>.+)$")
-
-
-def _event_name(event: EventInfo) -> str:
-    """The event ID without its leading date (`2026-11-14 Rave Night` becomes `Rave Night`)."""
-    match = _DATED_ID.match(event.event_id)
-    return match.group("name") if match else event.event_id
 
 
 def lineup_title(event: EventInfo) -> str:
@@ -106,7 +98,7 @@ def lineup_title(event: EventInfo) -> str:
     suffix = f" \u00b7 {texts.fmt_date(event)}"
     prefix = f"{_TITLE_ICON} "
     room = _MAX_TITLE - len(prefix) - len(suffix)
-    name = _event_name(event)
+    name = texts.event_name(event)
     if len(name) > room:
         name = name[: room - 1] + "\u2026"
     return f"{prefix}{name}{suffix}"
@@ -165,7 +157,7 @@ class BookingEventPickEmbed(disnake.Embed):
         for event, open_count in zip(events, open_counts, strict=True):
             noun = "slot" if event.slot_count == 1 else "slots"
             blocks.append(
-                f"**{_event_name(event)} \u00b7 {texts.fmt_date(event)}**\n"
+                f"**{texts.event_name(event)} \u00b7 {texts.fmt_date(event)}**\n"
                 f"{_BOOKED_ICON} {open_count} of {event.slot_count} {noun} open"
                 f" \u00b7 starts {texts.fmt_time(event, 0)}"
             )

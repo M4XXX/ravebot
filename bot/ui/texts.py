@@ -1,9 +1,38 @@
 """Central catalog of user-facing strings and small formatters (no em dash allowed)."""
+import datetime
+import re
 from collections.abc import Sequence
 
 import disnake
 
 from bot.notion.models import EventInfo
+
+_DATED_ID = re.compile(r"^\d{4}-\d{2}-\d{2}\s+(?P<name>.+)$")
+
+# Shown for a schedule date that has no event yet.
+PROJECTED_EVENT_NAME = "Rave Night"
+
+
+def event_name(event: EventInfo) -> str:
+    """The event ID without its leading date (`2026-11-14 Rave Night` becomes `Rave Night`)."""
+    match = _DATED_ID.match(event.event_id)
+    return match.group("name") if match else event.event_id
+
+
+def schedule_date_label(name: str, day: datetime.date) -> str:
+    """`Rave Night \u00b7 05.12.2026`."""
+    return f"{name} \u00b7 {day.strftime('%d.%m.%Y')}"
+
+
+# Schedule values and rules (genre <= 40, location <= 80 single line, note <= 300).
+GENRE_TOO_LONG = "The genre can be at most 40 characters long."
+LOCATION_TOO_LONG = "The location can be at most 80 characters long."
+NOTE_TOO_LONG = "The note can be at most 300 characters long."
+GENRE_ONE_LINE = "The genre must fit on one line."
+LOCATION_ONE_LINE = "The location must fit on one line."
+RULE_VALUE_EMPTY = "A rule needs a value."
+RULE_EVERY_RANGE = "A rule repeats every 1 to 52 events."
+RULE_ANCHOR_NOT_UPCOMING = "Pick the first event of the rule from the upcoming schedule."
 
 
 def fmt_date(event: EventInfo) -> str:
