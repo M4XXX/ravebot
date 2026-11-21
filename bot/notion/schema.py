@@ -397,6 +397,9 @@ async def ensure_schema(
         # Nothing stored (first start, or a lost Postgres): adopt the databases already
         # under the parent page before creating any (R18).
         stored = await _adopt(api, db, guild_id, parent_page_id, labels)
+        found = [labels[n] for n, ds_id in stored.items() if ds_id is not None]
+        if found:
+            logger.info("Found existing Notion databases: %s", ", ".join(found))
 
     # If any stored database is gone, abandon the whole set and start a fresh one.
     problems = []

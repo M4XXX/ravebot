@@ -197,7 +197,7 @@ Copy `.env.example` to `.env` and fill in your values. **Never commit `.env` to 
 | `ADMIN_PAGE_PASSWORD` | No | - | Password of the admin page. While empty, the page is off. Choose a long random value |
 | `ADMIN_PAGE_PORT` | No | `8080` | Port of the admin page inside the container (1 to 65535) |
 | `LOG_LEVEL` | No | `INFO` | Log verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
-| `BACKUP_DIR` | No | `/data/backups` | Folder for the safety backups saved before a restore, a rebuild or the one-time import from Notion (the newest 10 are kept). Map it to a host folder or volume writable by user ID 1000 so the files survive a container recreate |
+| `BACKUP_DIR` | No | `/data/backups` | Folder for the safety backups saved before a restore, a rebuild or the one-time import from Notion (the newest 10 are kept). Map it to a host folder or volume so the files survive a container recreate. The container makes the folder writable for its own user (ID 1000) at every start; started with `--user 1000` the folder must already be writable for that user |
 | `DB_POOL_MIN` | No | `5` | Minimum asyncpg connection pool size |
 | `DB_POOL_MAX` | No | `20` | Maximum asyncpg connection pool size |
 
@@ -411,7 +411,7 @@ All commands are for admins: the user IDs in `ADMIN_USER_IDS` plus the admins ad
 | `/config show` | Shows every setting (stored value or default) and the bot status. Works while idle. |
 | `/create event date:<YYYY-MM-DD> [slots] [start] [slot_minutes]` | Creates an event by hand. `slots`, `start` (`HH:MM`) and `slot_minutes` are optional and default to the setup values, so each event can differ. Works with scheduling on or off; scheduled events ignore it: it neither counts toward the events kept ready nor moves the schedule. |
 | `/post lineup update [event:<event id>]` | Posts the lineup of the upcoming event, or of a chosen future event, in the DJ channel. |
-| `/book dj slot event:<event> slot:<number> dj:<member>` or `guest:<name>` | Books a DJ into a slot without asking for confirmation. Use `dj` for a server member, or `guest` to pick a DJ from the DJ list by name (also DJs without Discord). |
+| `/book dj slot event:<event> slot:<number> dj:<member>` or `guest:<name>` | Books a DJ into a slot without asking for confirmation. Use `dj` for a server member, or `guest` to pick a DJ from the DJ list by name (also DJs without Discord). A slot that no longer exists (the event was deleted or has fewer slots now) is refused. |
 | `/cancel dj slot event:<event> slot:<number> dj:<member>` or `guest:<name>` | Frees a DJ's slot. |
 | `/cancel event event:<event>` | Cancels an upcoming event after you confirm. The event gets the status `Canceled` and its bookings are removed (Notion follows in the background). Booked DJs are told by DM; DJs the bot cannot reach (closed DMs, guests without Discord) are listed in the log channel so you can tell them yourself. If at least one DJ was booked, the DJ channel gets a notice. With scheduling on, one new event is added at the end of the schedule; the canceled date stays empty. |
 | `/dj add name:<name> link:<stream link> [backup_link] [vrchat_name] [logo] [discord_user]` | Adds a DJ to the DJ list. Leave `discord_user` empty for a guest who has no Discord account. `logo` is an optional PNG or JPEG up to 5 MB. |

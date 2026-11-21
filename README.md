@@ -24,6 +24,7 @@
   <a href="#-how-it-works">How it works</a> ·
   <a href="#-screenshots">Screenshots</a> ·
   <a href="#-commands">Commands</a> ·
+  <a href="#-backups-and-recovery">Backups</a> ·
   <a href="#-updating">Updating</a> ·
   <a href="docs/user-guide.md">User guide</a> ·
   <a href="docs/developer-guide.md">Developer guide</a>
@@ -39,10 +40,11 @@
 | 🗓️ **Self-service booking** | DJs book and cancel slots with buttons. Two DJs can never take the same slot. |
 | 📨 **Automatic invites** | DJs in the *Active DJ Booking Group* get a message when slots stay open. Cooldowns keep it friendly, reminders go out the day before. |
 | 📋 **Live lineup post** | A new *Lineup Update* appears in your DJ channel whenever the lineup changes, with a *Book a slot* button. |
-| 🗂️ **Postgres first, Notion optional** | Events, slots and DJs live in the PostgreSQL database. With a Notion integration the bot mirrors them into Notion databases it creates itself, and hand edits there are synced back. |
+| 🗂️ **Postgres first, Notion optional** | Events, slots, DJs and settings live in PostgreSQL, and no Discord reply ever waits for Notion. With a Notion integration the bot mirrors everything into Notion databases it creates itself; hand edits there are checked and synced back, conflicts wait for your choice. |
 | 🛰️ **Guided setup** | `/setup` walks you through channels, roles, event defaults, time zone and invites. The bot stays idle until you press *Activate*. |
 | 🔔 **Quiet admin log** | Only what matters: bookings, new DJs, problems and the DMs people send the bot, with a *Reply* button. |
-| 🪐 **Admin page** | An optional password protected web page to add and remove admins without touching the container. |
+| 💾 **Backups and recovery** | Download a backup of the whole database from the admin page and restore it later. The bot saves a safety backup before every restore, rebuild or import, and can rebuild PostgreSQL from Notion after a data loss. |
+| 🪐 **Admin page** | An optional password protected web page: admins, backups, the Notion sync status with conflicts and warnings, resync and rebuild. |
 
 ---
 
@@ -58,7 +60,8 @@ flowchart LR
     INV --> DJ
     N -- "every change" --> LINE["📋 Lineup Update<br/>#dj-lineup"]
     BOOK --> LOG["🔔 #rave-log<br/>bookings · new DJs · problems"]
-    N -. "optional mirror" .-> NO[("🗂️ Notion")]
+    N -. "optional mirror<br/>(in the background)" .-> NO[("🗂️ Notion")]
+    NO -. "checked hand edits" .-> N
     ORG([🛠️ Organizer]) -- "/setup · commands · admin page" --> N
 ```
 
@@ -66,6 +69,8 @@ flowchart LR
 2. **They book.** A button menu in the DMs shows events and slots. Booking is race-condition safe.
 3. **Gaps get filled.** Before each event the bot invites DJs who have not been asked recently and sends reminders the day before.
 4. **You stay in control.** The lineup post, the log channel and the optional Notion mirror show the same truth. Organizers can force-book or free any slot with a command.
+
+PostgreSQL is the source of truth. Every change is written there first and the DJ gets the answer right away; a background worker then writes it to Notion. Every 5 minutes the bot reads Notion: a hand edit is checked like the matching command and applied, a risky one (a deleted page, many missing records) only becomes a warning, and an edit that clashes with an unsynced bot change waits on the admin page for *Keep Postgres* or *Keep Notion* (after 24 hours the bot's version wins).
 
 ---
 
@@ -144,7 +149,7 @@ postgresql://ravebot:YOUR_PASSWORD@192.168.1.100:5432/ravebot
 2. **Name** `ravebot`, **Repository** `ghcr.io/m4xxx/ravebot:latest`, **Network Type** `bridge`.
 3. **Add another Path, Port, Variable…** → **Variable** for each row of the table below.
 4. Optional, for the admin page: add a **Port** (container port `8080`, any free host port) and the variable `ADMIN_PAGE_PASSWORD`.
-5. **Add another Path, Port, Variable…** → **Path**: container path `/data/backups`, host path for example `/mnt/user/appdata/ravebot/backups` (writable by user ID 1000). It keeps the safety backups across container updates.
+5. **Add another Path, Port, Variable…** → **Path**: container path `/data/backups`, host path for example `/mnt/user/appdata/ravebot/backups`. It keeps the safety backups across container updates. The container makes the folder writable for its own user (ID 1000) at every start, so a folder Unraid creates as root works as it is.
 6. Click **Apply**.
 
 **Anywhere else (plain Docker)**
@@ -159,6 +164,8 @@ docker run -d --name ravebot --restart unless-stopped \
 ```
 
 The volume keeps the safety backups the bot saves before a restore, a rebuild or the one-time import from Notion. Without it they are lost when the container is recreated.
+
+The container starts as root only to hand the backup folder to its own user (ID 1000), then runs the bot as that user. Started with `--user 1000`, it skips that step; the folder must then already be writable for user 1000.
 
 For the optional Notion mirror add `-e NOTION_API_KEY=...` and `-e NOTION_PARENT_PAGE_ID=...` before the image name.
 
@@ -188,6 +195,8 @@ Bot ready
 
 If the bot exits instead, the log says why (a missing variable, an unreachable database or, with Notion turned on, a page that is not shared with the integration). See [Troubleshooting](docs/user-guide.md#8-troubleshooting).
 
+With Notion turned on, the log also says when the bot finds its Notion databases again under your page (`Found existing Notion databases`). If the bot finds an empty database but filled Notion databases (for example after a lost database volume), it rebuilds PostgreSQL from Notion by itself and says so in the log channel.
+
 ### Step 6: Set it up in Discord
 
 1. In your server run **`/setup`** in a channel only you can see.
@@ -195,6 +204,20 @@ If the bot exits instead, the log says why (a missing variable, an unreachable d
 3. Press **Activate**. The bot creates your first events and posts the first Lineup Update.
 
 Until you press *Activate* the bot stays idle on purpose: no posts, no invites, no events. Give someone the DJ role to try the onboarding.
+
+---
+
+## 💾 Backups and recovery
+
+| Situation | What to do |
+|---|---|
+| Keep a copy of everything | Admin page → **Data and backup** → **Download backup**. One `.ravebot.json.gz` file with every table, including the admin accounts. |
+| Go back to a backup | Admin page → **Restore from a file**. The file must come from the same RaveBot version. The bot saves a safety backup first, pauses bookings while it restores and then writes everything to Notion again. Notion pages made after the backup go to the Notion trash. |
+| The database is lost, Notion still has the data | Start the bot on an empty database: it finds the Notion databases under `NOTION_PARENT_PAGE_ID` and rebuilds events, slots, DJs, logos and settings by itself. The admin page also has **Rebuild from Notion**. Admin accounts are not in Notion: the owners from `ADMIN_USER_IDS` work at once, other admins come back only from a backup file. |
+| Notion is lost, the database is fine | The bot keeps working and the admin page shows **Notion databases not found**. If the integration only lost access, share the page again and restart the bot. If the databases are really gone, press **Create new databases**: the bot creates a new set and fills it from PostgreSQL. |
+| A conflict or warning on the admin page | **Keep Postgres** or **Keep Notion** for a conflict, **Resync Postgres to Notion** for a warning. |
+
+Safety backups land in `BACKUP_DIR` (default `/data/backups`, the newest 10 are kept). Only one restore, rebuild or import runs at a time, and bookings are paused while it runs.
 
 ---
 
@@ -209,13 +232,22 @@ Every release publishes a new image to GitHub Container Registry and a GitHub re
 
 The database updates itself: migrations run at every start. Read the [release notes](https://github.com/M4XXX/ravebot/releases) before you update.
 
+**Updating from a version that kept its data in Notion (1.1 and older):** map the backup folder first (see step 4). The first start saves a safety backup and copies events, slots and DJs from Notion into PostgreSQL once. Booking and edits are paused until that worked. If it fails (for example two events with the same title in Notion), the log channel says why: fix it in Notion, then press **Retry the import from Notion** on the admin page or restart the bot.
+
 **Making a release (maintainers):** `scripts/release.sh 1.2.0` bumps the version, closes the changelog section, commits and tags. Then `git push origin main v1.2.0` starts the build. Details are in the [developer guide](docs/developer-guide.md#7-automated-releases).
 
 ---
 
 ## 🪐 Admin page
 
-Set `ADMIN_PAGE_PASSWORD` and open `http://YOUR-SERVER:PORT/`. Add admins by Discord user ID, remove them again, see who can use the commands. Admins added there can use every admin command. The page has **no HTTPS**: use it on your local network only and never expose it to the internet. Details: [user guide](docs/user-guide.md#77-the-admin-page).
+Set `ADMIN_PAGE_PASSWORD` and open `http://YOUR-SERVER:PORT/`.
+
+- **Admins:** add admins by Discord user ID, remove them again, see who can use the commands. Admins added there can use every admin command.
+- **DJs:** add, edit and remove DJs, also guests without Discord, with logo upload.
+- **Data and backup:** download a backup, restore one from a file.
+- **Notion sync** (with Notion turned on): last sync, changes waiting for Notion, errors, open conflicts and warnings with their choices, **Resync all to Notion**, **Rebuild from Notion**, and **Retry the import from Notion** while the bot is paused after a failed one-time import.
+
+Restore, rebuild, resync, new databases and the conflict choices each have a confirm step. The page has **no HTTPS**: use it on your local network only and never expose it to the internet. Details: [user guide](docs/user-guide.md#77-the-admin-page).
 
 ---
 
@@ -242,8 +274,8 @@ DJs do not use commands: they talk to the bot in the DMs and press buttons.
 
 ## 📚 Documentation
 
-- [User guide](docs/user-guide.md): prerequisites, optional Notion mirror, deployment (Unraid, Compose, Podman), setup walkthrough, troubleshooting
-- [Developer guide](docs/developer-guide.md): local setup, tests, project structure, migrations, releases
+- [User guide](docs/user-guide.md): prerequisites, optional Notion mirror, hand edits and conflicts, backups, deployment (Unraid, Compose, Podman), setup walkthrough, troubleshooting
+- [Developer guide](docs/developer-guide.md): architecture (outbox, mirror worker, sync cycle), local setup, tests, project structure, migrations, releases
 - [Changelog](CHANGELOG.md)
 
 ## 🧱 Built with
