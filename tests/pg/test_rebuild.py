@@ -194,6 +194,7 @@ async def test_total_loss_finds_the_notion_databases_and_rebuilds(
     event_page_id = await client.mirror_event("uid-1", event_payload({
         "event_id": "Rave One", "date": datetime.date(2030, 1, 2), "start": "20:00",
         "slot_minutes": 60, "slot_count": 2, "status": None, "genre": None, "notes": None,
+        "location": None,
     }), None)
     dj_page_id = await client.mirror_dj(dj_payload({
         "discord_user_id": A, "dj_name": "DJ A", "vrchat_name": None,

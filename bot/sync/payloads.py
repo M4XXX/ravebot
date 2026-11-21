@@ -58,6 +58,7 @@ def event_payload(row: Mapping[str, Any]) -> dict[str, Any]:
         "status": row["status"] or None,
         "genre": row["genre"] or None,
         "notes": row["notes"] or None,
+        "location": row["location"] or None,
     }
 
 
@@ -95,6 +96,7 @@ def notion_event_payload(page: dict[str, Any]) -> dict[str, Any] | None:
         "status": event.status or None,
         "genre": event.genre,
         "notes": event.notes,
+        "location": event.location,
     }
 
 
@@ -136,6 +138,10 @@ def notion_dj_payload(page: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def payload_hash(payload: dict[str, Any]) -> str:
+    # An empty location hashes as before the field existed: payloads synced then still
+    # match, so the upgrade does not turn every event into a change.
+    if "location" in payload and payload["location"] is None:
+        payload = {k: v for k, v in payload.items() if k != "location"}
     text = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(text.encode()).hexdigest()
 
@@ -153,4 +159,5 @@ def event_draft(payload: Mapping[str, Any]) -> EventDraft:
         status=payload.get("status") or None,
         genre=payload.get("genre") or None,
         notes=payload.get("notes") or None,
+        location=payload.get("location") or None,
     )

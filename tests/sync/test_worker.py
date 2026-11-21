@@ -21,7 +21,7 @@ DJ = 111111111111111111
 EVENT_ROW = {
     "uid": "u1", "event_id": "RAVE-1", "date": datetime.date(2026, 12, 1),
     "start": "20:00", "slot_minutes": 60, "slot_count": 2,
-    "status": None, "genre": None, "notes": None,
+    "status": None, "genre": None, "notes": None, "location": None,
 }
 DJ_ROW = {
     "discord_user_id": DJ, "dj_name": "DJ A", "vrchat_name": None,

@@ -37,6 +37,7 @@ from bot.notion.models import (
     _title,
     parse_dj,
 )
+from bot.services.schedule import recompute_hand_markers, schedule_guild_id
 from bot.sync.botdata import restore_botdata
 from bot.sync.payloads import (
     PROP_DJ_ALT_LINK,
@@ -325,6 +326,8 @@ async def _write(
     if mode == "replace":
         # Upgrade keeps what Postgres already holds; a rebuild restores the bot tables.
         await restore_botdata(conn, botdata)
+        # The imported values are marked by hand unless a restored rule produces them
+        await recompute_hand_markers(conn, await schedule_guild_id(conn))
         # In the same transaction: the rebuilt data is the one-time import (no upgrade
         # import runs over it later), and Notion now matches Postgres, so the next cycle
         # must not treat pages the rebuild skipped as left over from a backup restore.

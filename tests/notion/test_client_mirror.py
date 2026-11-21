@@ -45,7 +45,7 @@ def env():
 
 EVENT_ROW = {"event_id": "Friday", "date": datetime.date(2026, 6, 13), "start": "20:00",
              "slot_minutes": 60, "slot_count": 4, "status": "Planned", "genre": "Techno",
-             "notes": "bring gear"}
+             "notes": "bring gear", "location": "Club Nebula"}
 DJ_ROW = {"discord_user_id": 123, "dj_name": "DJ A", "vrchat_name": "vrc",
           "logo_url": "https://x.test/l.png", "stream_url_primary": "https://twitch.tv/a",
           "stream_url_backup": None, "logo_image": None}
@@ -59,7 +59,7 @@ async def test_payload_round_trip_event(env):
 
 async def test_payload_round_trip_event_cleared_fields(env):
     fake, client, _ = env
-    row = {**EVENT_ROW, "genre": None, "notes": None, "status": None}
+    row = {**EVENT_ROW, "genre": None, "notes": None, "location": None, "status": None}
     page_id = await client.mirror_event("uid-1", event_payload(row), None)
     await client.mirror_event("uid-1", event_payload(EVENT_ROW), page_id)
     await client.mirror_event("uid-1", event_payload(row), page_id)

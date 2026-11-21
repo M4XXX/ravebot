@@ -93,6 +93,7 @@ def _events_props() -> dict[str, Any]:
         "Date": {"date": {}},
         "Status": {"select": {"options": [{"name": n} for n in STATUS_OPTIONS]}},
         "Genre": {"rich_text": {}},
+        "Location": {"rich_text": {}},
         "Notes": {"rich_text": {}},
         "Slots": {"number": {}},
         "Start": {"rich_text": {}},

@@ -27,6 +27,7 @@ EVENT_PROPS = {
     "ID": "title", "Date": "date", "Status": "select", "Genre": "rich_text",
     "Notes": "rich_text", "Slots": "number", "Start": "rich_text",
     "Slot length": "number", "Bot ID": "rich_text", "Slot rows": "relation",
+    "Location": "rich_text",
 }
 SLOT_PROPS = {
     "Name": "title", "Event": "relation", "Slot number": "number", "DJ": "relation",
@@ -246,6 +247,17 @@ async def test_partial_failure_then_rerun_resumes_without_duplicates(
     assert store[(GUILD, "notion_schema_complete")] == "1"
     assert store[(GUILD, "notion_slots_ds")] == ids.slots_ds
     log.post_error.assert_not_awaited()  # resuming is not an error
+
+
+async def test_events_schema_has_location(store: dict) -> None:
+    fake = FakeNotion()
+    api, _log = make(fake)
+    await ensure_schema(api, object(), GUILD, PARENT)  # type: ignore[arg-type]
+    assert types(fake, "Events")["Location"] == "rich_text"
+
+    del fake.ds_by_title("Events")["properties"]["Location"]  # an older database
+    await ensure_schema(api, object(), GUILD, PARENT)  # type: ignore[arg-type]
+    assert types(fake, "Events")["Location"] == "rich_text"
 
 
 async def test_missing_property_is_added(store: dict) -> None:

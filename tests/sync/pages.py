@@ -18,6 +18,7 @@ def event_page(
     length: int = 60,
     status: str | None = None,
     genre: str | None = None,
+    location: str | None = None,
     bot_id: str | None = None,
 ) -> dict[str, Any]:
     return {
@@ -30,6 +31,7 @@ def event_page(
             "Slot length": {"number": length},
             "Status": {"select": {"name": status} if status else None},
             "Genre": {"rich_text": _text(genre)},
+            "Location": {"rich_text": _text(location)},
             "Notes": {"rich_text": []},
             "Bot ID": {"rich_text": _text(bot_id)},
         },

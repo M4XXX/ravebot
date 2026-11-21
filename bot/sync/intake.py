@@ -10,6 +10,7 @@ cycle sees no difference (or pushes the bot's cleaned values back).
 Applied changes are collected and posted as one log entry per cycle
 (``flush_log``). ``apply`` never raises.
 """
+import dataclasses
 import datetime
 import logging
 from typing import Any, Literal
@@ -34,7 +35,7 @@ from bot.db.events import (
     insert_event,
 )
 from bot.db.fully_booked import clear_announced
-from bot.db.manual_events import mark_manual
+from bot.db.manual_events import get_manual_page_ids, mark_manual
 from bot.notion.models import EventInfo
 from bot.services.dj_validation import (
     check_link,
@@ -46,6 +47,7 @@ from bot.services.dm import dm_user
 from bot.services.event_defaults import validate_event_draft
 from bot.services.event_replenish import replenish_guard
 from bot.services.fully_booked import recheck_fully_booked
+from bot.services.schedule import resolver_without_bot as _resolver
 from bot.sync.payloads import event_draft
 from bot.sync.plan import Change
 from bot.sync.worker import changed
@@ -59,10 +61,12 @@ logger = logging.getLogger(__name__)
 
 IntakeOutcome = Literal["applied", "rejected"]
 
-_EVENT_FIELDS = ("date", "start", "slot_minutes", "slot_count", "status", "genre", "notes")
+_EVENT_FIELDS = (
+    "date", "start", "slot_minutes", "slot_count", "status", "genre", "location", "notes",
+)
 _EVENT_LABELS = {
     "date": "date", "start": "start", "slot_minutes": "slot length", "slot_count": "slots",
-    "status": "status", "genre": "genre", "notes": "notes",
+    "status": "status", "genre": "genre", "location": "location", "notes": "notes",
 }
 _DJ_LABELS = {
     "dj_name": "name", "link": "stream link", "alt_link": "backup link",
@@ -156,6 +160,9 @@ class Intake:
         if current is None:
             raise _Rejected("The event is no longer in the bot.")
         fields = {f: getattr(draft, f) for f in diff}
+        for field in ("genre", "location"):
+            if field in diff:
+                fields.update(await self._hand_value(field, getattr(draft, field), current))
         if fields:
             try:
                 if not await edit_event(self._db, uid, **fields):
@@ -179,11 +186,26 @@ class Intake:
             self._applied.append(f"Event {_ev(draft.event_id)}: {labels} changed.")
             self._notify_lineup()
 
+    async def _hand_value(self, field: str, value: str | None, event: EventInfo) -> dict:
+        """A genre/location typed in Notion is a hand value. Cleared, a scheduled event
+        goes back to the rules (as ScheduleService.set_event_values) and a manual one is
+        left empty."""
+        if value is not None:
+            return {field: value, f"{field}_by_hand": True}
+        manual = event.page_id in await get_manual_page_ids(self._db, [event.page_id])
+        resolved = None if manual else (await _resolver(self._db))(field, event.date)
+        return {field: resolved, f"{field}_by_hand": False}
+
     async def _new_event(self, change: Change, draft: EventDraft) -> None:
         errors = validate_event_draft(draft, today=local_today())
         if errors:
             raise _Rejected(" ".join(errors))
         # As /create event: the scheduler must not count it before it is marked manual
+        draft = dataclasses.replace(
+            draft,  # typed by hand, so no rule overwrites them later
+            genre_by_hand=draft.genre is not None,
+            location_by_hand=draft.location is not None,
+        )
         async with replenish_guard():
             try:
                 event = await insert_event(self._db, draft)

@@ -37,6 +37,8 @@ __all__ = [
     "ScheduleDate",
     "ScheduleService",
     "load_resolver",
+    "recompute_hand_markers",
+    "resolver_without_bot",
     "schedule_guild_id",
 ]
 
@@ -101,12 +103,14 @@ def clean_value(kind: str, value: str | None) -> str | None:
     return value
 
 
-async def _interval_days(db: asyncpg.Pool, guild_id: int) -> int:
+async def _interval_days(db: asyncpg.Pool | asyncpg.Connection, guild_id: int) -> int:
     raw = await get_value(db, guild_id, "event_interval_days")
     return max(1, event_replenish._to_int(raw, 7))
 
 
-async def load_resolver(db: asyncpg.Pool, guild_id: int, interval_days: int) -> Resolver:
+async def load_resolver(
+    db: asyncpg.Pool | asyncpg.Connection, guild_id: int, interval_days: int
+) -> Resolver:
     """Read rules and defaults once; the returned function resolves a field for a date."""
     rules = await db_rules.list_rules(db, guild_id)
     defaults = {f: await db_rules.get_default(db, guild_id, f) for f in FIELDS}
@@ -117,7 +121,7 @@ async def load_resolver(db: asyncpg.Pool, guild_id: int, interval_days: int) -> 
     return resolver
 
 
-async def schedule_guild_id(db: asyncpg.Pool) -> int | None:
+async def schedule_guild_id(db: asyncpg.Pool | asyncpg.Connection) -> int | None:
     """The guild holding rules or defaults (lowest if several); None without any."""
     return await db.fetchval(
         "SELECT min(guild_id) FROM ("
@@ -127,6 +131,44 @@ async def schedule_guild_id(db: asyncpg.Pool) -> int | None:
         ") AS g",
         [db_rules.DEFAULT_GENRE_KEY, db_rules.DEFAULT_LOCATION_KEY],
     )
+
+
+async def resolver_without_bot(db: asyncpg.Pool | asyncpg.Connection) -> Resolver:
+    """A resolver for code that has no bot (Notion intake, import): the guild holding the
+    rules and defaults. Without any, every field resolves to None."""
+    guild_id = await schedule_guild_id(db)
+    if guild_id is None:
+        return lambda field, day: None
+    return await load_resolver(db, guild_id, await _interval_days(db, guild_id))
+
+
+async def recompute_hand_markers(conn: asyncpg.Connection, guild_id: int | None) -> None:
+    """Set genre_by_hand/location_by_hand from the stored values (after an import).
+
+    Scheduled event: by hand when the value differs from what the rules resolve for its
+    date. Manual event: by hand when it has a value. Without rules or defaults
+    (guild_id None) every value counts as by hand.
+    """
+    rows = await conn.fetch("SELECT uid, date, genre, location FROM events")
+    manual = await get_manual_page_ids(conn, [r["uid"] for r in rows])
+    if guild_id is None:
+        resolver: Resolver = lambda field, day: None  # noqa: E731
+    else:
+        resolver = await load_resolver(conn, guild_id, await _interval_days(conn, guild_id))
+    for row in rows:
+        marks = {}
+        for field in FIELDS:
+            value = row[field]
+            if not value:
+                marks[field] = False
+            elif row["uid"] in manual:
+                marks[field] = True
+            else:
+                marks[field] = value != resolver(field, row["date"])
+        await conn.execute(
+            "UPDATE events SET genre_by_hand = $2, location_by_hand = $3 WHERE uid = $1",
+            row["uid"], marks["genre"], marks["location"],
+        )
 
 
 class ScheduleService:

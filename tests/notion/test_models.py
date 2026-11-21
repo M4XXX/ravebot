@@ -37,6 +37,13 @@ def test_valid_event_parses():
     assert ev.slots == ()
 
 
+def test_parse_event_reads_location():
+    text = {"rich_text": [{"plain_text": "Club Nebula", "text": {"content": "Club Nebula"}}]}
+    assert parse_event(event_with(Location=text)).location == "Club Nebula"
+    # A database without the property (not reconciled yet) reads as no location
+    assert parse_event(load("event")).location is None
+
+
 def test_slot_start_second_slot():
     ev = parse_event(load("event"))
     assert ev.slot_start(1) == datetime.datetime(2026, 11, 14, 18, 0, tzinfo=datetime.UTC)

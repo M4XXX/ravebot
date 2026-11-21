@@ -85,7 +85,7 @@ _KEY_FIELD = {"event": "title", "dj": "Discord ID", "slot": "event or slot numbe
 _FIELD_LABELS = {
     "event_id": "title", "date": "date", "start": "start", "slot_minutes": "slot length",
     "slot_count": "slots", "status": "status", "genre": "genre", "notes": "notes",
-    "dj_name": "name", "vrchat_name": "VRChat name", "link": "stream link",
+    "location": "location", "dj_name": "name", "vrchat_name": "VRChat name", "link": "stream link",
     "alt_link": "backup link", "event_uid": "event", "number": "slot number",
 }
 
@@ -117,7 +117,8 @@ async def _load_pg(db: asyncpg.Pool, entity: str) -> dict[str, dict[str, Any]]:
     """Canonical payloads of every Postgres record of ``entity``, by mirror key."""
     if entity == "event":
         rows = await db.fetch(
-            "SELECT uid, event_id, date, start, slot_minutes, slot_count, status, genre, notes"
+            "SELECT uid, event_id, date, start, slot_minutes, slot_count, status, genre, notes,"
+            " location"
             " FROM events ORDER BY date, start, uid"
         )
         return {r["uid"]: event_payload(r) for r in rows}

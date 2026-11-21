@@ -1,4 +1,5 @@
 """Real-SQL checks of the Notion import (bot/sync/notion_import.py)."""
+import dataclasses
 import datetime
 from unittest.mock import AsyncMock, MagicMock
 
@@ -242,3 +243,41 @@ async def test_replace_import_empties_the_tables_first(pool) -> None:
     assert await _count(pool, "sync_issues") == 0
     assert await _count(pool, "notion_outbox") == 1  # slot 1 has no Notion row
     assert await get_event(pool, "p1") is not None
+
+
+async def test_import_recomputes_markers(pool) -> None:
+    import json
+
+    rule = {"id": 1, "guild_id": 7, "field": "location", "value": "Club Nebula", "every": 1,
+            "anchor": "2026-12-01", "created_at": "2026-01-01T10:00:00+00:00"}
+    rule_page = {"id": "bd-1", "properties": {
+        "Key": {"title": [{"plain_text": "schedule_rules:1"}]},
+        "Table": {"select": {"name": "schedule_rules"}},
+        "Payload": {"rich_text": [{"plain_text": json.dumps(rule)}]},
+    }}
+    manual = {"page_id": "ev-manual"}
+    manual_page = {"id": "bd-2", "properties": {
+        "Key": {"title": [{"plain_text": "manual_events:ev-manual"}]},
+        "Table": {"select": {"name": "manual_events"}},
+        "Payload": {"rich_text": [{"plain_text": json.dumps(manual)}]},
+    }}
+    snap = dataclasses.replace(
+        snapshot(events=[
+            event_page("ev-rule", "Rule", "2026-12-01", slots=1, location="Club Nebula"),
+            event_page("ev-diff", "Differs", "2026-12-08", slots=1, location="Elsewhere",
+                       genre="Techno"),
+            event_page("ev-empty", "Empty", "2026-12-15", slots=1),
+            event_page("ev-manual", "Manual", "2026-12-22", slots=1, location="Club Nebula"),
+        ]),
+        botdata=[rule_page, manual_page],
+    )
+    result = await import_from_notion(pool, _client(snap), mode="replace")
+    assert result.ok, result.problems
+    rows = {
+        r["uid"]: (r["location_by_hand"], r["genre_by_hand"])
+        for r in await pool.fetch("SELECT uid, location_by_hand, genre_by_hand FROM events")
+    }
+    assert rows["ev-rule"] == (False, False)  # equals the rule value
+    assert rows["ev-diff"] == (True, True)  # differs from the rule / no genre rule
+    assert rows["ev-empty"] == (False, False)
+    assert rows["ev-manual"] == (True, False)  # manual: any value is by hand
