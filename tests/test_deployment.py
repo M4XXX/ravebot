@@ -24,6 +24,10 @@ def test_image_has_a_writable_backup_folder() -> None:
     entrypoint = (ROOT / "docker" / "entrypoint.sh").read_text()
     assert 'chown ravebot:ravebot "$dir"' in entrypoint
     assert "setpriv --reuid=ravebot --regid=ravebot --init-groups" in entrypoint
+    # HOME must point at ravebot's own folder, not /root (asyncpg stats ~/.postgresql)
+    assert "export HOME=/home/ravebot" in entrypoint
+    assert entrypoint.index("export HOME=/home/ravebot") < entrypoint.index("exec setpriv")
+    assert "--create-home --home-dir /home/ravebot" in dockerfile
 
 
 def test_docs_name_backup_dir_and_the_volume() -> None:
