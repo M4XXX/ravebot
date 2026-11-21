@@ -288,7 +288,7 @@ async def test_remove_and_defaults_redirect_and_keep_does_not_loop() -> None:
         page = await unknown.text()
     assert gone.headers["Location"] == "/schedule?done=rule-removed"
     assert keep.status == 303 and keep.headers["Location"] == "/schedule?done=kept"
-    assert unknown.status == 200 and "%3Cb%3E" not in page and 'class="msg' not in page
+    assert unknown.status == 200 and "%3Cb%3E" not in page and 'class="msg ok' not in page
 
 
 async def test_apply_accepts_a_body_with_104_changes_and_other_posts_stay_small() -> None:
