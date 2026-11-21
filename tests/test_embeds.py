@@ -94,8 +94,8 @@ class TestBookingConfirmEmbed:
         from bot.ui.embeds import BookingConfirmEmbed
         embed = BookingConfirmEmbed(make_event(event_id="Test Rave"), 0)
         assert embed.title == "Confirm your booking"
-        t = texts.slot_time(make_event(event_id="Test Rave"), 0)
-        assert embed.description == f"Test Rave\nSaturday 13.06.2026, slot 1 at {t}"
+        when = texts.slot_when(make_event(event_id="Test Rave"), 0)
+        assert embed.description == f"Test Rave\nSlot 1, {when}"
 
 
 class TestBookedEmbed:
@@ -108,9 +108,9 @@ class TestBookedEmbed:
         from bot.ui.embeds import BookedEmbed
         embed = BookedEmbed(make_event(event_id="Test Rave"), 1)
         assert embed.title == "You're booked"
-        t = texts.slot_time(make_event(event_id="Test Rave"), 1)
+        when = texts.slot_when(make_event(event_id="Test Rave"), 1)
         assert embed.description == (
-            f"Test Rave\nSaturday 13.06.2026, slot 2 at {t}\nI'll remind you the day before."
+            f"Test Rave\nSlot 2, {when}\nI'll remind you the day before."
         )
 
 

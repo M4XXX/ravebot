@@ -65,6 +65,12 @@ def slot_phrase(event: EventInfo, slot_index: int) -> str:
     return f"slot {slot_index + 1} at {slot_time(event, slot_index)}"
 
 
+def _dj_slot(event: EventInfo, slot_index: int) -> str:
+    """`slot 2, <t:...:F>`: full date and time in the DJ's zone (a slot after the DJ's
+    midnight must not sit next to the bot-zone date)."""
+    return f"slot {slot_index + 1}, {slot_when(event, slot_index)}"
+
+
 def slot_button(slot_index: int) -> str:
     """Button label for a slot; never contains a time."""
     return f"Slot {slot_index + 1}"
@@ -279,7 +285,7 @@ BOOKED_TITLE = "You're booked"
 
 
 def booking_body(event: EventInfo, slot_index: int) -> str:
-    return f"{event.event_id}\n{fmt_date(event)}, {slot_phrase(event, slot_index)}"
+    return f"{event_name(event)}\nSlot {slot_index + 1}, {slot_when(event, slot_index)}"
 
 
 BOOKED_REMINDER_NOTE = "I'll remind you the day before."
@@ -311,7 +317,7 @@ def cancel_more(total: int) -> str:
 
 def cancel_confirm(event: EventInfo, slot_index: int) -> str:
     return (
-        f"Cancel slot {slot_index + 1} ({slot_time(event, slot_index)}) at {event.event_id}?"
+        f"Cancel slot {slot_index + 1} ({slot_when(event, slot_index)}) at {event_name(event)}?"
     )
 
 
@@ -341,34 +347,34 @@ INVITES_OFF_DONE = (
 def reminder(event: EventInfo, slot_index: int) -> str:
     return (
         "**You're on tomorrow!** \U0001f3a7\n"
-        f"{event.event_id}\n"
-        f"{fmt_date(event)}, {slot_phrase(event, slot_index)}\n"
+        f"{event_name(event)}\n"
+        f"Slot {slot_index + 1}, {slot_when(event, slot_index)}\n"
         "Check your gear and your stream link. Have a great set!"
     )
 
 
 def dm_booked(event: EventInfo, slot_index: int) -> str:
-    return f"An organizer booked you: {event.event_id}, {slot_phrase(event, slot_index)}."
+    return f"An organizer booked you: {event_name(event)}, {_dj_slot(event, slot_index)}."
 
 
 def dm_cancelled(event: EventInfo, slot_index: int) -> str:
     return (
         f"An organizer cancelled your booking: "
-        f"{event.event_id}, {slot_phrase(event, slot_index)}."
+        f"{event_name(event)}, {_dj_slot(event, slot_index)}."
     )
 
 
 def dm_added(event: EventInfo, slot_index: int) -> str:
     return (
-        f"You are in the lineup: {event.event_id}, "
-        f"{slot_phrase(event, slot_index)} (added by an organizer)."
+        f"You are in the lineup: {event_name(event)}, "
+        f"{_dj_slot(event, slot_index)} (added by an organizer)."
     )
 
 
 def dm_removed(event: EventInfo, slot_index: int) -> str:
     return (
-        f"You were removed from {event.event_id}, "
-        f"{slot_phrase(event, slot_index)} (by an organizer)."
+        f"You were removed from {event_name(event)}, "
+        f"{_dj_slot(event, slot_index)} (by an organizer)."
     )
 
 

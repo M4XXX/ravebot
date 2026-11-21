@@ -80,10 +80,33 @@ def test_formatted_texts() -> None:
     event = make_event(
         event_id="EV", date=datetime.date(2026, 11, 14), start=datetime.time(18, 0)
     )
-    t = texts.slot_time(event, 0)
-    assert texts.booking_body(event, 0) == f"EV\nSaturday 14.11.2026, slot 1 at {t}"
-    assert texts.cancel_confirm(event, 0) == f"Cancel slot 1 ({t}) at EV?"
-    assert texts.dm_booked(event, 0) == f"An organizer booked you: EV, slot 1 at {t}."
+    when = texts.slot_when(event, 0)
+    assert texts.booking_body(event, 0) == f"EV\nSlot 1, {when}"
+    assert texts.cancel_confirm(event, 0) == f"Cancel slot 1 ({when}) at EV?"
+    assert texts.dm_booked(event, 0) == f"An organizer booked you: EV, slot 1, {when}."
+
+
+def test_dj_texts_use_the_full_local_slot_time_and_no_bot_zone_date() -> None:
+    """A slot after midnight for the DJ: no bot-zone date next to a local time."""
+    event = make_event(
+        event_id="2026-11-14 Rave Night",
+        date=datetime.date(2026, 11, 14),
+        start=datetime.time(23, 0),
+        slot_minutes=60,
+    )
+    when = texts.slot_when(event, 1)
+    for text in (
+        texts.booking_body(event, 1),
+        texts.reminder(event, 1),
+        texts.cancel_confirm(event, 1),
+        texts.dm_booked(event, 1),
+        texts.dm_cancelled(event, 1),
+        texts.dm_added(event, 1),
+        texts.dm_removed(event, 1),
+    ):
+        assert when in text and "Rave Night" in text
+        assert "2026-11-14" not in text and "14.11.2026" not in text
+        assert texts.slot_time(event, 1) not in text
 
 
 # --- /cancel event -----------------------------------------------------------

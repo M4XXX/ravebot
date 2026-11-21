@@ -144,7 +144,7 @@ async def test_send_reminders_sends_dm_and_records_sent():
     assert dm_text == (
         "**You're on tomorrow!** \U0001f3a7\n"
         "Friday Night Rave\n"
-        f"Friday 22.05.2026, slot 1 at {texts.slot_time(event, 0)}\n"
+        f"Slot 1, {texts.slot_when(event, 0)}\n"
         "Check your gear and your stream link. Have a great set!"
     )
     mock_record.assert_awaited_once_with(svc.db, "evt-001", 123, 0)
@@ -288,7 +288,7 @@ async def test_send_reminders_slot_unix_from_typed_event():
     ) as mock_record:
         await svc.send_reminders(guild_id=1, ctx=MagicMock(), _now=FIXED_NOW)
     mock_get.assert_awaited_once_with(svc.db, "page-xyz")
-    assert f"Friday 22.05.2026, slot 3 at {texts.slot_time(event, 2)}" in (
+    assert f"Slot 3, {texts.slot_when(event, 2)}" in (
         user_mock.send.call_args[0][0]
     )
     mock_record.assert_awaited_once_with(svc.db, "page-xyz", 7, 2)

@@ -60,8 +60,7 @@ def test_confirm_embed_texts() -> None:
     event = _event()
     embed = BookingConfirmEmbed(event, 1)
     assert embed.title == "Confirm your booking"
-    t = texts.slot_time(event, 1)
-    assert embed.description == f"Rave One\nSaturday 14.11.2026, slot 2 at {t}"
+    assert embed.description == f"Rave One\nSlot 2, {texts.slot_when(event, 1)}"
     assert not embed.fields
 
 
@@ -69,10 +68,8 @@ def test_booked_embed_texts() -> None:
     event = _event()
     embed = BookedEmbed(event, 0)
     assert embed.title == "You're booked"
-    t = texts.slot_time(event, 0)
-    assert embed.description == (
-        f"Rave One\nSaturday 14.11.2026, slot 1 at {t}\nI'll remind you the day before."
-    )
+    when = texts.slot_when(event, 0)
+    assert embed.description == f"Rave One\nSlot 1, {when}\nI'll remind you the day before."
 
 
 async def test_prepare_booking_event_list_and_errors() -> None:
@@ -134,8 +131,7 @@ async def test_slot_selection_presents_confirm_embed() -> None:
     await view._handle_slot(inter, 1)
     embed = inter.response.send_message.call_args.kwargs["embed"]
     assert isinstance(embed, BookingConfirmEmbed)
-    t = texts.slot_time(event, 1)
-    assert embed.description == f"Rave One\nSaturday 14.11.2026, slot 2 at {t}"
+    assert embed.description == f"Rave One\nSlot 2, {texts.slot_when(event, 1)}"
 
 
 def _seed_event(event) -> None:  # noqa: ANN001
@@ -281,7 +277,7 @@ async def test_cancellation_view_never_mind_and_prompt() -> None:
     view = CancellationView(ctx, [_booking(event)], lock, 31)
     inter = _inter()
     await view._handle_booking(inter, _booking(event))
-    assert _msg(inter) == f"Cancel slot 2 ({texts.slot_time(event, 1)}) at Rave One?"
+    assert _msg(inter) == f"Cancel slot 2 ({texts.slot_when(event, 1)}) at Rave One?"
     assert _labels(inter.response.send_message.call_args.kwargs["view"]) == [
         "Yes, cancel",
         "Keep booking",
