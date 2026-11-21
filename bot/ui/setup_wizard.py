@@ -26,9 +26,10 @@ from bot.notion.models import MAX_SLOTS
 from bot.services import activation
 from bot.services.event_replenish import replenish_events
 from bot.services.outreach import parse_outreach_enabled
-from bot.services.schedule_rules import Rule, reanchor
+from bot.services.schedule_rules import Field, Rule, reanchor
 from bot.timezone import DEFAULT_TIMEZONE, is_valid_timezone, set_timezone
 from bot.ui import setup_rules, texts
+from bot.ui.gates import refuse_in_maintenance
 from bot.ui.schedule_views import ApplyChangesView
 from bot.ui.setup_options import (
     ASAP_VALUE,
@@ -330,7 +331,25 @@ def _schedule_summary(v: dict[str, Any]) -> str:
     )
 
 
-async def summary_lines(ctx: "BotContext", guild: Any, data: dict[str, Any]) -> list[str]:
+async def _moved_rule_lines(ctx: "BotContext", guild_id: int, data: dict[str, Any]) -> list[str]:
+    """`Rule #n moves: old start -> new start` for each rule the new grid moves."""
+    if not data.get("rules") or not _grid_changed(data):
+        return []
+    moved, refusal = await _reanchored_rules(ctx, guild_id, data)
+    if moved is None:
+        return [refusal] if refusal else []
+    label = texts.schedule_date_label
+    name = texts.PROJECTED_EVENT_NAME
+    return [
+        texts.setup_rule_moved(i, label(name, old.anchor), label(name, new.anchor))
+        for i, (old, new) in enumerate(moved, 1)
+        if old.anchor != new.anchor
+    ]
+
+
+async def summary_lines(
+    ctx: "BotContext", guild: Any, data: dict[str, Any], guild_id: int | None = None
+) -> list[str]:
     def chan(key: str) -> str:
         value = data.get(key)
         return f"<#{value}>" if value else "not set"
@@ -360,6 +379,9 @@ async def summary_lines(ctx: "BotContext", guild: Any, data: dict[str, Any]) -> 
             f"Default location: {v['default_location'] or 'none'}",
             f"Rules: {len(data.get('rules') or [])}",
         ]
+    gid = guild_id if guild_id is not None else getattr(guild, "id", None)
+    if isinstance(gid, int):
+        lines.extend(await _moved_rule_lines(ctx, gid, data))
     previous_zone = data.get("orig_timezone", DEFAULT_TIMEZONE)
     if previous_zone != v["timezone"]:
         lines.append(texts.SETUP_ZONE_CHANGED_WARNING)
@@ -591,7 +613,9 @@ async def render_step(ctx: "BotContext", guild: Any, draft: SetupDraft) -> StepV
             toggle_label="Turn off" if on else "Turn on",
         )
     rerun = bool(data.get("rerun"))
-    content = texts.setup_summary(await summary_lines(ctx, guild, data), rerun, total)
+    content = texts.setup_summary(
+        await summary_lines(ctx, guild, data, draft.guild_id), rerun, total
+    )
     return StepView(content, [ID_BACK, ID_SAVE if rerun else ID_ACTIVATE])
 
 
@@ -1226,26 +1250,66 @@ def _grid_changed(data: dict[str, Any]) -> bool:
     )
 
 
+_ORIGIN_WINDOW = 32
+_ORIGIN_WINDOW_MAX = 1024
+
+
+async def _grid_origin(
+    ctx: "BotContext", guild_id: int, data: dict[str, Any]
+) -> datetime.date | None:
+    """The first date replenish will create on the draft's grid: the first projected
+    date after the existing upcoming events (None without a schedule service)."""
+    service = ctx.schedule_service
+    if service is None:
+        return None
+    count = _ORIGIN_WINDOW
+    while count <= _ORIGIN_WINDOW_MAX:
+        dates = await service.upcoming_dates(
+            guild_id,
+            count,
+            interval_days=values(data)["event_interval_days"],
+            first_date=_first_date(data),
+        )
+        projected = next((d.date for d in dates if d.event is None), None)
+        if projected is not None or len(dates) < count:
+            return projected
+        count *= 2
+    return None
+
+
+async def _reanchored_rules(
+    ctx: "BotContext", guild_id: int, data: dict[str, Any]
+) -> tuple[list[tuple[Rule, Rule]] | None, str | None]:
+    """(old rule, rule to store) per draft rule: moved onto the new grid when the
+    interval or first date changed. (None, refusal) when the new grid is unknown."""
+    rules = setup_rules.stored_rules(data)
+    if not rules or not _grid_changed(data):
+        return [(r, r) for r in rules], None
+    origin = await _grid_origin(ctx, guild_id, data)
+    if origin is None:
+        return None, texts.SETUP_RULES_NO_GRID
+    interval = values(data)["event_interval_days"]
+    return [
+        (r, dataclasses.replace(r, anchor=reanchor(r.anchor, origin, interval)))
+        for r in rules
+    ], None
+
+
 async def _prepare_schedule(
     ctx: "BotContext", guild_id: int, data: dict[str, Any]
 ) -> tuple[list[Rule] | None, str | None]:
-    """The rules to store: (rules, None), (None, None) when the schedule is off (stored
-    rules and defaults stay) or (None, refusal text) when the grid change makes two rules
-    hit the same event."""
+    """The rules to store: (rules, None), (None, None) when nothing changes (schedule
+    off and the grid unchanged: stored rules and defaults stay) or (None, refusal text)
+    when the new grid is unknown or two rules would hit the same event."""
     v = values(data)
-    if not v["event_schedule_enabled"]:
+    if not v["event_schedule_enabled"] and not _grid_changed(data):
         return None, None
-    rules = setup_rules.stored_rules(data)
-    if not rules or not _grid_changed(data):
-        return rules, None
-    interval = v["event_interval_days"]
-    dates = await _grid_dates(ctx, guild_id, data, 1)
-    if not dates:
-        return rules, None
-    origin = dates[0].date
-    rules = [dataclasses.replace(r, anchor=reanchor(r.anchor, origin, interval)) for r in rules]
+    moved, refusal = await _reanchored_rules(ctx, guild_id, data)
+    if moved is None:
+        return None, refusal
+    rules = [new for _, new in moved]
     numbered = [dataclasses.replace(r, id=i) for i, r in enumerate(rules, 1)]
-    pairs = setup_rules.conflict_pairs(numbered, interval)
+    pairs = setup_rules.conflict_pairs(numbered, v["event_interval_days"])
     if not pairs:
         return rules, None
     label = texts.schedule_date_label
@@ -1265,16 +1329,21 @@ async def _prepare_schedule(
 async def _store_schedule(
     db: Any, guild_id: int, data: dict[str, Any], rules: list[Rule] | None
 ) -> None:
-    """Replace the stored rules with the draft's and write the defaults (one transaction)."""
+    """Replace the stored rules with the draft's and write the defaults (one transaction).
+
+    A draft without a "rules" key (saved before rules existed) leaves the stored rules
+    alone; a missing default key leaves that stored default alone.
+    """
     if rules is None:
         return
-    v = values(data)
-    await db_rules.save_schedule(
-        db,
-        guild_id,
-        rules,
-        {"genre": v["default_genre"] or None, "location": v["default_location"] or None},
+    keys: tuple[tuple[Field, str], ...] = (
+        ("genre", "default_genre"),
+        ("location", "default_location"),
     )
+    defaults: dict[Field, str | None] = {
+        field: data[key] or None for field, key in keys if key in data
+    }
+    await db_rules.save_schedule(db, guild_id, rules if "rules" in data else None, defaults)
 
 
 async def _offer_apply(ctx: "BotContext", inter: Any, guild_id: int) -> None:
@@ -1299,6 +1368,8 @@ async def activate_from_draft(ctx: "BotContext", inter: Any) -> None:
     """First activation: write the keys, set the flag, run the effects exactly once."""
     guild_id = inter.guild_id
     db = _db(ctx)
+    if await refuse_in_maintenance(inter, ctx):
+        return
     async with guild_lock(guild_id):
         draft = await _load_draft(db, guild_id)
         refusal = _refusal(draft, inter.message.id)
@@ -1354,6 +1425,8 @@ async def _run_effects(ctx: "BotContext", guild_id: int) -> tuple[int, bool]:
 async def save_from_draft(ctx: "BotContext", inter: Any) -> None:
     """Re-run: store the changed values; no events are created and nothing is reposted."""
     guild_id = inter.guild_id
+    if await refuse_in_maintenance(inter, ctx):
+        return
     async with guild_lock(guild_id):
         draft = await _load_draft(_db(ctx), guild_id)
         refusal = _refusal(draft, inter.message.id)

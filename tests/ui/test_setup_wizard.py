@@ -71,11 +71,12 @@ class Store:
     async def save_schedule(self, db, guild_id, rules, defaults):
         if self.save_schedule_error is not None:
             raise self.save_schedule_error
-        self.saved_schedule.append((list(rules), dict(defaults)))
-        self.rules = [
-            r if r.id is not None else dataclasses.replace(r, id=100 + i)
-            for i, r in enumerate(rules)
-        ]
+        self.saved_schedule.append((None if rules is None else list(rules), dict(defaults)))
+        if rules is not None:
+            self.rules = [
+                r if r.id is not None else dataclasses.replace(r, id=100 + i)
+                for i, r in enumerate(rules)
+            ]
         self.defaults.update(defaults)
         return self.rules
 
@@ -1349,24 +1350,20 @@ async def test_activate_with_schedule_off_creates_no_events_and_posts_lineup(sto
 
 
 @pytest.mark.asyncio
-async def test_activate_in_maintenance_creates_no_events(store):
-    """An import replaces the events: activation does not replenish during it."""
+async def test_activate_in_maintenance_is_refused(store):
+    """An import replaces the data: activation writes nothing and creates no events."""
     ctx = make_ctx()
     ctx.maintenance = "restoring"
     seed(store, SUMMARY, FULL)
     inter = make_inter(make_guild())
     await inter.response.defer()
     insert = AsyncMock()
-    with patch("bot.services.event_replenish.get_value", store.get_value), patch(
-        "bot.services.event_defaults.get_value", store.get_value
-    ), patch(
-        "bot.services.event_replenish.get_manual_page_ids", AsyncMock(return_value=set())
-    ), patch(
-        "bot.services.event_replenish.db_events.event_id_exists", AsyncMock(return_value=False)
-    ), patch("bot.services.event_replenish.db_events.insert_event", insert):
+    with patch("bot.services.event_replenish.db_events.insert_event", insert):
         await sw.activate_from_draft(ctx, inter)
     insert.assert_not_awaited()
-    assert store.config[(GUILD, "bot_active")] == "true"
+    assert (GUILD, "bot_active") not in store.config
+    assert inter.followup.send.await_args.args[0] == texts.MAINTENANCE
+    assert GUILD in store.drafts
 
 
 # ---------- after the update: old messages and drafts ----------
@@ -1708,7 +1705,7 @@ async def test_save_reanchors_rules_when_the_grid_changes(store):
     await inter.response.defer()
     await sw.save_from_draft(ctx, inter)
     ctx.schedule_service.upcoming_dates.assert_any_await(
-        GUILD, 1, interval_days=14, first_date=None
+        GUILD, sw._ORIGIN_WINDOW, interval_days=14, first_date=None
     )
     (rules, _), = store.saved_schedule
     assert rules[0].anchor == GRID_START + datetime.timedelta(days=14)
@@ -1744,6 +1741,143 @@ async def test_save_without_grid_change_keeps_anchors(store):
     await inter.response.defer()
     await sw.save_from_draft(ctx, inter)
     ctx.schedule_service.upcoming_dates.assert_not_awaited()
+
+
+def _old_grid_with_events(old_start, old_interval, new_interval, count=4):
+    """upcoming_dates as the service returns it: `count` existing events on the old grid,
+    then projected dates continuing from the latest event with the new interval."""
+    old = [old_start + datetime.timedelta(days=old_interval * i) for i in range(count)]
+
+    async def dates(guild_id, n=10, *, interval_days=None, first_date=None):
+        step = datetime.timedelta(days=interval_days or new_interval)
+        out = [ScheduleDate(d, MagicMock(date=d)) for d in old]
+        out += [ScheduleDate(old[-1] + step * i, None) for i in range(1, n + 1)]
+        return out[:n]
+
+    return dates
+
+
+@pytest.mark.asyncio
+async def test_save_reanchors_to_first_projected_date_after_existing_events(store):
+    ctx = make_ctx()
+    dec5 = D(2030, 12, 5)
+    ctx.schedule_service.upcoming_dates = AsyncMock(
+        side_effect=_old_grid_with_events(dec5, 7, 14)
+    )
+    seed(store, SUMMARY, {
+        **SAVE_DRAFT, "event_interval_days": 14, "orig_event_interval_days": 7,
+        "rules": [_rule_dict(anchor=dec5, every=1)],
+    })
+    inter = make_inter(make_guild())
+    await inter.response.defer()
+    await sw.save_from_draft(ctx, inter)
+    (rules, _), = store.saved_schedule
+    first_new = D(2031, 1, 9)  # Dec 26 + 14: the first event replenish creates
+    assert (first_new - rules[0].anchor).days % 14 == 0
+    assert rules[0].anchor >= dec5
+
+
+@pytest.mark.asyncio
+async def test_save_refuses_conflicting_rules_without_grid_change(store):
+    ctx = make_ctx()
+    seed(store, SUMMARY, {
+        **SAVE_DRAFT,
+        "rules": [
+            _rule_dict(value="A", every=1, anchor=GRID_START),
+            _rule_dict(value="B", every=1, anchor=GRID_START + datetime.timedelta(days=7)),
+        ],
+    })
+    inter = make_inter(make_guild())
+    await inter.response.defer()
+    await sw.save_from_draft(ctx, inter)
+    assert store.saved_schedule == [] and store.writes == []
+    text = inter.followup.send.await_args.args[0]
+    assert "#1" in text and "#2" in text
+    assert GUILD in store.drafts
+
+
+@pytest.mark.asyncio
+async def test_save_with_schedule_off_still_reanchors_on_grid_change(store):
+    ctx = make_ctx()
+    off_grid = GRID_START + datetime.timedelta(days=1)
+    seed(store, SUMMARY, {
+        **SAVE_DRAFT, **OFF, "event_interval_days": 14, "orig_event_interval_days": 7,
+        "rules": [_rule_dict(anchor=off_grid, every=1, rule_id=3)],
+    })
+    inter = make_inter(make_guild())
+    await inter.response.defer()
+    await sw.save_from_draft(ctx, inter)
+    (rules, _), = store.saved_schedule
+    assert rules == [Rule(3, "genre", "Techno", 1, GRID_START + datetime.timedelta(days=14))]
+
+
+@pytest.mark.asyncio
+async def test_save_refused_without_schedule_service_when_grid_changes(store):
+    ctx = make_ctx()
+    ctx.schedule_service = None
+    seed(store, SUMMARY, {
+        **SAVE_DRAFT, "event_interval_days": 14, "orig_event_interval_days": 7,
+        "rules": [_rule_dict()],
+    })
+    inter = make_inter(make_guild())
+    await inter.response.defer()
+    await sw.save_from_draft(ctx, inter)
+    assert store.saved_schedule == [] and store.writes == []
+    assert inter.followup.send.await_args.args[0] == texts.SETUP_RULES_NO_GRID
+    assert GUILD in store.drafts
+
+
+@pytest.mark.asyncio
+async def test_summary_shows_moved_rule_starts_when_grid_changes(store):
+    ctx = make_ctx()
+    off_grid = GRID_START + datetime.timedelta(days=1)
+    seed(store, SUMMARY, {
+        **SAVE_DRAFT, "event_interval_days": 14, "orig_event_interval_days": 7,
+        "rules": [_rule_dict(anchor=off_grid, every=1)],
+    })
+    view = await sw.render_step(ctx, make_guild(), store.drafts[GUILD])
+    label = texts.schedule_date_label
+    new = GRID_START + datetime.timedelta(days=14)
+    assert texts.setup_rule_moved(
+        1, label(texts.PROJECTED_EVENT_NAME, off_grid), label(texts.PROJECTED_EVENT_NAME, new)
+    ) in view.content
+
+
+@pytest.mark.asyncio
+async def test_summary_shows_no_moves_without_grid_change(store):
+    ctx = make_ctx()
+    seed(store, SUMMARY, {**SAVE_DRAFT, "rules": [_rule_dict()]})
+    view = await sw.render_step(ctx, make_guild(), store.drafts[GUILD])
+    assert "moves" not in view.content
+
+
+@pytest.mark.asyncio
+async def test_save_without_rules_key_keeps_stored_rules_and_defaults(store):
+    ctx = make_ctx()
+    seed(store, SUMMARY, {**SAVE_DRAFT, "default_genre": "Techno"})
+    inter = make_inter(make_guild())
+    await inter.response.defer()
+    await sw.save_from_draft(ctx, inter)
+    (rules, defaults), = store.saved_schedule
+    assert rules is None  # stored rules stay
+    assert defaults == {"genre": "Techno"}  # location key missing: stored default stays
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", [sw.save_from_draft, sw.activate_from_draft])
+async def test_save_and_activate_refused_during_maintenance(store, action):
+    ctx = make_ctx()
+    ctx.maintenance = object()
+    data = {**SAVE_DRAFT, "rules": [_rule_dict()]}
+    if action is sw.activate_from_draft:
+        data.pop("rerun")
+    seed(store, SUMMARY, data)
+    inter = make_inter(make_guild())
+    await inter.response.defer()
+    await action(ctx, inter)
+    assert store.saved_schedule == [] and store.writes == []
+    assert inter.followup.send.await_args.args[0] == texts.MAINTENANCE
+    assert GUILD in store.drafts
 
 
 @pytest.mark.asyncio
@@ -1799,7 +1933,7 @@ async def test_activate_stores_defaults_and_rules(store):
     await inter.response.defer()
     await sw.activate_from_draft(ctx, inter)
     (rules, defaults), = store.saved_schedule
-    assert defaults == {"genre": None, "location": "Club"} and len(rules) == 1
+    assert defaults == {"location": "Club"} and len(rules) == 1
 
 
 @pytest.mark.asyncio

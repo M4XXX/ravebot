@@ -1265,6 +1265,17 @@ def setup_rule_pending_summary(field: str, value: str, every: int) -> str:
     return f'{field_name(field)} "{value}", every {every}'
 
 
+SETUP_RULES_NO_GRID = (
+    "I can't work out the dates of the new schedule, so I can't move the rules onto it. "
+    "Nothing was saved. Please try again in a moment."
+)
+
+
+def setup_rule_moved(number: int, old_label: str, new_label: str) -> str:
+    """Summary line for a rule whose start moves onto the new schedule."""
+    return f"Rule #{number} moves: {old_label} \u2192 {new_label}"
+
+
 def setup_rules_save_conflict(pairs: Sequence[tuple[int, str, int, str]]) -> str:
     lines = [
         f"Rule #{a} ({sa}) and rule #{b} ({sb}) would hit the same event "

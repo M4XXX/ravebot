@@ -73,23 +73,25 @@ async def set_default(db: asyncpg.Pool, guild_id: int, field: Field, value: str 
 async def save_schedule(
     db: asyncpg.Pool,
     guild_id: int,
-    rules: list[Rule],
+    rules: list[Rule] | None,
     defaults: dict[Field, str | None],
 ) -> list[Rule]:
     """Make the stored rules equal `rules` and write the defaults, in one transaction.
 
     A rule with an id that still exists is updated (its id stays), one without an id
     (or whose id is gone) is inserted, a stored rule missing from `rules` is deleted.
+    `rules` None leaves the stored rules alone; only the defaults given are written.
     Returns the stored rules.
     """
     async with db.acquire() as conn, conn.transaction():
-        keep = {r.id for r in rules if r.id is not None}
-        for stored in await list_rules(conn, guild_id):
-            if stored.id not in keep:
-                await delete_rule(conn, guild_id, stored.id)  # type: ignore[arg-type]
-        for rule in rules:
-            if rule.id is None or not await update_rule(conn, guild_id, rule):
-                await insert_rule(conn, guild_id, rule)
+        if rules is not None:
+            keep = {r.id for r in rules if r.id is not None}
+            for stored in await list_rules(conn, guild_id):
+                if stored.id not in keep:
+                    await delete_rule(conn, guild_id, stored.id)  # type: ignore[arg-type]
+            for rule in rules:
+                if rule.id is None or not await update_rule(conn, guild_id, rule):
+                    await insert_rule(conn, guild_id, rule)
         for field, value in defaults.items():
             await set_value(conn, guild_id, _DEFAULT_KEYS[field], value or "")  # type: ignore[arg-type]
         return await list_rules(conn, guild_id)

@@ -88,3 +88,14 @@ async def test_save_schedule_rolls_back_on_failure(pool) -> None:
         )
     assert await list_rules(pool, 1) == [keep]
     assert await get_default(pool, 1, "genre") is None
+
+
+async def test_save_schedule_without_rules_keeps_rules_and_missing_defaults(pool) -> None:
+    from bot.db.schedule_rules import save_schedule
+
+    keep = await insert_rule(pool, 1, Rule(None, "genre", "Techno", 1, D(2026, 1, 2)))
+    await set_default(pool, 1, "location", "Club")
+    saved = await save_schedule(pool, 1, None, {"genre": "House"})
+    assert saved == [keep] and await list_rules(pool, 1) == [keep]
+    assert await get_default(pool, 1, "genre") == "House"
+    assert await get_default(pool, 1, "location") == "Club"
