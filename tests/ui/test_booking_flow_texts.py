@@ -83,8 +83,9 @@ async def test_prepare_booking_event_list_and_errors() -> None:
     assert start.content == ""
     assert start.embed.title == "Which event do you want to play?"
     assert start.embed.description == (
-        "**Rave One · Saturday 14.11.2026**\n"
-        f"🎧 3 of 4 slots open · starts {texts.slot_time(_event(), 0)}"
+        "**Event 1 · Rave One**\n"
+        f"{texts.ts(_event().slot_start(0), 'F')}\n"
+        "🎧 3 of 4 slots open"
     )
     assert _labels(start.view)[-1] == "Never mind"
     # flow already open

@@ -411,7 +411,7 @@ async def test_show_lineup_multi_event_offers_picker_capped_at_five() -> None:
     kw = inter.response.send_message.call_args.kwargs
     pick = kw["view"]
     assert isinstance(pick, LineupEventPickView)
-    assert [c.label for c in pick.children] == [e.date.strftime("%d.%m.%Y") for e in events[:5]]
+    assert [c.label for c in pick.children] == [f"Event {i}" for i in range(1, 6)]
     assert [c.custom_id for c in pick.children] == [f"lineup_pick:{i}" for i in range(5)]
     assert [c.style for c in pick.children] == [
         disnake.ButtonStyle.primary, *[disnake.ButtonStyle.secondary] * 4
@@ -504,13 +504,13 @@ async def test_pick_when_notion_fails_replies_privately_and_keeps_the_message() 
 
 
 @pytest.mark.asyncio
-async def test_pick_labels_show_the_event_id_when_two_events_share_a_date() -> None:
+async def test_pick_labels_are_numbers_even_when_two_events_share_a_date() -> None:
     from bot.ui.views import LineupEventPickView
 
     a = _lineup_event("Rave A", 3)
     b = _lineup_event("Rave B", 3)
     view = LineupEventPickView([a, b], make_real_ctx(db=MagicMock()))
-    assert [c.label for c in view.children] == ["Rave A", "Rave B"]
+    assert [c.label for c in view.children] == ["Event 1", "Event 2"]
 
 
 @pytest.mark.asyncio
@@ -1561,7 +1561,7 @@ async def test_event_selection_button_uses_event_id_and_page_id() -> None:
     await lock.acquire()
     view = EventSelectionView(ctx, [_gap_event()], lock, 40003)
     first = view.children[0]
-    assert first.label == _gap_event().date.strftime("%d.%m.%Y")
+    assert first.label == "Event 1"
     assert first.custom_id.startswith("event_select:evt-gap:")
 
 
@@ -1584,8 +1584,8 @@ async def test_book_slot_lists_event_name_and_start_timestamp() -> None:
     await view.book_slot.callback(inter)
 
     description = inter.response.send_message.call_args.kwargs["embed"].description
-    assert description.startswith("**Gap Rave · ")
-    assert "starts " in description
+    assert description.startswith("**Event 1 · Gap Rave**\n<t:")
+    assert ":F>" in description
 
 
 @pytest.mark.asyncio
@@ -2775,3 +2775,80 @@ async def test_outreach_accept_refuses_a_canceled_event() -> None:
     assert inter.response.send_message.call_args[0][0] == texts.EVENT_WAS_CANCELED
     assert "view" not in inter.response.send_message.call_args.kwargs
     assert not ctx.get_user_lock(40093).locked()
+
+
+# ---------------------------------------------------------------------------
+# Numbered event pickers
+# ---------------------------------------------------------------------------
+
+
+def test_booking_picker_is_numbered_with_timestamps() -> None:
+    import re
+
+    from bot.ui.embeds import BookingEventPickEmbed
+
+    a = make_event(event_id="2026-11-14 Rave Night", genre="Techno", location="Club")
+    b = make_event(event_id="2026-11-21 Other", date=a.date + __import__("datetime").timedelta(7))
+    description = BookingEventPickEmbed([a, b], [3, 1]).description
+    assert "**Event 1 \u00b7 Rave Night**" in description
+    assert "**Event 2 \u00b7 Other**" in description
+    assert re.search(r"<t:\d+:F>", description)
+    assert "\U0001f3b5 Techno \u00b7 \U0001f4cd Club" in description
+    assert not re.search(r"\d{2}\.\d{2}\.\d{4}", description)
+    assert "3 of 6 slots open" in description
+
+
+def test_booking_picker_omits_meta_line_when_unset() -> None:
+    from bot.ui.embeds import BookingEventPickEmbed
+
+    description = BookingEventPickEmbed([make_event()], [2]).description
+    assert "\U0001f3b5" not in description and "\U0001f4cd" not in description
+    assert len(description.splitlines()) == 3
+
+
+@pytest.mark.asyncio
+async def test_event_buttons_are_numbered() -> None:
+    from bot.ui.views import EventSelectionView, LineupEventPickView
+
+    ctx = make_real_ctx(db=MagicMock())
+    events = [_lineup_event(f"E{i}", 3) for i in range(3)]
+    lock = ctx.get_user_lock(50001)
+    await lock.acquire()
+    booking = EventSelectionView(ctx, events, lock, 50001)
+    assert [c.label for c in booking.children][:3] == ["Event 1", "Event 2", "Event 3"]
+    assert booking.children[3].label == texts.BTN_NEVER_MIND
+    lineup = LineupEventPickView(events, ctx)
+    assert [c.label for c in lineup.children] == ["Event 1", "Event 2", "Event 3"]
+
+
+def test_lineup_events_field_lists_shown_events() -> None:
+    import re
+
+    from bot.ui.embeds import LineupUpdateEmbed
+
+    events = [_lineup_event(f"2026-11-1{i} Night {i}", i + 1) for i in range(3)]
+    embed = LineupUpdateEmbed(events[1], shown=events)
+    field = next(f for f in embed.fields if f.name == "Events")
+    lines = field.value.splitlines()
+    assert len(lines) == 3
+    assert lines[0].startswith("Event 1 \u00b7 Night 0 \u00b7 <t:")
+    assert lines[1].startswith("**Event 2 \u00b7 Night 1 \u00b7 <t:") and lines[1].endswith("**")
+    assert re.search(r"<t:\d+:D>", lines[2])
+    assert not re.search(r"\d{2}\.\d{2}\.\d{4}", field.value)
+    assert not any(f.name == "Events" for f in LineupUpdateEmbed(events[0]).fields)
+
+
+@pytest.mark.asyncio
+async def test_stale_event_press_uses_current_position() -> None:
+    from bot.ui.views import LineupEventPickView
+
+    old = [_lineup_event("Old0", 1), _lineup_event("Old1", 2)]
+    pick = LineupEventPickView(old, _pick_ctx([_lineup_event("New0", 1), _lineup_event("New1", 2),
+                                               _lineup_event("New2", 3)]))
+    inter = MagicMock(spec=disnake.MessageInteraction)
+    inter.response.edit_message = AsyncMock()
+    await pick.children[1].callback(inter)
+    kw = inter.response.edit_message.call_args.kwargs
+    assert kw["embed"].footer.text == "New1"
+    assert any(f.name == "Events" for f in kw["embed"].fields)
+    assert len(kw["view"].children) == 3

@@ -533,7 +533,8 @@ class FallbackMenuView(GatedView):
 
         upcoming = future_events(events, today)
         pick_view = LineupEventPickView(upcoming, self.ctx) if len(upcoming) > 1 else None
-        kwargs: dict = {"embed": LineupUpdateEmbed(chosen), "ephemeral": True}
+        shown = upcoming[:MAX_PICK_BUTTONS] if pick_view is not None else None
+        kwargs: dict = {"embed": LineupUpdateEmbed(chosen, shown=shown), "ephemeral": True}
         if pick_view is not None:
             kwargs["view"] = pick_view
         await inter.response.send_message(**kwargs)
@@ -590,12 +591,6 @@ async def _has_dj_profile(ctx: "BotContext", user_id: int) -> bool:
 MAX_PICK_BUTTONS = 5
 
 
-def _pick_label(event: "EventInfo", shown: list["EventInfo"]) -> str:
-    """The event's date; the event ID when another shown event has the same date."""
-    same_date = sum(1 for other in shown if other.date == event.date)
-    return (event.event_id if same_date > 1 else event.date.strftime("%d.%m.%Y"))[:80]
-
-
 class LineupEventPickView(GatedView):
     """One button per upcoming event (max 5) under a lineup; the shown event is highlighted.
 
@@ -618,7 +613,7 @@ class LineupEventPickView(GatedView):
         for index in range(MAX_PICK_BUTTONS if all_buttons else len(shown)):
             highlighted = index == selected and not all_buttons
             btn = disnake.ui.Button(
-                label=_pick_label(shown[index], shown) if index < len(shown) else "-",
+                label=texts.event_button(index),
                 style=(
                     disnake.ButtonStyle.primary if highlighted else disnake.ButtonStyle.secondary
                 ),
@@ -649,9 +644,12 @@ class LineupEventPickView(GatedView):
             return
         index = position if position < len(upcoming) else 0
         view = None
+        shown = None
         if len(upcoming) > 1:
             view = LineupEventPickView(upcoming, self.ctx, selected=index)
-        await inter.response.edit_message(embed=LineupUpdateEmbed(upcoming[index]), view=view)
+            shown = upcoming
+        embed = LineupUpdateEmbed(upcoming[index], shown=shown)
+        await inter.response.edit_message(embed=embed, view=view)
 
 
 # ---------------------------------------------------------------------------
@@ -879,9 +877,9 @@ class EventSelectionView(FlowView):
         self._ctx = ctx
         self._bind_flow(lock, user_id)
 
-        for event in events:
+        for position, event in enumerate(events):
             btn = disnake.ui.Button(
-                label=_pick_label(event, events),
+                label=texts.event_button(position),
                 style=disnake.ButtonStyle.secondary,
                 custom_id=self._cid(f"event_select:{event.page_id}"),
                 row=0,

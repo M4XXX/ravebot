@@ -70,6 +70,21 @@ def slot_button(slot_index: int) -> str:
     return f"Slot {slot_index + 1}"
 
 
+def event_button(position: int) -> str:
+    """Button label for the event at the zero-based position; never contains a date."""
+    return f"Event {position + 1}"
+
+
+EVENTS_FIELD = "Events"
+
+
+def event_pick_line(position: int, event: EventInfo, current: bool) -> str:
+    """`Event 2 \u00b7 Rave Night \u00b7 <t:..:D>`, bold for the displayed event."""
+    day = ts(event.slot_start(0), "D")
+    line = f"{event_button(position)} \u00b7 {event_name(event)} \u00b7 {day}"
+    return f"**{line}**" if current else line
+
+
 NOTES_HEADING = "Notes"
 _GENRE_ICON = "\U0001f3b5"
 _LOCATION_ICON = "\U0001f4cd"

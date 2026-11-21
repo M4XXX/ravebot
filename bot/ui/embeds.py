@@ -150,12 +150,18 @@ def lineup_text(event: EventInfo) -> str:
 class LineupUpdateEmbed(disnake.Embed):
     """Public lineup post for one event."""
 
-    def __init__(self, event: EventInfo) -> None:
+    def __init__(self, event: EventInfo, shown: list[EventInfo] | None = None) -> None:
         super().__init__(
             title=lineup_title(event),
             description=lineup_text(event),
             colour=EmbedColors.MISSION_GOLD,
         )
+        if shown:
+            lines = [
+                texts.event_pick_line(i, other, other.page_id == event.page_id)
+                for i, other in enumerate(shown)
+            ]
+            self.add_field(name=texts.EVENTS_FIELD, value="\n".join(lines)[:1024], inline=False)
         self.set_footer(text=event.event_id)
 
 
@@ -164,13 +170,17 @@ class BookingEventPickEmbed(disnake.Embed):
 
     def __init__(self, events: list[EventInfo], open_counts: list[int]) -> None:
         blocks = []
-        for event, open_count in zip(events, open_counts, strict=True):
+        for position, (event, open_count) in enumerate(zip(events, open_counts, strict=True)):
             noun = "slot" if event.slot_count == 1 else "slots"
-            blocks.append(
-                f"**{texts.event_name(event)} \u00b7 {texts.fmt_date(event)}**\n"
-                f"{_BOOKED_ICON} {open_count} of {event.slot_count} {noun} open"
-                f" \u00b7 starts {texts.slot_time(event, 0)}"
-            )
+            lines = [
+                f"**{texts.event_button(position)} \u00b7 {texts.event_name(event)}**",
+                texts.ts(event.slot_start(0), "F"),
+            ]
+            meta = texts.event_meta(event)
+            if meta:
+                lines.append(meta)
+            lines.append(f"{_BOOKED_ICON} {open_count} of {event.slot_count} {noun} open")
+            blocks.append("\n".join(lines))
         super().__init__(
             title=texts.PICK_EVENT,
             description="\n\n".join(blocks),
