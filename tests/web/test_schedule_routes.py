@@ -64,8 +64,9 @@ class FakeSchedule:
     async def get_event(self, uid):
         return self.event if uid == "uid-1" else None
 
-    async def set_event(self, uid, genre, location, note):
+    async def set_event(self, uid, genre, location, note, original=None):
         self.calls.append(("event", uid, genre, location, note))
+        self.original = original
         return self.result
 
     async def pending(self):
@@ -208,6 +209,24 @@ async def test_event_edit_empty_field_clears() -> None:
     assert resp.status == 303 and resp.headers["Location"] == "/schedule?done=event-saved"
     assert service.schedule.calls == [("event", "uid-1", "", "Hall A", "")]
     assert missing.status == 404
+
+
+async def test_event_form_sends_the_values_it_first_showed() -> None:
+    sessions = SessionManager(secret=b"k" * 32)
+    headers, csrf = _auth(sessions)
+    service = _service()
+    async with make_client(service, sessions) as client:
+        form = await (await client.get("/schedule/events/uid-1", headers=headers)).text()
+        await client.post(
+            "/schedule/events/uid-1", headers=headers,
+            data=_form(
+                csrf, genre="Techno", location="", note="x",
+                orig_genre="Techno", orig_location="", orig_note="",
+            ),
+            allow_redirects=False,
+        )
+    assert 'name="orig_genre" value="Techno"' in form
+    assert service.schedule.original == {"genre": "Techno", "location": "", "note": ""}
 
 
 async def test_values_are_html_escaped() -> None:

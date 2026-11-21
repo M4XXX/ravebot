@@ -63,6 +63,21 @@ async def test_unchanged_form_fields_are_not_sent() -> None:
     )
 
 
+async def test_fields_left_as_shown_stay_untouched_when_stored_changed() -> None:
+    from bot.services.schedule import UNSET
+
+    page, schedule = _page()
+    # A rule apply changed the stored genre after the form was shown
+    stored = make_event(page_id="u", genre="House", location="Club", notes="Old")
+    page.get_event = AsyncMock(return_value=stored)
+    schedule.set_event_values.return_value = stored
+    shown = {"genre": "Techno", "location": "Club", "note": "Old"}
+    assert (await page.set_event("u", "Techno", "Club", "New", shown)).ok
+    schedule.set_event_values.assert_awaited_once_with(
+        7, "u", genre=UNSET, location=UNSET, note="New"
+    )
+
+
 async def test_missing_event_is_refused_before_the_service() -> None:
     page, schedule = _page()
     page.get_event = AsyncMock(return_value=None)

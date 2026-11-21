@@ -126,10 +126,14 @@ def _t(index: int) -> str:
     return texts.slot_time(_rave(), index)
 
 
+def _w(index: int) -> str:
+    return texts.slot_when(_rave(), index)
+
+
 def test_dm_event_canceled_lists_every_slot() -> None:
     assert texts.dm_event_canceled(_rave(), [0, 2]) == (
-        "The event 2026-11-28 Rave Night was canceled by an organizer. "
-        f"Your booking (slot 1 at {_t(0)}, slot 3 at {_t(2)}) is canceled too."
+        "The event Rave Night was canceled by an organizer. "
+        f"Your booking (slot 1, {_w(0)}; slot 3, {_w(2)}) is canceled too."
     )
 
 
@@ -141,7 +145,7 @@ def test_dj_channel_event_canceled() -> None:
 
 def test_dj_line() -> None:
     assert texts.dj_line("DJ Alpha", _rave(), [0, 2]) == (
-        f"- DJ Alpha, slot 1 at {_t(0)}, slot 3 at {_t(2)}"
+        f"- DJ Alpha, slot 1, {_w(0)}; slot 3, {_w(2)}"
     )
 
 
@@ -152,7 +156,7 @@ def test_log_event_canceled_text_without_and_with_djs() -> None:
     )
     line = texts.dj_line("DJ Alpha", event, [0])
     assert texts.log_event_canceled_text("Max", event, [line]) == (
-        f"Max canceled **2026-11-28 Rave Night**.\nBooked DJs:\n- DJ Alpha, slot 1 at {_t(0)}"
+        f"Max canceled **2026-11-28 Rave Night**.\nBooked DJs:\n- DJ Alpha, slot 1, {_w(0)}"
     )
 
 
@@ -168,7 +172,7 @@ def test_cancel_event_confirm_lists_djs_and_by_hand_names() -> None:
     assert text == (
         "Cancel the event **2026-11-28 Rave Night**?\n"
         "These DJs are booked and will be told by DM:\n"
-        f"- DJ Alpha, slot 1 at {_t(0)}\n"
+        f"- DJ Alpha, slot 1, {_w(0)}\n"
         "Without a Discord account, tell them yourself: Guesty"
     )
 
@@ -255,3 +259,12 @@ def test_log_notion_missing_text_says_paused_only_when_paused() -> None:
     assert "paused" not in t.log_notion_missing_text("gone")
     assert "keep working" in t.log_notion_missing_text("gone")
     assert "paused" in t.log_notion_missing_text("gone", paused=True)
+
+
+def test_dj_booking_line_has_no_bot_zone_date() -> None:
+    assert texts.dj_booking_line(_rave(), 1) == f"- Rave Night, slot 2, {_w(1)}"
+
+
+def test_rule_save_conflict_does_not_claim_a_new_schedule() -> None:
+    text = texts.setup_rules_save_conflict([(1, "a", 2, "b")])
+    assert "new schedule" not in text and "#1" in text and "#2" in text

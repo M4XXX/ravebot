@@ -989,12 +989,18 @@ _CONFIRM_MAX_CHARS = 1900
 
 
 def _slots_phrase(event: EventInfo, slot_indexes: Sequence[int]) -> str:
-    return ", ".join(slot_phrase(event, index) for index in slot_indexes)
+    """`slot 2, <t:...:F>; slot 3, <t:...:F>`: each slot with its full local date."""
+    return "; ".join(_dj_slot(event, index) for index in slot_indexes)
+
+
+def dj_booking_line(event: EventInfo, slot_index: int) -> str:
+    """`- Rave Night, slot 2, <t:...:F>` (no bot-zone date next to a local time)."""
+    return f"- {escape_text(event_name(event))}, {_dj_slot(event, slot_index)}"
 
 
 def dm_event_canceled(event: EventInfo, slot_indexes: Sequence[int]) -> str:
     return (
-        f"The event {escape_text(event.event_id)} was canceled by an organizer. "
+        f"The event {escape_text(event_name(event))} was canceled by an organizer. "
         f"Your booking ({_slots_phrase(event, slot_indexes)}) is canceled too."
     )
 
@@ -1284,8 +1290,8 @@ def setup_rule_moved(number: int, old_label: str, new_label: str) -> str:
 
 def setup_rules_save_conflict(pairs: Sequence[tuple[int, str, int, str]]) -> str:
     lines = [
-        f"Rule #{a} ({sa}) and rule #{b} ({sb}) would hit the same event "
-        "with the new schedule. Remove one of them."
+        f"Rule #{a} ({sa}) and rule #{b} ({sb}) would hit the same event. "
+        "Remove one of them."
         for a, sa, b, sb in pairs
     ]
     return "\n".join([*lines, "Nothing was saved."])

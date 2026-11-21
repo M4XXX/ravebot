@@ -573,12 +573,22 @@ def create_app(
         event = await _event_or_none(request)
         if event is None:
             return await _no_event(request)
-        values = _sched_values(await _read_form(request), "genre", "location", "note")
+        form = await _read_form(request)
+        values = _sched_values(form, "genre", "location", "note")
+        # The values the form first showed; a form without them compares to the stored row
+        names = ("genre", "location", "note")
+        original = (
+            {name: _field(form, f"orig_{name}") or "" for name in names}
+            if all(f"orig_{name}" in form for name in names)
+            else None
+        )
         result = await _schedule_service().set_event(
-            event.page_id, values["genre"], values["location"], values["note"]
+            event.page_id, values["genre"], values["location"], values["note"], original
         )
         if not result.ok:
-            page = render_edit_event(event, request["session"].csrf, result, values)
+            page = render_edit_event(
+                event, request["session"].csrf, result, values, original
+            )
             return _html(page, 404 if result.message == texts.EDIT_EVENT_NOT_FOUND else 400)
         return await after_change(request, "event-saved")
 

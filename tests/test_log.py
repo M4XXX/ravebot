@@ -340,7 +340,8 @@ async def test_log_event_canceled_posts_one_gold_entry() -> None:
     await service.log_event_canceled("Max *x*", event, [line])
     embed = _sent(channel)
     assert embed.title == "Event canceled"
-    assert _plain(embed.description) == (
-        "Max \\*x\\* canceled **EV-1**.\nBooked DJs:\n- Nova, slot 1 at 18:00, slot 2 at 19:00"
+    assert embed.description == (
+        "Max \\*x\\* canceled **EV-1**.\nBooked DJs:\n"
+        f"- Nova, slot 1, {texts.slot_when(event, 0)}; slot 2, {texts.slot_when(event, 1)}"
     )
     assert embed.color.value == GOLD

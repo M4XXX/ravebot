@@ -1864,6 +1864,44 @@ async def test_save_without_rules_key_keeps_stored_rules_and_defaults(store):
 
 
 @pytest.mark.asyncio
+async def test_old_draft_without_rules_key_reanchors_stored_rules_on_grid_change(store):
+    ctx = make_ctx()
+    off_grid = GRID_START + datetime.timedelta(days=1)
+    store.rules = [Rule(5, "location", "Hall B", 1, off_grid)]
+    seed(store, SUMMARY, {
+        **SAVE_DRAFT, "event_interval_days": 14, "orig_event_interval_days": 7,
+    })
+    inter = make_inter(make_guild())
+    await inter.response.defer()
+    await sw.save_from_draft(ctx, inter)
+    (rules, _), = store.saved_schedule
+    assert rules == [
+        Rule(5, "location", "Hall B", 1, GRID_START + datetime.timedelta(days=14))
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", [sw.save_from_draft, sw.activate_from_draft])
+async def test_maintenance_starting_while_waiting_for_the_lock_refuses(store, action):
+    ctx = make_ctx()
+    data = {**SAVE_DRAFT, "rules": [_rule_dict()]}
+    if action is sw.activate_from_draft:
+        data.pop("rerun")
+    seed(store, SUMMARY, data)
+    inter = make_inter(make_guild())
+    await inter.response.defer()
+    lock = sw.guild_lock(GUILD)
+    await lock.acquire()
+    task = asyncio.create_task(action(ctx, inter))
+    await asyncio.sleep(0)  # passes the first check, then waits for the lock
+    ctx.maintenance = object()
+    lock.release()
+    await task
+    assert store.saved_schedule == [] and store.writes == []
+    assert inter.followup.send.await_args.args[0] == texts.MAINTENANCE
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("action", [sw.save_from_draft, sw.activate_from_draft])
 async def test_save_and_activate_refused_during_maintenance(store, action):
     ctx = make_ctx()

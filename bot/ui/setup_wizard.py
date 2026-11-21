@@ -1282,7 +1282,11 @@ async def _reanchored_rules(
 ) -> tuple[list[tuple[Rule, Rule]] | None, str | None]:
     """(old rule, rule to store) per draft rule: moved onto the new grid when the
     interval or first date changed. (None, refusal) when the new grid is unknown."""
-    rules = setup_rules.stored_rules(data)
+    if "rules" in data:
+        rules = setup_rules.stored_rules(data)
+    else:
+        # A draft from before rules existed: the stored rules still move with the grid
+        rules = await db_rules.list_rules(_db(ctx), guild_id)
     if not rules or not _grid_changed(data):
         return [(r, r) for r in rules], None
     origin = await _grid_origin(ctx, guild_id, data)
@@ -1332,7 +1336,8 @@ async def _store_schedule(
     """Replace the stored rules with the draft's and write the defaults (one transaction).
 
     A draft without a "rules" key (saved before rules existed) leaves the stored rules
-    alone; a missing default key leaves that stored default alone.
+    alone, unless the grid changed: then they are stored re-anchored. A missing default
+    key leaves that stored default alone.
     """
     if rules is None:
         return
@@ -1343,7 +1348,8 @@ async def _store_schedule(
     defaults: dict[Field, str | None] = {
         field: data[key] or None for field, key in keys if key in data
     }
-    await db_rules.save_schedule(db, guild_id, rules if "rules" in data else None, defaults)
+    replace = "rules" in data or _grid_changed(data)
+    await db_rules.save_schedule(db, guild_id, rules if replace else None, defaults)
 
 
 async def _offer_apply(ctx: "BotContext", inter: Any, guild_id: int) -> None:
@@ -1371,6 +1377,8 @@ async def activate_from_draft(ctx: "BotContext", inter: Any) -> None:
     if await refuse_in_maintenance(inter, ctx):
         return
     async with guild_lock(guild_id):
+        if await refuse_in_maintenance(inter, ctx):  # started while this waited
+            return
         draft = await _load_draft(db, guild_id)
         refusal = _refusal(draft, inter.message.id)
         if refusal is None and draft is not None and draft.data.get("rerun"):
@@ -1428,6 +1436,8 @@ async def save_from_draft(ctx: "BotContext", inter: Any) -> None:
     if await refuse_in_maintenance(inter, ctx):
         return
     async with guild_lock(guild_id):
+        if await refuse_in_maintenance(inter, ctx):  # started while this waited
+            return
         draft = await _load_draft(_db(ctx), guild_id)
         refusal = _refusal(draft, inter.message.id)
         if refusal is None and draft is not None and not draft.data.get("rerun"):

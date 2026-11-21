@@ -239,7 +239,17 @@ class SchedulePageService:
             return None
         return await db_events.get_event(self._ctx.db, uid)
 
-    async def set_event(self, uid: str, genre: str, location: str, note: str) -> ActionResult:
+    async def set_event(
+        self,
+        uid: str,
+        genre: str,
+        location: str,
+        note: str,
+        original: dict[str, str] | None = None,
+    ) -> ActionResult:
+        """Save the event form. ``original`` is what the form first showed: a field
+        the admin left as shown stays untouched, even if the stored value changed
+        meanwhile (a rule apply or a Notion edit), and never turns into a hand value."""
         guild_id = self._guild_id()
         if guild_id is None:
             return ActionResult(False, NOT_READY)
@@ -247,14 +257,17 @@ class SchedulePageService:
             stored = await self.get_event(uid)
             if stored is None:
                 return ActionResult(False, NO_EVENT)
-            # The form is prefilled and sends every field: a field the admin did not
-            # change stays as it is (a rule value must not turn into a hand value).
+            before = original or {
+                "genre": stored.genre or "",
+                "location": stored.location or "",
+                "note": stored.notes or "",
+            }
             event = await self._service.set_event_values(
                 guild_id,
                 uid,
-                genre=_changed(genre, stored.genre),
-                location=_changed(location, stored.location),
-                note=_changed(note, stored.notes),
+                genre=_changed(genre, before["genre"]),
+                location=_changed(location, before["location"]),
+                note=_changed(note, before["note"]),
             )
         except LookupError:
             return ActionResult(False, NO_EVENT)

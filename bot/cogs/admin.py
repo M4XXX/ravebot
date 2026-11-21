@@ -1031,8 +1031,7 @@ class AdminCog(commands.Cog):
         text = f"Delete the DJ **{row['dj_name']}**?"
         if bookings:
             text += "\nTheir upcoming bookings are cancelled:\n" + "\n".join(
-                f"- {event.event_id}, {texts.slot_phrase(event, index)}"
-                for event, index in bookings[:15]
+                texts.dj_booking_line(event, index) for event, index in bookings[:15]
             )
         view = _ConfirmDelete(self.ctx, service, row["discord_user_id"], inter.author.id)
         await inter.followup.send(text, view=view, ephemeral=True)

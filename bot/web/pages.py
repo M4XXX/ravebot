@@ -734,18 +734,27 @@ def render_edit_event(
     csrf: str,
     message: ActionResult | None = None,
     values: dict[str, str] | None = None,
+    original: dict[str, str] | None = None,
 ) -> str:
-    shown = values or {
+    """The event form. ``original`` holds the values the form first showed (hidden
+    fields), so a save only touches the fields the admin changed."""
+    stored = {
         "genre": event.genre or "",
         "location": event.location or "",
         "note": event.notes or "",
     }
+    shown = values or stored
+    first = original or stored
+    hidden = "".join(
+        f'<input type="hidden" name="orig_{name}" value="{_e(first[name])}">'
+        for name in ("genre", "location", "note")
+    )
     return _page(
         f"{_TOP}{_message(message)}"
         f'<section class="card"><h3>{_e(texts.event_name(event))} &middot; '
         f"{_e(event.date.strftime('%d.%m.%Y'))}</h3>"
         f'<form method="post" action="/schedule/events/{_e(quote(event.page_id, safe=""))}">'
-        f"{_csrf_field(csrf)}"
+        f"{_csrf_field(csrf)}{hidden}"
         + _text_input("genre", "Genre", shown["genre"], 40)
         + _text_input("location", "Location", shown["location"], 80)
         + '<textarea class="in" name="note" rows="4" maxlength="300" placeholder="Note" '
