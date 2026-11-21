@@ -52,3 +52,33 @@ async def test_rebuild_restores_parents_before_children(pool) -> None:
     async with pool.acquire() as conn:
         assert await restore_botdata(conn, [contact, sequence]) == 2
     assert await pool.fetchval("SELECT count(*) FROM outreach_contacts") == 1
+
+
+async def test_schedule_rules_are_bot_data(pool) -> None:
+    rid = await pool.fetchval(
+        "INSERT INTO schedule_rules (guild_id, field, value, every, anchor)"
+        " VALUES (7, 'genre', 'Techno', 2, '2026-01-02') RETURNING id"
+    )
+    rows = await botdata_rows(pool)
+    table, row = rows[f"schedule_rules:{rid}"]
+    assert table == "schedule_rules"
+    assert row["value"] == "Techno" and row["anchor"] == "2026-01-02"
+
+
+async def test_insert_after_restore_gets_fresh_id(pool) -> None:
+    import json
+
+    row = {"id": 5, "guild_id": 7, "field": "genre", "value": "Techno", "every": 2,
+           "anchor": "2026-01-02", "created_at": "2026-01-01T10:00:00+00:00"}
+    page = {"id": "pg1", "properties": {
+        "Key": {"title": [{"plain_text": "schedule_rules:5"}]},
+        "Table": {"select": {"name": "schedule_rules"}},
+        "Payload": {"rich_text": [{"plain_text": json.dumps(row)}]},
+    }}
+    async with pool.acquire() as conn:
+        assert await restore_botdata(conn, [page]) == 1
+    new_id = await pool.fetchval(
+        "INSERT INTO schedule_rules (guild_id, field, value, every, anchor)"
+        " VALUES (7, 'location', 'Club', 1, '2026-01-02') RETURNING id"
+    )
+    assert new_id == 6

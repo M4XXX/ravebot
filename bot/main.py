@@ -175,6 +175,7 @@ async def main() -> None:
     from bot.cogs.events import EventsCog
     from bot.cogs.onboarding import OnboardingCog
     from bot.cogs.outreach_cog import OutreachCog
+    from bot.cogs.schedule_cog import ScheduleCog
     from bot.cogs.setup import SetupCog
     from bot.log import AdminLogService
 
@@ -285,6 +286,9 @@ async def main() -> None:
         db=ctx.db,
         log_service=ctx.log_service,
     )
+    from bot.services.schedule import ScheduleService
+
+    ctx.schedule_service = ScheduleService(ctx)
 
     # Story 5.1: init OutreachService after log_service is ready
     from bot.services.outreach import OutreachService
@@ -323,6 +327,7 @@ async def main() -> None:
     _add_cog(bot, AdminCog(ctx))
     _add_cog(bot, EventsCog(ctx))
     _add_cog(bot, SetupCog(ctx))
+    _add_cog(bot, ScheduleCog(ctx))
 
     startup_dm_sent = False
 

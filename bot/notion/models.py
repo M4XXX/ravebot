@@ -18,6 +18,7 @@ PROP_EVENT_ID = "ID"
 PROP_EVENT_DATE = "Date"
 PROP_EVENT_STATUS = "Status"
 PROP_EVENT_GENRE = "Genre"
+PROP_EVENT_LOCATION = "Location"
 PROP_EVENT_NOTES = "Notes"
 PROP_EVENT_SLOTS = "Slots"
 PROP_EVENT_START = "Start"
@@ -86,6 +87,9 @@ class EventInfo:
     start: datetime.time
     slot_minutes: int
     slots: tuple[SlotInfo, ...]
+    location: str | None = None
+    genre_by_hand: bool = False
+    location_by_hand: bool = False
 
     def resolved_slots(self) -> dict[int, SlotInfo]:
         """One slot row per number; duplicates resolve to the lowest page id.
@@ -220,6 +224,7 @@ def parse_event(page: dict) -> EventInfo | None:
         status=_select(page, PROP_EVENT_STATUS),
         genre=_rich(page, PROP_EVENT_GENRE),
         notes=_rich(page, PROP_EVENT_NOTES),
+        location=_rich(page, PROP_EVENT_LOCATION),
         slot_count=int(slots),
         start=start,
         slot_minutes=int(length),

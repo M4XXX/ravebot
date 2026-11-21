@@ -216,7 +216,8 @@ class MirrorWorker:
         self, uid: str, op: str = "upsert", page_id: str | None = None
     ) -> str | None:
         row = await self.db.fetchrow(
-            "SELECT uid, event_id, date, start, slot_minutes, slot_count, status, genre, notes"
+            "SELECT uid, event_id, date, start, slot_minutes, slot_count, status, genre, notes,"
+            " location"
             " FROM events WHERE uid = $1",
             uid,
         )

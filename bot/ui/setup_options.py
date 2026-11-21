@@ -26,11 +26,19 @@ FIELD_LABELS: dict[str, str] = {
     "first_event_date": "First event date (YYYY-MM-DD)",
     "event_lookahead_count": "Future events kept ready",
     "timezone": "Time zone (e.g. Europe/Berlin)",
+    "default_genre": "Default genre (empty for none)",
+    "default_location": "Default location (empty for none)",
 }
+
+# Text value steps: config key -> kind checked by `clean_value`, popup length limit.
+TEXT_KEYS: dict[str, str] = {"default_genre": "genre", "default_location": "location"}
+TEXT_MAX_LENGTH: dict[str, int] = {"default_genre": 40, "default_location": 80}
 
 MAX_OPTIONS = 25
 ASAP_LABEL = "As soon as the interval allows"
 ASAP_VALUE = "asap"  # Discord rejects an empty option value
+NONE_LABEL = "None"
+NONE_VALUE = "__none__"  # Discord rejects an empty option value
 
 _HHMM_RE = re.compile(r"^(\d{1,2}):(\d{2})$")
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -90,6 +98,9 @@ def dropdown_options(
     elif key == "timezone":
         options = [(z, z) for z in _ZONES]
         shown = (str(current), str(current)) if current else None
+    elif key in TEXT_KEYS:
+        options = [(NONE_LABEL, NONE_VALUE)]
+        shown = (str(current), str(current)) if current else None
     else:  # first_event_date
         first = today or local_today()
         options = [(ASAP_LABEL, ASAP_VALUE)]
@@ -129,6 +140,16 @@ def parse_choice(
     text = (raw or "").strip()
     if key in LIMITS:
         return _number(key, text)
+    if key in TEXT_KEYS:
+        # Imported here: bot.services.schedule leads back to this module
+        from bot.services.schedule import clean_value
+
+        if text == NONE_VALUE:
+            return {key: ""}, []
+        try:
+            return {key: clean_value(TEXT_KEYS[key], text) or ""}, []
+        except ValueError as exc:
+            return {}, [str(exc)]
     if key == "default_start_time":
         start = parse_hhmm(text)
         if start is None:

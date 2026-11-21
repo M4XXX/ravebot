@@ -1,5 +1,7 @@
 """Tests for the setup wizard view (bot/ui/setup_wizard.py)."""
 import asyncio
+import dataclasses
+import datetime
 import re
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -8,6 +10,8 @@ import pytest
 
 from bot.db.setup_drafts import SetupDraft
 from bot.services import activation as _activation
+from bot.services.schedule import ScheduleDate
+from bot.services.schedule_rules import Rule
 from bot.ui import setup_wizard as sw
 from bot.ui import texts
 from tests.fake_events import fake_events
@@ -29,6 +33,10 @@ class Store:
         self.config: dict[tuple[int, str], str] = {}
         self.writes: list[tuple[str, str]] = []
         self.legacy: set[int] = set()  # guilds whose draft was saved by the old wizard
+        self.rules: list[Rule] = []  # stored schedule rules
+        self.defaults: dict[str, str | None] = {}  # stored default genre/location
+        self.saved_schedule: list[tuple[list[Rule], dict[str, str | None]]] = []
+        self.save_schedule_error: Exception | None = None
 
     async def get_draft(self, db, guild_id):
         d = self.drafts.get(guild_id)
@@ -36,13 +44,16 @@ class Store:
             return None
         data = dict(d.data)
         if guild_id not in self.legacy:
-            data.setdefault(sw.DRAFT_MARKER, True)  # every current draft carries the marker
+            # every current draft carries both markers
+            data.setdefault(sw.DRAFT_MARKER, True)
+            data.setdefault(sw.STEPS_MARKER, True)
         return SetupDraft(d.guild_id, d.message_id, d.channel_id, d.step, data)
 
     async def save_draft(self, db, guild_id, message_id, channel_id, step, data):
         data = dict(data)
         if guild_id not in self.legacy:
             data.pop(sw.DRAFT_MARKER, None)  # keeps the tests' data comparisons readable
+            data.pop(sw.STEPS_MARKER, None)
         self.drafts[guild_id] = SetupDraft(guild_id, message_id, channel_id, step, data)
 
     async def delete_draft(self, db, guild_id):
@@ -50,6 +61,24 @@ class Store:
 
     async def get_value(self, db, guild_id, key):
         return self.config.get((guild_id, key))
+
+    async def list_rules(self, db, guild_id):
+        return list(self.rules)
+
+    async def get_default(self, db, guild_id, field):
+        return self.defaults.get(field)
+
+    async def save_schedule(self, db, guild_id, rules, defaults):
+        if self.save_schedule_error is not None:
+            raise self.save_schedule_error
+        self.saved_schedule.append((None if rules is None else list(rules), dict(defaults)))
+        if rules is not None:
+            self.rules = [
+                r if r.id is not None else dataclasses.replace(r, id=100 + i)
+                for i, r in enumerate(rules)
+            ]
+        self.defaults.update(defaults)
+        return self.rules
 
     async def is_active(self, db, guild_id):
         flag = self.config.get((guild_id, "bot_active"))
@@ -85,6 +114,9 @@ def store():
         patch("bot.services.activation.get_value", s.get_value),
         patch("bot.services.activation.set_value", s.set_value),
         patch("bot.services.activation.is_active", s.is_active),
+        patch("bot.ui.setup_wizard.db_rules.list_rules", s.list_rules),
+        patch("bot.ui.setup_wizard.db_rules.get_default", s.get_default),
+        patch("bot.ui.setup_wizard.db_rules.save_schedule", s.save_schedule),
     ]
     for p in patches:
         p.start()
@@ -104,7 +136,19 @@ def make_ctx(events=None):
     ctx.mirror = None
     fake_events.list_events = AsyncMock(return_value=events or [])
     ctx.lineup_service.refresh = AsyncMock(return_value=True)
+    ctx.schedule_service.upcoming_dates = AsyncMock(side_effect=fake_dates)
+    ctx.schedule_service.pending_changes = AsyncMock(return_value=[])
     return ctx
+
+
+GRID_START = datetime.date(2030, 1, 7)
+
+
+async def fake_dates(guild_id, count=10, *, interval_days=None, first_date=None):
+    """The schedule grid: from the first date (default GRID_START) every interval days."""
+    step = datetime.timedelta(days=interval_days or 7)
+    start = first_date or GRID_START
+    return [ScheduleDate(start + step * i, None) for i in range(count)]
 
 
 def make_guild(
@@ -203,6 +247,7 @@ async def test_every_control_refuses_non_admin(store):
         sw.ID_INVITES_ROLE, sw.ID_CREATE_ROLE, sw.ID_VALUE, sw.ID_OTHER,
         sw.ID_SCHEDULE_TOGGLE, sw.ID_LEGACY_EVENTS, sw.ID_LEGACY_ZONE,
         sw.ID_INVITES_TOGGLE, sw.ID_INVITES_CHANGE, sw.ID_ACTIVATE, sw.ID_SAVE, sw.ID_CHANGE,
+        sw.ID_RULE_ADD, sw.ID_RULE_REMOVE, sw.ID_RULE_START, sw.ID_RULE_CANCEL,
     }
     assert all(v.timeout is None for v in sw.registered_views(ctx))
     for _ in sorted(registered):
@@ -303,11 +348,12 @@ async def test_navigation_back_next_and_summary(store):
 
 
 def test_total_steps_follows_step_list():
-    assert sw.total_steps() == len(sw.STEPS) - 1 == 13
+    assert sw.total_steps() == len(sw.STEPS) - 1 == 16
     assert sw.STEPS[-1] == "summary"
     assert sw.STEPS == [
         "welcome", "dj_channel", "log_channel", "roles", "slots", "start_time", "slot_length",
-        "schedule", "interval", "first_date", "lookahead", "timezone", "invites", "summary",
+        "schedule", "interval", "first_date", "lookahead", "default_genre", "default_location",
+        "rules", "timezone", "invites", "summary",
     ]
 
 
@@ -453,6 +499,8 @@ async def test_change_settings_prefills_all_stored_values(store):
         "outreach_days_before": 10, "outreach_cooldown_hours": 24,
         "orig_timezone": "Europe/London", "orig_invites_role_id": 400,
         "event_schedule_enabled": True, "first_event_date": "",
+        "default_genre": "", "default_location": "", "rules": [],
+        "orig_event_interval_days": 14, "orig_first_event_date": "",
     }
     assert draft.message_id == 55 and draft.step == 0
     assert store.writes == []
@@ -1173,7 +1221,9 @@ async def test_start_time_step_uses_zone_abbreviation(store):
 # ---------- schedule switch ----------
 
 OFF = {"event_schedule_enabled": False}
-HIDDEN = ("interval", "first_date", "lookahead")
+HIDDEN = (
+    "interval", "first_date", "lookahead", "default_genre", "default_location", "rules",
+)
 
 
 @pytest.mark.asyncio
@@ -1222,7 +1272,7 @@ async def test_next_visits_scheduled_steps_when_on(store):
     for _ in range(4):
         await view._navigate(make_inter(guild), 1)
         visited.append(sw.STEPS[store.drafts[GUILD].step])
-    assert visited == ["interval", "first_date", "lookahead", "timezone"]
+    assert visited == ["interval", "first_date", "lookahead", "default_genre"]
 
 
 def test_next_step_clamps_at_both_ends():
@@ -1232,7 +1282,7 @@ def test_next_step_clamps_at_both_ends():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("data", "total"), [({}, 13), (OFF, 10)])
+@pytest.mark.parametrize(("data", "total"), [({}, 16), (OFF, 10)])
 async def test_step_numbers_are_consecutive(store, data, total):
     ctx = make_ctx()
     guild = make_guild()
@@ -1300,24 +1350,20 @@ async def test_activate_with_schedule_off_creates_no_events_and_posts_lineup(sto
 
 
 @pytest.mark.asyncio
-async def test_activate_in_maintenance_creates_no_events(store):
-    """An import replaces the events: activation does not replenish during it."""
+async def test_activate_in_maintenance_is_refused(store):
+    """An import replaces the data: activation writes nothing and creates no events."""
     ctx = make_ctx()
     ctx.maintenance = "restoring"
     seed(store, SUMMARY, FULL)
     inter = make_inter(make_guild())
     await inter.response.defer()
     insert = AsyncMock()
-    with patch("bot.services.event_replenish.get_value", store.get_value), patch(
-        "bot.services.event_defaults.get_value", store.get_value
-    ), patch(
-        "bot.services.event_replenish.get_manual_page_ids", AsyncMock(return_value=set())
-    ), patch(
-        "bot.services.event_replenish.db_events.event_id_exists", AsyncMock(return_value=False)
-    ), patch("bot.services.event_replenish.db_events.insert_event", insert):
+    with patch("bot.services.event_replenish.db_events.insert_event", insert):
         await sw.activate_from_draft(ctx, inter)
     insert.assert_not_awaited()
-    assert store.config[(GUILD, "bot_active")] == "true"
+    assert (GUILD, "bot_active") not in store.config
+    assert inter.followup.send.await_args.args[0] == texts.MAINTENANCE
+    assert GUILD in store.drafts
 
 
 # ---------- after the update: old messages and drafts ----------
@@ -1394,3 +1440,572 @@ async def test_legacy_buttons_redraw_the_current_step_without_changes(store):
         assert "Slots per event" in last_content(inter)
         assert store.drafts[GUILD].data["slots_per_event"] == 4
         assert store.writes == [], legacy
+
+
+# ---------- default genre, default location and rules steps ----------
+
+D = datetime.date
+RULES_STEP = STEP["rules"]
+SAVE_DRAFT = {"rerun": True, **FULL}
+
+
+def _rule_dict(field="genre", value="Techno", every=2, anchor=GRID_START, rule_id=None):
+    return {
+        "id": rule_id, "field": field, "value": value, "every": every,
+        "anchor": anchor.isoformat(),
+    }
+
+
+def test_new_steps_follow_lookahead():
+    keys = sw.STEPS
+    start = keys.index("lookahead")
+    assert keys[start + 1:start + 4] == ["default_genre", "default_location", "rules"]
+    assert keys[start + 4] == "timezone"
+    assert sw.VALUE_STEPS["default_genre"] == "default_genre"
+    assert sw.VALUE_STEPS["default_location"] == "default_location"
+
+
+def test_steps_hidden_when_schedule_off():
+    visible = sw.visible_steps({"event_schedule_enabled": False})
+    for key in ("default_genre", "default_location", "rules"):
+        assert key not in visible
+        assert key in sw.visible_steps({})
+
+
+@pytest.mark.asyncio
+async def test_default_step_offers_none_and_current(store):
+    ctx = make_ctx()
+    seed(store, STEP["default_genre"], {**FULL, "default_genre": "Techno"})
+    step = await sw.render_step(ctx, make_guild(), store.drafts[GUILD])
+    assert step.options[0] == ("None", "__none__")
+    assert ("Techno", "Techno") in step.options
+    assert step.selected == "Techno"
+    assert "Techno" in step.content
+    seed(store, STEP["default_genre"], {**FULL})
+    step = await sw.render_step(ctx, make_guild(), store.drafts[GUILD])
+    assert step.selected == "__none__"
+
+
+@pytest.mark.asyncio
+async def test_default_none_choice_clears_the_draft_value(store):
+    ctx = make_ctx()
+    seed(store, STEP["default_genre"], {**FULL, "default_genre": "Techno"})
+    inter = make_inter(make_guild(), values=["__none__"])
+    await sw.SetupWizardView(ctx).on_value_select(inter)
+    assert store.drafts[GUILD].data["default_genre"] == ""
+
+
+@pytest.mark.asyncio
+async def test_default_location_other_popup_validates_length(store):
+    ctx = make_ctx()
+    modal = await _open_modal(store, ctx, STEP["default_location"], "on_other", dict(FULL))
+    field = modal.components[0].children[0]
+    assert field.max_length == 80 and field.required is False
+    too_long = _modal_inter({"v": "x" * 81})
+    await modal.callback(too_long)
+    assert "at most 80" in too_long.response.send_message.await_args.args[0]
+    assert "default_location" not in store.drafts[GUILD].data
+    ok = _modal_inter({"v": "  Club Aurora  "})
+    await modal.callback(ok)
+    assert store.drafts[GUILD].data["default_location"] == "Club Aurora"
+    empty = _modal_inter({"v": ""})
+    await modal.callback(empty)
+    assert store.drafts[GUILD].data["default_location"] == ""
+
+
+@pytest.mark.asyncio
+async def test_default_genre_other_popup_rejects_newline(store):
+    ctx = make_ctx()
+    modal = await _open_modal(store, ctx, STEP["default_genre"], "on_other", dict(FULL))
+    bad = _modal_inter({"v": "a\nb"})
+    await modal.callback(bad)
+    assert texts.GENRE_ONE_LINE in bad.response.send_message.await_args.args[0]
+
+
+async def _rule_modal(store, ctx, data=None):
+    modal = await _open_modal(store, ctx, RULES_STEP, "on_rule_add", {**FULL, **(data or {})})
+    return modal
+
+
+def _rule_modal_inter(field="genre", value="House", every="1"):
+    inter = make_inter(make_guild())
+    inter.values = {"field": [field], "value": value, "every": every}
+    return inter
+
+
+@pytest.mark.asyncio
+async def test_rules_step_lists_draft_rules_and_controls(store):
+    ctx = make_ctx()
+    seed(store, RULES_STEP, {**FULL, "rules": [_rule_dict(), _rule_dict("location", "Club", 1)]})
+    step = await sw.render_step(ctx, make_guild(), store.drafts[GUILD])
+    assert 'Genre "Techno"' in step.content and 'Location "Club"' in step.content
+    assert {sw.ID_RULE_ADD, sw.ID_RULE_REMOVE, sw.ID_BACK, sw.ID_NEXT} <= set(step.visible)
+    assert len(step.options) == 2
+    seed(store, RULES_STEP, {**FULL})
+    step = await sw.render_step(ctx, make_guild(), store.drafts[GUILD])
+    assert sw.ID_RULE_REMOVE not in step.visible and sw.ID_RULE_ADD in step.visible
+
+
+@pytest.mark.asyncio
+async def test_rule_modal_validates_and_moves_to_start_choice(store):
+    ctx = make_ctx()
+    modal = await _rule_modal(store, ctx)
+    for kwargs, text in (
+        ({"every": "0"}, texts.RULE_EVERY_RANGE),
+        ({"every": "x"}, texts.RULE_EVERY_RANGE),
+        ({"value": "   "}, texts.RULE_VALUE_EMPTY),
+        ({"value": "g" * 41}, texts.GENRE_TOO_LONG),
+    ):
+        inter = _rule_modal_inter(**kwargs)
+        await modal.callback(inter)
+        assert text in inter.response.send_message.await_args.args[0]
+        assert "rule_pending" not in store.drafts[GUILD].data
+    good = _rule_modal_inter(value=" House ", every="2")
+    await modal.callback(good)
+    assert store.drafts[GUILD].data["rule_pending"] == {
+        "field": "genre", "value": "House", "every": 2,
+    }
+    step = await sw.render_step(ctx, make_guild(), store.drafts[GUILD])
+    assert sw.ID_RULE_START in step.visible and sw.ID_RULE_CANCEL in step.visible
+
+
+@pytest.mark.asyncio
+async def test_rule_start_choices_follow_draft_interval(store):
+    ctx = make_ctx()
+    pending = {"field": "genre", "value": "House", "every": 1}
+    seed(store, RULES_STEP, {
+        **FULL, "event_interval_days": 14, "first_event_date": "2030-03-04",
+        "rule_pending": pending,
+    })
+    step = await sw.render_step(ctx, make_guild(), store.drafts[GUILD])
+    ctx.schedule_service.upcoming_dates.assert_any_await(
+        GUILD, 10, interval_days=14, first_date=D(2030, 3, 4)
+    )
+    start = D(2030, 3, 4)
+    assert [v for _, v in step.options] == [
+        (start + datetime.timedelta(days=14 * i)).isoformat() for i in range(10)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_rule_start_adds_rule_to_draft(store):
+    ctx = make_ctx()
+    seed(store, RULES_STEP, {
+        **FULL, "rule_pending": {"field": "genre", "value": "House", "every": 2},
+    })
+    inter = make_inter(make_guild(), values=[GRID_START.isoformat()])
+    await sw.SetupWizardView(ctx).on_rule_start(inter)
+    data = store.drafts[GUILD].data
+    assert data["rules"] == [_rule_dict(value="House", every=2)]
+    assert "rule_pending" not in data
+    assert store.saved_schedule == []  # nothing stored before Save
+
+
+@pytest.mark.asyncio
+async def test_rule_start_outside_choices_is_refused(store):
+    ctx = make_ctx()
+    seed(store, RULES_STEP, {
+        **FULL, "rule_pending": {"field": "genre", "value": "House", "every": 2},
+    })
+    inter = make_inter(make_guild(), values=["2031-01-01"])
+    await sw.SetupWizardView(ctx).on_rule_start(inter)
+    assert texts.RULE_ANCHOR_NOT_UPCOMING in inter.followup.send.await_args.args[0]
+    assert "rules" not in store.drafts[GUILD].data
+
+
+@pytest.mark.asyncio
+async def test_rule_add_conflict_refused_in_draft(store):
+    ctx = make_ctx()
+    existing = _rule_dict(value="Techno", every=2)
+    seed(store, RULES_STEP, {
+        **FULL, "rules": [existing],
+        "rule_pending": {"field": "genre", "value": "House", "every": 1},
+    })
+    inter = make_inter(make_guild(), values=[(GRID_START + datetime.timedelta(days=7)).isoformat()])
+    await sw.SetupWizardView(ctx).on_rule_start(inter)
+    reply = inter.followup.send.await_args.args[0]
+    assert "collides with #1" in reply
+    assert store.drafts[GUILD].data["rules"] == [existing]
+    assert "rule_pending" in store.drafts[GUILD].data
+
+
+@pytest.mark.asyncio
+async def test_rule_cancel_drops_pending_rule(store):
+    ctx = make_ctx()
+    seed(store, RULES_STEP, {
+        **FULL, "rule_pending": {"field": "genre", "value": "House", "every": 2},
+    })
+    await sw.SetupWizardView(ctx).on_rule_cancel(make_inter(make_guild()))
+    assert "rule_pending" not in store.drafts[GUILD].data
+
+
+@pytest.mark.asyncio
+async def test_rule_remove_drops_the_picked_rule(store):
+    ctx = make_ctx()
+    rules = [_rule_dict(value="A"), _rule_dict("location", "B", 1)]
+    seed(store, RULES_STEP, {**FULL, "rules": rules})
+    await sw.SetupWizardView(ctx).on_rule_remove(make_inter(make_guild(), values=["0"]))
+    assert store.drafts[GUILD].data["rules"] == [rules[1]]
+
+
+@pytest.mark.asyncio
+async def test_rules_controls_refuse_non_admin_and_are_registered(store):
+    ctx = make_ctx()
+    registered = {c.custom_id for v in sw.registered_views(ctx) for c in v.children}
+    assert {
+        sw.ID_RULE_ADD, sw.ID_RULE_REMOVE, sw.ID_RULE_START, sw.ID_RULE_CANCEL
+    } <= registered
+    view = sw.SetupWizardView(ctx)
+    assert await view.interaction_check(make_inter(make_guild(), user=999)) is False
+
+
+@pytest.mark.asyncio
+async def test_save_writes_defaults_and_rules(store):
+    ctx = make_ctx()
+    seed(store, SUMMARY, {
+        **SAVE_DRAFT, "default_genre": "Techno", "default_location": "",
+        "rules": [_rule_dict(rule_id=7), _rule_dict("location", "Club", 1)],
+    })
+    inter = make_inter(make_guild())
+    await inter.response.defer()
+    await sw.save_from_draft(ctx, inter)
+    (rules, defaults), = store.saved_schedule
+    assert defaults == {"genre": "Techno", "location": None}
+    assert rules == [
+        Rule(7, "genre", "Techno", 2, GRID_START),
+        Rule(None, "location", "Club", 1, GRID_START),
+    ]
+    assert last_content(inter).startswith("Settings saved.")
+    assert ("default_genre", "Techno") not in store.writes  # stored by the schedule write
+
+
+@pytest.mark.asyncio
+async def test_save_with_schedule_off_leaves_rules_and_defaults(store):
+    ctx = make_ctx()
+    seed(store, SUMMARY, {
+        **SAVE_DRAFT, **OFF, "default_genre": "Techno", "rules": [_rule_dict()],
+    })
+    inter = make_inter(make_guild())
+    await inter.response.defer()
+    await sw.save_from_draft(ctx, inter)
+    assert store.saved_schedule == []
+    ctx.schedule_service.pending_changes.assert_not_awaited()
+    assert last_content(inter).startswith("Settings saved.")
+
+
+@pytest.mark.asyncio
+async def test_save_reanchors_rules_when_the_grid_changes(store):
+    ctx = make_ctx()
+    off_grid = GRID_START + datetime.timedelta(days=1)  # not on the 14 day grid
+    seed(store, SUMMARY, {
+        **SAVE_DRAFT, "event_interval_days": 14, "orig_event_interval_days": 7,
+        "rules": [_rule_dict(anchor=off_grid, every=1)],
+    })
+    inter = make_inter(make_guild())
+    await inter.response.defer()
+    await sw.save_from_draft(ctx, inter)
+    ctx.schedule_service.upcoming_dates.assert_any_await(
+        GUILD, sw._ORIGIN_WINDOW, interval_days=14, first_date=None
+    )
+    (rules, _), = store.saved_schedule
+    assert rules[0].anchor == GRID_START + datetime.timedelta(days=14)
+
+
+@pytest.mark.asyncio
+async def test_save_refused_when_reanchor_conflicts(store):
+    ctx = make_ctx()
+    a = GRID_START + datetime.timedelta(days=1)
+    b = GRID_START + datetime.timedelta(days=13)  # both land on the same 14 day grid date
+    seed(store, SUMMARY, {
+        **SAVE_DRAFT, "event_interval_days": 14, "orig_event_interval_days": 7,
+        "rules": [
+            _rule_dict(value="A", every=1, anchor=a),
+            _rule_dict(value="B", every=1, anchor=b),
+        ],
+    })
+    inter = make_inter(make_guild())
+    await inter.response.defer()
+    await sw.save_from_draft(ctx, inter)
+    assert store.saved_schedule == [] and store.writes == []
+    text = inter.followup.send.await_args.args[0]
+    assert '#1' in text and '#2' in text and '"A"' in text and '"B"' in text
+    assert GUILD in store.drafts  # draft kept so the rules can be fixed
+    inter.edit_original_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_save_without_grid_change_keeps_anchors(store):
+    ctx = make_ctx()
+    seed(store, SUMMARY, {**SAVE_DRAFT, "rules": [_rule_dict()]})
+    inter = make_inter(make_guild())
+    await inter.response.defer()
+    await sw.save_from_draft(ctx, inter)
+    ctx.schedule_service.upcoming_dates.assert_not_awaited()
+
+
+def _old_grid_with_events(old_start, old_interval, new_interval, count=4):
+    """upcoming_dates as the service returns it: `count` existing events on the old grid,
+    then projected dates continuing from the latest event with the new interval."""
+    old = [old_start + datetime.timedelta(days=old_interval * i) for i in range(count)]
+
+    async def dates(guild_id, n=10, *, interval_days=None, first_date=None):
+        step = datetime.timedelta(days=interval_days or new_interval)
+        out = [ScheduleDate(d, MagicMock(date=d)) for d in old]
+        out += [ScheduleDate(old[-1] + step * i, None) for i in range(1, n + 1)]
+        return out[:n]
+
+    return dates
+
+
+@pytest.mark.asyncio
+async def test_save_reanchors_to_first_projected_date_after_existing_events(store):
+    ctx = make_ctx()
+    dec5 = D(2030, 12, 5)
+    ctx.schedule_service.upcoming_dates = AsyncMock(
+        side_effect=_old_grid_with_events(dec5, 7, 14)
+    )
+    seed(store, SUMMARY, {
+        **SAVE_DRAFT, "event_interval_days": 14, "orig_event_interval_days": 7,
+        "rules": [_rule_dict(anchor=dec5, every=1)],
+    })
+    inter = make_inter(make_guild())
+    await inter.response.defer()
+    await sw.save_from_draft(ctx, inter)
+    (rules, _), = store.saved_schedule
+    first_new = D(2031, 1, 9)  # Dec 26 + 14: the first event replenish creates
+    assert (first_new - rules[0].anchor).days % 14 == 0
+    assert rules[0].anchor >= dec5
+
+
+@pytest.mark.asyncio
+async def test_save_refuses_conflicting_rules_without_grid_change(store):
+    ctx = make_ctx()
+    seed(store, SUMMARY, {
+        **SAVE_DRAFT,
+        "rules": [
+            _rule_dict(value="A", every=1, anchor=GRID_START),
+            _rule_dict(value="B", every=1, anchor=GRID_START + datetime.timedelta(days=7)),
+        ],
+    })
+    inter = make_inter(make_guild())
+    await inter.response.defer()
+    await sw.save_from_draft(ctx, inter)
+    assert store.saved_schedule == [] and store.writes == []
+    text = inter.followup.send.await_args.args[0]
+    assert "#1" in text and "#2" in text
+    assert GUILD in store.drafts
+
+
+@pytest.mark.asyncio
+async def test_save_with_schedule_off_still_reanchors_on_grid_change(store):
+    ctx = make_ctx()
+    off_grid = GRID_START + datetime.timedelta(days=1)
+    seed(store, SUMMARY, {
+        **SAVE_DRAFT, **OFF, "event_interval_days": 14, "orig_event_interval_days": 7,
+        "rules": [_rule_dict(anchor=off_grid, every=1, rule_id=3)],
+    })
+    inter = make_inter(make_guild())
+    await inter.response.defer()
+    await sw.save_from_draft(ctx, inter)
+    (rules, _), = store.saved_schedule
+    assert rules == [Rule(3, "genre", "Techno", 1, GRID_START + datetime.timedelta(days=14))]
+
+
+@pytest.mark.asyncio
+async def test_save_refused_without_schedule_service_when_grid_changes(store):
+    ctx = make_ctx()
+    ctx.schedule_service = None
+    seed(store, SUMMARY, {
+        **SAVE_DRAFT, "event_interval_days": 14, "orig_event_interval_days": 7,
+        "rules": [_rule_dict()],
+    })
+    inter = make_inter(make_guild())
+    await inter.response.defer()
+    await sw.save_from_draft(ctx, inter)
+    assert store.saved_schedule == [] and store.writes == []
+    assert inter.followup.send.await_args.args[0] == texts.SETUP_RULES_NO_GRID
+    assert GUILD in store.drafts
+
+
+@pytest.mark.asyncio
+async def test_summary_shows_moved_rule_starts_when_grid_changes(store):
+    ctx = make_ctx()
+    off_grid = GRID_START + datetime.timedelta(days=1)
+    seed(store, SUMMARY, {
+        **SAVE_DRAFT, "event_interval_days": 14, "orig_event_interval_days": 7,
+        "rules": [_rule_dict(anchor=off_grid, every=1)],
+    })
+    view = await sw.render_step(ctx, make_guild(), store.drafts[GUILD])
+    label = texts.schedule_date_label
+    new = GRID_START + datetime.timedelta(days=14)
+    assert texts.setup_rule_moved(
+        1, label(texts.PROJECTED_EVENT_NAME, off_grid), label(texts.PROJECTED_EVENT_NAME, new)
+    ) in view.content
+
+
+@pytest.mark.asyncio
+async def test_summary_shows_no_moves_without_grid_change(store):
+    ctx = make_ctx()
+    seed(store, SUMMARY, {**SAVE_DRAFT, "rules": [_rule_dict()]})
+    view = await sw.render_step(ctx, make_guild(), store.drafts[GUILD])
+    assert "moves" not in view.content
+
+
+@pytest.mark.asyncio
+async def test_save_without_rules_key_keeps_stored_rules_and_defaults(store):
+    ctx = make_ctx()
+    seed(store, SUMMARY, {**SAVE_DRAFT, "default_genre": "Techno"})
+    inter = make_inter(make_guild())
+    await inter.response.defer()
+    await sw.save_from_draft(ctx, inter)
+    (rules, defaults), = store.saved_schedule
+    assert rules is None  # stored rules stay
+    assert defaults == {"genre": "Techno"}  # location key missing: stored default stays
+
+
+@pytest.mark.asyncio
+async def test_old_draft_without_rules_key_reanchors_stored_rules_on_grid_change(store):
+    ctx = make_ctx()
+    off_grid = GRID_START + datetime.timedelta(days=1)
+    store.rules = [Rule(5, "location", "Hall B", 1, off_grid)]
+    seed(store, SUMMARY, {
+        **SAVE_DRAFT, "event_interval_days": 14, "orig_event_interval_days": 7,
+    })
+    inter = make_inter(make_guild())
+    await inter.response.defer()
+    await sw.save_from_draft(ctx, inter)
+    (rules, _), = store.saved_schedule
+    assert rules == [
+        Rule(5, "location", "Hall B", 1, GRID_START + datetime.timedelta(days=14))
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", [sw.save_from_draft, sw.activate_from_draft])
+async def test_maintenance_starting_while_waiting_for_the_lock_refuses(store, action):
+    ctx = make_ctx()
+    data = {**SAVE_DRAFT, "rules": [_rule_dict()]}
+    if action is sw.activate_from_draft:
+        data.pop("rerun")
+    seed(store, SUMMARY, data)
+    inter = make_inter(make_guild())
+    await inter.response.defer()
+    lock = sw.guild_lock(GUILD)
+    await lock.acquire()
+    task = asyncio.create_task(action(ctx, inter))
+    await asyncio.sleep(0)  # passes the first check, then waits for the lock
+    ctx.maintenance = object()
+    lock.release()
+    await task
+    assert store.saved_schedule == [] and store.writes == []
+    assert inter.followup.send.await_args.args[0] == texts.MAINTENANCE
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", [sw.save_from_draft, sw.activate_from_draft])
+async def test_save_and_activate_refused_during_maintenance(store, action):
+    ctx = make_ctx()
+    ctx.maintenance = object()
+    data = {**SAVE_DRAFT, "rules": [_rule_dict()]}
+    if action is sw.activate_from_draft:
+        data.pop("rerun")
+    seed(store, SUMMARY, data)
+    inter = make_inter(make_guild())
+    await inter.response.defer()
+    await action(ctx, inter)
+    assert store.saved_schedule == [] and store.writes == []
+    assert inter.followup.send.await_args.args[0] == texts.MAINTENANCE
+    assert GUILD in store.drafts
+
+
+@pytest.mark.asyncio
+async def test_save_failure_in_schedule_write_keeps_draft(store):
+    ctx = make_ctx()
+    store.save_schedule_error = RuntimeError("boom")
+    seed(store, SUMMARY, {**SAVE_DRAFT, "rules": [_rule_dict()]})
+    inter = make_inter(make_guild())
+    await inter.response.defer()
+    await sw.save_from_draft(ctx, inter)
+    assert GUILD in store.drafts
+    assert inter.followup.send.await_args.args[0] == texts.SETUP_ERROR
+
+
+@pytest.mark.asyncio
+async def test_save_offers_apply_view(store):
+    from bot.services.schedule import PendingChange
+    from bot.ui.schedule_views import ApplyChangesView
+    from tests.notion.factories import make_event
+
+    change = PendingChange(make_event(date=D(2030, 1, 7)), "genre", None, "Techno")
+    ctx = make_ctx()
+    ctx.schedule_service.pending_changes = AsyncMock(return_value=[change])
+    seed(store, SUMMARY, {**SAVE_DRAFT, "default_genre": "Techno"})
+    inter = make_inter(make_guild())
+    await inter.response.defer()
+    await sw.save_from_draft(ctx, inter)
+    assert last_content(inter).startswith("Settings saved.")
+    kwargs = inter.followup.send.await_args.kwargs
+    view = kwargs["view"]
+    assert isinstance(view, ApplyChangesView) and view.origin is inter
+    assert kwargs["ephemeral"] is True
+    assert inter.followup.send.await_args.args[0] == view.content(texts.SETUP_APPLY_INTRO)
+
+
+@pytest.mark.asyncio
+async def test_save_without_pending_changes_sends_no_view(store):
+    ctx = make_ctx()
+    seed(store, SUMMARY, {**SAVE_DRAFT})
+    inter = make_inter(make_guild())
+    await inter.response.defer()
+    await sw.save_from_draft(ctx, inter)
+    inter.followup.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_activate_stores_defaults_and_rules(store):
+    ctx = make_ctx()
+    seed(store, SUMMARY, {
+        **FULL, "default_location": "Club", "rules": [_rule_dict()],
+    })
+    inter = make_inter(make_guild())
+    await inter.response.defer()
+    await sw.activate_from_draft(ctx, inter)
+    (rules, defaults), = store.saved_schedule
+    assert defaults == {"location": "Club"} and len(rules) == 1
+
+
+@pytest.mark.asyncio
+async def test_rerun_loads_stored_rules(store):
+    stored = Rule(5, "location", "Club", 2, D(2030, 2, 4))
+    store.rules = [stored]
+    store.defaults = {"genre": "Techno"}
+    data = await sw.prefilled_data(make_ctx().db, GUILD, make_guild())
+    assert data["rules"] == [_rule_dict("location", "Club", 2, D(2030, 2, 4), rule_id=5)]
+    assert data["default_genre"] == "Techno" and data["default_location"] == ""
+    assert data["orig_event_interval_days"] == 7 and data["orig_first_event_date"] == ""
+
+
+@pytest.mark.asyncio
+async def test_summary_shows_defaults_and_rule_count(store):
+    ctx = make_ctx()
+    lines = await sw.summary_lines(ctx, make_guild(), {
+        **FULL, "default_genre": "Techno", "rules": [_rule_dict()],
+    })
+    joined = "\n".join(lines)
+    assert "Default genre: Techno" in joined and "Default location: none" in joined
+    assert "Rules: 1" in joined
+    off = "\n".join(await sw.summary_lines(ctx, make_guild(), {**FULL, **OFF}))
+    assert "Default genre" not in off and "Rules:" not in off
+
+
+def test_step_numbers_of_an_open_draft_shift_past_the_new_steps():
+    old_timezone = SetupDraft(1, 2, 3, 11, {sw.DRAFT_MARKER: True})
+    old_invites = SetupDraft(1, 2, 3, 12, {sw.DRAFT_MARKER: True})
+    old_lookahead = SetupDraft(1, 2, 3, 10, {sw.DRAFT_MARKER: True})
+    for draft in (old_timezone, old_invites, old_lookahead):
+        sw.migrate_legacy_draft(draft)
+    assert old_timezone.step == STEP["timezone"] and old_invites.step == STEP["invites"]
+    assert old_lookahead.step == STEP["lookahead"]
+    again = SetupDraft(1, 2, 3, STEP["timezone"], dict(old_timezone.data))
+    sw.migrate_legacy_draft(again)
+    assert again.step == STEP["timezone"]

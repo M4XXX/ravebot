@@ -1,9 +1,38 @@
 """Central catalog of user-facing strings and small formatters (no em dash allowed)."""
+import datetime
+import re
 from collections.abc import Sequence
 
 import disnake
 
 from bot.notion.models import EventInfo
+
+_DATED_ID = re.compile(r"^\d{4}-\d{2}-\d{2}\s+(?P<name>.+)$")
+
+# Shown for a schedule date that has no event yet.
+PROJECTED_EVENT_NAME = "Rave Night"
+
+
+def event_name(event: EventInfo) -> str:
+    """The event ID without its leading date (`2026-11-14 Rave Night` becomes `Rave Night`)."""
+    match = _DATED_ID.match(event.event_id)
+    return match.group("name") if match else event.event_id
+
+
+def schedule_date_label(name: str, day: datetime.date) -> str:
+    """`Rave Night \u00b7 05.12.2026`."""
+    return f"{name} \u00b7 {day.strftime('%d.%m.%Y')}"
+
+
+# Schedule values and rules (genre <= 40, location <= 80 single line, note <= 300).
+GENRE_TOO_LONG = "The genre can be at most 40 characters long."
+LOCATION_TOO_LONG = "The location can be at most 80 characters long."
+NOTE_TOO_LONG = "The note can be at most 300 characters long."
+GENRE_ONE_LINE = "The genre must fit on one line."
+LOCATION_ONE_LINE = "The location must fit on one line."
+RULE_VALUE_EMPTY = "A rule needs a value."
+RULE_EVERY_RANGE = "A rule repeats every 1 to 52 events."
+RULE_ANCHOR_NOT_UPCOMING = "Pick the first event of the rule from the upcoming schedule."
 
 
 def fmt_date(event: EventInfo) -> str:
@@ -11,20 +40,70 @@ def fmt_date(event: EventInfo) -> str:
     return event.date.strftime("%A %d.%m.%Y")
 
 
-def fmt_time(event: EventInfo, slot_index: int) -> str:
-    """Local HH:MM of the zero-based slot_index."""
+def ts(moment: datetime.datetime, style: str) -> str:
+    """A Discord timestamp token; every reader sees it in their own time zone."""
+    return f"<t:{int(moment.timestamp())}:{style}>"
+
+
+def slot_time(event: EventInfo, slot_index: int) -> str:
+    """Short time of the zero-based slot_index, in the reader's time zone."""
+    return ts(event.slot_start(slot_index), "t")
+
+
+def slot_when(event: EventInfo, slot_index: int) -> str:
+    """Full date and time of the slot, in the reader's time zone."""
+    return ts(event.slot_start(slot_index), "F")
+
+
+def plain_time(event: EventInfo, slot_index: int) -> str:
+    """Local HH:MM in the bot time zone, for places Discord does not render (web, Notion, logs)."""
     return event.slot_start(slot_index).strftime("%H:%M")
 
 
-def fmt_slot_when(event: EventInfo, slot_index: int) -> str:
-    """`Saturday 14.11.2026, 19:00` (local time of the slot)."""
-    start = event.slot_start(slot_index)
-    return f"{start.strftime('%A %d.%m.%Y')}, {start.strftime('%H:%M')}"
-
-
 def slot_phrase(event: EventInfo, slot_index: int) -> str:
-    """`slot 2 at 19:00` for the zero-based slot_index."""
-    return f"slot {slot_index + 1} at {fmt_time(event, slot_index)}"
+    """`slot 2 at <t:...:t>` for the zero-based slot_index."""
+    return f"slot {slot_index + 1} at {slot_time(event, slot_index)}"
+
+
+def _dj_slot(event: EventInfo, slot_index: int) -> str:
+    """`slot 2, <t:...:F>`: full date and time in the DJ's zone (a slot after the DJ's
+    midnight must not sit next to the bot-zone date)."""
+    return f"slot {slot_index + 1}, {slot_when(event, slot_index)}"
+
+
+def slot_button(slot_index: int) -> str:
+    """Button label for a slot; never contains a time."""
+    return f"Slot {slot_index + 1}"
+
+
+def event_button(position: int) -> str:
+    """Button label for the event at the zero-based position; never contains a date."""
+    return f"Event {position + 1}"
+
+
+EVENTS_FIELD = "Events"
+
+
+def event_pick_line(position: int, event: EventInfo, current: bool) -> str:
+    """`Event 2 \u00b7 Rave Night \u00b7 <t:..:D>`, bold for the displayed event."""
+    day = ts(event.slot_start(0), "D")
+    line = f"{event_button(position)} \u00b7 {event_name(event)} \u00b7 {day}"
+    return f"**{line}**" if current else line
+
+
+NOTES_HEADING = "Notes"
+_GENRE_ICON = "\U0001f3b5"
+_LOCATION_ICON = "\U0001f4cd"
+
+
+def event_meta(event: EventInfo) -> str | None:
+    """`🎵 Techno · 📍 Club Vortex`, only the parts that are set; None when neither."""
+    parts = []
+    if event.genre:
+        parts.append(f"{_GENRE_ICON} {escape_text(event.genre)}")
+    if event.location:
+        parts.append(f"{_LOCATION_ICON} {escape_text(event.location)}")
+    return " \u00b7 ".join(parts) if parts else None
 
 
 FLOW_STALE = "This menu is out of date. Open the menu again to start over."
@@ -195,10 +274,6 @@ PICK_SLOT_TRUNCATED = "Showing the first 24 open slots."
 BTN_NEVER_MIND = "Never mind"
 
 
-def slot_button(event: EventInfo, slot_index: int) -> str:
-    return f"Slot {slot_index + 1} · {fmt_time(event, slot_index)}"
-
-
 PICK_EVENT = "Which event do you want to play?"
 
 
@@ -210,7 +285,7 @@ BOOKED_TITLE = "You're booked"
 
 
 def booking_body(event: EventInfo, slot_index: int) -> str:
-    return f"{event.event_id}\n{fmt_date(event)}, {slot_phrase(event, slot_index)}"
+    return f"{event_name(event)}\nSlot {slot_index + 1}, {slot_when(event, slot_index)}"
 
 
 BOOKED_REMINDER_NOTE = "I'll remind you the day before."
@@ -219,6 +294,18 @@ EVENT_FULL = "All slots of this event are now booked. I'll message you if one op
 ALL_BOOKED = "All slots are booked. I'll message you if one opens up."
 NO_EVENTS = "There are no upcoming events yet."
 CANCEL_WHICH = "Which booking do you want to cancel?"
+
+
+def booking_button(number: int) -> str:
+    """Button label of the cancel list; never contains a time."""
+    return f"Booking {number}"
+
+
+def cancel_list_line(number: int, event: EventInfo, slot_index: int) -> str:
+    return (
+        f"{booking_button(number)} \u00b7 {escape_text(event_name(event))} \u00b7 "
+        f"Slot {slot_index + 1} \u00b7 {slot_when(event, slot_index)}"
+    )
 
 
 def cancel_more(total: int) -> str:
@@ -230,7 +317,7 @@ def cancel_more(total: int) -> str:
 
 def cancel_confirm(event: EventInfo, slot_index: int) -> str:
     return (
-        f"Cancel slot {slot_index + 1} ({fmt_time(event, slot_index)}) at {event.event_id}?"
+        f"Cancel slot {slot_index + 1} ({slot_when(event, slot_index)}) at {event_name(event)}?"
     )
 
 
@@ -260,34 +347,34 @@ INVITES_OFF_DONE = (
 def reminder(event: EventInfo, slot_index: int) -> str:
     return (
         "**You're on tomorrow!** \U0001f3a7\n"
-        f"{event.event_id}\n"
-        f"{fmt_date(event)}, {slot_phrase(event, slot_index)}\n"
+        f"{event_name(event)}\n"
+        f"Slot {slot_index + 1}, {slot_when(event, slot_index)}\n"
         "Check your gear and your stream link. Have a great set!"
     )
 
 
 def dm_booked(event: EventInfo, slot_index: int) -> str:
-    return f"An organizer booked you: {event.event_id}, {slot_phrase(event, slot_index)}."
+    return f"An organizer booked you: {event_name(event)}, {_dj_slot(event, slot_index)}."
 
 
 def dm_cancelled(event: EventInfo, slot_index: int) -> str:
     return (
         f"An organizer cancelled your booking: "
-        f"{event.event_id}, {slot_phrase(event, slot_index)}."
+        f"{event_name(event)}, {_dj_slot(event, slot_index)}."
     )
 
 
 def dm_added(event: EventInfo, slot_index: int) -> str:
     return (
-        f"You are in the lineup: {event.event_id}, "
-        f"{slot_phrase(event, slot_index)} (added by an organizer)."
+        f"You are in the lineup: {event_name(event)}, "
+        f"{_dj_slot(event, slot_index)} (added by an organizer)."
     )
 
 
 def dm_removed(event: EventInfo, slot_index: int) -> str:
     return (
-        f"You were removed from {event.event_id}, "
-        f"{slot_phrase(event, slot_index)} (by an organizer)."
+        f"You were removed from {event_name(event)}, "
+        f"{_dj_slot(event, slot_index)} (by an organizer)."
     )
 
 
@@ -776,6 +863,14 @@ setup_value_texts: dict[str, tuple[str, str]] = {
         "How many future events should always be ready?",
     ),
     "timezone": ("Time zone", "Which time zone do start times use?"),
+    "default_genre": (
+        "Default genre",
+        "Which genre should scheduled events get when no rule sets one?",
+    ),
+    "default_location": (
+        "Default location",
+        "Which location should scheduled events get when no rule sets one?",
+    ),
 }
 
 
@@ -894,12 +989,18 @@ _CONFIRM_MAX_CHARS = 1900
 
 
 def _slots_phrase(event: EventInfo, slot_indexes: Sequence[int]) -> str:
-    return ", ".join(slot_phrase(event, index) for index in slot_indexes)
+    """`slot 2, <t:...:F>; slot 3, <t:...:F>`: each slot with its full local date."""
+    return "; ".join(_dj_slot(event, index) for index in slot_indexes)
+
+
+def dj_booking_line(event: EventInfo, slot_index: int) -> str:
+    """`- Rave Night, slot 2, <t:...:F>` (no bot-zone date next to a local time)."""
+    return f"- {escape_text(event_name(event))}, {_dj_slot(event, slot_index)}"
 
 
 def dm_event_canceled(event: EventInfo, slot_indexes: Sequence[int]) -> str:
     return (
-        f"The event {escape_text(event.event_id)} was canceled by an organizer. "
+        f"The event {escape_text(event_name(event))} was canceled by an organizer. "
         f"Your booking ({_slots_phrase(event, slot_indexes)}) is canceled too."
     )
 
@@ -994,3 +1095,203 @@ def event_cancel_done(
     if failed_slots:
         text += " Some slots could not be emptied, see the log channel."
     return text
+
+
+# --- /edit event, /schedule ------------------------------------------------------------
+EDIT_EVENT_NEEDS_OPTION = "Give at least one of genre, location, note or clear."
+EDIT_EVENT_CLEAR_CONFLICT = "Use either a value or clear for the same field, not both."
+EDIT_EVENT_NOT_FOUND = "That event no longer exists. Pick one from the list."
+CREATE_EVENT_VALUES_NOT_SAVED = (
+    " The genre, location and note were not saved. Set them with /edit event."
+)
+
+
+def edit_event_done(event: EventInfo) -> str:
+    meta = event_meta(event)
+    head = f"Updated {event_name(event)} on {ts(event.slot_start(0), 'D')}."
+    note = f"\nNote: {escape_text(event.notes)}" if event.notes else ""
+    return head + (f"\n{meta}" if meta else "") + note
+
+
+SCHEDULE_NO_CHANGES = "No upcoming event changes."
+SCHEDULE_NOT_READY = "The bot is not ready yet. Please try again in a moment."
+RULE_NOT_FOUND = "That rule does not exist (any more)."
+RULE_EDIT_NEEDS_OPTION = "Give at least one of value, every or start."
+SCHEDULE_NOTHING_SET = "No defaults, no rules."
+_FIELD_NAMES = {"genre": "Genre", "location": "Location"}
+
+
+def field_name(field: str) -> str:
+    return _FIELD_NAMES[field]
+
+
+def rule_summary(field: str, value: str, every: int, anchor_label: str) -> str:
+    """`Location "B", every 2, from Rave Night · 12.12.2026`."""
+    return f'{field_name(field)} "{value}", every {every}, from {anchor_label}'
+
+
+def rule_line(rule_id: int | None, field: str, value: str, every: int, anchor_label: str) -> str:
+    """`#3 · Location "B" · every 2 · from Rave Night · 05.12.2026`."""
+    return (
+        f'#{rule_id} · {field_name(field)} "{value}" · every {every}'
+        f" · from {anchor_label}"
+    )
+
+
+def rule_conflict(lines: Sequence[str]) -> str:
+    return "\n".join(
+        f"This rule collides with #{rid} ({summary}). Remove that rule first."
+        for rid, summary in lines
+    )
+
+
+def default_set(field: str, value: str | None) -> str:
+    if value is None:
+        return f"The default {field} is cleared."
+    return f'The default {field} is now "{value}".'
+
+
+def rule_added(line: str) -> str:
+    return f"Rule added: {line}"
+
+
+def rule_edited(line: str) -> str:
+    return f"Rule updated: {line}"
+
+
+def rule_removed(rule_id: int) -> str:
+    return f"Rule #{rule_id} removed."
+
+
+def schedule_show(defaults: Sequence[str], rules: Sequence[str], events: Sequence[str]) -> str:
+    parts = ["**Defaults**", *(defaults or ["none"])]
+    parts += ["", "**Rules**", *(rules or ["none"])]
+    parts += ["", "**Next events**", *(events or ["none"])]
+    return "\n".join(parts)
+
+
+def schedule_event_line(
+    label: str,
+    genre: str | None,
+    genre_by_hand: bool,
+    location: str | None,
+    location_by_hand: bool,
+) -> str:
+    hand = " (set by hand)"
+    bits = []
+    if genre:
+        bits.append(f"{_GENRE_ICON} {escape_text(genre)}{hand if genre_by_hand else ''}")
+    if location:
+        bits.append(f"{_LOCATION_ICON} {escape_text(location)}{hand if location_by_hand else ''}")
+    return f"{label} · " + (" · ".join(bits) if bits else "nothing set")
+
+
+# Apply view
+APPLY_ALL = "Apply to all"
+APPLY_PICK = "Pick events"
+APPLY_KEEP = "Keep all as they are"
+APPLY_SELECTED = "Apply selected"
+APPLY_PLACEHOLDER = "Choose the changes to apply"
+APPLY_CAPPED = "Showing the first 25; use Apply to all or the admin page for the rest."
+APPLY_NOT_YOURS = "Only the admin who opened this can use it."
+APPLY_NONE_PICKED = "Pick at least one change first."
+APPLY_KEPT = "Upcoming events were left as they are."
+APPLY_EXPIRED = (
+    "This choice expired. Events were left as they are. Run /schedule apply to review again."
+)
+APPLY_HEADING = "These upcoming events would change:"
+_APPLY_LIMIT = 1900
+
+
+def apply_done(count: int) -> str:
+    return f"Updated {count} event{'s' if count != 1 else ''}."
+
+
+def _none(value: str | None) -> str:
+    return escape_text(value) if value else "none"
+
+
+def change_text(event: EventInfo, field: str, old: str | None, new: str | None) -> str:
+    """`Rave Night · 05.12. · \U0001f3b5 Techno → House`."""
+    icon = _GENRE_ICON if field == "genre" else _LOCATION_ICON
+    return (
+        f"{event_name(event)} · {event.date.strftime('%d.%m.')} · "
+        f"{icon} {_none(old)} → {_none(new)}"
+    )
+
+
+def apply_content(lines: Sequence[str], intro: str | None = None) -> str:
+    """Intro and change lines within Discord's 2000 characters."""
+    head = [intro] if intro else []
+    head.append(APPLY_HEADING)
+    out = "\n".join(head)
+    for shown, line in enumerate(lines):
+        extra = f"\n{line}"
+        rest = len(lines) - shown
+        tail = f"\n...and {rest} more" if rest > 1 else ""
+        if len(out) + len(extra) + len(tail) > _APPLY_LIMIT:
+            return out + f"\n...and {rest} more"
+        out += extra
+    return out
+
+
+def option_label(text: str) -> str:
+    """Select option label, at most 100 characters."""
+    return text if len(text) <= 100 else text[:99] + "…"
+
+
+# Setup wizard: rules step
+SETUP_APPLY_INTRO = "Defaults and rules saved."
+SETUP_RULES_FULL = "There can be at most 25 rules."
+SETUP_RULES_STALE = "That choice is no longer available. Pick again."
+RULE_MODAL_TITLE = "Add a rule"
+RULE_FIELD_LABEL = "What the rule sets"
+RULE_VALUE_LABEL = "The value"
+RULE_EVERY_LABEL = "Every how many events (1 to 52)"
+
+
+def setup_rules_step(number: int, total: int, lines: Sequence[str]) -> str:
+    parts = [
+        f"**Step {number} of {total}: Rules**",
+        "A rule sets the genre or location of every n-th scheduled event. "
+        "A value set by hand always wins.",
+        "",
+        *(lines or ["No rules yet."]),
+        "",
+        "Rules are stored when you save. Numbers here only count this list.",
+    ]
+    return "\n".join(parts)
+
+
+def setup_rule_start_step(number: int, total: int, summary: str) -> str:
+    return "\n".join(
+        [
+            f"**Step {number} of {total}: Rules**",
+            f"New rule: {summary}",
+            "Pick the first event of the rule.",
+        ]
+    )
+
+
+def setup_rule_pending_summary(field: str, value: str, every: int) -> str:
+    return f'{field_name(field)} "{value}", every {every}'
+
+
+SETUP_RULES_NO_GRID = (
+    "I can't work out the dates of the new schedule, so I can't move the rules onto it. "
+    "Nothing was saved. Please try again in a moment."
+)
+
+
+def setup_rule_moved(number: int, old_label: str, new_label: str) -> str:
+    """Summary line for a rule whose start moves onto the new schedule."""
+    return f"Rule #{number} moves: {old_label} \u2192 {new_label}"
+
+
+def setup_rules_save_conflict(pairs: Sequence[tuple[int, str, int, str]]) -> str:
+    lines = [
+        f"Rule #{a} ({sa}) and rule #{b} ({sb}) would hit the same event. "
+        "Remove one of them."
+        for a, sa, b, sb in pairs
+    ]
+    return "\n".join([*lines, "Nothing was saved."])

@@ -47,6 +47,7 @@ BOTDATA_TABLES = (
     "fully_booked_events",
     "manual_events",
     "setup_drafts",
+    "schedule_rules",
 )
 
 _PRIMARY_KEYS: dict[str, tuple[str, ...]] = {
@@ -58,6 +59,7 @@ _PRIMARY_KEYS: dict[str, tuple[str, ...]] = {
     "fully_booked_events": ("event_id",),
     "manual_events": ("page_id",),
     "setup_drafts": ("guild_id",),
+    "schedule_rules": ("id",),
 }
 _EXCLUDED_COLUMNS = {"dj_conversations": {"logo_image"}}
 _WHERE = {"config": " WHERE guild_id <> 0"}
@@ -179,4 +181,10 @@ async def restore_botdata(conn: asyncpg.Connection, pages: list[dict[str, Any]])
         # The page already holds this row: record it so the next cycle leaves it alone.
         await mirror.set_synced(conn, "botdata", key, str(page["id"]), row)
         restored += 1
+    if any(parsed[1] == "schedule_rules" for _, parsed in parsed_pages):
+        # Rows came back with explicit ids: move the serial past them.
+        await conn.execute(
+            "SELECT setval(pg_get_serial_sequence('schedule_rules', 'id'),"
+            " COALESCE(MAX(id), 1), MAX(id) IS NOT NULL) FROM schedule_rules"
+        )
     return restored

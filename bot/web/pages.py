@@ -5,8 +5,11 @@ from __future__ import annotations
 import datetime
 import json
 from html import escape
+from urllib.parse import quote
 
 from bot.db.issues import IssueRow
+from bot.ui import texts
+from bot.web.schedule_page import PendingView, RuleView, ScheduleOverview, pick_key
 from bot.web.service import ActionResult, AdminRow, ServerInfo, SyncStatus
 
 _CDN = "https://cdn.discordapp.com/"
@@ -328,6 +331,9 @@ def render_dashboard(
         '<section class="card"><h3>DJs</h3>'
         '<p class="muted">Add, edit or delete DJs, including guests without a Discord account.</p>'
         '<a class="btn" href="/djs">Manage DJs</a></section>'
+        '<section class="card"><h3>Schedule</h3>'
+        '<p class="muted">Genre and location defaults, rules and the next events.</p>'
+        '<a class="btn" href="/schedule">Schedule</a></section>'
         f"{_data_card(sync)}"
         f"{_sync_card(sync)}"
     )
@@ -559,6 +565,235 @@ def render_confirm_delete_dj(row: dict, bookings: list[tuple[str, str]], csrf: s
         '<button class="btn red" type="submit">Delete</button></form>'
         '<a class="btn g" href="/djs">Cancel</a></div></section>'
     )
+
+
+_FIELD_CHOICES = (("genre", "Genre"), ("location", "Location"))
+_NOTE_EXCERPT = 60
+
+
+def _text_input(name: str, label: str, value: str, maxlen: int) -> str:
+    return (
+        f'<input class="in" type="text" name="{name}" maxlength="{maxlen}" '
+        f'placeholder="{_e(label)}" aria-label="{_e(label)}" value="{_e(value)}" '
+        'autocomplete="off">'
+    )
+
+
+def _anchor_select(options: list[tuple[str, str]], selected: str | None = None) -> str:
+    items = "".join(
+        f'<option value="{_e(iso)}"{" selected" if iso == selected else ""}>{_e(label)}</option>'
+        for label, iso in options
+    )
+    return f'<select class="in" name="start" aria-label="First event of the rule">{items}</select>'
+
+
+def _every_input(value: str) -> str:
+    return (
+        f'<input class="in" type="number" name="every" min="1" max="52" value="{_e(value)}" '
+        'aria-label="Every how many events (1 to 52)" required>'
+    )
+
+
+def _rule_row(view: RuleView) -> str:
+    rule = view.rule
+    return (
+        f'<div class="row"><div class="who"><b>#{_e(rule.id)} '
+        f"{_e(texts.field_name(rule.field))}: {_e(rule.value)}</b>"
+        f"<small>every {_e(rule.every)} &middot; from {_e(view.label)}</small></div>"
+        f'<a class="btn g" href="/schedule/rules/{_e(rule.id)}/edit">Edit</a>'
+        f'<a class="btn red" href="/schedule/rules/{_e(rule.id)}/remove">Remove</a></div>'
+    )
+
+
+def _event_row(item) -> str:
+    event = item.event
+    if event is None:
+        return (
+            f'<div class="row"><div class="who"><b>{_e(item.label)}</b>'
+            '<small>Not created yet</small></div></div>'
+        )
+    parts = []
+    for field in ("genre", "location"):
+        value = getattr(event, field)
+        if value:
+            by_hand = getattr(event, f"{field}_by_hand")
+            hand = ' <span class="tag">set by hand</span>' if by_hand else ""
+            parts.append(f"{_e(texts.field_name(field))}: {_e(value)}{hand}")
+    if event.notes:
+        note = event.notes.replace("\n", " ")
+        if len(note) > _NOTE_EXCERPT:
+            note = note[: _NOTE_EXCERPT - 1] + "\u2026"
+        parts.append(f"Note: {_e(note)}")
+    detail = " &middot; ".join(parts) or "nothing set"
+    return (
+        f'<div class="row"><div class="who"><b>{_e(item.label)}</b><small>{detail}</small></div>'
+        f'<a class="btn g" href="/schedule/events/{_e(quote(event.page_id, safe=""))}">Edit</a>'
+        "</div>"
+    )
+
+
+def render_schedule(
+    overview: ScheduleOverview,
+    anchor_options: list[tuple[str, str]],
+    csrf: str,
+    message: ActionResult | None = None,
+    values: dict[str, str] | None = None,
+) -> str:
+    values = values or {}
+    shown_defaults = {
+        f: values.get(f, overview.defaults.get(f, "")) for f in ("genre", "location")
+    }
+    banner = ""
+    if overview.pending:
+        banner = (
+            f'<p class="msg err" role="status">{overview.pending} upcoming '
+            f'event{"s" if overview.pending != 1 else ""} differ from the rules. '
+            '<a href="/schedule/apply">Review the changes</a></p>'
+        )
+    summary = (
+        '<section class="card"><h3>Schedule</h3>'
+        f'<p class="kv">Scheduled events: {"on" if overview.enabled else "off"}</p>'
+        f'<p class="kv">One event every {_e(overview.interval_days)} days</p>'
+        f'<p class="kv">First date: {_e(overview.first_date or "not set")}</p>'
+        f'<p class="kv">Future events kept ready: {_e(overview.lookahead)}</p>'
+        '<p class="muted">Change these with /setup in Discord.</p></section>'
+    )
+    defaults = (
+        '<section class="card"><h3>Defaults</h3>'
+        f'<form method="post" action="/schedule/defaults">{_csrf_field(csrf)}'
+        + _text_input("genre", "Default genre", shown_defaults["genre"], 40)
+        + _text_input("location", "Default location", shown_defaults["location"], 80)
+        + '<button class="btn" type="submit">Save defaults</button></form>'
+        '<p class="muted">Used by scheduled events when no rule sets the value. '
+        "Empty means none.</p></section>"
+    )
+    rows = "".join(_rule_row(v) for v in overview.rules) or '<p class="muted">No rules yet.</p>'
+    field_options = "".join(
+        f'<option value="{k}"{" selected" if values.get("field") == k else ""}>{_e(v)}</option>'
+        for k, v in _FIELD_CHOICES
+    )
+    rules = (
+        f'<section class="card"><h3>Rules ({len(overview.rules)})</h3>{rows}'
+        f'<form method="post" action="/schedule/rules/add">{_csrf_field(csrf)}'
+        f'<select class="in" name="field" aria-label="What the rule sets">{field_options}</select>'
+        + _text_input("value", "The value", values.get("value", ""), 80)
+        + _every_input(values.get("every", "1"))
+        + _anchor_select(anchor_options, values.get("start"))
+        + '<button class="btn" type="submit">Add rule</button></form>'
+        '<p class="muted">A rule sets the genre or location of every n-th scheduled event, '
+        "counted from the event you pick. A value set by hand always wins.</p></section>"
+    )
+    events = "".join(_event_row(d) for d in overview.dates) or '<p class="muted">None.</p>'
+    return _page(
+        f'<div class="top"><div class="brand">{_BRAND}</div>'
+        '<a class="btn g" href="/">Back</a></div>'
+        f"{_message(message)}{banner}{summary}{defaults}{rules}"
+        f'<section class="card"><h3>Next events</h3>{events}</section>'
+    )
+
+
+def render_edit_rule(
+    view: RuleView,
+    options: list[tuple[str, str]],
+    csrf: str,
+    message: ActionResult | None = None,
+    values: dict[str, str] | None = None,
+) -> str:
+    rule = view.rule
+    values = values or {}
+    return _page(
+        f"{_TOP}{_message(message)}"
+        f'<section class="card"><h3>Edit rule #{_e(rule.id)} '
+        f"({_e(texts.field_name(rule.field))})</h3>"
+        f'<form method="post" action="/schedule/rules/{_e(rule.id)}/edit">{_csrf_field(csrf)}'
+        f'<input type="hidden" name="field" value="{_e(rule.field)}">'
+        + _text_input("value", "The value", values.get("value", rule.value), 80)
+        + _every_input(values.get("every", str(rule.every)))
+        + _anchor_select(options, values.get("start", rule.anchor.isoformat()))
+        + '<div class="actions"><button class="btn" type="submit">Save</button>'
+        '<a class="btn g" href="/schedule">Cancel</a></div></form></section>'
+    )
+
+
+def render_confirm_remove_rule(view: RuleView, csrf: str) -> str:
+    rule = view.rule
+    return _page(
+        f"{_TOP}"
+        '<section class="card"><h3>Remove a rule</h3>'
+        f"<p>Remove rule #{_e(rule.id)} ({_e(texts.field_name(rule.field))} "
+        f'"{_e(rule.value)}", every {_e(rule.every)}, from {_e(view.label)})?</p>'
+        '<p class="muted">Events keep their values until you apply the changes.</p>'
+        f'<div class="actions"><form method="post" action="/schedule/rules/{_e(rule.id)}/remove">'
+        f'{_csrf_field(csrf)}<button class="btn red" type="submit">Remove</button></form>'
+        '<a class="btn g" href="/schedule">Cancel</a></div></section>'
+    )
+
+
+def render_edit_event(
+    event,
+    csrf: str,
+    message: ActionResult | None = None,
+    values: dict[str, str] | None = None,
+    original: dict[str, str] | None = None,
+) -> str:
+    """The event form. ``original`` holds the values the form first showed (hidden
+    fields), so a save only touches the fields the admin changed."""
+    stored = {
+        "genre": event.genre or "",
+        "location": event.location or "",
+        "note": event.notes or "",
+    }
+    shown = values or stored
+    first = original or stored
+    hidden = "".join(
+        f'<input type="hidden" name="orig_{name}" value="{_e(first[name])}">'
+        for name in ("genre", "location", "note")
+    )
+    return _page(
+        f"{_TOP}{_message(message)}"
+        f'<section class="card"><h3>{_e(texts.event_name(event))} &middot; '
+        f"{_e(event.date.strftime('%d.%m.%Y'))}</h3>"
+        f'<form method="post" action="/schedule/events/{_e(quote(event.page_id, safe=""))}">'
+        f"{_csrf_field(csrf)}{hidden}"
+        + _text_input("genre", "Genre", shown["genre"], 40)
+        + _text_input("location", "Location", shown["location"], 80)
+        + '<textarea class="in" name="note" rows="4" maxlength="300" placeholder="Note" '
+        f'aria-label="Note">{_e(shown["note"])}</textarea>'
+        '<p class="muted">An empty genre or location goes back to the rules (or stays empty '
+        "on a manual event). A value you enter is kept even when rules change.</p>"
+        '<div class="actions"><button class="btn" type="submit">Save</button>'
+        '<a class="btn g" href="/schedule">Cancel</a></div></form></section>'
+    )
+
+
+def render_apply(
+    changes: list[PendingView], csrf: str, message: ActionResult | None = None
+) -> str:
+    if not changes:
+        body = (
+            '<p class="muted">No upcoming event changes.</p>'
+            '<a class="btn g" href="/schedule">Back</a>'
+        )
+    else:
+        items = "".join(
+            f'<label class="row"><input type="checkbox" name="pick" '
+            f'value="{_e(pick_key(c.uid, c.field))}"> <span class="who">{_e(c.text)}</span></label>'
+            f'<input type="hidden" name="shown" value="{_e(pick_key(c.uid, c.field))}">'
+            for c in changes
+        )
+        body = (
+            f'<p>{_e(texts.APPLY_HEADING)}</p>'
+            f'<form method="post" action="/schedule/apply">{_csrf_field(csrf)}{items}'
+            '<div class="actions">'
+            '<button class="btn" type="submit" name="choice" value="all">'
+            f"{_e(texts.APPLY_ALL)}</button>"
+            f'<button class="btn" type="submit" name="choice" value="selected">'
+            f"{_e(texts.APPLY_SELECTED)}</button>"
+            f'<button class="btn g" type="submit" name="choice" value="keep">'
+            f"{_e(texts.APPLY_KEEP)}</button></div></form>"
+        )
+    return _page(f"{_TOP}{_message(message)}"
+                 f'<section class="card"><h3>Changes to apply</h3>{body}</section>')
 
 
 def render_notice(message: str) -> str:

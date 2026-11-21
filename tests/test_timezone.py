@@ -65,11 +65,10 @@ def test_dst_autumn_switch_crossing_midnight() -> None:
 
 def test_text_helpers_are_local() -> None:
     e = _event(datetime.date(2026, 7, 14), datetime.time(19, 0))
-    assert texts.fmt_time(e, 0) == "19:00"
-    assert texts.fmt_time(e, 2) == "21:00"
-    assert texts.slot_phrase(e, 1) == "slot 2 at 20:00"
-    assert texts.fmt_slot_when(e, 5) == "Wednesday 15.07.2026, 00:00"
-    assert texts.fmt_slot_when(e, 0) == "Tuesday 14.07.2026, 19:00"
+    assert texts.plain_time(e, 0) == "19:00"
+    assert texts.plain_time(e, 2) == "21:00"
+    assert texts.slot_phrase(e, 1) == f"slot 2 at <t:{int(e.slot_start(1).timestamp())}:t>"
+    assert texts.slot_when(e, 5) == f"<t:{int(e.slot_start(5).timestamp())}:F>"
 
 
 def test_set_timezone_invalid_keeps_zone() -> None:
@@ -125,10 +124,10 @@ def test_reminder_window_uses_real_instant() -> None:
     assert svc._is_in_reminder_window(e, now - datetime.timedelta(hours=5)) is False
 
 
-def test_no_discord_timestamps_in_bot_source() -> None:
+def test_discord_timestamps_are_built_only_in_texts() -> None:
     root = Path(__file__).resolve().parent.parent / "bot"
     offenders = [
         str(p) for p in root.rglob("*.py")
-        if re.search(r"<t:[^>\s]*[{\d]", p.read_text(encoding="utf-8"))
+        if p.name != "texts.py" and re.search(r"<t:[^>\s]*[{\d]", p.read_text(encoding="utf-8"))
     ]
     assert offenders == []

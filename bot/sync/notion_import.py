@@ -37,6 +37,7 @@ from bot.notion.models import (
     _title,
     parse_dj,
 )
+from bot.services.schedule import recompute_hand_markers, schedule_guild_id
 from bot.sync.botdata import restore_botdata
 from bot.sync.payloads import (
     PROP_DJ_ALT_LINK,
@@ -299,7 +300,13 @@ async def _write(
     id_by_dj_page: dict[str, int | None] = {d.page_id: d.discord_id for d in djs}
     slots = 0
     for event in new_events:
-        await insert_event(conn, event.draft, uid=event.uid)
+        # Values already in Notion count as hand values (replace mode recomputes below)
+        draft = dataclasses.replace(
+            event.draft,
+            genre_by_hand=event.draft.genre is not None,
+            location_by_hand=event.draft.location is not None,
+        )
+        await insert_event(conn, draft, uid=event.uid)
         await mirror.set_synced(conn, "event", event.uid, event.page_id, event.payload)
         holders: dict[int, int | None] = {}
         for index, page in event.slot_pages.items():
@@ -325,6 +332,8 @@ async def _write(
     if mode == "replace":
         # Upgrade keeps what Postgres already holds; a rebuild restores the bot tables.
         await restore_botdata(conn, botdata)
+        # The imported values are marked by hand unless a restored rule produces them
+        await recompute_hand_markers(conn, await schedule_guild_id(conn))
         # In the same transaction: the rebuilt data is the one-time import (no upgrade
         # import runs over it later), and Notion now matches Postgres, so the next cycle
         # must not treat pages the rebuild skipped as left over from a backup restore.

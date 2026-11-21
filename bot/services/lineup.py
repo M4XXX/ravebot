@@ -63,6 +63,9 @@ def event_snapshot(event: EventInfo | None) -> str:
             "start": event.start.strftime("%H:%M"),
             "slot_minutes": event.slot_minutes,
             "slot_count": event.slot_count,
+            "genre": event.genre,
+            "location": event.location,
+            "notes": event.notes,
             "slots": [
                 [number, slot.dj_page_id] for number, slot in sorted(event.resolved_slots().items())
             ],

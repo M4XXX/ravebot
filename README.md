@@ -36,6 +36,8 @@
 
 | | |
 |---|---|
+| 🎼 **Genre, location and notes** | Every event can have a genre, a location and a note, shown in the lineup only when set. Rules such as "every second event is in Hall B" fill scheduled events by themselves; a value you set by hand always wins. |
+| 🕒 **Times in your own time zone** | The lineup, bookings and reminders show times as Discord timestamps, so everyone sees their own local time. |
 | 🎧 **DJ onboarding by chat** | A DJ gets the DJ role and the bot asks five short questions in the DMs: name, VRChat name, logo (an image they just send), stream links. No forms, no popups. |
 | 🗓️ **Self-service booking** | DJs book and cancel slots with buttons. Two DJs can never take the same slot. |
 | 📨 **Automatic invites** | DJs in the *Active DJ Booking Group* get a message when slots stay open. Cooldowns keep it friendly, reminders go out the day before. |
@@ -44,7 +46,7 @@
 | 🛰️ **Guided setup** | `/setup` walks you through channels, roles, event defaults, time zone and invites. The bot stays idle until you press *Activate*. |
 | 🔔 **Quiet admin log** | Only what matters: bookings, new DJs, problems and the DMs people send the bot, with a *Reply* button. |
 | 💾 **Backups and recovery** | Download a backup of the whole database from the admin page and restore it later. The bot saves a safety backup before every restore, rebuild or import, and can rebuild PostgreSQL from Notion after a data loss. |
-| 🪐 **Admin page** | An optional password protected web page: admins, backups, the Notion sync status with conflicts and warnings, resync and rebuild. |
+| 🪐 **Admin page** | An optional password protected web page: admins, DJs, the schedule (defaults, rules, genre, location and notes of upcoming events), backups, the Notion sync status with conflicts and warnings, resync and rebuild. |
 
 ---
 
@@ -244,6 +246,7 @@ Set `ADMIN_PAGE_PASSWORD` and open `http://YOUR-SERVER:PORT/`.
 
 - **Admins:** add admins by Discord user ID, remove them again, see who can use the commands. Admins added there can use every admin command.
 - **DJs:** add, edit and remove DJs, also guests without Discord, with logo upload.
+- **Schedule:** see the schedule settings, set the default genre and location, add, edit and remove rules, edit genre, location and note of upcoming events, and apply rule changes to upcoming events (**Apply to all**, **Apply selected** or **Keep all as they are**).
 - **Data and backup:** download a backup, restore one from a file.
 - **Notion sync** (with Notion turned on): last sync, changes waiting for Notion, errors, open conflicts and warnings with their choices, **Resync all to Notion**, **Rebuild from Notion**, and **Retry the import from Notion** while the bot is paused after a failed one-time import.
 
@@ -259,7 +262,10 @@ All admin commands work on the server only (not in DMs).
 |---|---|---|
 | `/setup` | Admin | Guided setup; run it again to change settings |
 | `/config show` | Admin | Show all settings and the bot status |
-| `/create event` | Admin | Create an event for a date |
+| `/create event` | Admin | Create an event for a date, optionally with genre, location and note |
+| `/edit event` | Admin | Set or clear the genre, location and note of an event |
+| `/schedule show`, `/schedule default`, `/schedule apply` | Admin | Show defaults, rules and next events; set a default genre or location; review rule changes for upcoming events |
+| `/schedule rule add`, `/schedule rule edit`, `/schedule rule remove` | Admin | Manage rules that set the genre or location of every n-th scheduled event |
 | `/post lineup update` | Admin | Post the lineup of the next (or a chosen future) event |
 | `/book dj slot` | Admin | Book a slot for any DJ, also a guest |
 | `/cancel dj slot` | Admin | Free any booking |

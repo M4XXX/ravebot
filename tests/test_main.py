@@ -200,6 +200,16 @@ async def test_startup_registers_lineup_pick_view() -> None:
 
 
 @pytest.mark.asyncio
+async def test_startup_loads_schedule_cog() -> None:
+    from bot.cogs.schedule_cog import ScheduleCog
+
+    s = _Startup()
+    await s.run()
+    cogs = [c.args[0] for c in s.bot.add_cog.call_args_list]
+    assert any(isinstance(c, ScheduleCog) and c.bot is s.bot for c in cogs)
+
+
+@pytest.mark.asyncio
 async def test_startup_registers_setup_wizard_view_and_cog() -> None:
     from bot.cogs.setup import SetupCog
     from bot.ui.setup_wizard import SetupWizardView

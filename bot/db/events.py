@@ -59,10 +59,16 @@ class EventDraft:
     status: str | None = None
     genre: str | None = None
     notes: str | None = None
+    location: str | None = None
+    genre_by_hand: bool = False
+    location_by_hand: bool = False
 
 
 _FIELDS = tuple(f.name for f in dataclasses.fields(EventDraft))
-_COLUMNS = "uid, event_id, date, start, slot_minutes, slot_count, status, genre, notes"
+_COLUMNS = (
+    "uid, event_id, date, start, slot_minutes, slot_count, status, genre, notes, "
+    "location, genre_by_hand, location_by_hand"
+)
 
 
 def _parse_start(value: str) -> datetime.time:
@@ -95,6 +101,9 @@ def _event(row: asyncpg.Record, slots: tuple[SlotInfo, ...]) -> EventInfo:
         start=_parse_start(row["start"]),
         slot_minutes=row["slot_minutes"],
         slots=slots,
+        location=row["location"],
+        genre_by_hand=row["genre_by_hand"],
+        location_by_hand=row["location_by_hand"],
     )
 
 
@@ -164,8 +173,9 @@ async def _insert(db: asyncpg.Connection, draft: EventDraft, uid: str) -> None:
         await db.execute(
             """
             INSERT INTO events
-                (uid, event_id, date, start, slot_minutes, slot_count, status, genre, notes)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                (uid, event_id, date, start, slot_minutes, slot_count, status, genre, notes,
+                 location, genre_by_hand, location_by_hand)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
             """,
             uid,
             draft.event_id,
@@ -176,6 +186,9 @@ async def _insert(db: asyncpg.Connection, draft: EventDraft, uid: str) -> None:
             draft.status,
             draft.genre,
             draft.notes,
+            draft.location,
+            draft.genre_by_hand,
+            draft.location_by_hand,
         )
     except asyncpg.UniqueViolationError as exc:
         raise DuplicateEventError(draft.event_id) from exc
@@ -204,6 +217,9 @@ async def insert_event(
         start=draft.start,
         slot_minutes=draft.slot_minutes,
         slots=_empty_slots(uid, draft.slot_count),
+        location=draft.location,
+        genre_by_hand=draft.genre_by_hand,
+        location_by_hand=draft.location_by_hand,
     )
 
 

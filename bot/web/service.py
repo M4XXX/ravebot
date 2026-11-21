@@ -319,6 +319,13 @@ class AdminPageService:
             raise RuntimeError("The DJ list service is not ready")
         return self._ctx.dj_admin_service
 
+    @property
+    def schedule(self) -> Any:
+        """The schedule page service (defaults, rules, event values, apply)."""
+        from bot.web.schedule_page import SchedulePageService
+
+        return SchedulePageService(self._ctx, self._bot)
+
     def server_info(self) -> ServerInfo | None:
         if not self._bot.guilds:
             return None

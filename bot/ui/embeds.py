@@ -11,7 +11,6 @@ Classes:
     LineupUpdateEmbed      — "Lineup Update" post for the DJ channel (one per change)
 """
 import enum
-import re
 
 import disnake
 
@@ -92,13 +91,6 @@ _TITLE_ICON = "\U0001f3b6"
 _BOOKED_ICON = "\U0001f3a7"
 _OPEN_ICON = "\u25ab\ufe0f"
 _MAX_TITLE = 256
-_DATED_ID = re.compile(r"^\d{4}-\d{2}-\d{2}\s+(?P<name>.+)$")
-
-
-def _event_name(event: EventInfo) -> str:
-    """The event ID without its leading date (`2026-11-14 Rave Night` becomes `Rave Night`)."""
-    match = _DATED_ID.match(event.event_id)
-    return match.group("name") if match else event.event_id
 
 
 def lineup_title(event: EventInfo) -> str:
@@ -106,7 +98,7 @@ def lineup_title(event: EventInfo) -> str:
     suffix = f" \u00b7 {texts.fmt_date(event)}"
     prefix = f"{_TITLE_ICON} "
     room = _MAX_TITLE - len(prefix) - len(suffix)
-    name = _event_name(event)
+    name = texts.event_name(event)
     if len(name) > room:
         name = name[: room - 1] + "\u2026"
     return f"{prefix}{name}{suffix}"
@@ -120,40 +112,56 @@ def _lineup_summary(booked: int, total: int) -> str:
 
 
 def lineup_text(event: EventInfo) -> str:
-    """Lineup body: a summary line, then one line per slot; whole lines, capped at 4096 chars."""
+    """Lineup body: meta line, summary, one line per slot, notes; capped at 4096 chars.
+
+    Over the cap the Notes block goes first (never a partial note), then whole slot lines.
+    """
     by_number = event.resolved_slots()
     slot_lines: list[str] = []
     booked = 0
     for index in range(event.slot_count):
         slot = by_number.get(index + 1)
-        time = f"**{texts.fmt_time(event, index)}**"
+        label = f"**Slot {index + 1}** \u00b7 {texts.slot_time(event, index)}"
         if slot is not None and slot.dj_page_id is not None:
             booked += 1
-            slot_lines.append(f"{time}  {_BOOKED_ICON} {_safe_dj_name(slot.dj_name)}")
+            slot_lines.append(f"{label}  {_BOOKED_ICON} {_safe_dj_name(slot.dj_name)}")
         else:
-            slot_lines.append(f"{time}  {_OPEN_ICON} *open slot*")
-    head = [_lineup_summary(booked, event.slot_count), ""]
+            slot_lines.append(f"{label}  {_OPEN_ICON} *open slot*")
+    meta = texts.event_meta(event)
+    head = [meta, ""] if meta else []
+    head += [_lineup_summary(booked, event.slot_count), ""]
+    note = (event.notes or "").strip()
+    notes_block = ["", f"**{texts.NOTES_HEADING}**", texts.escape_text(note)] if note else []
+    text = "\n".join([*head, *slot_lines, *notes_block])
+    if len(text) <= _MAX_DESCRIPTION:
+        return text
     text = "\n".join([*head, *slot_lines])
     if len(text) <= _MAX_DESCRIPTION:
         return text
     for keep in range(len(slot_lines), -1, -1):
         hidden = len(slot_lines) - keep
-        note = f"{hidden} slot not shown" if hidden == 1 else f"{hidden} slots not shown"
-        candidate = "\n".join([*head, *slot_lines[:keep], note])
+        cut = f"{hidden} slot not shown" if hidden == 1 else f"{hidden} slots not shown"
+        candidate = "\n".join([*head, *slot_lines[:keep], cut])
         if len(candidate) <= _MAX_DESCRIPTION:
             return candidate
-    return head[0]
+    return head[-2]
 
 
 class LineupUpdateEmbed(disnake.Embed):
     """Public lineup post for one event."""
 
-    def __init__(self, event: EventInfo) -> None:
+    def __init__(self, event: EventInfo, shown: list[EventInfo] | None = None) -> None:
         super().__init__(
             title=lineup_title(event),
             description=lineup_text(event),
             colour=EmbedColors.MISSION_GOLD,
         )
+        if shown:
+            lines = [
+                texts.event_pick_line(i, other, other.page_id == event.page_id)
+                for i, other in enumerate(shown)
+            ]
+            self.add_field(name=texts.EVENTS_FIELD, value="\n".join(lines)[:1024], inline=False)
         self.set_footer(text=event.event_id)
 
 
@@ -162,13 +170,17 @@ class BookingEventPickEmbed(disnake.Embed):
 
     def __init__(self, events: list[EventInfo], open_counts: list[int]) -> None:
         blocks = []
-        for event, open_count in zip(events, open_counts, strict=True):
+        for position, (event, open_count) in enumerate(zip(events, open_counts, strict=True)):
             noun = "slot" if event.slot_count == 1 else "slots"
-            blocks.append(
-                f"**{_event_name(event)} \u00b7 {texts.fmt_date(event)}**\n"
-                f"{_BOOKED_ICON} {open_count} of {event.slot_count} {noun} open"
-                f" \u00b7 starts {texts.fmt_time(event, 0)}"
-            )
+            lines = [
+                f"**{texts.event_button(position)} \u00b7 {texts.event_name(event)}**",
+                texts.ts(event.slot_start(0), "F"),
+            ]
+            meta = texts.event_meta(event)
+            if meta:
+                lines.append(meta)
+            lines.append(f"{_BOOKED_ICON} {open_count} of {event.slot_count} {noun} open")
+            blocks.append("\n".join(lines))
         super().__init__(
             title=texts.PICK_EVENT,
             description="\n\n".join(blocks),

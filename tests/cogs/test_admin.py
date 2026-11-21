@@ -498,7 +498,9 @@ async def test_add_event_creates_event_and_replies(monkeypatch: pytest.MonkeyPat
     shape = shape_mock.return_value
     shape_mock.side_effect = lambda *a: inter.order.append("shape") or shape
 
-    await cog.create_event.callback(cog, inter, future_date.isoformat(), None, None, None)
+    await cog.create_event.callback(
+        cog, inter, future_date.isoformat(), None, None, None, None, None, None
+    )
     assert inter.order[:2] == ["defer", "shape"]
     inter.order.remove("shape")
 
@@ -513,8 +515,7 @@ async def test_add_event_creates_event_and_replies(monkeypatch: pytest.MonkeyPat
     reply, _ = assert_deferred_reply(inter)
     from bot.ui import texts
 
-    assert "<t:" not in reply
-    assert reply == f"Event created for {texts.fmt_slot_when(created, 0)}."
+    assert reply == f"Event created for {texts.slot_when(created, 0)}."
 
 
 @pytest.mark.asyncio
@@ -533,7 +534,7 @@ async def test_add_event_duplicate_id_replies_message(monkeypatch: pytest.Monkey
     inter = make_mock_inter(user_id=1, guild_id=111)
 
     future_date = (datetime.date.today() + datetime.timedelta(days=7)).isoformat()
-    await cog.create_event.callback(cog, inter, future_date, None, None, None)
+    await cog.create_event.callback(cog, inter, future_date, None, None, None, None, None, None)
 
     assert_deferred_reply(inter)
     inter.followup.send.assert_awaited_once_with(
@@ -556,7 +557,7 @@ async def test_add_event_past_date_replies_error(monkeypatch: pytest.MonkeyPatch
     inter = make_mock_inter(user_id=1, guild_id=111)
 
     past_date = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
-    await cog.create_event.callback(cog, inter, past_date, None, None, None)
+    await cog.create_event.callback(cog, inter, past_date, None, None, None, None, None, None)
 
     insert.assert_not_called()
     reply = inter.response.send_message.call_args[0][0].lower()
@@ -576,7 +577,7 @@ async def test_add_event_invalid_format_replies_error(monkeypatch: pytest.Monkey
     cog = AdminCog(ctx)
     inter = make_mock_inter(user_id=1, guild_id=111)
 
-    await cog.create_event.callback(cog, inter, "not-a-date", None, None, None)
+    await cog.create_event.callback(cog, inter, "not-a-date", None, None, None, None, None, None)
 
     insert.assert_not_called()
     reply = inter.response.send_message.call_args[0][0].lower()
@@ -600,7 +601,7 @@ async def test_add_event_works_without_notion(monkeypatch: pytest.MonkeyPatch) -
     inter = make_mock_inter(user_id=1, guild_id=111)
 
     future_date = (datetime.date.today() + datetime.timedelta(days=7)).isoformat()
-    await cog.create_event.callback(cog, inter, future_date, None, None, None)
+    await cog.create_event.callback(cog, inter, future_date, None, None, None, None, None, None)
 
     insert.assert_awaited_once()
     reply, _ = assert_deferred_reply(inter)
@@ -620,7 +621,7 @@ async def test_add_event_not_ready_without_db() -> None:
     inter = make_mock_inter(user_id=1, guild_id=111)
 
     future_date = (datetime.date.today() + datetime.timedelta(days=7)).isoformat()
-    await cog.create_event.callback(cog, inter, future_date, None, None, None)
+    await cog.create_event.callback(cog, inter, future_date, None, None, None, None, None, None)
 
     reply = inter.response.send_message.call_args[0][0].lower()
     assert "not ready" in reply
@@ -645,7 +646,7 @@ async def test_add_event_db_error_replies_error(
     inter = make_mock_inter(user_id=1, guild_id=111)
 
     future_date = (datetime.date.today() + datetime.timedelta(days=7)).isoformat()
-    await cog.create_event.callback(cog, inter, future_date, None, None, None)
+    await cog.create_event.callback(cog, inter, future_date, None, None, None, None, None, None)
 
     reply, _ = assert_deferred_reply(inter)
     assert reply == "Could not create the event. Please try again in a moment."
@@ -938,6 +939,7 @@ def test_command_tree_is_exactly_the_new_set() -> None:
         "setup",
         "config show",
         "create event",
+        "edit event",
         "post lineup update",
         "book dj slot",
         "cancel dj slot",
@@ -958,7 +960,7 @@ def test_old_commands_are_gone() -> None:
     for old in ("status", "intervene", "admin", "add-event", "lineup", "list-djs"):
         assert old not in top
     assert "set" not in {c.name for c in cog.config_base.children.values()}
-    assert top == {"config", "create", "post", "book", "cancel", "dj", "list", "automatic"}
+    assert top == {"config", "create", "edit", "post", "book", "cancel", "dj", "list", "automatic"}
 
 
 def test_idle_exempt_names_match_the_tree() -> None:
@@ -1252,7 +1254,7 @@ def test_every_admin_command_is_server_only() -> None:
     from bot.cogs.admin import AdminCog
 
     cog = AdminCog(make_mock_ctx(frozenset({123})))
-    names = {"config", "create", "post", "book", "cancel", "automatic", "list"}
+    names = {"config", "create", "edit", "post", "book", "cancel", "automatic", "list"}
     found = {c.name: c for c in cog.get_slash_commands()}
     assert names <= set(found)
     for name in names:
@@ -1283,7 +1285,10 @@ async def test_cog_check_in_a_private_message_answers_server_only(user_id: int) 
 # ---------------------------------------------------------------------------
 
 
-async def _create(monkeypatch, *, slots=None, start=None, slot_minutes=None, date_str=None):
+async def _create(
+    monkeypatch, *, slots=None, start=None, slot_minutes=None, date_str=None,
+    genre=None, location=None, note=None,
+):
     """Run /create event with a future date; return (ctx, inter, future_date, insert)."""
     import datetime
 
@@ -1297,7 +1302,8 @@ async def _create(monkeypatch, *, slots=None, start=None, slot_minutes=None, dat
     cog = AdminCog(ctx)
     inter = make_mock_inter(user_id=1, guild_id=111)
     await cog.create_event.callback(
-        cog, inter, date_str or future_date.isoformat(), slots, start, slot_minutes
+        cog, inter, date_str or future_date.isoformat(), slots, start, slot_minutes,
+        genre, location, note,
     )
     return ctx, inter, future_date, insert
 
@@ -1370,7 +1376,7 @@ async def test_create_event_survives_marker_failure(monkeypatch: pytest.MonkeyPa
     import datetime
 
     day = (datetime.date.today() + datetime.timedelta(days=3)).isoformat()
-    await cog.create_event.callback(cog, inter2, day, None, None, None)
+    await cog.create_event.callback(cog, inter2, day, None, None, None, None, None, None)
     reply, _ = assert_deferred_reply(inter2)
     assert reply.startswith("Event created for")
 
@@ -1414,7 +1420,8 @@ async def test_create_event_holds_replenish_lock_while_creating_and_marking(
     monkeypatch.setattr(admin, "mark_manual", AsyncMock(side_effect=mark))
     cog = AdminCog(ctx)
     await cog.create_event.callback(
-        cog, make_mock_inter(user_id=1, guild_id=111), day.isoformat(), None, None, None
+        cog, make_mock_inter(user_id=1, guild_id=111), day.isoformat(), None, None, None,
+        None, None, None,
     )
     assert seen == {"create": True, "mark": True}
     assert not _replenish_lock().locked()
@@ -1434,7 +1441,7 @@ async def test_create_event_tells_organizer_when_marker_fails(
     cog = AdminCog(ctx)
     inter = make_mock_inter(user_id=1, guild_id=111)
     day = (datetime.date.today() + datetime.timedelta(days=4)).isoformat()
-    await cog.create_event.callback(cog, inter, day, None, None, None)
+    await cog.create_event.callback(cog, inter, day, None, None, None, None, None, None)
     reply, _ = assert_deferred_reply(inter)
     assert reply.startswith("Event created for")
     assert "scheduled" in reply and "could not" in reply.lower()
@@ -1519,11 +1526,11 @@ async def test_dj_remove_asks_first_and_deletes_on_confirm() -> None:
         return_value=[(MagicMock(event_id="Rave One"), 0)]
     )
     inter = make_mock_inter(user_id=1)
-    with patch("bot.cogs.admin.texts.slot_phrase", return_value="slot 1 at 20:00"):
+    with patch("bot.cogs.admin.texts.dj_booking_line", return_value="- Rave One, slot 1, <t:1:F>"):
         await cog.dj_remove.callback(cog, inter, "Moonbeat")
     text = inter.followup.send.call_args.args[0]
     view = inter.followup.send.call_args.kwargs["view"]
-    assert "Moonbeat" in text and "Rave One, slot 1 at 20:00" in text
+    assert "Moonbeat" in text and "- Rave One, slot 1, <t:1:F>" in text
     assert isinstance(view, _ConfirmDelete)
     ctx.dj_admin_service.delete_dj.assert_not_awaited()
 
@@ -1819,3 +1826,142 @@ async def test_admin_writes_refused_in_maintenance(command, args) -> None:
     ctx.admin_booking_service.book_slot_override.assert_not_called()
     ctx.event_cancel_service.preview.assert_not_called()
     ctx.dj_admin_service.add_dj.assert_not_called()
+
+
+# --- /edit event and the new /create event options ------------------------------------
+
+
+async def _edit(monkeypatch, error=None, **options):
+    """Run /edit event for 'Rave Night' on a stored event; return (service, inter)."""
+    import datetime
+
+    from bot.cogs.admin import AdminCog
+    from tests.notion.factories import make_event
+
+    day = datetime.date.today() + datetime.timedelta(days=5)
+    stored = make_event(page_id="uid-1", event_id=f"{day.isoformat()} Rave Night", date=day)
+    ctx = make_mock_ctx(frozenset({1}))
+    ctx.schedule_service = MagicMock()
+    ctx.schedule_service.set_event_values = AsyncMock(return_value=stored, side_effect=error)
+    monkeypatch.setattr("bot.cogs.admin.db_events.list_events", AsyncMock(return_value=[stored]))
+    cog = AdminCog(ctx)
+    inter = make_mock_inter(user_id=1, guild_id=111)
+    args = {"genre": None, "location": None, "note": None, "clear": None, **options}
+    await cog.edit_event.callback(cog, inter, stored.event_id, **args)
+    return ctx.schedule_service, inter
+
+
+@pytest.mark.asyncio
+async def test_edit_event_sets_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    from bot.services.schedule import UNSET
+
+    service, inter = await _edit(monkeypatch, genre="Techno", note="Bring ID")
+    service.set_event_values.assert_awaited_once_with(
+        111, "uid-1", genre="Techno", location=UNSET, note="Bring ID"
+    )
+    assert_deferred_reply(inter)
+
+
+@pytest.mark.asyncio
+async def test_edit_event_clear_passes_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    from bot.services.schedule import UNSET
+
+    service, _ = await _edit(monkeypatch, clear="location")
+    service.set_event_values.assert_awaited_once_with(
+        111, "uid-1", genre=UNSET, location=None, note=UNSET
+    )
+
+
+@pytest.mark.asyncio
+async def test_edit_event_clear_and_value_same_field_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from bot.ui import texts
+
+    service, inter = await _edit(monkeypatch, genre="House", clear="genre")
+    service.set_event_values.assert_not_awaited()
+    assert inter.response.send_message.call_args.args[0] == texts.EDIT_EVENT_CLEAR_CONFLICT
+
+
+@pytest.mark.asyncio
+async def test_edit_event_needs_an_option(monkeypatch: pytest.MonkeyPatch) -> None:
+    from bot.ui import texts
+
+    service, inter = await _edit(monkeypatch)
+    service.set_event_values.assert_not_awaited()
+    assert inter.response.send_message.call_args.args[0] == texts.EDIT_EVENT_NEEDS_OPTION
+
+
+@pytest.mark.asyncio
+async def test_edit_event_limit_error_is_shown(monkeypatch: pytest.MonkeyPatch) -> None:
+    from bot.ui import texts
+
+    _, inter = await _edit(monkeypatch, genre="x", error=ValueError(texts.GENRE_TOO_LONG))
+    reply, _ = assert_deferred_reply(inter)
+    assert reply == texts.GENRE_TOO_LONG
+
+
+@pytest.mark.asyncio
+async def test_create_event_with_genre_location_note(monkeypatch: pytest.MonkeyPatch) -> None:
+    ctx = make_mock_ctx(frozenset({1}))
+    ctx.schedule_service = MagicMock()
+    ctx.schedule_service.set_event_values = AsyncMock()
+    import datetime
+
+    from bot.cogs.admin import AdminCog
+    from tests.notion.factories import make_event
+
+    day = datetime.date.today() + datetime.timedelta(days=2)
+    _, insert = _add_event_patches(monkeypatch)
+    created = make_event(page_id="manual-page", event_id="x", date=day)
+    insert.return_value = created
+    ctx.schedule_service.set_event_values.return_value = created
+    cog = AdminCog(ctx)
+    inter = make_mock_inter(user_id=1)
+    await cog.create_event.callback(
+        cog, inter, day.isoformat(), None, None, None, "Techno", "Club A", "Doors 20:00"
+    )
+    ctx.schedule_service.set_event_values.assert_awaited_once_with(
+        111, "manual-page", genre="Techno", location="Club A", note="Doors 20:00"
+    )
+    reply, _ = assert_deferred_reply(inter)
+    assert reply.startswith("Event created for")
+
+
+@pytest.mark.asyncio
+async def test_create_event_refuses_too_long_genre(monkeypatch: pytest.MonkeyPatch) -> None:
+    from bot.ui import texts
+
+    _, inter, _, insert = await _create(monkeypatch, genre="g" * 41)
+    insert.assert_not_called()
+    assert inter.response.send_message.call_args.args[0] == texts.GENRE_TOO_LONG
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("service_down", [False, True])
+async def test_create_event_warns_when_values_not_saved(
+    monkeypatch: pytest.MonkeyPatch, service_down: bool
+) -> None:
+    import datetime
+
+    from bot.cogs.admin import AdminCog
+    from bot.ui import texts
+    from tests.notion.factories import make_event
+
+    ctx = make_mock_ctx(frozenset({1}))
+    day = datetime.date.today() + datetime.timedelta(days=2)
+    _, insert = _add_event_patches(monkeypatch)
+    insert.return_value = make_event(page_id="manual-page", event_id="x", date=day)
+    if service_down:
+        ctx.schedule_service = None
+    else:
+        ctx.schedule_service = MagicMock()
+        ctx.schedule_service.set_event_values = AsyncMock(side_effect=RuntimeError("db"))
+    cog = AdminCog(ctx)
+    inter = make_mock_inter(user_id=1)
+    await cog.create_event.callback(
+        cog, inter, day.isoformat(), None, None, None, "Techno", None, None
+    )
+    reply, _ = assert_deferred_reply(inter)
+    assert reply.startswith("Event created for")
+    assert reply.endswith(texts.CREATE_EVENT_VALUES_NOT_SAVED)

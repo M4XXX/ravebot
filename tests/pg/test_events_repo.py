@@ -145,3 +145,19 @@ async def test_edit_event_moves_times_when_nothing_is_booked(pool) -> None:
     assert await edit_event(pool, "u1", start=datetime.time(21, 30), slot_minutes=45) is True
     ev = await get_event(pool, "u1")
     assert ev.start == datetime.time(21, 30) and ev.slot_minutes == 45
+
+
+async def test_location_and_markers_round_trip(pool) -> None:
+    day = local_today() + datetime.timedelta(days=3)
+    draft = EventDraft(
+        event_id="E9", date=day, start=datetime.time(20, 0), slot_minutes=60,
+        slot_count=2, location="Club Vortex", genre="Techno", genre_by_hand=True,
+    )
+    await insert_event(pool, draft, uid="u9")
+    ev = await get_event(pool, "u9")
+    assert ev.location == "Club Vortex"
+    assert ev.genre == "Techno"
+    assert ev.genre_by_hand is True
+    assert ev.location_by_hand is False
+    assert await update_event(pool, "u9", location=None, location_by_hand=False)
+    assert (await get_event(pool, "u9")).location is None

@@ -22,6 +22,16 @@ def _fixed_today():
 
 
 @pytest.fixture(autouse=True)
+def _no_rules():
+    """No schedule rules or defaults: new events get no genre or location."""
+    async def load_resolver(db, guild_id, interval_days):
+        return lambda field, day: None
+
+    with patch("bot.services.schedule.load_resolver", new=load_resolver):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _manual():
     """Manual page ids as the repository returns them (none by default)."""
     with patch(
@@ -630,3 +640,24 @@ async def test_many_manual_dates_stop_at_candidate_cap(_manual) -> None:
         assert await _rep(cog, events) == 0
     assert REPO.event_id_exists.await_count == 2 + 52
     REPO.create_event.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_new_events_get_resolved_genre_and_location() -> None:
+    """Each draft carries the rule/default value for its date, markers false."""
+    cog = _make_cog_with_bot()
+    calls = []
+
+    async def load_resolver(db, guild_id, interval_days):
+        calls.append(interval_days)
+        return lambda field, day: f"{field}-{day.day}"
+
+    with _cfg("2", "7", "6"), patch(
+        "bot.services.schedule.load_resolver", new=load_resolver
+    ):
+        assert await _rep(cog, []) == 2
+    assert calls == [7]  # rules read once per run
+    assert [(d.genre, d.location) for d in REPO.drafts] == [
+        ("genre-8", "location-8"), ("genre-15", "location-15")
+    ]
+    assert not any(d.genre_by_hand or d.location_by_hand for d in REPO.drafts)

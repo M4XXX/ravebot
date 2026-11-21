@@ -25,6 +25,7 @@ def event_payload(**over):
     payload = {
         "event_id": "2026-12-01 Rave Night", "date": DAY, "start": "20:00",
         "slot_minutes": 60, "slot_count": 3, "status": None, "genre": None, "notes": None,
+        "location": None,
     }
     payload.update(over)
     return payload
@@ -44,6 +45,8 @@ class Store:
         self.manual: list[str] = []
         self.cleared: list[str] = []
         self.edits: list[tuple[str, dict]] = []
+        self.inserted: list[EventDraft] = []
+        self.rules: dict[tuple[str, datetime.date], str] = {}
         self.guest = 0
 
     def add_event(self, uid="u1", **over) -> None:
@@ -71,6 +74,7 @@ class Store:
         return EventInfo(
             page_id=uid, event_id=p["event_id"], date=datetime.date.fromisoformat(p["date"]),
             status=p["status"], genre=p["genre"], notes=p["notes"], slot_count=p["slot_count"],
+            location=p["location"],
             start=datetime.time(int(h), int(m)), slot_minutes=p["slot_minutes"], slots=slots,
         )
 
@@ -86,8 +90,9 @@ class Store:
             uid, event_id=draft.event_id, date=draft.date.isoformat(),
             start=draft.start.strftime("%H:%M"), slot_minutes=draft.slot_minutes,
             slot_count=draft.slot_count, status=draft.status, genre=draft.genre,
-            notes=draft.notes,
+            notes=draft.notes, location=draft.location,
         )
+        self.inserted.append(draft)
         return self.event_info(uid)
 
     async def edit_event(self, db, uid, **fields):  # noqa: ANN001, ANN201
@@ -151,6 +156,12 @@ class Store:
     async def mark_manual(self, db, uid):  # noqa: ANN001, ANN201
         self.manual.append(uid)
 
+    async def get_manual_page_ids(self, db, uids):  # noqa: ANN001, ANN201
+        return {u for u in uids if u in self.manual}
+
+    async def resolver(self, db):  # noqa: ANN001, ANN201
+        return lambda field, day: self.rules.get((field, day))
+
     async def clear_announced(self, db, uid, before=None):  # noqa: ANN001, ANN201
         self.cleared.append(uid)
 
@@ -167,6 +178,8 @@ def store(monkeypatch: pytest.MonkeyPatch) -> Store:
         "next_guest_id", "insert_dj", "update_dj_fields", "mark_manual", "clear_announced",
     ):
         monkeypatch.setattr(intake_mod, name, getattr(s, name))
+    monkeypatch.setattr(intake_mod, "get_manual_page_ids", s.get_manual_page_ids)
+    monkeypatch.setattr(intake_mod, "_resolver", s.resolver)
     monkeypatch.setattr(intake_mod.mirror, "set_synced", s.set_synced)
     monkeypatch.setattr(intake_mod, "changed", s.record_changed)
     monkeypatch.setattr(intake_mod, "local_today", lambda: TODAY)
@@ -201,7 +214,7 @@ async def test_apply_event_field_change(env) -> None:
     notion = event_payload(genre="Techno", slot_count=5)
     change = Change("apply", "event", "u1", event_payload(), notion, "page-e1")
     assert await env.intake.apply(change) == "applied"
-    assert env.store.edits == [("u1", {"slot_count": 5, "genre": "Techno"})]
+    assert env.store.edits == [("u1", {"slot_count": 5, "genre": "Techno", "genre_by_hand": True})]
     assert env.store.synced[("event", "u1")] == ("page-e1", notion)
     # added slots are left to the sync cycle's slot pass
     assert not any(entity == "slot" for entity, _ in env.store.changed)
@@ -209,6 +222,49 @@ async def test_apply_event_field_change(env) -> None:
     env.log.log_notion_applied.assert_awaited_once()
     text = env.log.log_notion_applied.await_args.args[0]
     assert "Rave Night" in text and "genre" in text
+
+
+async def test_notion_location_edit_sets_hand_marker(env) -> None:
+    env.store.add_event("u1")
+    notion = event_payload(location="Club Nebula", genre="Techno")
+    change = Change("apply", "event", "u1", event_payload(), notion, "page-e1")
+    assert await env.intake.apply(change) == "applied"
+    (_, fields), = env.store.edits
+    assert fields == {
+        "genre": "Techno", "genre_by_hand": True,
+        "location": "Club Nebula", "location_by_hand": True,
+    }
+    await env.intake.flush_log()
+    assert "location" in env.log.log_notion_applied.await_args.args[0]
+
+
+async def test_notion_genre_cleared_falls_back_to_rule(env) -> None:
+    env.store.add_event("u1", genre="Hand")
+    env.store.rules[("genre", datetime.date.fromisoformat(DAY))] = "House"
+    change = Change(
+        "apply", "event", "u1", event_payload(genre="Hand"), event_payload(genre=None), "pe"
+    )
+    assert await env.intake.apply(change) == "applied"
+    assert env.store.edits == [("u1", {"genre": "House", "genre_by_hand": False})]
+
+
+async def test_notion_genre_cleared_on_manual_event_empties_it(env) -> None:
+    env.store.add_event("u1", genre="Hand")
+    env.store.manual.append("u1")
+    env.store.rules[("genre", datetime.date.fromisoformat(DAY))] = "House"
+    change = Change(
+        "apply", "event", "u1", event_payload(genre="Hand"), event_payload(genre=None), "pe"
+    )
+    assert await env.intake.apply(change) == "applied"
+    assert env.store.edits == [("u1", {"genre": None, "genre_by_hand": False})]
+
+
+async def test_new_notion_event_values_are_hand_set(env) -> None:
+    notion = event_payload(genre="Techno", location="Club")
+    change = Change("new_in_notion", "event", None, None, notion, "page-new")
+    assert await env.intake.apply(change) == "applied"
+    (draft,) = env.store.inserted
+    assert (draft.genre_by_hand, draft.location_by_hand) == (True, True)
 
 
 async def test_slot_count_shrink_queues_removed_slots(env) -> None:

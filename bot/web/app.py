@@ -36,19 +36,24 @@ from bot.web.auth import (
 )
 from bot.web.pages import (
     issue_choice_ok,
+    render_apply,
     render_backup_import,
     render_confirm_delete_dj,
     render_confirm_issue,
     render_confirm_rebuild,
     render_confirm_recreate,
     render_confirm_remove,
+    render_confirm_remove_rule,
     render_confirm_resync,
     render_confirm_retry_import,
     render_dashboard,
     render_djs,
     render_edit_dj,
+    render_edit_event,
+    render_edit_rule,
     render_login,
     render_notice,
+    render_schedule,
 )
 from bot.web.service import FORMAT_MESSAGE, ActionResult
 
@@ -58,7 +63,18 @@ MAX_BODY = 4096
 MAX_UPLOAD = 6 * 1024 * 1024  # a DJ logo (up to 5 MB) plus the other form fields
 MAX_BACKUP = 512 * 1024 * 1024  # a backup file for /backup/import
 BACKUP_PATH = "/backup/import"
+APPLY_PATH = "/schedule/apply"
+MAX_APPLY = 64 * 1024  # 104 changes (52 events x 2 fields) as shown and pick fields
 UPLOAD_PATHS = frozenset({"/djs/add", "/djs/edit", BACKUP_PATH})
+_DONE_TEXT = {
+    "defaults-saved": "The defaults are saved.",
+    "rule-added": "The rule was added.",
+    "rule-updated": "The rule was updated.",
+    "rule-removed": "The rule was removed.",
+    "event-saved": "The event was saved.",
+    "applied": "The changes were applied.",
+    "kept": texts.APPLY_KEPT,
+}
 ADMIN_NAME = "The admin page"
 WRONG_PASSWORD = "Wrong password."
 OWNER_MESSAGE = "Owners can only be changed with ADMIN_USER_IDS."
@@ -118,11 +134,12 @@ async def security_middleware(request: web.Request, handler: Handler) -> web.Str
     try:
         if request.method not in _SAFE_METHODS:
             length = request.content_length or 0
+            body_max = MAX_APPLY if request.path == APPLY_PATH else MAX_BODY
             if request.path not in UPLOAD_PATHS and (
-                length > MAX_BODY
+                length > body_max
                 or "chunked" in request.headers.get("Transfer-Encoding", "").lower()
             ):
-                raise web.HTTPRequestEntityTooLarge(max_size=MAX_BODY, actual_size=length)
+                raise web.HTTPRequestEntityTooLarge(max_size=body_max, actual_size=length)
             limit = MAX_BACKUP if request.path == BACKUP_PATH else MAX_UPLOAD
             if length > limit:
                 raise web.HTTPRequestEntityTooLarge(max_size=limit, actual_size=length)
@@ -212,6 +229,10 @@ _DJ_FIELDS = ("name", "link", "alt_link", "vrchat", "discord_id")
 
 def _dj_values(form: MultiDictProxy[Any]) -> dict[str, str]:
     return {name: (_field(form, name) or "") for name in _DJ_FIELDS}
+
+
+def _sched_values(form: MultiDictProxy[Any], *names: str) -> dict[str, str]:
+    return {name: (_field(form, name) or "") for name in names}
 
 
 def create_app(
@@ -405,7 +426,7 @@ def create_app(
         except Exception:
             logger.warning("Could not list the bookings of a DJ", exc_info=True)
             return await djs_page(request, ActionResult(False, BOOKINGS_FAILED), 502)
-        bookings = [(e.event_id, texts.slot_phrase(e, i)) for e, i in found]
+        bookings = [(e.event_id, f"slot {i + 1} at {texts.plain_time(e, i)}") for e, i in found]
         return _html(render_confirm_delete_dj(row, bookings, request["session"].csrf))
 
     async def post_dj_delete(request: web.Request) -> web.Response:
@@ -420,6 +441,184 @@ def create_app(
         return await djs_page(
             request, ActionResult(result.ok, result.message), 200 if result.ok else 400
         )
+
+    # --- schedule ---
+
+    def _schedule_service() -> Any:
+        return getattr(service, "schedule", None)
+
+    async def schedule_page(
+        request: web.Request,
+        message: ActionResult | None = None,
+        status: int = 200,
+        values: dict[str, str] | None = None,
+    ) -> web.Response:
+        schedule = _schedule_service()
+        overview = await schedule.overview() if schedule is not None else None
+        if overview is None:
+            return _html(render_notice(texts.SCHEDULE_NOT_READY), 503)
+        options = [(d.label, d.date.isoformat()) for d in overview.anchors]
+        return _html(
+            render_schedule(overview, options, request["session"].csrf, message, values), status
+        )
+
+    async def after_change(request: web.Request, done: str) -> web.Response:
+        """Post/redirect/get: the apply list while events differ from the rules, else the
+        schedule page. ``done`` picks a fixed message text; nothing user-made is echoed."""
+        if await _schedule_service().has_pending():
+            return _redirect(f"/schedule/apply?done={done}")
+        return _redirect(f"/schedule?done={done}")
+
+    def _done(request: web.Request) -> ActionResult | None:
+        text = _DONE_TEXT.get(request.query.get("done", ""))
+        return ActionResult(True, text) if text else None
+
+    async def get_schedule(request: web.Request) -> web.Response:
+        return await schedule_page(request, _done(request))
+
+    async def post_schedule_defaults(request: web.Request) -> web.Response:
+        if refused := _maintenance(service):
+            return await schedule_page(request, refused, 503)
+        schedule = _schedule_service()
+        if schedule is None:
+            return _html(render_notice(texts.SCHEDULE_NOT_READY), 503)
+        values = _sched_values(await _read_form(request), "genre", "location")
+        result = await schedule.set_defaults(values["genre"], values["location"])
+        if not result.ok:
+            return await schedule_page(request, result, 400, values)
+        return await after_change(request, "defaults-saved")
+
+    async def post_rule_add(request: web.Request) -> web.Response:
+        if refused := _maintenance(service):
+            return await schedule_page(request, refused, 503)
+        schedule = _schedule_service()
+        if schedule is None:
+            return _html(render_notice(texts.SCHEDULE_NOT_READY), 503)
+        values = _sched_values(await _read_form(request), "field", "value", "every", "start")
+        result = await schedule.add_rule(
+            values["field"], values["value"], values["every"], values["start"]
+        )
+        if not result.ok:
+            return await schedule_page(request, result, 400, values)
+        return await after_change(request, "rule-added")
+
+    async def _rule_or_none(request: web.Request) -> Any:
+        schedule = _schedule_service()
+        if schedule is None:
+            return None
+        return await schedule.get_rule(int(request.match_info["id"]))
+
+    async def _no_rule(request: web.Request) -> web.Response:
+        return await schedule_page(request, ActionResult(False, texts.RULE_NOT_FOUND), 404)
+
+    async def get_rule_edit(request: web.Request) -> web.Response:
+        view = await _rule_or_none(request)
+        if view is None:
+            return await _no_rule(request)
+        options = await _schedule_service().anchor_options(view.rule.anchor)
+        return _html(render_edit_rule(view, options, request["session"].csrf))
+
+    async def post_rule_edit(request: web.Request) -> web.Response:
+        if refused := _maintenance(service):
+            return await schedule_page(request, refused, 503)
+        view = await _rule_or_none(request)
+        if view is None:
+            return await _no_rule(request)
+        schedule = _schedule_service()
+        values = _sched_values(await _read_form(request), "value", "every", "start")
+        result = await schedule.edit_rule(
+            view.rule.id, view.rule.field, values["value"], values["every"], values["start"]
+        )
+        if not result.ok:
+            options = await schedule.anchor_options(view.rule.anchor)
+            page = render_edit_rule(view, options, request["session"].csrf, result, values)
+            return _html(page, 404 if result.message == texts.RULE_NOT_FOUND else 400)
+        return await after_change(request, "rule-updated")
+
+    async def get_rule_remove(request: web.Request) -> web.Response:
+        view = await _rule_or_none(request)
+        if view is None:
+            return await _no_rule(request)
+        return _html(render_confirm_remove_rule(view, request["session"].csrf))
+
+    async def post_rule_remove(request: web.Request) -> web.Response:
+        if refused := _maintenance(service):
+            return await schedule_page(request, refused, 503)
+        view = await _rule_or_none(request)
+        if view is None:
+            return await _no_rule(request)
+        result = await _schedule_service().remove_rule(view.rule.id)
+        if not result.ok:
+            return await schedule_page(request, result, 400)
+        return await after_change(request, "rule-removed")
+
+    async def _event_or_none(request: web.Request) -> Any:
+        schedule = _schedule_service()
+        if schedule is None:
+            return None
+        return await schedule.get_event(request.match_info["uid"])
+
+    async def _no_event(request: web.Request) -> web.Response:
+        return await schedule_page(request, ActionResult(False, texts.EDIT_EVENT_NOT_FOUND), 404)
+
+    async def get_schedule_event(request: web.Request) -> web.Response:
+        event = await _event_or_none(request)
+        if event is None:
+            return await _no_event(request)
+        return _html(render_edit_event(event, request["session"].csrf))
+
+    async def post_schedule_event(request: web.Request) -> web.Response:
+        if refused := _maintenance(service):
+            return await schedule_page(request, refused, 503)
+        event = await _event_or_none(request)
+        if event is None:
+            return await _no_event(request)
+        form = await _read_form(request)
+        values = _sched_values(form, "genre", "location", "note")
+        # The values the form first showed; a form without them compares to the stored row
+        names = ("genre", "location", "note")
+        original = (
+            {name: _field(form, f"orig_{name}") or "" for name in names}
+            if all(f"orig_{name}" in form for name in names)
+            else None
+        )
+        result = await _schedule_service().set_event(
+            event.page_id, values["genre"], values["location"], values["note"], original
+        )
+        if not result.ok:
+            page = render_edit_event(
+                event, request["session"].csrf, result, values, original
+            )
+            return _html(page, 404 if result.message == texts.EDIT_EVENT_NOT_FOUND else 400)
+        return await after_change(request, "event-saved")
+
+    async def apply_page(
+        request: web.Request, message: ActionResult | None = None, status: int = 200
+    ) -> web.Response:
+        schedule = _schedule_service()
+        if schedule is None:
+            return _html(render_notice(texts.SCHEDULE_NOT_READY), 503)
+        changes = await schedule.pending()
+        return _html(render_apply(changes, request["session"].csrf, message), status)
+
+    async def get_schedule_apply(request: web.Request) -> web.Response:
+        return await apply_page(request, _done(request))
+
+    async def post_schedule_apply(request: web.Request) -> web.Response:
+        if refused := _maintenance(service):
+            return await schedule_page(request, refused, 503)
+        schedule = _schedule_service()
+        if schedule is None:
+            return _html(render_notice(texts.SCHEDULE_NOT_READY), 503)
+        form = await _read_form(request)
+        picks = [v for v in form.getall("pick", []) if isinstance(v, str)]
+        shown = [v for v in form.getall("shown", []) if isinstance(v, str)]
+        result = await schedule.apply(_field(form, "choice") or "", picks, shown)
+        if not result.ok:
+            return await apply_page(request, result, 400)
+        if _field(form, "choice") == "keep":
+            return _redirect("/schedule?done=kept")  # kept: do not list them again
+        return await after_change(request, "applied")
 
     # --- Notion databases ---
 
@@ -532,6 +731,17 @@ def create_app(
     app.router.add_post("/djs/edit", post_dj_edit)
     app.router.add_get("/djs/delete", get_dj_delete)
     app.router.add_post("/djs/delete", post_dj_delete)
+    app.router.add_get("/schedule", get_schedule)
+    app.router.add_post("/schedule/defaults", post_schedule_defaults)
+    app.router.add_post("/schedule/rules/add", post_rule_add)
+    app.router.add_get(r"/schedule/rules/{id:\d{1,18}}/edit", get_rule_edit)
+    app.router.add_post(r"/schedule/rules/{id:\d{1,18}}/edit", post_rule_edit)
+    app.router.add_get(r"/schedule/rules/{id:\d{1,18}}/remove", get_rule_remove)
+    app.router.add_post(r"/schedule/rules/{id:\d{1,18}}/remove", post_rule_remove)
+    app.router.add_get(r"/schedule/events/{uid:[^/]+}", get_schedule_event)
+    app.router.add_post(r"/schedule/events/{uid:[^/]+}", post_schedule_event)
+    app.router.add_get("/schedule/apply", get_schedule_apply)
+    app.router.add_post("/schedule/apply", post_schedule_apply)
     app.router.add_get("/backup/export", get_backup_export)
     app.router.add_get(BACKUP_PATH, get_backup_import)
     app.router.add_post(BACKUP_PATH, post_backup_import)

@@ -150,6 +150,20 @@ def _sent(channel):
     return kw["embed"]
 
 
+def _plain(text: str) -> str:
+    """Discord timestamps back to bot-timezone HH:MM, so the wording stays readable."""
+    import datetime
+    import re
+
+    from bot.timezone import get_timezone
+
+    return re.sub(
+        r"<t:(\d+):t>",
+        lambda m: datetime.datetime.fromtimestamp(int(m[1]), get_timezone()).strftime("%H:%M"),
+        text,
+    )
+
+
 GREEN, GOLD, RED, BLUE = 0x2E7D32, 0xFFD700, 0xED4245, 0x5865F2
 
 
@@ -181,7 +195,7 @@ async def test_typed_entries(call, title, body, color) -> None:
     service, channel = _service()
     await call(service)
     embed = _sent(channel)
-    assert (embed.title, embed.description, embed.colour.value) == (title, body, color)
+    assert (embed.title, _plain(embed.description), embed.colour.value) == (title, body, color)
     assert embed.footer.text == "RaveBot"
 
 
@@ -327,6 +341,7 @@ async def test_log_event_canceled_posts_one_gold_entry() -> None:
     embed = _sent(channel)
     assert embed.title == "Event canceled"
     assert embed.description == (
-        "Max \\*x\\* canceled **EV-1**.\nBooked DJs:\n- Nova, slot 1 at 18:00, slot 2 at 19:00"
+        "Max \\*x\\* canceled **EV-1**.\nBooked DJs:\n"
+        f"- Nova, slot 1, {texts.slot_when(event, 0)}; slot 2, {texts.slot_when(event, 1)}"
     )
     assert embed.color.value == GOLD

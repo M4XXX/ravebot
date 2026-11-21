@@ -60,8 +60,7 @@ def test_confirm_embed_texts() -> None:
     event = _event()
     embed = BookingConfirmEmbed(event, 1)
     assert embed.title == "Confirm your booking"
-    assert embed.description == "Rave One\nSaturday 14.11.2026, slot 2 at 21:00"
-    assert "<t:" not in embed.description
+    assert embed.description == f"Rave One\nSlot 2, {texts.slot_when(event, 1)}"
     assert not embed.fields
 
 
@@ -69,10 +68,8 @@ def test_booked_embed_texts() -> None:
     event = _event()
     embed = BookedEmbed(event, 0)
     assert embed.title == "You're booked"
-    assert embed.description == (
-        "Rave One\nSaturday 14.11.2026, slot 1 at 20:00\nI'll remind you the day before."
-    )
-    assert "<t:" not in embed.description
+    when = texts.slot_when(event, 0)
+    assert embed.description == f"Rave One\nSlot 1, {when}\nI'll remind you the day before."
 
 
 async def test_prepare_booking_event_list_and_errors() -> None:
@@ -83,8 +80,9 @@ async def test_prepare_booking_event_list_and_errors() -> None:
     assert start.content == ""
     assert start.embed.title == "Which event do you want to play?"
     assert start.embed.description == (
-        "**Rave One · Saturday 14.11.2026**\n"
-        "🎧 3 of 4 slots open · starts 20:00"
+        "**Event 1 · Rave One**\n"
+        f"{texts.ts(_event().slot_start(0), 'F')}\n"
+        "🎧 3 of 4 slots open"
     )
     assert _labels(start.view)[-1] == "Never mind"
     # flow already open
@@ -133,7 +131,7 @@ async def test_slot_selection_presents_confirm_embed() -> None:
     await view._handle_slot(inter, 1)
     embed = inter.response.send_message.call_args.kwargs["embed"]
     assert isinstance(embed, BookingConfirmEmbed)
-    assert embed.description == "Rave One\nSaturday 14.11.2026, slot 2 at 21:00"
+    assert embed.description == f"Rave One\nSlot 2, {texts.slot_when(event, 1)}"
 
 
 def _seed_event(event) -> None:  # noqa: ANN001
@@ -222,9 +220,12 @@ async def test_cancel_slot_entry_texts() -> None:
     rows = [{"event_id": "evt-1", "slot_index": 1}]
     with patch("bot.db.bookings.get_dj_slot_locks", new=AsyncMock(return_value=rows)):
         await FallbackMenuView(ctx).cancel_slot.callback(inter)
-    assert _msg(inter) == "Which booking do you want to cancel?"
+    assert _msg(inter) == (
+        "Which booking do you want to cancel?\n"
+        f"Booking 1 · Rave One · Slot 2 · {texts.slot_when(event, 1)}"
+    )
     view = inter.response.send_message.call_args.kwargs["view"]
-    assert _labels(view) == ["Rave One · Slot 2 · 21:00", "Never mind"]
+    assert _labels(view) == ["Booking 1", "Never mind"]
     # no bookings
     ctx = _ctx_with_notion([event])
     inter = _inter()
@@ -276,7 +277,7 @@ async def test_cancellation_view_never_mind_and_prompt() -> None:
     view = CancellationView(ctx, [_booking(event)], lock, 31)
     inter = _inter()
     await view._handle_booking(inter, _booking(event))
-    assert _msg(inter) == "Cancel slot 2 (21:00) at Rave One?"
+    assert _msg(inter) == f"Cancel slot 2 ({texts.slot_when(event, 1)}) at Rave One?"
     assert _labels(inter.response.send_message.call_args.kwargs["view"]) == [
         "Yes, cancel",
         "Keep booking",

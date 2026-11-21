@@ -23,6 +23,7 @@ from bot.notion.models import (
     PROP_EVENT_DATE,
     PROP_EVENT_GENRE,
     PROP_EVENT_ID,
+    PROP_EVENT_LOCATION,
     PROP_EVENT_NOTES,
     PROP_EVENT_SLOT_LENGTH,
     PROP_EVENT_SLOTS,
@@ -187,6 +188,9 @@ class NotionClient:
             PROP_EVENT_SLOT_LENGTH: {"number": payload["slot_minutes"]},
             PROP_EVENT_GENRE: {
                 "rich_text": _text(payload["genre"]) if payload.get("genre") else []
+            },
+            PROP_EVENT_LOCATION: {
+                "rich_text": _text(payload["location"]) if payload.get("location") else []
             },
             PROP_EVENT_NOTES: {
                 "rich_text": _text(payload["notes"]) if payload.get("notes") else []

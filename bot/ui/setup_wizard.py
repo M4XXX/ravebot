@@ -8,6 +8,7 @@ To add a step, insert its key into STEPS (before "summary"), add a renderer bran
 `render_step` and its controls to the view; navigation works on the list.
 """
 import asyncio
+import dataclasses
 import datetime
 import logging
 import zoneinfo
@@ -19,16 +20,23 @@ import disnake
 
 from bot.db import config as db_config
 from bot.db import events as db_events
+from bot.db import schedule_rules as db_rules
 from bot.db.setup_drafts import SetupDraft, delete_draft, get_draft, save_draft
 from bot.notion.models import MAX_SLOTS
 from bot.services import activation
 from bot.services.event_replenish import replenish_events
 from bot.services.outreach import parse_outreach_enabled
+from bot.services.schedule_rules import Field, Rule, reanchor
 from bot.timezone import DEFAULT_TIMEZONE, is_valid_timezone, set_timezone
-from bot.ui import texts
+from bot.ui import setup_rules, texts
+from bot.ui.gates import refuse_in_maintenance
+from bot.ui.schedule_views import ApplyChangesView
 from bot.ui.setup_options import (
     ASAP_VALUE,
     FIELD_LABELS,
+    NONE_VALUE,
+    TEXT_KEYS,
+    TEXT_MAX_LENGTH,
     dropdown_options,
     parse_choice,
     parse_hhmm,
@@ -53,6 +61,9 @@ STEPS: list[str] = [
     "interval",
     "first_date",
     "lookahead",
+    "default_genre",
+    "default_location",
+    "rules",
     "timezone",
     "invites",
     "summary",
@@ -66,6 +77,8 @@ VALUE_STEPS: dict[str, str] = {
     "interval": "event_interval_days",
     "first_date": "first_event_date",
     "lookahead": "event_lookahead_count",
+    "default_genre": "default_genre",
+    "default_location": "default_location",
     "timezone": "timezone",
 }
 
@@ -78,11 +91,15 @@ DEFAULT_VALUES: dict[str, Any] = {
     "event_lookahead_count": 6,
     "event_schedule_enabled": True,
     "first_event_date": "",
+    "default_genre": "",
+    "default_location": "",
     "timezone": DEFAULT_TIMEZONE,
     "outreach_enabled": True,
     "outreach_days_before": 14,
     "outreach_cooldown_hours": 12,
 }
+# Stored by the schedule write (rules and defaults together), not by `_write_all`.
+_SCHEDULE_TEXT_KEYS = ("default_genre", "default_location")
 _INT_VALUE_KEYS = (
     "slots_per_event",
     "slot_duration_minutes",
@@ -108,6 +125,10 @@ ID_CREATE_ROLE = "setup:create_role"
 ID_VALUE = "setup:value"
 ID_OTHER = "setup:other"
 ID_SCHEDULE_TOGGLE = "setup:schedule_toggle"
+ID_RULE_ADD = "setup:rule_add"
+ID_RULE_REMOVE = "setup:rule_remove"
+ID_RULE_START = "setup:rule_start"
+ID_RULE_CANCEL = "setup:rule_cancel"
 # Controls of wizard messages posted before the Events popup was split into steps
 ID_LEGACY_EVENTS = "setup:events_change"
 ID_LEGACY_ZONE = "setup:zone"
@@ -143,7 +164,7 @@ def guild_lock(guild_id: int) -> asyncio.Lock:
 
 def scheduled_step_keys() -> tuple[str, ...]:
     """Steps that only apply while scheduled events are on."""
-    return ("interval", "first_date", "lookahead")
+    return ("interval", "first_date", "lookahead", "default_genre", "default_location", "rules")
 
 
 def visible_steps(data: dict[str, Any] | None = None) -> list[str]:
@@ -310,7 +331,25 @@ def _schedule_summary(v: dict[str, Any]) -> str:
     )
 
 
-async def summary_lines(ctx: "BotContext", guild: Any, data: dict[str, Any]) -> list[str]:
+async def _moved_rule_lines(ctx: "BotContext", guild_id: int, data: dict[str, Any]) -> list[str]:
+    """`Rule #n moves: old start -> new start` for each rule the new grid moves."""
+    if not data.get("rules") or not _grid_changed(data):
+        return []
+    moved, refusal = await _reanchored_rules(ctx, guild_id, data)
+    if moved is None:
+        return [refusal] if refusal else []
+    label = texts.schedule_date_label
+    name = texts.PROJECTED_EVENT_NAME
+    return [
+        texts.setup_rule_moved(i, label(name, old.anchor), label(name, new.anchor))
+        for i, (old, new) in enumerate(moved, 1)
+        if old.anchor != new.anchor
+    ]
+
+
+async def summary_lines(
+    ctx: "BotContext", guild: Any, data: dict[str, Any], guild_id: int | None = None
+) -> list[str]:
     def chan(key: str) -> str:
         value = data.get(key)
         return f"<#{value}>" if value else "not set"
@@ -334,6 +373,15 @@ async def summary_lines(ctx: "BotContext", guild: Any, data: dict[str, Any]) -> 
         f"Time zone: {v['timezone']}",
         f"Automatic invites: {invites}",
     ]
+    if v["event_schedule_enabled"]:
+        lines[5:5] = [
+            f"Default genre: {v['default_genre'] or 'none'}",
+            f"Default location: {v['default_location'] or 'none'}",
+            f"Rules: {len(data.get('rules') or [])}",
+        ]
+    gid = guild_id if guild_id is not None else getattr(guild, "id", None)
+    if isinstance(gid, int):
+        lines.extend(await _moved_rule_lines(ctx, gid, data))
     previous_zone = data.get("orig_timezone", DEFAULT_TIMEZONE)
     if previous_zone != v["timezone"]:
         lines.append(texts.SETUP_ZONE_CHANGED_WARNING)
@@ -350,6 +398,10 @@ _LEGACY_STEP_KEYS = {4: "slots", 5: "invites", 6: "summary"}
 
 
 DRAFT_MARKER = "wizard_v2"  # set in the data of every draft made by the step-per-setting wizard
+# Set in the data of every draft whose step number counts the default and rules steps.
+STEPS_MARKER = "steps_v3"
+_FIRST_SHIFTED_STEP = 11  # index of "timezone" before the default and rules steps existed
+_ADDED_STEPS = 3
 
 
 def migrate_legacy_draft(draft: SetupDraft) -> None:
@@ -358,10 +410,15 @@ def migrate_legacy_draft(draft: SetupDraft) -> None:
     Only drafts without DRAFT_MARKER are old: every current draft carries it.
     """
     if draft.data.get(DRAFT_MARKER):
+        if not draft.data.get(STEPS_MARKER):
+            if draft.step >= _FIRST_SHIFTED_STEP:
+                draft.step += _ADDED_STEPS
+            draft.data[STEPS_MARKER] = True
         return
     if draft.step in _LEGACY_STEP_KEYS:
         draft.step = STEPS.index(_LEGACY_STEP_KEYS[draft.step])
     draft.data[DRAFT_MARKER] = True
+    draft.data[STEPS_MARKER] = True
     draft.data.setdefault("event_schedule_enabled", True)
     draft.data.setdefault("first_event_date", "")
 
@@ -385,6 +442,8 @@ def _selected_value(config_key: str, current: Any) -> str:
     """The dropdown value that shows the current setting as chosen."""
     if config_key == "first_event_date" and not current:
         return ASAP_VALUE
+    if config_key in TEXT_KEYS and not current:
+        return NONE_VALUE
     return str(current)
 
 
@@ -399,7 +458,67 @@ def _value_label(config_key: str, v: dict[str, Any]) -> str:
         return f"{value} days"
     if config_key == "first_event_date":
         return str(value) if value else "as soon as the interval allows"
+    if config_key in TEXT_KEYS:
+        return str(value) if value else "none"
     return str(value)
+
+
+def _first_date(data: dict[str, Any]) -> datetime.date | None:
+    """The draft's first event date, None for "as soon as the interval allows"."""
+    raw = values(data)["first_event_date"]
+    try:
+        return datetime.date.fromisoformat(str(raw)) if raw else None
+    except ValueError:
+        return None
+
+
+async def _grid_dates(
+    ctx: "BotContext", guild_id: int, data: dict[str, Any], count: int
+) -> list[Any]:
+    """The next schedule dates for the draft's interval and first date."""
+    service = ctx.schedule_service
+    if service is None:
+        return []
+    return await service.upcoming_dates(
+        guild_id,
+        count,
+        interval_days=values(data)["event_interval_days"],
+        first_date=_first_date(data),
+    )
+
+
+def _anchor_label(labels: dict[datetime.date, str], day: datetime.date) -> str:
+    return labels.get(day) or texts.schedule_date_label(texts.PROJECTED_EVENT_NAME, day)
+
+
+async def _render_rules(ctx: "BotContext", draft: SetupDraft) -> StepView:
+    data = draft.data
+    number, total = step_number("rules", data), total_steps(data)
+    pending = data.get("rule_pending")
+    if pending:
+        dates = await _grid_dates(ctx, draft.guild_id, data, RULE_START_CHOICES)
+        summary = texts.setup_rule_pending_summary(
+            pending["field"], pending["value"], pending["every"]
+        )
+        return StepView(
+            texts.setup_rule_start_step(number, total, summary),
+            [ID_RULE_START, ID_RULE_CANCEL],
+            options=[(texts.option_label(d.label), d.date.isoformat()) for d in dates],
+        )
+    dates = await _grid_dates(ctx, draft.guild_id, data, RULE_LABEL_DATES)
+    labels = {d.date: d.label for d in dates}
+    lines = [
+        texts.rule_line(
+            rule.id, rule.field, rule.value, rule.every, _anchor_label(labels, rule.anchor)
+        )
+        for rule in setup_rules.numbered_rules(data)
+    ]
+    visible = [ID_RULE_REMOVE] if lines else []
+    return StepView(
+        texts.setup_rules_step(number, total, lines),
+        [*visible, ID_RULE_ADD, ID_BACK, ID_NEXT],
+        options=[(texts.option_label(line), str(i)) for i, line in enumerate(lines)],
+    )
 
 
 async def render_step(ctx: "BotContext", guild: Any, draft: SetupDraft) -> StepView:
@@ -452,6 +571,8 @@ async def render_step(ctx: "BotContext", guild: Any, draft: SetupDraft) -> StepV
             next_disabled=not ok,
             defaults=defaults,
         )
+    if key == "rules":
+        return await _render_rules(ctx, draft)
     if key in VALUE_STEPS:
         config_key = VALUE_STEPS[key]
         v = values(data)
@@ -492,9 +613,14 @@ async def render_step(ctx: "BotContext", guild: Any, draft: SetupDraft) -> StepV
             toggle_label="Turn off" if on else "Turn on",
         )
     rerun = bool(data.get("rerun"))
-    content = texts.setup_summary(await summary_lines(ctx, guild, data), rerun, total)
+    content = texts.setup_summary(
+        await summary_lines(ctx, guild, data, draft.guild_id), rerun, total
+    )
     return StepView(content, [ID_BACK, ID_SAVE if rerun else ID_ACTIVATE])
 
+
+RULE_START_CHOICES = 10
+RULE_LABEL_DATES = 25
 
 Handler = Callable[[Any], Awaitable[None]]
 
@@ -531,6 +657,8 @@ class SetupWizardView(disnake.ui.View):
                 disnake.ButtonStyle.secondary,
                 self.on_schedule_toggle,
             ),
+            ID_RULE_ADD: ("Add rule", disnake.ButtonStyle.secondary, self.on_rule_add),
+            ID_RULE_CANCEL: ("Cancel", disnake.ButtonStyle.secondary, self.on_rule_cancel),
             ID_INVITES_TOGGLE: (step.toggle_label, disnake.ButtonStyle.secondary, self.on_toggle),
             ID_INVITES_CHANGE: ("Change", disnake.ButtonStyle.secondary, self.on_invites_change),
             ID_ACTIVATE: ("Activate", disnake.ButtonStyle.success, self.on_activate),
@@ -555,6 +683,19 @@ class SetupWizardView(disnake.ui.View):
                 or [disnake.SelectOption(label="-", value="-")],
             )
             item.callback = self.on_value_select  # type: ignore[method-assign,assignment]
+            return item
+        if cid in (ID_RULE_REMOVE, ID_RULE_START):
+            remove = cid == ID_RULE_REMOVE
+            item = disnake.ui.StringSelect(
+                custom_id=cid,
+                placeholder="Remove a rule" if remove else "Pick the first event",
+                options=[
+                    disnake.SelectOption(label=label, value=value)
+                    for label, value in step.options
+                ]
+                or [disnake.SelectOption(label="-", value="-")],
+            )
+            item.callback = self.on_rule_remove if remove else self.on_rule_start  # type: ignore[method-assign,assignment]
             return item
         default = step.defaults.get(cid)
         defaults = [disnake.Object(id=default)] if default else None
@@ -732,6 +873,8 @@ class SetupWizardView(disnake.ui.View):
                 f"setup_value:{inter.message.id}",
                 [("v", FIELD_LABELS[config_key], str(v[config_key]))],
                 parser,
+                max_length=TEXT_MAX_LENGTH.get(config_key, 40),
+                required=config_key not in TEXT_KEYS,
             )
         )
 
@@ -781,6 +924,109 @@ class SetupWizardView(disnake.ui.View):
             draft.data["event_schedule_enabled"] = not enabled
             await self._show(inter, draft)
 
+    # --- rules step ---
+
+    async def on_rule_add(self, inter: Any) -> None:
+        draft = await self._draft(inter)
+        if draft is None:
+            return
+        if len(draft.data.get("rules") or []) >= setup_rules.MAX_RULES:
+            await _private(inter, texts.SETUP_RULES_FULL)
+            return
+        await inter.response.send_modal(
+            setup_rules.RuleModal(inter.message.id, self.on_rule_submitted)
+        )
+
+    async def on_rule_submitted(self, inter: Any, message_id: int, answers: dict[str, Any]) -> None:
+        """The Add rule popup was sent: keep the rule until its start event is picked."""
+        if not self.ctx.is_admin(inter.author.id):
+            await _private(inter, texts.SETUP_ONLY_ORGANIZERS)
+            return
+        pending, error = setup_rules.parse_rule_fields(answers)
+        if pending is None:
+            await _private(inter, error or texts.SETUP_ERROR)
+            return
+        await inter.response.defer(with_message=False)
+        async with guild_lock(inter.guild_id):
+            draft = await _load_draft(_db(self.ctx), inter.guild_id)
+            refusal = _refusal(draft, message_id)
+            if refusal is not None or draft is None:
+                await _private(inter, refusal or texts.SETUP_ALREADY_DONE)
+                return
+            draft.data["rule_pending"] = pending
+            await self._show(inter, draft)
+
+    async def on_rule_start(self, inter: Any) -> None:
+        await inter.response.defer()
+        chosen = inter.values
+        if not chosen:
+            return
+        async with guild_lock(inter.guild_id):
+            draft = await self._draft(inter)
+            if draft is None:
+                return
+            data = draft.data
+            pending = data.get("rule_pending")
+            if pending is None:
+                await self._show(inter, draft)
+                return
+            dates = await _grid_dates(self.ctx, draft.guild_id, data, RULE_START_CHOICES)
+            labels = {d.date: d.label for d in dates}
+            try:
+                anchor = datetime.date.fromisoformat(chosen[0])
+            except ValueError:
+                anchor = None
+            if anchor not in labels:
+                await _private(inter, texts.RULE_ANCHOR_NOT_UPCOMING)
+                return
+            rule = Rule(None, pending["field"], pending["value"], pending["every"], anchor)
+            existing = setup_rules.numbered_rules(data)
+            found = setup_rules.conflicts(rule, existing, values(data)["event_interval_days"])
+            if found:
+                await _private(
+                    inter,
+                    texts.rule_conflict(
+                        [
+                            (
+                                r.id,
+                                setup_rules.rule_summary(r, _anchor_label(labels, r.anchor)),
+                            )
+                            for r in found
+                        ]
+                    ),
+                )
+                return
+            data["rules"] = [*(data.get("rules") or []), setup_rules.rule_to_dict(rule)]
+            data.pop("rule_pending", None)
+            await self._show(inter, draft)
+
+    async def on_rule_cancel(self, inter: Any) -> None:
+        await inter.response.defer()
+        async with guild_lock(inter.guild_id):
+            draft = await self._draft(inter)
+            if draft is None:
+                return
+            draft.data.pop("rule_pending", None)
+            await self._show(inter, draft)
+
+    async def on_rule_remove(self, inter: Any) -> None:
+        await inter.response.defer()
+        chosen = inter.values
+        if not chosen:
+            return
+        async with guild_lock(inter.guild_id):
+            draft = await self._draft(inter)
+            if draft is None:
+                return
+            rules = list(draft.data.get("rules") or [])
+            try:
+                rules.pop(int(chosen[0]))
+            except (ValueError, IndexError):
+                await _private(inter, texts.SETUP_RULES_STALE)
+                return
+            draft.data["rules"] = rules
+            await self._show(inter, draft)
+
     async def on_activate(self, inter: Any) -> None:
         await inter.response.defer()
         await activate_from_draft(self.ctx, inter)
@@ -819,6 +1065,8 @@ class ValuesModal(disnake.ui.Modal):
         custom_id: str,
         fields: list[tuple[str, str, str]],
         parser: Callable[[dict[str, str]], tuple[dict[str, Any], list[str]]],
+        max_length: int = 40,
+        required: bool = True,
     ) -> None:
         self._wizard = view
         self._message_id = message_id
@@ -828,7 +1076,11 @@ class ValuesModal(disnake.ui.Modal):
             custom_id=custom_id,
             components=[
                 disnake.ui.TextInput(
-                    label=label, custom_id=fid, value=current, max_length=40, required=True
+                    label=label,
+                    custom_id=fid,
+                    value=current,
+                    max_length=max_length,
+                    required=required,
                 )
                 for fid, label, current in fields
             ],
@@ -877,6 +1129,7 @@ def _layout(draft: SetupDraft) -> StepView:
         "log_channel": [ID_LOG_CHANNEL, ID_BACK, ID_NEXT],
         "roles": [ID_DJ_ROLE, ID_INVITES_ROLE, ID_CREATE_ROLE, ID_BACK, ID_NEXT],
         "schedule": [ID_SCHEDULE_TOGGLE, ID_BACK, ID_NEXT],
+        "rules": [ID_RULE_REMOVE, ID_RULE_START, ID_RULE_ADD, ID_RULE_CANCEL, ID_BACK, ID_NEXT],
         "invites": [ID_INVITES_TOGGLE, ID_INVITES_CHANGE, ID_BACK, ID_NEXT],
         "summary": [ID_BACK, ID_SAVE if draft.data.get("rerun") else ID_ACTIVATE],
     }
@@ -961,6 +1214,13 @@ async def prefilled_data(
         _today_in(data["timezone"]),
     )
     data["first_event_date"] = first_date.get("first_event_date", "")
+    data["orig_event_interval_days"] = data["event_interval_days"]
+    data["orig_first_event_date"] = data["first_event_date"]
+    data["default_genre"] = await db_rules.get_default(db, guild_id, "genre") or ""
+    data["default_location"] = await db_rules.get_default(db, guild_id, "location") or ""
+    data["rules"] = [
+        setup_rules.rule_to_dict(r) for r in await db_rules.list_rules(db, guild_id)
+    ]
     return data
 
 
@@ -974,16 +1234,151 @@ async def _write_all(db: Any, guild_id: int, data: dict[str, Any]) -> None:
     for key in (*CHANNEL_KEYS, *ROLE_KEYS):
         await db_config.set_value(db, guild_id, key, str(data[key]))
     for key, value in v.items():
+        if key in _SCHEDULE_TEXT_KEYS:
+            continue
         text = ("true" if value else "false") if isinstance(value, bool) else str(value)
         await db_config.set_value(db, guild_id, key, text)
     set_timezone(v["timezone"])
+
+
+def _grid_changed(data: dict[str, Any]) -> bool:
+    """Whether the interval or the first date differ from the stored ones."""
+    v = values(data)
+    return (
+        data.get("orig_event_interval_days", v["event_interval_days"]) != v["event_interval_days"]
+        or data.get("orig_first_event_date", v["first_event_date"]) != v["first_event_date"]
+    )
+
+
+_ORIGIN_WINDOW = 32
+_ORIGIN_WINDOW_MAX = 1024
+
+
+async def _grid_origin(
+    ctx: "BotContext", guild_id: int, data: dict[str, Any]
+) -> datetime.date | None:
+    """The first date replenish will create on the draft's grid: the first projected
+    date after the existing upcoming events (None without a schedule service)."""
+    service = ctx.schedule_service
+    if service is None:
+        return None
+    count = _ORIGIN_WINDOW
+    while count <= _ORIGIN_WINDOW_MAX:
+        dates = await service.upcoming_dates(
+            guild_id,
+            count,
+            interval_days=values(data)["event_interval_days"],
+            first_date=_first_date(data),
+        )
+        projected = next((d.date for d in dates if d.event is None), None)
+        if projected is not None or len(dates) < count:
+            return projected
+        count *= 2
+    return None
+
+
+async def _reanchored_rules(
+    ctx: "BotContext", guild_id: int, data: dict[str, Any]
+) -> tuple[list[tuple[Rule, Rule]] | None, str | None]:
+    """(old rule, rule to store) per draft rule: moved onto the new grid when the
+    interval or first date changed. (None, refusal) when the new grid is unknown."""
+    if "rules" in data:
+        rules = setup_rules.stored_rules(data)
+    else:
+        # A draft from before rules existed: the stored rules still move with the grid
+        rules = await db_rules.list_rules(_db(ctx), guild_id)
+    if not rules or not _grid_changed(data):
+        return [(r, r) for r in rules], None
+    origin = await _grid_origin(ctx, guild_id, data)
+    if origin is None:
+        return None, texts.SETUP_RULES_NO_GRID
+    interval = values(data)["event_interval_days"]
+    return [
+        (r, dataclasses.replace(r, anchor=reanchor(r.anchor, origin, interval)))
+        for r in rules
+    ], None
+
+
+async def _prepare_schedule(
+    ctx: "BotContext", guild_id: int, data: dict[str, Any]
+) -> tuple[list[Rule] | None, str | None]:
+    """The rules to store: (rules, None), (None, None) when nothing changes (schedule
+    off and the grid unchanged: stored rules and defaults stay) or (None, refusal text)
+    when the new grid is unknown or two rules would hit the same event."""
+    v = values(data)
+    if not v["event_schedule_enabled"] and not _grid_changed(data):
+        return None, None
+    moved, refusal = await _reanchored_rules(ctx, guild_id, data)
+    if moved is None:
+        return None, refusal
+    rules = [new for _, new in moved]
+    numbered = [dataclasses.replace(r, id=i) for i, r in enumerate(rules, 1)]
+    pairs = setup_rules.conflict_pairs(numbered, v["event_interval_days"])
+    if not pairs:
+        return rules, None
+    label = texts.schedule_date_label
+    return None, texts.setup_rules_save_conflict(
+        [
+            (
+                a.id,
+                setup_rules.rule_summary(a, label(texts.PROJECTED_EVENT_NAME, a.anchor)),
+                b.id,
+                setup_rules.rule_summary(b, label(texts.PROJECTED_EVENT_NAME, b.anchor)),
+            )
+            for a, b in pairs  # type: ignore[misc]
+        ]
+    )
+
+
+async def _store_schedule(
+    db: Any, guild_id: int, data: dict[str, Any], rules: list[Rule] | None
+) -> None:
+    """Replace the stored rules with the draft's and write the defaults (one transaction).
+
+    A draft without a "rules" key (saved before rules existed) leaves the stored rules
+    alone, unless the grid changed: then they are stored re-anchored. A missing default
+    key leaves that stored default alone.
+    """
+    if rules is None:
+        return
+    keys: tuple[tuple[Field, str], ...] = (
+        ("genre", "default_genre"),
+        ("location", "default_location"),
+    )
+    defaults: dict[Field, str | None] = {
+        field: data[key] or None for field, key in keys if key in data
+    }
+    replace = "rules" in data or _grid_changed(data)
+    await db_rules.save_schedule(db, guild_id, rules if replace else None, defaults)
+
+
+async def _offer_apply(ctx: "BotContext", inter: Any, guild_id: int) -> None:
+    """Follow-up with the apply choice when the new rules change upcoming events."""
+    service = ctx.schedule_service
+    if service is None:
+        return
+    try:
+        pending = await service.pending_changes(guild_id)
+        if not pending:
+            return
+        view = ApplyChangesView(ctx, guild_id, inter.author.id, pending)
+        view.origin = inter
+        await inter.followup.send(
+            view.content(texts.SETUP_APPLY_INTRO), view=view, ephemeral=True
+        )
+    except Exception:
+        logger.warning("Setup wizard: could not offer the apply choice", exc_info=True)
 
 
 async def activate_from_draft(ctx: "BotContext", inter: Any) -> None:
     """First activation: write the keys, set the flag, run the effects exactly once."""
     guild_id = inter.guild_id
     db = _db(ctx)
+    if await refuse_in_maintenance(inter, ctx):
+        return
     async with guild_lock(guild_id):
+        if await refuse_in_maintenance(inter, ctx):  # started while this waited
+            return
         draft = await _load_draft(db, guild_id)
         refusal = _refusal(draft, inter.message.id)
         if refusal is None and draft is not None and draft.data.get("rerun"):
@@ -994,11 +1389,16 @@ async def activate_from_draft(ctx: "BotContext", inter: Any) -> None:
         if not _complete(draft.data):
             await _private(inter, texts.SETUP_MISSING_VALUES)
             return
+        rules, refusal = await _prepare_schedule(ctx, guild_id, draft.data)
+        if refusal is not None:
+            await _private(inter, refusal)
+            return
         try:
             # An explicit "false" first: a failure below must not leave a half-written
             # setup that the legacy rule (both channels stored) would count as active.
             await db_config.set_value(db, guild_id, activation.ACTIVE_KEY, "false")
             await _write_all(db, guild_id, draft.data)
+            await _store_schedule(db, guild_id, draft.data, rules)
             await activation.set_active(db, guild_id)
             created, posted = await _run_effects(ctx, guild_id)
             await delete_draft(db, guild_id)
@@ -1033,7 +1433,11 @@ async def _run_effects(ctx: "BotContext", guild_id: int) -> tuple[int, bool]:
 async def save_from_draft(ctx: "BotContext", inter: Any) -> None:
     """Re-run: store the changed values; no events are created and nothing is reposted."""
     guild_id = inter.guild_id
+    if await refuse_in_maintenance(inter, ctx):
+        return
     async with guild_lock(guild_id):
+        if await refuse_in_maintenance(inter, ctx):  # started while this waited
+            return
         draft = await _load_draft(_db(ctx), guild_id)
         refusal = _refusal(draft, inter.message.id)
         if refusal is None and draft is not None and not draft.data.get("rerun"):
@@ -1044,11 +1448,18 @@ async def save_from_draft(ctx: "BotContext", inter: Any) -> None:
         if not _complete(draft.data):
             await _private(inter, texts.SETUP_MISSING_VALUES)
             return
+        rules, refusal = await _prepare_schedule(ctx, guild_id, draft.data)
+        if refusal is not None:
+            await _private(inter, refusal)
+            return
         try:
             await _write_all(_db(ctx), guild_id, draft.data)
+            await _store_schedule(_db(ctx), guild_id, draft.data, rules)
             await delete_draft(_db(ctx), guild_id)
         except Exception:
             logger.exception("Setup wizard: saving failed")
             await _private(inter, texts.SETUP_ERROR)
             return
         await inter.edit_original_message(content=texts.SETUP_SAVED, view=None)
+        if rules is not None:
+            await _offer_apply(ctx, inter, guild_id)
