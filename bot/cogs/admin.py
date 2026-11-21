@@ -42,6 +42,7 @@ from bot.services.lineup import future_events, upcoming_event
 from bot.services.logo import MAX_LOGO_BYTES
 from bot.services.outreach import parse_outreach_enabled
 from bot.services.roles import DJ_ROLE_KEY, INVITES_ROLE_KEY
+from bot.services.schedule import UNSET, clean_value
 from bot.timezone import DEFAULT_TIMEZONE, local_today
 from bot.ui import texts
 from bot.ui.embeds import EmbedColors
@@ -249,6 +250,9 @@ class AdminCog(commands.Cog):
             ge=1,
             le=LIMITS["slot_duration_minutes"],
         ),
+        genre: str | None = commands.Param(None, description="Genre of the event"),
+        location: str | None = commands.Param(None, description="Location of the event"),
+        note: str | None = commands.Param(None, description="Note shown with the event"),
     ) -> None:
         """Create a new event (Postgres, mirrored to Notion) on the specified future date.
 
@@ -293,6 +297,12 @@ class AdminCog(commands.Cog):
             slot_count=slots if slots is not None else DEFAULT_SLOT_COUNT,
         )
         errors = validate_event_draft(given, today=_today()) + start_errors
+        values = {"genre": genre, "location": location, "note": note}
+        for kind, raw in values.items():
+            try:
+                clean_value(kind, raw)
+            except ValueError as exc:
+                errors.append(str(exc))
         if errors:
             await inter.response.send_message("\n".join(errors), ephemeral=True)
             return
@@ -339,12 +349,82 @@ class AdminCog(commands.Cog):
                     "create_event: could not record %r as manual", event_id, exc_info=True
                 )
 
+        given_values = {k: v for k, v in values.items() if clean_value(k, v) is not None}
+        if given_values and self.ctx.schedule_service is not None:
+            try:
+                event = await self.ctx.schedule_service.set_event_values(
+                    inter.guild_id, event.page_id, **given_values
+                )
+            except Exception:
+                logger.warning(
+                    "create_event: could not set the values of %r", event_id, exc_info=True
+                )
         mirror_new_event(self.ctx, event)
-        note = "" if marked else texts.CREATE_EVENT_NOT_MARKED
+        note_text = "" if marked else texts.CREATE_EVENT_NOT_MARKED
         await inter.followup.send(
-            f"Event created for {texts.slot_when(event, 0)}.{note}",
+            f"Event created for {texts.slot_when(event, 0)}.{note_text}",
             ephemeral=True
         )
+
+    @commands.slash_command(
+        name="edit", description="Edit things by hand (admin only)", contexts=SERVER_ONLY
+    )
+    async def edit_base(self, inter: disnake.ApplicationCommandInteraction) -> None:
+        pass
+
+    @edit_base.sub_command(name="event", description="Set genre, location or note of an event")
+    async def edit_event(
+        self,
+        inter: disnake.ApplicationCommandInteraction,
+        event: str = commands.Param(description="The event (pick one from the list)"),
+        genre: str | None = commands.Param(None, description="Genre of the event"),
+        location: str | None = commands.Param(None, description="Location of the event"),
+        note: str | None = commands.Param(None, description="Note shown with the event"),
+        clear: str | None = commands.Param(
+            None,
+            description="Remove a value (scheduled events go back to the rules)",
+            choices=["genre", "location", "note"],
+        ),
+    ) -> None:
+        """Set or clear an event's genre, location and note through ScheduleService."""
+        if await refuse_in_maintenance(inter, self.ctx):
+            return
+        service = self.ctx.schedule_service
+        if self.ctx.db is None or service is None or inter.guild_id is None:
+            await inter.response.send_message(texts.SCHEDULE_NOT_READY, ephemeral=True)
+            return
+        given = {"genre": genre, "location": location, "note": note}
+        if clear is None and all(v is None for v in given.values()):
+            await inter.response.send_message(texts.EDIT_EVENT_NEEDS_OPTION, ephemeral=True)
+            return
+        if clear is not None and given[clear] is not None:
+            await inter.response.send_message(texts.EDIT_EVENT_CLEAR_CONFLICT, ephemeral=True)
+            return
+        values = {k: (UNSET if v is None else v) for k, v in given.items()}
+        if clear is not None:
+            values[clear] = None
+        await inter.response.defer(ephemeral=True)
+        try:
+            found = next(
+                (e for e in await db_events.list_events(self.ctx.db) if e.event_id == event),
+                None,
+            )
+            if found is None:
+                raise LookupError(event)
+            updated = await service.set_event_values(inter.guild_id, found.page_id, **values)
+        except ValueError as exc:
+            await inter.followup.send(str(exc), ephemeral=True)
+            return
+        except LookupError:
+            await inter.followup.send(texts.EDIT_EVENT_NOT_FOUND, ephemeral=True)
+            return
+        await inter.followup.send(texts.edit_event_done(updated), ephemeral=True)
+
+    @edit_event.autocomplete("event")
+    async def edit_event_autocomplete(
+        self, inter: disnake.ApplicationCommandInteraction, user_input: str
+    ) -> list[str]:
+        return await self.future_event_autocomplete(inter, user_input)
 
     @commands.slash_command(
         name="post", description="Post to the DJ channel (admin only)", contexts=SERVER_ONLY

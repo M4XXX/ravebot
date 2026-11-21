@@ -1075,3 +1075,143 @@ def event_cancel_done(
     if failed_slots:
         text += " Some slots could not be emptied, see the log channel."
     return text
+
+
+# --- /edit event, /schedule ------------------------------------------------------------
+EDIT_EVENT_NEEDS_OPTION = "Give at least one of genre, location, note or clear."
+EDIT_EVENT_CLEAR_CONFLICT = "Use either a value or clear for the same field, not both."
+EDIT_EVENT_NOT_FOUND = "That event no longer exists. Pick one from the list."
+
+
+def edit_event_done(event: EventInfo) -> str:
+    meta = event_meta(event)
+    head = f"Updated {event_name(event)} on {ts(event.slot_start(0), 'D')}."
+    note = f"\nNote: {escape_text(event.notes)}" if event.notes else ""
+    return head + (f"\n{meta}" if meta else "") + note
+
+
+SCHEDULE_NO_CHANGES = "No upcoming event changes."
+SCHEDULE_NOT_READY = "The bot is not ready yet. Please try again in a moment."
+RULE_NOT_FOUND = "That rule does not exist (any more)."
+RULE_EDIT_NEEDS_OPTION = "Give at least one of value, every or start."
+SCHEDULE_NOTHING_SET = "No defaults, no rules."
+_FIELD_NAMES = {"genre": "Genre", "location": "Location"}
+
+
+def field_name(field: str) -> str:
+    return _FIELD_NAMES[field]
+
+
+def rule_summary(field: str, value: str, every: int, anchor_label: str) -> str:
+    """`Location "B", every 2, from Rave Night · 12.12.2026`."""
+    return f'{field_name(field)} "{value}", every {every}, from {anchor_label}'
+
+
+def rule_line(rule_id: int | None, field: str, value: str, every: int, anchor_label: str) -> str:
+    """`#3 · Location "B" · every 2 · from Rave Night · 05.12.2026`."""
+    return (
+        f'#{rule_id} · {field_name(field)} "{value}" · every {every}'
+        f" · from {anchor_label}"
+    )
+
+
+def rule_conflict(lines: Sequence[str]) -> str:
+    return "\n".join(
+        f"This rule collides with #{rid} ({summary}). Remove that rule first."
+        for rid, summary in lines
+    )
+
+
+def default_set(field: str, value: str | None) -> str:
+    if value is None:
+        return f"The default {field} is cleared."
+    return f'The default {field} is now "{value}".'
+
+
+def rule_added(line: str) -> str:
+    return f"Rule added: {line}"
+
+
+def rule_edited(line: str) -> str:
+    return f"Rule updated: {line}"
+
+
+def rule_removed(rule_id: int) -> str:
+    return f"Rule #{rule_id} removed."
+
+
+def schedule_show(defaults: Sequence[str], rules: Sequence[str], events: Sequence[str]) -> str:
+    parts = ["**Defaults**", *(defaults or ["none"])]
+    parts += ["", "**Rules**", *(rules or ["none"])]
+    parts += ["", "**Next events**", *(events or ["none"])]
+    return "\n".join(parts)
+
+
+def schedule_event_line(
+    label: str,
+    genre: str | None,
+    genre_by_hand: bool,
+    location: str | None,
+    location_by_hand: bool,
+) -> str:
+    hand = " (set by hand)"
+    bits = []
+    if genre:
+        bits.append(f"{_GENRE_ICON} {escape_text(genre)}{hand if genre_by_hand else ''}")
+    if location:
+        bits.append(f"{_LOCATION_ICON} {escape_text(location)}{hand if location_by_hand else ''}")
+    return f"{label} · " + (" · ".join(bits) if bits else "nothing set")
+
+
+# Apply view
+APPLY_ALL = "Apply to all"
+APPLY_PICK = "Pick events"
+APPLY_KEEP = "Keep all as they are"
+APPLY_SELECTED = "Apply selected"
+APPLY_PLACEHOLDER = "Choose the changes to apply"
+APPLY_CAPPED = "Showing the first 25; use Apply to all or the admin page for the rest."
+APPLY_NOT_YOURS = "Only the admin who opened this can use it."
+APPLY_NONE_PICKED = "Pick at least one change first."
+APPLY_KEPT = "Upcoming events were left as they are."
+APPLY_EXPIRED = (
+    "This choice expired. Events were left as they are. Run /schedule apply to review again."
+)
+APPLY_HEADING = "These upcoming events would change:"
+_APPLY_LIMIT = 1900
+
+
+def apply_done(count: int) -> str:
+    return f"Updated {count} event{'s' if count != 1 else ''}."
+
+
+def _none(value: str | None) -> str:
+    return escape_text(value) if value else "none"
+
+
+def change_text(event: EventInfo, field: str, old: str | None, new: str | None) -> str:
+    """`Rave Night · 05.12. · \U0001f3b5 Techno → House`."""
+    icon = _GENRE_ICON if field == "genre" else _LOCATION_ICON
+    return (
+        f"{event_name(event)} · {event.date.strftime('%d.%m.')} · "
+        f"{icon} {_none(old)} → {_none(new)}"
+    )
+
+
+def apply_content(lines: Sequence[str], intro: str | None = None) -> str:
+    """Intro and change lines within Discord's 2000 characters."""
+    head = [intro] if intro else []
+    head.append(APPLY_HEADING)
+    out = "\n".join(head)
+    for shown, line in enumerate(lines):
+        extra = f"\n{line}"
+        rest = len(lines) - shown
+        tail = f"\n...and {rest} more" if rest > 1 else ""
+        if len(out) + len(extra) + len(tail) > _APPLY_LIMIT:
+            return out + f"\n...and {rest} more"
+        out += extra
+    return out
+
+
+def option_label(text: str) -> str:
+    """Select option label, at most 100 characters."""
+    return text if len(text) <= 100 else text[:99] + "…"

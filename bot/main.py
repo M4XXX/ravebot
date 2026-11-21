@@ -175,6 +175,7 @@ async def main() -> None:
     from bot.cogs.events import EventsCog
     from bot.cogs.onboarding import OnboardingCog
     from bot.cogs.outreach_cog import OutreachCog
+    from bot.cogs.schedule_cog import ScheduleCog
     from bot.cogs.setup import SetupCog
     from bot.log import AdminLogService
 
@@ -326,6 +327,7 @@ async def main() -> None:
     _add_cog(bot, AdminCog(ctx))
     _add_cog(bot, EventsCog(ctx))
     _add_cog(bot, SetupCog(ctx))
+    _add_cog(bot, ScheduleCog(ctx))
 
     startup_dm_sent = False
 
