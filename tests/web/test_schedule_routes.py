@@ -159,12 +159,14 @@ async def test_add_rule_redirects_to_apply_when_pending() -> None:
             "/schedule/rules/add", headers=headers, data=_form(csrf, **data), allow_redirects=False
         )
         assert resp.status == 303
-        assert resp.headers["Location"] == "/schedule/apply"
+        assert resp.headers["Location"] == "/schedule/apply?done=rule-added"
         service.schedule.pending_changes = []
         resp = await client.post(
             "/schedule/rules/add", headers=headers, data=_form(csrf, **data), allow_redirects=False
         )
-        assert resp.status == 200 and "Done." in await resp.text()
+        assert resp.status == 303 and resp.headers["Location"] == "/schedule?done=rule-added"
+        page = await (await client.get(resp.headers["Location"], headers=headers)).text()
+        assert "The rule was added." in page
     assert service.schedule.calls[0] == ("add", "genre", "House", "1", "2026-12-05")
 
 
@@ -181,9 +183,10 @@ async def test_apply_selected_applies_only_picks() -> None:
             "/schedule/apply", headers=headers,
             data=_form(csrf, choice="selected", pick=["uid-2:location"],
                        shown=["uid-1:genre", "uid-2:location"]),
+            allow_redirects=False,
         )
     assert "Apply to all" in page and "Apply selected" in page and "Keep all as they are" in page
-    assert resp.status == 200
+    assert resp.status == 303 and resp.headers["Location"].endswith("done=applied")
     assert service.schedule.calls == [
         ("apply", "selected", ["uid-2:location"], ["uid-1:genre", "uid-2:location"])
     ]
@@ -198,10 +201,11 @@ async def test_event_edit_empty_field_clears() -> None:
         resp = await client.post(
             "/schedule/events/uid-1", headers=headers,
             data=_form(csrf, genre="", location="Hall A", note=""),
+            allow_redirects=False,
         )
         missing = await client.get("/schedule/events/nope", headers=headers)
     assert 'value="Techno"' in form and "Bring &lt;b&gt;water" in form
-    assert resp.status == 200
+    assert resp.status == 303 and resp.headers["Location"] == "/schedule?done=event-saved"
     assert service.schedule.calls == [("event", "uid-1", "", "Hall A", "")]
     assert missing.status == 404
 
@@ -265,3 +269,43 @@ async def test_schedule_writes_refused_in_maintenance(path, fields) -> None:
         assert resp.status == 503
         assert texts.MAINTENANCE in await resp.text()
     assert service.schedule.calls == []
+
+
+async def test_remove_and_defaults_redirect_and_keep_does_not_loop() -> None:
+    sessions = SessionManager(secret=b"k" * 32)
+    headers, csrf = _auth(sessions)
+    service = _service()
+    async with make_client(service, sessions) as client:
+        gone = await client.post(
+            "/schedule/rules/3/remove", headers=headers, data=_form(csrf), allow_redirects=False
+        )
+        service.schedule.pending_changes = [PendingView("uid-1", "genre", "x")]
+        keep = await client.post(
+            "/schedule/apply", headers=headers,
+            data=_form(csrf, choice="keep", shown=["uid-1:genre"]), allow_redirects=False,
+        )
+        unknown = await client.get("/schedule?done=%3Cb%3E", headers=headers)
+    assert gone.headers["Location"] == "/schedule?done=rule-removed"
+    assert keep.status == 303 and keep.headers["Location"] == "/schedule?done=kept"
+    page = await unknown.text()
+    assert unknown.status == 200 and "%3Cb%3E" not in page and 'class="msg' not in page
+
+
+async def test_apply_accepts_a_body_with_104_changes_and_other_posts_stay_small() -> None:
+    sessions = SessionManager(secret=b"k" * 32)
+    headers, csrf = _auth(sessions)
+    service = _service()
+    shown = [f"{'0123456789abcdef' * 2}-{i // 2}:{'genre' if i % 2 else 'location'}"
+             for i in range(104)]
+    async with make_client(service, sessions) as client:
+        resp = await client.post(
+            "/schedule/apply", headers=headers,
+            data=_form(csrf, choice="all", shown=shown, pick=shown), allow_redirects=False,
+        )
+        big = await client.post(
+            "/schedule/defaults", headers=headers,
+            data=_form(csrf, genre="x" * 5000), allow_redirects=False,
+        )
+    assert resp.status == 303
+    assert service.schedule.calls[0][3] == shown
+    assert big.status == 413

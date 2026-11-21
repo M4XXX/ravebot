@@ -63,7 +63,18 @@ MAX_BODY = 4096
 MAX_UPLOAD = 6 * 1024 * 1024  # a DJ logo (up to 5 MB) plus the other form fields
 MAX_BACKUP = 512 * 1024 * 1024  # a backup file for /backup/import
 BACKUP_PATH = "/backup/import"
+APPLY_PATH = "/schedule/apply"
+MAX_APPLY = 64 * 1024  # 104 changes (52 events x 2 fields) as shown and pick fields
 UPLOAD_PATHS = frozenset({"/djs/add", "/djs/edit", BACKUP_PATH})
+_DONE_TEXT = {
+    "defaults-saved": "The defaults are saved.",
+    "rule-added": "The rule was added.",
+    "rule-updated": "The rule was updated.",
+    "rule-removed": "The rule was removed.",
+    "event-saved": "The event was saved.",
+    "applied": "The changes were applied.",
+    "kept": texts.APPLY_KEPT,
+}
 ADMIN_NAME = "The admin page"
 WRONG_PASSWORD = "Wrong password."
 OWNER_MESSAGE = "Owners can only be changed with ADMIN_USER_IDS."
@@ -123,11 +134,12 @@ async def security_middleware(request: web.Request, handler: Handler) -> web.Str
     try:
         if request.method not in _SAFE_METHODS:
             length = request.content_length or 0
+            body_max = MAX_APPLY if request.path == APPLY_PATH else MAX_BODY
             if request.path not in UPLOAD_PATHS and (
-                length > MAX_BODY
+                length > body_max
                 or "chunked" in request.headers.get("Transfer-Encoding", "").lower()
             ):
-                raise web.HTTPRequestEntityTooLarge(max_size=MAX_BODY, actual_size=length)
+                raise web.HTTPRequestEntityTooLarge(max_size=body_max, actual_size=length)
             limit = MAX_BACKUP if request.path == BACKUP_PATH else MAX_UPLOAD
             if length > limit:
                 raise web.HTTPRequestEntityTooLarge(max_size=limit, actual_size=length)
@@ -450,15 +462,19 @@ def create_app(
             render_schedule(overview, options, request["session"].csrf, message, values), status
         )
 
-    async def after_change(request: web.Request, result: ActionResult) -> web.Response:
-        """Redirect to the apply list when events differ from the rules, else back."""
-        schedule = _schedule_service()
-        if await schedule.has_pending():
-            return _redirect("/schedule/apply")
-        return await schedule_page(request, result)
+    async def after_change(request: web.Request, done: str) -> web.Response:
+        """Post/redirect/get: the apply list while events differ from the rules, else the
+        schedule page. ``done`` picks a fixed message text; nothing user-made is echoed."""
+        if await _schedule_service().has_pending():
+            return _redirect(f"/schedule/apply?done={done}")
+        return _redirect(f"/schedule?done={done}")
+
+    def _done(request: web.Request) -> ActionResult | None:
+        text = _DONE_TEXT.get(request.query.get("done", ""))
+        return ActionResult(True, text) if text else None
 
     async def get_schedule(request: web.Request) -> web.Response:
-        return await schedule_page(request)
+        return await schedule_page(request, _done(request))
 
     async def post_schedule_defaults(request: web.Request) -> web.Response:
         if refused := _maintenance(service):
@@ -467,7 +483,7 @@ def create_app(
         result = await _schedule_service().set_defaults(values["genre"], values["location"])
         if not result.ok:
             return await schedule_page(request, result, 400, values)
-        return await after_change(request, result)
+        return await after_change(request, "defaults-saved")
 
     async def post_rule_add(request: web.Request) -> web.Response:
         if refused := _maintenance(service):
@@ -478,7 +494,7 @@ def create_app(
         )
         if not result.ok:
             return await schedule_page(request, result, 400, values)
-        return await after_change(request, result)
+        return await after_change(request, "rule-added")
 
     async def _rule_or_none(request: web.Request) -> Any:
         schedule = _schedule_service()
@@ -511,7 +527,7 @@ def create_app(
             options = await schedule.anchor_options(view.rule.anchor)
             page = render_edit_rule(view, options, request["session"].csrf, result, values)
             return _html(page, 404 if result.message == texts.RULE_NOT_FOUND else 400)
-        return await after_change(request, result)
+        return await after_change(request, "rule-updated")
 
     async def get_rule_remove(request: web.Request) -> web.Response:
         view = await _rule_or_none(request)
@@ -528,7 +544,7 @@ def create_app(
         result = await _schedule_service().remove_rule(view.rule.id)
         if not result.ok:
             return await schedule_page(request, result, 400)
-        return await after_change(request, result)
+        return await after_change(request, "rule-removed")
 
     async def _event_or_none(request: web.Request) -> Any:
         schedule = _schedule_service()
@@ -558,7 +574,7 @@ def create_app(
         if not result.ok:
             page = render_edit_event(event, request["session"].csrf, result, values)
             return _html(page, 404 if result.message == texts.EDIT_EVENT_NOT_FOUND else 400)
-        return await schedule_page(request, result)
+        return await after_change(request, "event-saved")
 
     async def apply_page(
         request: web.Request, message: ActionResult | None = None, status: int = 200
@@ -570,7 +586,7 @@ def create_app(
         return _html(render_apply(changes, request["session"].csrf, message), status)
 
     async def get_schedule_apply(request: web.Request) -> web.Response:
-        return await apply_page(request)
+        return await apply_page(request, _done(request))
 
     async def post_schedule_apply(request: web.Request) -> web.Response:
         if refused := _maintenance(service):
@@ -584,7 +600,9 @@ def create_app(
         result = await schedule.apply(_field(form, "choice") or "", picks, shown)
         if not result.ok:
             return await apply_page(request, result, 400)
-        return await schedule_page(request, result)
+        if _field(form, "choice") == "keep":
+            return _redirect("/schedule?done=kept")  # kept: do not list them again
+        return await after_change(request, "applied")
 
     # --- Notion databases ---
 
