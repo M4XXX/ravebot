@@ -285,9 +285,9 @@ async def test_remove_and_defaults_redirect_and_keep_does_not_loop() -> None:
             data=_form(csrf, choice="keep", shown=["uid-1:genre"]), allow_redirects=False,
         )
         unknown = await client.get("/schedule?done=%3Cb%3E", headers=headers)
+        page = await unknown.text()
     assert gone.headers["Location"] == "/schedule?done=rule-removed"
     assert keep.status == 303 and keep.headers["Location"] == "/schedule?done=kept"
-    page = await unknown.text()
     assert unknown.status == 200 and "%3Cb%3E" not in page and 'class="msg' not in page
 
 
