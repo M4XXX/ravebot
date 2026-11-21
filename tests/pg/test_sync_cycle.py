@@ -125,14 +125,33 @@ def _client_for(day, **event) -> MagicMock:  # noqa: ANN001
 
 
 async def test_mirrored_rule_value_is_not_a_hand_edit(pool) -> None:
+    """A rule value written to Postgres after the last sync is pushed to Notion, and
+    reading it back is not taken for a hand edit."""
     day = await _seed(pool)
-    await pool.execute("UPDATE events SET location = 'Club Nebula' WHERE uid = 'u1'")
-    await _synced_everything(pool)  # what the worker mirrored
-    cycle = SyncCycle(_ctx(pool, _client_for(day, location="Club Nebula")), MagicMock())
+    await _synced_everything(pool)  # Notion shows no location
+    await pool.execute(
+        "UPDATE events SET location = 'Club Nebula', location_by_hand = false WHERE uid = 'u1'"
+    )
+    client = _client_for(day)
+    ctx = _ctx(pool, client)
+    cycle = SyncCycle(ctx, MagicMock())
 
-    report = await cycle.run()
+    report = await cycle.run()  # Notion still shows the old value
 
     assert (report.applied, report.conflicts) == (0, 0)
+    assert report.pushed == 1
+    row = await pool.fetchrow("SELECT location, location_by_hand FROM events WHERE uid = 'u1'")
+    assert (row["location"], row["location_by_hand"]) == ("Club Nebula", False)
+
+    # The worker mirrored it: synced state and Notion both hold the new value
+    await mirror.set_synced(
+        pool, "event", "u1", "p-u1", (await _load_pg(pool, "event"))["u1"]
+    )
+    client.read_all = _client_for(day, location="Club Nebula").read_all
+
+    again = await cycle.run()
+
+    assert (again.applied, again.pushed, again.conflicts) == (0, 0, 0)
     row = await pool.fetchrow("SELECT location, location_by_hand FROM events WHERE uid = 'u1'")
     assert (row["location"], row["location_by_hand"]) == ("Club Nebula", False)
 

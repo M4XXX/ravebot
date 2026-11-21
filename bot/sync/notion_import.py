@@ -300,7 +300,13 @@ async def _write(
     id_by_dj_page: dict[str, int | None] = {d.page_id: d.discord_id for d in djs}
     slots = 0
     for event in new_events:
-        await insert_event(conn, event.draft, uid=event.uid)
+        # Values already in Notion count as hand values (replace mode recomputes below)
+        draft = dataclasses.replace(
+            event.draft,
+            genre_by_hand=event.draft.genre is not None,
+            location_by_hand=event.draft.location is not None,
+        )
+        await insert_event(conn, draft, uid=event.uid)
         await mirror.set_synced(conn, "event", event.uid, event.page_id, event.payload)
         holders: dict[int, int | None] = {}
         for index, page in event.slot_pages.items():

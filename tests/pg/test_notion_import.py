@@ -281,3 +281,25 @@ async def test_import_recomputes_markers(pool) -> None:
     assert rows["ev-diff"] == (True, True)  # differs from the rule / no genre rule
     assert rows["ev-empty"] == (False, False)
     assert rows["ev-manual"] == (True, False)  # manual: any value is by hand
+
+
+async def test_upgrade_import_marks_imported_values_by_hand_only_for_new_events(pool) -> None:
+    from bot.db.events import EventDraft, insert_event
+
+    await insert_event(pool, EventDraft(
+        event_id="Existing", date=datetime.date(2026, 12, 20), start=datetime.time(20, 0),
+        slot_minutes=60, slot_count=1, genre="Kept", genre_by_hand=False,
+    ), uid="ev-existing")
+    snap = snapshot(events=[
+        event_page("ev-new", "New", "2026-12-01", slots=1, genre="Techno", location="Club"),
+        event_page("ev-plain", "Plain", "2026-12-08", slots=1),
+    ])
+    result = await import_from_notion(pool, _client(snap), mode="upgrade")
+    assert result.ok, result.problems
+    rows = {
+        r["uid"]: (r["genre_by_hand"], r["location_by_hand"])
+        for r in await pool.fetch("SELECT uid, genre_by_hand, location_by_hand FROM events")
+    }
+    assert rows["ev-new"] == (True, True)
+    assert rows["ev-plain"] == (False, False)
+    assert rows["ev-existing"] == (False, False)  # untouched
