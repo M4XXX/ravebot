@@ -51,9 +51,9 @@ class ApplyChangesView(disnake.ui.View):
             logger.debug("apply view: could not edit the expired message", exc_info=True)
 
     async def _apply(self, inter: disnake.MessageInteraction, picks: list[tuple[str, str]] | None):
-        self.stop()
         if await refuse_in_maintenance(inter, self._ctx):
-            return
+            return  # the view stays live: the admin can press again after the restore
+        self.stop()
         await inter.response.defer()
         try:
             count = await self._ctx.schedule_service.apply(self._guild_id, picks)

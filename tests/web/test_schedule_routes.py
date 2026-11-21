@@ -309,3 +309,26 @@ async def test_apply_accepts_a_body_with_104_changes_and_other_posts_stay_small(
     assert resp.status == 303
     assert service.schedule.calls[0][3] == shown
     assert big.status == 413
+
+
+@pytest.mark.parametrize(
+    ("path", "fields"),
+    [
+        ("/schedule/defaults", {"genre": "x", "location": "y"}),
+        ("/schedule/rules/add",
+         {"field": "genre", "value": "x", "every": "1", "start": "2026-12-05"}),
+        ("/schedule/rules/3/edit", {"value": "x", "every": "1", "start": "2026-12-05"}),
+        ("/schedule/rules/3/remove", {}),
+        ("/schedule/events/uid-1", {"genre": "x", "location": "", "note": ""}),
+        ("/schedule/apply", {"choice": "all"}),
+    ],
+)
+async def test_schedule_posts_without_service_show_not_ready(path, fields) -> None:
+    sessions = SessionManager(secret=b"k" * 32)
+    headers, csrf = _auth(sessions)
+    service = FakeService()
+    service.schedule = None
+    async with make_client(service, sessions) as client:
+        resp = await client.post(path, headers=headers, data=_form(csrf, **fields))
+        assert resp.status == 503
+        assert texts.SCHEDULE_NOT_READY in await resp.text()

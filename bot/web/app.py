@@ -479,8 +479,11 @@ def create_app(
     async def post_schedule_defaults(request: web.Request) -> web.Response:
         if refused := _maintenance(service):
             return await schedule_page(request, refused, 503)
+        schedule = _schedule_service()
+        if schedule is None:
+            return _html(render_notice(texts.SCHEDULE_NOT_READY), 503)
         values = _sched_values(await _read_form(request), "genre", "location")
-        result = await _schedule_service().set_defaults(values["genre"], values["location"])
+        result = await schedule.set_defaults(values["genre"], values["location"])
         if not result.ok:
             return await schedule_page(request, result, 400, values)
         return await after_change(request, "defaults-saved")
@@ -488,8 +491,11 @@ def create_app(
     async def post_rule_add(request: web.Request) -> web.Response:
         if refused := _maintenance(service):
             return await schedule_page(request, refused, 503)
+        schedule = _schedule_service()
+        if schedule is None:
+            return _html(render_notice(texts.SCHEDULE_NOT_READY), 503)
         values = _sched_values(await _read_form(request), "field", "value", "every", "start")
-        result = await _schedule_service().add_rule(
+        result = await schedule.add_rule(
             values["field"], values["value"], values["every"], values["start"]
         )
         if not result.ok:

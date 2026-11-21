@@ -139,3 +139,19 @@ async def test_apply_all_skips_changes_that_became_pending_after_the_view() -> N
     picks = ctx.schedule_service.apply.call_args.args[1]
     assert picks is not None
     assert ("uid-late", "genre") not in picks and picks == [("uid-0", "genre")]
+
+
+@pytest.mark.asyncio
+async def test_maintenance_refusal_keeps_the_buttons_working() -> None:
+    ctx, view = _view(2)
+    ctx.maintenance = object()
+    inter = _inter()
+    inter.response.is_done = MagicMock(return_value=False)
+    await view.apply_all.callback(inter)
+    ctx.schedule_service.apply.assert_not_awaited()
+    assert inter.response.send_message.call_args.args[0] == texts.MAINTENANCE
+    assert not view.is_finished()  # the admin can press Apply again after the restore
+    ctx.maintenance = None
+    await view.apply_all.callback(_inter())
+    ctx.schedule_service.apply.assert_awaited_once()
+    assert view.is_finished()
