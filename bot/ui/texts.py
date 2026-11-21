@@ -857,6 +857,14 @@ setup_value_texts: dict[str, tuple[str, str]] = {
         "How many future events should always be ready?",
     ),
     "timezone": ("Time zone", "Which time zone do start times use?"),
+    "default_genre": (
+        "Default genre",
+        "Which genre should scheduled events get when no rule sets one?",
+    ),
+    "default_location": (
+        "Default location",
+        "Which location should scheduled events get when no rule sets one?",
+    ),
 }
 
 
@@ -1218,3 +1226,49 @@ def apply_content(lines: Sequence[str], intro: str | None = None) -> str:
 def option_label(text: str) -> str:
     """Select option label, at most 100 characters."""
     return text if len(text) <= 100 else text[:99] + "…"
+
+
+# Setup wizard: rules step
+SETUP_APPLY_INTRO = "Defaults and rules saved."
+SETUP_RULES_FULL = "There can be at most 25 rules."
+SETUP_RULES_STALE = "That choice is no longer available. Pick again."
+RULE_MODAL_TITLE = "Add a rule"
+RULE_FIELD_LABEL = "What the rule sets"
+RULE_VALUE_LABEL = "The value"
+RULE_EVERY_LABEL = "Every how many events (1 to 52)"
+
+
+def setup_rules_step(number: int, total: int, lines: Sequence[str]) -> str:
+    parts = [
+        f"**Step {number} of {total}: Rules**",
+        "A rule sets the genre or location of every n-th scheduled event. "
+        "A value set by hand always wins.",
+        "",
+        *(lines or ["No rules yet."]),
+        "",
+        "Rules are stored when you save. Numbers here only count this list.",
+    ]
+    return "\n".join(parts)
+
+
+def setup_rule_start_step(number: int, total: int, summary: str) -> str:
+    return "\n".join(
+        [
+            f"**Step {number} of {total}: Rules**",
+            f"New rule: {summary}",
+            "Pick the first event of the rule.",
+        ]
+    )
+
+
+def setup_rule_pending_summary(field: str, value: str, every: int) -> str:
+    return f'{field_name(field)} "{value}", every {every}'
+
+
+def setup_rules_save_conflict(pairs: Sequence[tuple[int, str, int, str]]) -> str:
+    lines = [
+        f"Rule #{a} ({sa}) and rule #{b} ({sb}) would hit the same event "
+        "with the new schedule. Remove one of them."
+        for a, sa, b, sb in pairs
+    ]
+    return "\n".join([*lines, "Nothing was saved."])
