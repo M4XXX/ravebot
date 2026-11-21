@@ -18,8 +18,8 @@ import pytest
 from bot.notion.models import EventInfo
 from bot.services.reminders import RemindersService
 from bot.ui.embeds import ErrorCode
-from tests.notion.factories import make_event
 from tests.fake_events import fake_events
+from tests.notion.factories import make_event
 
 # Fixed reference: 2026-05-21 02:00 UTC
 # "2026-05-22" midnight = 22h away → squarely in the 20-28h window

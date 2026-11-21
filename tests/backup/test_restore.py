@@ -78,6 +78,12 @@ async def test_refuses_malformed_table() -> None:
     assert not result.ok and result.message == texts.IMPORT_UNREADABLE
 
 
+async def test_refuses_sequence_with_non_boolean_is_called() -> None:
+    seqs = {"djs_id_seq": {"last_value": 3, "is_called": "false"}}
+    result = await restore.import_database(_ctx(), _file(sequences=seqs))
+    assert not result.ok and result.message == texts.IMPORT_UNREADABLE
+
+
 @pytest.mark.parametrize("file_revision", ["0099", "0001"])
 async def test_refuses_other_revision_naming_both(file_revision: str) -> None:
     ctx = _ctx("0017")

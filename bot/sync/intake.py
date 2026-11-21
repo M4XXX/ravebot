@@ -46,6 +46,7 @@ from bot.services.dm import dm_user
 from bot.services.event_defaults import validate_event_draft
 from bot.services.event_replenish import replenish_guard
 from bot.services.fully_booked import recheck_fully_booked
+from bot.sync.payloads import event_draft
 from bot.sync.plan import Change
 from bot.sync.worker import changed
 from bot.timezone import local_today
@@ -80,17 +81,7 @@ def _ev(name: str) -> str:
 def _draft(payload: dict[str, Any]) -> EventDraft:
     """The Notion event payload as a draft; _Rejected when a value cannot be read."""
     try:
-        hour, minute = str(payload["start"]).split(":")
-        return EventDraft(
-            event_id=str(payload["event_id"] or ""),
-            date=datetime.date.fromisoformat(str(payload["date"])),
-            start=datetime.time(int(hour), int(minute)),
-            slot_minutes=payload["slot_minutes"],
-            slot_count=payload["slot_count"],
-            status=payload.get("status") or None,
-            genre=payload.get("genre") or None,
-            notes=payload.get("notes") or None,
-        )
+        return event_draft(payload)
     except (KeyError, TypeError, ValueError) as exc:
         raise _Rejected(f"The event has a value the bot cannot read ({exc}).") from exc
 

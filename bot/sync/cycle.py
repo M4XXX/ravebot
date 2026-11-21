@@ -66,7 +66,7 @@ from bot.sync.payloads import (
     payload_hash,
     slot_payload,
 )
-from bot.sync.plan import Change, Side, plan
+from bot.sync.plan import Change, Side, plan, strip_meta
 from bot.sync.worker import changed
 from bot.ui import texts
 
@@ -74,7 +74,7 @@ __all__ = ["CONFLICT_TTL", "POST_RESTORE_KEY", "CycleReport", "SyncCycle"]
 
 logger = logging.getLogger(__name__)
 
-CONFIG_GUILD_ID = 0
+CONFIG_GUILD_ID = config_db.GLOBAL_GUILD_ID  # config rows of the bot itself (bot/db/config.py)
 LAST_RUN_KEY = "sync_last_run"
 LAST_ERROR_KEY = "sync_last_error"
 CONFLICT_TTL = datetime.timedelta(hours=24)
@@ -193,10 +193,6 @@ def _match(
     return Side(payloads, page_ids), unmatched, unreadable
 
 
-def _strip(payload: dict[str, Any]) -> dict[str, Any]:
-    return {k: v for k, v in payload.items() if not k.startswith("_")}
-
-
 class SyncCycle:
     def __init__(self, ctx: Any, bot: Any) -> None:
         self._ctx = ctx
@@ -218,10 +214,12 @@ class SyncCycle:
     async def exclusive(self) -> AsyncIterator[None]:
         """Wait for a running cycle or admin decision, then keep them out until exit.
 
-        For maintenance jobs (backup import). Do not call run, resolve_issue or any
+        For maintenance jobs (backup import, rebuild). Also holds the mirror worker's
+        gate (same order as ``run``: cycle lock, then gate), so no Notion write of the
+        old data runs while the data is replaced. Do not call run, resolve_issue or any
         other method that takes the lock while holding it; resync_all does not.
         """
-        async with self._lock:
+        async with self._lock, self._worker_gate():
             yield
 
     def _worker_gate(self) -> contextlib.AbstractAsyncContextManager[Any]:
@@ -432,7 +430,7 @@ class SyncCycle:
             if not page_id or (keep is not None and keep(page)):
                 kept.append(page)
                 continue
-            payload = _strip(page)
+            payload = strip_meta(page)
             # Its own outbox key: never replaces a queued write of a bot record.
             changed(self._ctx, entity, f"stray:{page_id}", "delete", page_id)
             self._counts.pushed += 1
@@ -469,7 +467,7 @@ class SyncCycle:
         adopted = {key: pages[0] for key, pages in candidates.items() if len(pages) == 1}
         rest = [p for p in unmatched if not any(p is a for a in adopted.values())]
         for key, page in adopted.items():
-            payload, page_id, current = _strip(page), page["_page_id"], pg[key]
+            payload, page_id, current = strip_meta(page), page["_page_id"], pg[key]
             if payload == current:
                 await mirror.set_synced(self._db, "slot", key, page_id, payload)
             elif current["discord_id"] is None:
@@ -683,7 +681,9 @@ class SyncCycle:
                     changed(self._ctx, issue.entity, issue.entity_key)
                 return ActionResult(True, texts.SYNC_KEPT_POSTGRES)
             if issue.kind == "conflict" and choice == "notion":
-                return await self._keep_notion(issue)
+                # The worker must not write the bot's old version while Notion's is applied.
+                async with self._worker_gate():
+                    return await self._keep_notion(issue)
             if issue.kind == "warning" and choice == "resynced":
                 if await issues.resolve(self._db, issue.id, "resynced") is None:
                     return ActionResult(False, texts.SYNC_ISSUE_NOT_OPEN)

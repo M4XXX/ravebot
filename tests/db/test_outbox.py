@@ -53,7 +53,8 @@ async def test_failed_backs_off() -> None:
     sql, *args = pool.execute.await_args.args
     assert "attempts = attempts + 1" in sql
     assert "LEAST(power(2, LEAST(attempts, 20)) * $4, $5)" in sql
-    assert args == ["dj", "42", "boom", 10, 3600]
+    assert "enqueued_at = $6" in sql
+    assert args == ["dj", "42", "boom", 10, 3600, None]
 
 
 async def test_due_skips_open_conflicts_and_maps_rows() -> None:

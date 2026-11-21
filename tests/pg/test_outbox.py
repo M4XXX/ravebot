@@ -62,6 +62,29 @@ async def test_failed_backs_off(pool) -> None:
     assert (stats.count, stats.last_error) == (1, "still") and stats.oldest is not None
 
 
+async def test_failed_write_keeps_a_newer_enqueue_due(pool) -> None:
+    await outbox.enqueue(pool, "dj", "42")
+    (first,) = await outbox.due(pool, 10)
+    await outbox.enqueue(pool, "dj", "42")  # changed again while the write failed
+    await outbox.failed(pool, "dj", "42", "boom", first.enqueued_at)
+    row = await _row(pool, "dj", "42")
+    assert (row["attempts"], row["last_error"]) == (0, None)
+    assert [r.entity_key for r in await outbox.due(pool, 10)] == ["42"]
+
+
+async def test_stats_shows_the_newest_failure(pool) -> None:
+    await outbox.enqueue(pool, "dj", "1")
+    await outbox.enqueue(pool, "dj", "2")
+    await pool.execute("UPDATE notion_outbox SET attempts = 10 WHERE entity_key = '1'")
+    await outbox.failed(pool, "dj", "1", "old, long backoff")
+    await pool.execute(
+        "UPDATE notion_outbox SET next_attempt_at = next_attempt_at - interval '10 minutes'"
+        " WHERE entity_key = '1'"
+    )
+    await outbox.failed(pool, "dj", "2", "newest")
+    assert (await outbox.stats(pool)).last_error == "newest"
+
+
 async def test_due_hides_open_conflicts_only(pool) -> None:
     await outbox.enqueue(pool, "event", "u1")
     await outbox.enqueue(pool, "event", "u2")

@@ -24,6 +24,25 @@ class SlotLock:
     booked_at: datetime.datetime | None
 
 
+_LOCK_SLOT_ROW = """
+SELECT s.discord_user_id FROM slot_locks s
+JOIN events e ON e.uid = s.event_id AND s.slot_index < e.slot_count
+WHERE s.event_id = $1 AND s.slot_index = $2
+FOR UPDATE OF s
+"""
+
+
+async def _lock_slot_row(
+    conn: asyncpg.Connection, event_id: str, slot_index: int
+) -> asyncpg.Record | None:
+    """Lock the existing slot row of an existing event (None: the slot is gone).
+
+    The one row lock every booking change takes (DJ booking, admin override), so
+    they are serialized; no row is ever created here.
+    """
+    return await conn.fetchrow(_LOCK_SLOT_ROW, event_id, slot_index)
+
+
 async def acquire_slot_lock(
     pool: asyncpg.Pool,
     event_id: str,
@@ -50,16 +69,7 @@ async def acquire_slot_lock(
     async with pool.acquire() as conn:
         async with conn.transaction():
             # Step 1: lock the existing slot row of an existing event
-            row = await conn.fetchrow(
-                """
-                SELECT s.discord_user_id FROM slot_locks s
-                JOIN events e ON e.uid = s.event_id AND s.slot_index < e.slot_count
-                WHERE s.event_id = $1 AND s.slot_index = $2
-                FOR UPDATE OF s
-                """,
-                event_id,
-                slot_index,
-            )
+            row = await _lock_slot_row(conn, event_id, slot_index)
             if row is None or row["discord_user_id"] is not None:
                 # The slot no longer exists, or it is already taken
                 return False
@@ -163,6 +173,10 @@ async def get_dj_slot_locks(
     return [{"event_id": row["event_id"], "slot_index": row["slot_index"]} for row in rows]
 
 
+class SlotGoneError(Exception):
+    """The slot does not exist: its event was deleted or has fewer slots now."""
+
+
 async def force_slot_holder(
     pool: asyncpg.Pool,
     event_id: str,
@@ -171,30 +185,18 @@ async def force_slot_holder(
 ) -> int | None:
     """Set the slot's holder to ``discord_user_id`` (None frees it); admin override only.
 
-    Takes the same row lock as acquire_slot_lock (SELECT ... FOR UPDATE), so a DJ
-    booking racing the override is serialized with it. The row is created when
-    missing. Returns the previous holder (None if the slot was free).
+    Takes the same row lock as acquire_slot_lock (SELECT ... FOR UPDATE of the existing
+    slot row, joined to its event and limited to its slot count), so a DJ booking racing
+    the override is serialized with it. Like acquire_slot_lock it never creates a row:
+    raises ``SlotGoneError`` when the slot no longer exists. Returns the previous holder
+    (None if the slot was free).
     """
     async with pool.acquire() as conn:
         async with conn.transaction():
-            await conn.execute(
-                """
-                INSERT INTO slot_locks (event_id, slot_index)
-                VALUES ($1, $2)
-                ON CONFLICT (event_id, slot_index) DO NOTHING
-                """,
-                event_id,
-                slot_index,
-            )
-            previous = await conn.fetchval(
-                """
-                SELECT discord_user_id FROM slot_locks
-                WHERE event_id = $1 AND slot_index = $2
-                FOR UPDATE
-                """,
-                event_id,
-                slot_index,
-            )
+            row = await _lock_slot_row(conn, event_id, slot_index)
+            if row is None:
+                raise SlotGoneError(f"{event_id}:{slot_index}")
+            previous = row["discord_user_id"]
             if previous != discord_user_id:
                 await conn.execute(
                     """

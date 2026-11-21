@@ -7,8 +7,8 @@ import pytest
 
 from bot.notion.models import EventInfo
 from bot.ui.embeds import ErrorCode
-from tests.notion.factories import make_event
 from tests.fake_events import fake_events
+from tests.notion.factories import make_event
 
 
 def make_ctx(db: object = None, log: object = None) -> MagicMock:
@@ -95,7 +95,7 @@ def _make_pages(*ids: str) -> list[EventInfo]:
     ]
 
 
-def _make_cog_with_bot(guilds: list = None) -> "EventsCog":
+def _make_cog_with_bot(guilds: list = None) -> "bot.cogs.events.EventsCog":  # noqa: F821
     """Create EventsCog with a mock bot attribute for testing guild access."""
     from bot.cogs.events import EventsCog
 

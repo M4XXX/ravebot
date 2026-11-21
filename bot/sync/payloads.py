@@ -9,8 +9,11 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
-from bot.notion.client import _url_prop
+from bot.db.events import EventDraft
 from bot.notion.models import (
+    PROP_DJ_ALT_LINK,
+    PROP_DJ_LINK,
+    PROP_DJ_VRCHAT_NAME,
     PROP_SLOT_DJ,
     PROP_SLOT_EVENT,
     PROP_SLOT_NUMBER,
@@ -20,10 +23,15 @@ from bot.notion.models import (
     _rich,
     parse_dj,
     parse_event,
+    url_prop,
 )
 
 __all__ = [
+    "PROP_DJ_ALT_LINK",
+    "PROP_DJ_LINK",
+    "PROP_DJ_VRCHAT_NAME",
     "dj_payload",
+    "event_draft",
     "event_payload",
     "notion_dj_payload",
     "notion_event_payload",
@@ -32,9 +40,6 @@ __all__ = [
     "slot_payload",
 ]
 
-PROP_DJ_VRCHAT_NAME = "VRChat name"
-PROP_DJ_LINK = "Link"
-PROP_DJ_ALT_LINK = "Alternative link"
 
 
 def _iso(value: Any) -> str:
@@ -72,8 +77,8 @@ def dj_payload(row: Mapping[str, Any]) -> dict[str, Any]:
         "discord_id": row["discord_user_id"],
         "dj_name": row["dj_name"],
         "vrchat_name": row["vrchat_name"] or None,
-        "link": _url_prop(row["stream_url_primary"])["url"],
-        "alt_link": _url_prop(row["stream_url_backup"])["url"],
+        "link": url_prop(row["stream_url_primary"])["url"],
+        "alt_link": url_prop(row["stream_url_backup"])["url"],
     }
 
 
@@ -133,3 +138,19 @@ def notion_dj_payload(page: dict[str, Any]) -> dict[str, Any] | None:
 def payload_hash(payload: dict[str, Any]) -> str:
     text = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(text.encode()).hexdigest()
+
+
+def event_draft(payload: Mapping[str, Any]) -> EventDraft:
+    """The event payload as an EventDraft. KeyError, TypeError or ValueError when a
+    value cannot be read (a hand-edited Notion page)."""
+    hour, minute = str(payload["start"]).split(":")
+    return EventDraft(
+        event_id=str(payload["event_id"] or ""),
+        date=datetime.date.fromisoformat(str(payload["date"])),
+        start=datetime.time(int(hour), int(minute)),
+        slot_minutes=payload["slot_minutes"],
+        slot_count=payload["slot_count"],
+        status=payload.get("status") or None,
+        genre=payload.get("genre") or None,
+        notes=payload.get("notes") or None,
+    )

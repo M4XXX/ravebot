@@ -58,13 +58,11 @@ def patched(monkeypatch):  # noqa: ANN001, ANN201
         export=AsyncMock(return_value="/backups/x.json.gz"),
         imp=AsyncMock(return_value=ImportResult(True, 2, 5, 3, [], ["a note"])),
         get_value=AsyncMock(return_value="1"),
-        set_value=AsyncMock(),
         download=AsyncMock(return_value=b"png"),
     )
     monkeypatch.setattr(rebuild, "write_safety_export", mocks.export)
     monkeypatch.setattr(rebuild, "import_from_notion", mocks.imp)
     monkeypatch.setattr(rebuild, "get_value", mocks.get_value)
-    monkeypatch.setattr(rebuild, "set_value", mocks.set_value)
     monkeypatch.setattr(rebuild, "download_logo_file", mocks.download)
     return mocks
 
@@ -150,9 +148,8 @@ async def test_rebuild_runs_export_then_replace_import_in_maintenance(patched) -
     patched.export.assert_awaited_once_with(ctx.db, "before-rebuild")
     assert seen == [("replace", texts.MAINTENANCE, True)]
     assert ctx.maintenance is None
-    patched.set_value.assert_awaited_once_with(
-        ctx.db, 0, rebuild.PG_TRUTH_IMPORTED_KEY, "1"
-    )
+    # The upgrade-done mark is written inside the import transaction
+    # (tests/pg/test_rebuild.py checks it against real Postgres).
     ctx.log_service.log_notice.assert_awaited_once()
     assert ctx.log_service.log_notice.await_args.args[0] == texts.LOG_REBUILD_DONE_TITLE
 
@@ -162,7 +159,6 @@ async def test_rebuild_failure_posts_problems_and_changes_nothing_else(patched) 
     ctx = _ctx()
     result = await rebuild.rebuild_from_notion(ctx)
     assert not result.ok and result.message == texts.REBUILD_FAILED
-    patched.set_value.assert_not_awaited()
     patched.download.assert_not_awaited()
     assert ctx.maintenance is None
     title, what, _todo = ctx.log_service.log_attention.await_args.args
@@ -263,7 +259,7 @@ async def test_failed_startup_rebuild_pauses_like_a_failed_upgrade(patched, monk
     assert await rebuild.run_startup_rebuild_if_needed(ctx) is True
     assert ctx.maintenance == texts.MAINTENANCE
     assert "Two events" in ctx.sync_problem
-    patched.set_value.assert_not_awaited()  # the next start retries
+    # The import rolled back, so the upgrade-done mark is not set: the next start retries.
 
 
 async def test_startup_rebuild_not_needed(patched, monkeypatch) -> None:  # noqa: ANN001

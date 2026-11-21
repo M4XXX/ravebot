@@ -35,6 +35,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A hand-made slot page that names another DJ than the bot's booking is still overwritten, but now with a warning.
 - A backup file that unpacks to more than 1 GB is refused.
 - The missing-databases notice no longer claims that booking is paused when it is not.
+- **Retry the import from Notion** is shown on the admin page also while the Notion databases cannot be reached, and a network error during the retry gives a message instead of an error page.
+- **Create new databases** warns in bold, while the one-time import from Notion has not run, that the bot would then start with no events and no bookings.
+- A rebuild from Notion right after a backup restore no longer lets the next sync trash pages the rebuild skipped, and its "import done" mark is written in the same transaction as the data.
+- The container makes a mapped backup folder writable for its user at every start (Unraid creates new folders as root), so restores, rebuilds and the one-time import no longer fail on the safety backup.
+- An admin booking for a slot that no longer exists is refused instead of creating a hidden slot.
+- A failed Notion write no longer delays a newer change of the same record; the admin page shows the newest Notion write error.
+- Changes made just before a shutdown reach the Notion queue before the database closes.
+- Deleting a DJ locks their bookings in a fixed order, so it cannot deadlock with an event edit; restores, rebuilds and **Keep Notion** pause the Notion writer while they change the data.
 
 - Canceled events no longer get outreach invites, reminders or a fully-booked entry, and the
   Notion sync no longer books DJs back into them.

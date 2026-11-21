@@ -59,7 +59,7 @@ class Store:
         if self.queue.get((entity, key)) and self.queue[(entity, key)].enqueued_at == enqueued_at:
             del self.queue[(entity, key)]
 
-    async def failed(self, db, entity, key, error):  # noqa: ANN001, ANN202
+    async def failed(self, db, entity, key, error, enqueued_at=None):  # noqa: ANN001, ANN202
         self.failures[(entity, key)] = error
 
     async def enqueue(self, db, entity, key, op="upsert", notion_page_id=None):  # noqa: ANN001, ANN202
@@ -455,3 +455,24 @@ async def test_conflict_opened_while_waiting_for_the_gate_stalls_the_write(
     assert await task == 0
     assert notion.calls == []
     assert ("event", "u1") in store.queue
+
+
+async def test_stop_waits_for_queued_changes(store: Store) -> None:
+    """A change queued just before shutdown reaches the outbox before the pool closes."""
+    import asyncio
+
+    from bot.sync import worker as worker_mod
+
+    done = asyncio.Event()
+
+    async def slow_enqueue() -> None:
+        await asyncio.sleep(0.05)
+        done.set()
+
+    task = asyncio.create_task(slow_enqueue())
+    worker_mod._pending.add(task)
+    task.add_done_callback(worker_mod._pending.discard)
+    w = worker_mod.MirrorWorker.__new__(worker_mod.MirrorWorker)
+    w._task = None
+    await w.stop()
+    assert done.is_set()

@@ -72,7 +72,8 @@ async def test_booking_a_slot_that_no_longer_exists_is_refused(pool) -> None:
 
 
 async def test_admin_force_returns_previous_holder(pool) -> None:
-    assert await bookings.force_slot_holder(pool, "e1", 0, A) is None  # row created
+    await _event(pool)
+    assert await bookings.force_slot_holder(pool, "e1", 0, A) is None
     assert await bookings.get_slot_lock_holder(pool, "e1", 0) == A
     assert await bookings.force_slot_holder(pool, "e1", 0, B) == A
     assert await bookings.get_slot_lock_holder(pool, "e1", 0) == B
@@ -81,11 +82,22 @@ async def test_admin_force_returns_previous_holder(pool) -> None:
         "SELECT discord_user_id, booked_at FROM slot_locks WHERE event_id = 'e1'"
     )
     assert (row["discord_user_id"], row["booked_at"]) == (None, None)
-    await _event(pool)
     assert await bookings.acquire_slot_lock(pool, "e1", 0, A)
 
 
+async def test_admin_force_refuses_a_slot_that_no_longer_exists(pool) -> None:
+    with pytest.raises(bookings.SlotGoneError):
+        await bookings.force_slot_holder(pool, "gone", 0, A)
+    await _event(pool, "e1", slot_count=2)
+    await pool.execute("UPDATE events SET slot_count = 1 WHERE uid = 'e1'")
+    with pytest.raises(bookings.SlotGoneError):
+        await bookings.force_slot_holder(pool, "e1", 1, A)
+    assert await pool.fetchval("SELECT count(*) FROM slot_locks WHERE event_id = 'gone'") == 0
+
+
 async def test_dj_slot_locks_are_ordered(pool) -> None:
+    await _event(pool, "e1")
+    await _event(pool, "e2")
     for event, index in (("e2", 1), ("e1", 0), ("e1", 2)):
         await bookings.force_slot_holder(pool, event, index, A)
     rows = await bookings.get_dj_slot_locks(pool, A)
@@ -124,6 +136,7 @@ async def test_guest_ids_count_down_and_are_never_reused(pool) -> None:
 
 async def test_delete_dj_removes_what_the_bot_keeps_about_them(pool) -> None:
     await _dj(pool, A, "Nova")
+    await _event(pool, "past")
     await bookings.force_slot_holder(pool, "past", 0, A)
     await reminders.record_reminder_sent(pool, "past", A, 0)
     await outreach.upsert_sequence(pool, "past")

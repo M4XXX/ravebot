@@ -4,8 +4,9 @@ Tests mock the asyncpg pool to verify correct SQL is issued without a live DB.
 
 [Source: story 5-1-gap-detection-outreach-trigger.md#Task 7]
 """
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from bot.db.outreach import (
     get_contacted_discord_ids,
@@ -18,7 +19,6 @@ from bot.db.outreach import (
     update_outreach_contact_status,
     upsert_sequence,
 )
-
 
 # ---------------------------------------------------------------------------
 # get_sequence
@@ -40,7 +40,9 @@ async def test_get_sequence_returns_none_when_missing():
 @pytest.mark.asyncio
 async def test_get_sequence_returns_dict_when_found():
     pool = MagicMock()
-    fake_row = {"event_id": "evt-001", "status": "active", "last_contact_at": None, "created_at": None}
+    fake_row = {
+        "event_id": "evt-001", "status": "active", "last_contact_at": None, "created_at": None,
+    }
     pool.fetchrow = AsyncMock(return_value=fake_row)
     result = await get_sequence(pool, "evt-001")
     assert result is not None

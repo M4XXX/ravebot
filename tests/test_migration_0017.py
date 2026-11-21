@@ -7,7 +7,8 @@ _PATH = pathlib.Path(__file__).resolve().parents[1] / "migrations" / "versions"
 
 
 def _load():
-    spec = importlib.util.spec_from_file_location("m0017", _PATH / "0017_postgres_source_of_truth.py")
+    path = _PATH / "0017_postgres_source_of_truth.py"
+    spec = importlib.util.spec_from_file_location("m0017", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module

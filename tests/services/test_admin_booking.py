@@ -93,6 +93,22 @@ def _patch_db(monkeypatch, *, holder=None, released=True, registered=True):
 
 
 @pytest.mark.asyncio
+async def test_book_slot_override_refuses_removed_slot(monkeypatch):
+    """A slot removed after the lookup is refused: nothing queued, nobody DMed."""
+    from bot.db.bookings import SlotGoneError
+    from bot.ui import texts
+
+    svc = _make_service()
+    force, _release, queued = _patch_db(monkeypatch)
+    force.side_effect = SlotGoneError("e:1")
+    success, msg = await svc.book_slot_override(
+        admin_name="Admin", dj_id=42, dj_name="DJ Scope", event_name=EVENT_NAME, slot_num=2,
+    )
+    assert success is False and msg == texts.SLOT_NO_LONGER_EXISTS_ADMIN
+    queued.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_book_slot_override_success(monkeypatch):
     """Happy path: event found by event_id, holder set in Postgres, queued, DM sent, logged."""
     svc = _make_service()

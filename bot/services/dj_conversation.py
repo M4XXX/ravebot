@@ -40,7 +40,7 @@ from bot.services.dj_validation import (
     stream_link_ok,
 )
 from bot.services.logo import LogoError, logo_from_message
-from bot.services.roles import get_invites_role
+from bot.services.roles import set_invites_role
 from bot.ui import texts
 
 if TYPE_CHECKING:
@@ -590,13 +590,10 @@ class DjConversationService:
             if member is None:
                 logger.warning("Member %s not found; invites role unchanged", user_id)
                 return
-            role = await get_invites_role(db, guild)
-            if role is None:
-                logger.warning("Invites role not found in guild %s", guild.id)
-                return
-            if add:
-                await member.add_roles(role, reason="DJ joined the Active DJ Booking Group")
-            else:
-                await member.remove_roles(role, reason="DJ left the Active DJ Booking Group")
+            reason = (
+                "DJ joined the Active DJ Booking Group" if add
+                else "DJ left the Active DJ Booking Group"
+            )
+            await set_invites_role(db, guild, user_id, add=add, reason=reason)
         except Exception:
             logger.warning("Could not change the invites role of %s", user_id, exc_info=True)

@@ -17,8 +17,13 @@ def test_unraid_template_maps_the_backup_folder() -> None:
 def test_image_has_a_writable_backup_folder() -> None:
     dockerfile = (ROOT / "Dockerfile").read_text()
     assert f"mkdir -p {DEFAULT_BACKUP_DIR}" in dockerfile
-    assert f"chown ravebot {DEFAULT_BACKUP_DIR}" in dockerfile
+    assert f"chown ravebot:ravebot {DEFAULT_BACKUP_DIR}" in dockerfile
     assert f'VOLUME ["{DEFAULT_BACKUP_DIR}"]' in dockerfile
+    # A mapped host folder created as root is handed to ravebot before the bot starts
+    assert 'ENTRYPOINT ["ravebot-entrypoint"]' in dockerfile
+    entrypoint = (ROOT / "docker" / "entrypoint.sh").read_text()
+    assert 'chown ravebot:ravebot "$dir"' in entrypoint
+    assert "setpriv --reuid=ravebot --regid=ravebot --init-groups" in entrypoint
 
 
 def test_docs_name_backup_dir_and_the_volume() -> None:

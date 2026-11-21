@@ -257,6 +257,13 @@ def test_confirm_rebuild_and_import_forms() -> None:
 def test_recreate_confirm_warns_about_upgrade_import() -> None:
     page = render_confirm_recreate("gone", "tok")
     assert "marks the one-time import from Notion as done for good" in page
+    assert "zero events" not in page
+
+
+def test_recreate_confirm_strong_warning_while_import_pending() -> None:
+    page = render_confirm_recreate("gone", "tok", import_pending=True)
+    assert "has not run yet" in page and "zero events" in page
+    assert "retry the import instead" in page and "DJ outreach" in page
 
 
 def test_new_pages_have_no_em_dash_or_script() -> None:

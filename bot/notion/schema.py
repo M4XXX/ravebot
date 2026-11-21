@@ -19,6 +19,7 @@ import asyncpg
 
 from bot.db.config import get_value, set_value
 from bot.notion.api import NotionApi, NotionWriteError
+from bot.notion.models import is_trashed
 from bot.ui import texts
 
 logger = logging.getLogger(__name__)
@@ -240,10 +241,6 @@ async def _reconcile(
     return ds
 
 
-def _is_trashed(ds: dict[str, Any]) -> bool:
-    return bool(ds.get("in_trash") or ds.get("is_archived") or ds.get("archived"))
-
-
 async def _create(
     api: NotionApi,
     db: asyncpg.Pool,
@@ -288,7 +285,7 @@ async def _check(api: NotionApi, ds_id: str, label: str) -> str | None:
         if exc.status_code != 404:
             raise
         return "returned 404"
-    return "is trashed" if _is_trashed(ds) else None
+    return "is trashed" if is_trashed(ds) else None
 
 
 async def _child_databases(api: NotionApi, parent_page_id: str) -> list[dict[str, Any]]:
@@ -335,7 +332,7 @@ async def _adopt(
     titles = {title: name for name, title in labels.items()}
     for block in await _child_databases(api, parent_page_id):
         title = ((block.get("child_database") or {}).get("title") or "").strip()
-        if title in titles and not _is_trashed(block):
+        if title in titles and not is_trashed(block):
             found.setdefault(titles[title], []).append(block["id"])
     adopted: dict[str, str | None] = {n: None for n in labels}
     duplicates = [labels[n] for n, ids in found.items() if len(ids) > 1]
@@ -357,7 +354,7 @@ async def _adopt(
                 raise
             continue
         sources = database.get("data_sources") or []
-        if _is_trashed(database) or not sources:
+        if is_trashed(database) or not sources:
             continue
         ds_id = sources[0]["id"]
         if await _check(api, ds_id, labels[name]) is None:
@@ -400,6 +397,9 @@ async def ensure_schema(
         # Nothing stored (first start, or a lost Postgres): adopt the databases already
         # under the parent page before creating any (R18).
         stored = await _adopt(api, db, guild_id, parent_page_id, labels)
+        found = [labels[n] for n, ds_id in stored.items() if ds_id is not None]
+        if found:
+            logger.info("Found existing Notion databases: %s", ", ".join(found))
 
     # If any stored database is gone, abandon the whole set and start a fresh one.
     problems = []

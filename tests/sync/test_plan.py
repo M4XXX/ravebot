@@ -13,7 +13,9 @@ def mrow(key, payload, page="pg1"):
 
 def run(pg, notion, mirror, open_keys=frozenset(), unmatched=(), pages=None):
     pages = pages if pages is not None else {k: f"page-{k}" for k in notion}
-    return plan("dj", pg, Side(notion, pages), mirror, set(open_keys), unmatched_notion=list(unmatched))
+    return plan(
+        "dj", pg, Side(notion, pages), mirror, set(open_keys), unmatched_notion=list(unmatched)
+    )
 
 
 def kinds(changes):

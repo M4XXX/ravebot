@@ -45,6 +45,7 @@ STRAY_PREFIX = "stray:"
 
 # changed() tasks, kept so they are not garbage collected before they finish.
 _pending: set[asyncio.Task[None]] = set()
+PENDING_FLUSH_SECONDS = 5.0
 
 
 class _NotReady(Exception):
@@ -102,6 +103,12 @@ class MirrorWorker:
             self._task = asyncio.create_task(self._run(), name="notion-mirror-worker")
 
     async def stop(self) -> None:
+        """Stop the loop. Queued ``changed()`` calls get a few seconds to reach the
+        outbox first, so a change made just before shutdown is written on the next start
+        instead of waiting for the poll to repair it."""
+        pending = list(_pending)
+        if pending:
+            await asyncio.wait(pending, timeout=PENDING_FLUSH_SECONDS)
         task, self._task = self._task, None
         if task is None:
             return
@@ -165,7 +172,11 @@ class MirrorWorker:
                 "Notion mirror of %s %s failed", row.entity, row.entity_key, exc_info=True
             )
             await outbox.failed(
-                self.db, row.entity, row.entity_key, (str(exc) or repr(exc))[:_ERROR_LIMIT]
+                self.db,
+                row.entity,
+                row.entity_key,
+                (str(exc) or repr(exc))[:_ERROR_LIMIT],
+                row.enqueued_at,
             )
             return False
         await outbox.done(self.db, row.entity, row.entity_key, row.enqueued_at)

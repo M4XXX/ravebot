@@ -13,8 +13,8 @@ from bot.notion.api import NotionApi
 from bot.services.lineup import LineupService
 from bot.services.outreach import OutreachService
 from bot.services.reminders import RemindersService
-from tests.notion.factories import make_event, make_slot
 from tests.fake_events import fake_events
+from tests.notion.factories import make_event, make_slot
 
 DM_TODO = (
     "Tell {name} yourself. They need to allow DMs from server members "
@@ -90,7 +90,8 @@ async def reminder_blocked(log: Recorder) -> None:
     now = datetime.datetime(2026, 5, 21, 2, 0, tzinfo=datetime.UTC)
     with patch("bot.services.reminders.get_booked_djs_for_event",
                new=AsyncMock(return_value=[booked])), \
-         patch("bot.services.reminders.has_reminder_been_sent", new=AsyncMock(return_value=False)), \
+         patch("bot.services.reminders.has_reminder_been_sent",
+               new=AsyncMock(return_value=False)), \
          patch("bot.services.reminders.record_reminder_sent", new=AsyncMock()):
         await svc.send_reminders(guild_id=1, ctx=MagicMock(), _now=now)
 

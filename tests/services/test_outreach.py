@@ -13,18 +13,20 @@ All DB and Notion interactions are mocked. Tests verify:
 [Source: story 5-1-gap-detection-outreach-trigger.md#Task 8]
 """
 import datetime
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from bot.notion.models import EventInfo
 from bot.services.outreach import OutreachService
-from tests.notion.factories import make_event, make_slot
 from tests.fake_events import fake_events
-
+from tests.notion.factories import make_event, make_slot
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+OUT = "bot.services.outreach."  # patch target prefix
 
 
 def _make_event(
@@ -124,7 +126,7 @@ async def test_run_gap_detection_marks_complete_when_all_slots_filled():
 async def test_run_gap_detection_skips_event_within_cooldown():
     event = _make_event(days_ahead=5, slots=6, djs_booked=2)
     svc = _make_service(list_events_result=[event])
-    recent = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=3)
+    recent = datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=3)
     seq = _active_seq(last_contact_at=recent)
     with patch("bot.services.outreach.get_value", new=AsyncMock(return_value="12")), \
          patch("bot.services.outreach.upsert_sequence", new=AsyncMock()), \
@@ -138,7 +140,7 @@ async def test_run_gap_detection_skips_event_within_cooldown():
 async def test_run_gap_detection_returns_event_past_cooldown():
     event = _make_event(days_ahead=5, slots=6, djs_booked=2)
     svc = _make_service(list_events_result=[event])
-    old_contact = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=15)
+    old_contact = datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=15)
     seq = _active_seq(last_contact_at=old_contact)
     with patch("bot.services.outreach.get_value", new=AsyncMock(return_value="12")), \
          patch("bot.services.outreach.upsert_sequence", new=AsyncMock()), \
@@ -274,7 +276,7 @@ async def test_contact_next_dj_handles_forbidden_dm():
     with patch("bot.services.outreach.get_active_booking_djs", new=AsyncMock(return_value=[dj])), \
          patch("bot.services.outreach.get_contacted_discord_ids", new=AsyncMock(return_value=[])), \
          patch("bot.services.outreach.record_outreach_contact", new=AsyncMock()), \
-         patch("bot.services.outreach.update_outreach_contact_status", new=AsyncMock()) as mock_status:
+         patch(OUT + "update_outreach_contact_status", new=AsyncMock()) as mock_status:
         result = await svc.contact_next_dj(event, guild_id=1, ctx=ctx)
     assert result is True
     mock_status.assert_awaited()
@@ -294,7 +296,7 @@ async def test_handle_exhaustion_marks_exhausted_and_posts_alert():
     svc = _make_service()
     active_seq = {"event_id": "evt-001", "status": "active", "last_contact_at": None}
     with patch("bot.services.outreach.get_sequence", new=AsyncMock(return_value=active_seq)), \
-         patch("bot.services.outreach.get_contacted_discord_ids", new=AsyncMock(return_value=[101, 102])), \
+         patch(OUT + "get_contacted_discord_ids", new=AsyncMock(return_value=[101, 102])), \
          patch("bot.services.outreach.mark_sequence_exhausted", new=AsyncMock()) as mock_exhaust:
         await svc.handle_exhaustion(event, guild_id=1)
     mock_exhaust.assert_awaited_once_with(svc.db, "evt-001")
@@ -350,7 +352,7 @@ async def test_run_gap_detection_reactivates_exhausted_seq_with_new_dj():
          patch("bot.services.outreach.get_sequence", new=AsyncMock(
              side_effect=[exhausted_seq, active_seq]
          )), \
-         patch("bot.services.outreach.get_active_booking_djs", new=AsyncMock(return_value=[new_dj])), \
+         patch(OUT + "get_active_booking_djs", new=AsyncMock(return_value=[new_dj])), \
          patch("bot.services.outreach.get_contacted_discord_ids", new=AsyncMock(return_value=[])), \
          patch("bot.services.outreach.reactivate_sequence", new=AsyncMock()) as mock_reactivate:
         result = await svc.run_gap_detection(guild_id=1)
@@ -370,7 +372,7 @@ async def test_contact_next_dj_marks_unreachable_if_user_not_found():
     with patch("bot.services.outreach.get_active_booking_djs", new=AsyncMock(return_value=[dj])), \
          patch("bot.services.outreach.get_contacted_discord_ids", new=AsyncMock(return_value=[])), \
          patch("bot.services.outreach.record_outreach_contact", new=AsyncMock()), \
-         patch("bot.services.outreach.update_outreach_contact_status", new=AsyncMock()) as mock_status:
+         patch(OUT + "update_outreach_contact_status", new=AsyncMock()) as mock_status:
         result = await svc.contact_next_dj(event, guild_id=1, ctx=ctx)
     assert result is True
     mock_status.assert_awaited()
@@ -453,7 +455,7 @@ async def test_contact_next_dj_skips_dj_with_unanswered_invite():
     djs = [_make_dj(101, "Busy"), _make_dj(102, "Free")]
     with patch("bot.services.outreach.get_active_booking_djs", new=AsyncMock(return_value=djs)), \
          patch("bot.services.outreach.get_contacted_discord_ids", new=AsyncMock(return_value=[])), \
-         patch("bot.services.outreach.get_waiting_discord_ids", new=AsyncMock(return_value=[101])), \
+         patch(OUT + "get_waiting_discord_ids", new=AsyncMock(return_value=[101])), \
          patch("bot.services.outreach.record_outreach_contact", new=AsyncMock()) as record, \
          patch("bot.services.outreach.update_last_contact_at", new=AsyncMock()), \
          patch("bot.services.outreach.update_dj_last_contacted_at", new=AsyncMock()):
@@ -467,9 +469,9 @@ async def test_contact_next_dj_waits_when_only_waiting_djs_remain():
     svc = _make_service()
     user = MagicMock(send=AsyncMock())
     svc.bot.get_user = MagicMock(return_value=user)
-    with patch("bot.services.outreach.get_active_booking_djs", new=AsyncMock(return_value=[_make_dj(101)])), \
+    with patch(OUT + "get_active_booking_djs", new=AsyncMock(return_value=[_make_dj(101)])), \
          patch("bot.services.outreach.get_contacted_discord_ids", new=AsyncMock(return_value=[])), \
-         patch("bot.services.outreach.get_waiting_discord_ids", new=AsyncMock(return_value=[101])), \
+         patch(OUT + "get_waiting_discord_ids", new=AsyncMock(return_value=[101])), \
          patch("bot.services.outreach.record_outreach_contact", new=AsyncMock()) as record:
         # True: not exhausted, the next cycle tries again
         assert await svc.contact_next_dj(event, guild_id=1, ctx=MagicMock()) is True

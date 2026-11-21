@@ -158,7 +158,7 @@ def sync(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
 @pytest.fixture
 def roles(monkeypatch: pytest.MonkeyPatch, role: MagicMock) -> AsyncMock:
     mock = AsyncMock(return_value=role)
-    monkeypatch.setattr(svc_mod, "get_invites_role", mock)
+    monkeypatch.setattr("bot.services.roles.get_invites_role", mock)
     return mock
 
 

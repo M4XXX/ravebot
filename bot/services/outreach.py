@@ -20,8 +20,8 @@ from bot.db.djs import get_active_booking_djs
 from bot.db.djs import update_last_contacted_at as update_dj_last_contacted_at
 from bot.db.outreach import (
     get_contacted_discord_ids,
-    get_waiting_discord_ids,
     get_sequence,
+    get_waiting_discord_ids,
     mark_sequence_complete,
     mark_sequence_exhausted,
     reactivate_sequence,
@@ -128,7 +128,7 @@ class OutreachService:
             logger.warning("OutreachService.run_gap_detection: list_events failed: %s", exc)
             return []
 
-        now_utc = datetime.datetime.now(datetime.timezone.utc)
+        now_utc = datetime.datetime.now(datetime.UTC)
         window_end = now_utc + datetime.timedelta(days=outreach_days)
         ready: list[EventInfo] = []
 
@@ -240,7 +240,7 @@ class OutreachService:
             last_contact = seq.get("last_contact_at")
             if last_contact is not None:
                 if last_contact.tzinfo is None:
-                    last_contact = last_contact.replace(tzinfo=datetime.timezone.utc)
+                    last_contact = last_contact.replace(tzinfo=datetime.UTC)
                 elapsed = now_utc - last_contact
                 if elapsed < datetime.timedelta(hours=cooldown_hours):
                     continue  # within cooldown — skip this cycle

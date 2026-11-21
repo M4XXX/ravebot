@@ -52,15 +52,18 @@ COPY --from=builder /app/alembic.ini /app/LICENSE /app/NOTICE /app/COMMERCIAL-LI
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1
 
-# Non-root user for security (uid 1000: a mapped backup folder must be writable by it)
-RUN useradd --uid 1000 --no-create-home --shell /bin/false ravebot
+# The bot runs as the non-root user ravebot (uid 1000). The entrypoint starts as root
+# only to make a mapped backup folder writable for it, then drops privileges (setpriv).
+RUN useradd --uid 1000 --user-group --no-create-home --shell /bin/false ravebot
 # Safety exports before a restore, rebuild or upgrade import (BACKUP_DIR). Map a host
 # folder or a named volume here so they survive a container recreate.
-RUN mkdir -p /data/backups && chown ravebot /data/backups && chmod 700 /data/backups
+RUN mkdir -p /data/backups && chown ravebot:ravebot /data/backups && chmod 700 /data/backups
 VOLUME ["/data/backups"]
-USER ravebot
+COPY docker/entrypoint.sh /usr/local/bin/ravebot-entrypoint
+RUN chmod 755 /usr/local/bin/ravebot-entrypoint
 
 # Admin page (default port 8080; change with ADMIN_PAGE_PORT and map it in the container settings)
 EXPOSE 8080
 
+ENTRYPOINT ["ravebot-entrypoint"]
 CMD ["python", "-m", "bot.main"]

@@ -48,7 +48,7 @@ def _natural_key(entity: str, payload: dict[str, Any]) -> Any:
     return None
 
 
-def _strip(payload: dict[str, Any]) -> dict[str, Any]:
+def strip_meta(payload: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in payload.items() if not k.startswith("_")}
 
 
@@ -141,7 +141,7 @@ def plan(
         counts[nk] = counts.get(nk, 0) + 1
     for u in unmatched_notion:
         page_id = u.get("_page_id")
-        payload = _strip(u)
+        payload = strip_meta(u)
         if _adopts(u):
             bot_id = u["_bot_id"]
             add("agree", bot_id, pg[bot_id], payload, page_id)

@@ -152,7 +152,7 @@ class Store:
     async def done(self, db, entity, key, enqueued_at):  # noqa: ANN001, ANN202
         self.queue.pop((entity, key), None)
 
-    async def failed(self, db, entity, key, error):  # noqa: ANN001, ANN202
+    async def failed(self, db, entity, key, error, enqueued_at=None):  # noqa: ANN001, ANN202
         raise AssertionError(f"{entity} {key} failed: {error}")
 
 
@@ -479,6 +479,18 @@ async def test_exclusive_waits_for_running_cycle(store, monkeypatch) -> None:
     monkeypatch.setattr(cycle_mod, "_load_pg", AsyncMock(return_value={}))
     async with cycle.exclusive():  # resync_all must not take the lock again
         assert await asyncio.wait_for(cycle.resync_all(), 1) == 0
+
+
+async def test_exclusive_also_holds_the_worker_gate(store) -> None:
+    """A restore or rebuild keeps the mirror worker from writing the old data."""
+    import asyncio
+
+    cycle, ctx = make_cycle()
+    ctx.mirror = MagicMock()
+    ctx.mirror.gate = asyncio.Lock()
+    async with cycle.exclusive():
+        assert ctx.mirror.gate.locked()
+    assert not ctx.mirror.gate.locked()
 
 
 async def test_worker_write_during_read_waits_for_cycle(store, monkeypatch) -> None:

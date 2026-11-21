@@ -22,7 +22,7 @@ import disnake
 from bot.db import events as db_events
 from bot.db.djs import get_dj_by_discord_id, update_active_booking
 from bot.notion.models import FINISHED_STATUSES
-from bot.services.roles import get_dj_role, get_invites_role
+from bot.services.roles import get_dj_role, set_invites_role
 from bot.ui import texts
 from bot.ui.dj_profile import respond, start_onboarding_dm
 from bot.ui.embeds import ErrorCode
@@ -39,6 +39,16 @@ FLOW_VIEW_TIMEOUT = 15 * 60  # the same as the FlowLock time limit (bot.context)
 # 15 minutes after the interaction. The expiry edit must land before that.
 INTERACTION_TOKEN_TTL = 15 * 60
 EXPIRY_EDIT_MARGIN = 30
+
+
+async def _set_invites_role_anywhere(
+    db: Any, inter: disnake.MessageInteraction, *, add: bool, reason: str
+) -> None:
+    """Change the invites role on the first server the user is a member of."""
+    for guild in inter.client.guilds:
+        if guild.get_member(inter.author.id) is not None:
+            await set_invites_role(db, guild, inter.author.id, add=add, reason=reason)
+            return
 
 
 class FlowView(GatedView):
@@ -70,6 +80,22 @@ class FlowView(GatedView):
 
     def _cid(self, base: str) -> str:
         return f"{base}:{self._nonce}"
+
+    def _add_never_mind(
+        self,
+        custom_id: str,
+        row: int,
+        callback: Callable[[disnake.MessageInteraction], Awaitable[None]],
+    ) -> None:
+        """Add the grey "Never mind" button that ends the flow."""
+        button = disnake.ui.Button(
+            label=texts.BTN_NEVER_MIND,
+            style=disnake.ButtonStyle.secondary,
+            custom_id=self._cid(custom_id),
+            row=row,
+        )
+        button.callback = callback
+        self.add_item(button)
 
     def track(
         self,
@@ -421,23 +447,10 @@ class FallbackMenuView(GatedView):
             )
             return
 
-        # Assign Active Booking role (best-effort — failure does not block confirmation)
-        for guild in inter.client.guilds:
-            member = guild.get_member(inter.author.id)
-            if member is not None:
-                role = await get_invites_role(self.ctx.db, guild)
-                if role is not None:
-                    try:
-                        await member.add_roles(
-                            role, reason="DJ opted back in via FallbackMenuView"
-                        )
-                    except (disnake.Forbidden, disnake.HTTPException) as exc:
-                        logger.warning(
-                            "Could not assign Active Booking role to user %s: %s",
-                            inter.author.id,
-                            exc,
-                        )
-                break
+        # Active Booking role, best effort: a failure does not block the confirmation
+        await _set_invites_role_anywhere(
+            self.ctx.db, inter, add=True, reason="DJ opted back in via FallbackMenuView"
+        )
 
         go_active_text = texts.INVITES_ON_DONE
         await inter.response.send_message(go_active_text)
@@ -473,23 +486,10 @@ class FallbackMenuView(GatedView):
             await inter.response.send_message(texts.NO_PROFILE, ephemeral=True)
             return
 
-        # Remove Active Booking role (best-effort — failure does not block confirmation)
-        for guild in inter.client.guilds:
-            member = guild.get_member(inter.author.id)
-            if member is not None:
-                role = await get_invites_role(self.ctx.db, guild)
-                if role is not None:
-                    try:
-                        await member.remove_roles(
-                            role, reason="DJ opted out via FallbackMenuView"
-                        )
-                    except (disnake.Forbidden, disnake.HTTPException) as exc:
-                        logger.warning(
-                            "Could not remove Active Booking role from user %s: %s",
-                            inter.author.id,
-                            exc,
-                        )
-                break
+        # Active Booking role, best effort: a failure does not block the confirmation
+        await _set_invites_role_anywhere(
+            self.ctx.db, inter, add=False, reason="DJ opted out via FallbackMenuView"
+        )
 
         go_inactive_text = texts.INVITES_OFF_DONE
         await inter.response.send_message(go_inactive_text)
@@ -893,14 +893,7 @@ class EventSelectionView(FlowView):
             btn.callback = _cb
             self.add_item(btn)
 
-        never_mind = disnake.ui.Button(
-            label=texts.BTN_NEVER_MIND,
-            style=disnake.ButtonStyle.secondary,
-            custom_id=self._cid("event_select:cancel"),
-            row=1,
-        )
-        never_mind.callback = self._handle_cancel
-        self.add_item(never_mind)
+        self._add_never_mind("event_select:cancel", 1, self._handle_cancel)
 
 
     async def _handle_cancel(self, inter: disnake.MessageInteraction) -> None:
@@ -999,14 +992,7 @@ class SlotSelectionView(FlowView):
             btn.callback = _cb
             self.add_item(btn)
 
-        never_mind = disnake.ui.Button(
-            label=texts.BTN_NEVER_MIND,
-            style=disnake.ButtonStyle.secondary,
-            custom_id=self._cid("slot_select:cancel"),
-            row=4,
-        )
-        never_mind.callback = self._handle_cancel
-        self.add_item(never_mind)
+        self._add_never_mind("slot_select:cancel", 4, self._handle_cancel)
 
 
     async def _handle_cancel(self, inter: disnake.MessageInteraction) -> None:
@@ -1055,7 +1041,31 @@ class SlotSelectionView(FlowView):
 # Story 4.2: BookingConfirmView
 # ---------------------------------------------------------------------------
 
-class BookingConfirmView(FlowView):
+
+class _SlotConfirmView(FlowView):
+    """Base of the two-button confirmations for one slot (book it, cancel it)."""
+
+    def __init__(
+        self,
+        ctx: "BotContext",
+        event: "EventInfo",
+        slot_index: int,
+        slot_unix: int,
+        lock: asyncio.Lock,
+        user_id: int,
+    ) -> None:
+        super().__init__(timeout=FLOW_VIEW_TIMEOUT)
+        self._ctx = ctx
+        self._event = event
+        self._slot_index = slot_index
+        self._slot_unix = slot_unix
+        self._bind_flow(lock, user_id)
+        for item in self.children:
+            if isinstance(item, disnake.ui.Button) and item.custom_id:
+                item.custom_id = self._cid(item.custom_id)
+
+
+class BookingConfirmView(_SlotConfirmView):
     """Two-button confirmation view — confirms or cancels a pending slot booking.
 
     Presented alongside BookingConfirmEmbed after DJ selects a slot in
@@ -1080,25 +1090,6 @@ class BookingConfirmView(FlowView):
     [Source: architecture.md#Slot Booking Atomicity: SELECT...FOR UPDATE in Transaction]
     [Source: architecture.md#View Lifecycle Contract]
     """
-
-    def __init__(
-        self,
-        ctx: "BotContext",
-        event: "EventInfo",
-        slot_index: int,
-        slot_unix: int,
-        lock: asyncio.Lock,
-        user_id: int,
-    ) -> None:
-        super().__init__(timeout=FLOW_VIEW_TIMEOUT)
-        self._ctx = ctx
-        self._event = event
-        self._slot_index = slot_index
-        self._slot_unix = slot_unix
-        self._bind_flow(lock, user_id)
-        self.confirm.custom_id = self._cid(self.confirm.custom_id)
-        self.cancel.custom_id = self._cid(self.cancel.custom_id)
-
 
     @disnake.ui.button(
         label=texts.BTN_CONFIRM,
@@ -1365,14 +1356,7 @@ class CancellationView(FlowView):
             btn.callback = _cb
             self.add_item(btn)
 
-        never_mind = disnake.ui.Button(
-            label=texts.BTN_NEVER_MIND,
-            style=disnake.ButtonStyle.secondary,
-            custom_id=self._cid("cancel_select:nevermind"),
-            row=4,
-        )
-        never_mind.callback = self._handle_never_mind
-        self.add_item(never_mind)
+        self._add_never_mind("cancel_select:nevermind", 4, self._handle_never_mind)
 
 
     async def _handle_never_mind(self, inter: disnake.MessageInteraction) -> None:
@@ -1418,7 +1402,7 @@ class CancellationView(FlowView):
 # Story 4.4: CancelConfirmView
 # ---------------------------------------------------------------------------
 
-class CancelConfirmView(FlowView):
+class CancelConfirmView(_SlotConfirmView):
     """Two-button confirmation — confirms or keeps a pending slot cancellation.
 
     Presented alongside the "Are you sure?" message after DJ selects a booking
@@ -1434,25 +1418,6 @@ class CancelConfirmView(FlowView):
     [Source: ux-design-specification.md#UX-DR7, UX-DR13, UX-DR16]
     [Source: architecture.md#View Lifecycle Contract]
     """
-
-    def __init__(
-        self,
-        ctx: "BotContext",
-        event: "EventInfo",
-        slot_index: int,
-        slot_unix: int,
-        lock: asyncio.Lock,
-        user_id: int,
-    ) -> None:
-        super().__init__(timeout=FLOW_VIEW_TIMEOUT)
-        self._ctx = ctx
-        self._event = event
-        self._slot_index = slot_index
-        self._slot_unix = slot_unix
-        self._bind_flow(lock, user_id)
-        self.confirm.custom_id = self._cid(self.confirm.custom_id)
-        self.keep.custom_id = self._cid(self.keep.custom_id)
-
 
     @disnake.ui.button(
         label=texts.BTN_CANCEL_YES,

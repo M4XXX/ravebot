@@ -96,6 +96,22 @@ async def test_rebuild_replaces_data_keeps_admins(pool, tmp_path, monkeypatch) -
     assert ctx.maintenance is None
 
 
+async def test_rebuild_clears_post_restore_flag(pool, tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setenv("BACKUP_DIR", str(tmp_path))
+    monkeypatch.setattr(rebuild, "download_logo_file", AsyncMock(return_value=b"x"))
+    from bot.sync.notion_import import POST_RESTORE_KEY
+
+    await pool.execute(
+        "INSERT INTO config (guild_id, key, value) VALUES (0, $1, '1')", POST_RESTORE_KEY
+    )
+    snap = snapshot(events=[event_page("ev-1", "Rave One", slots=1)], djs=[dj_page("d", "D", A)])
+    assert (await rebuild.rebuild_from_notion(_ctx(pool, snap))).ok
+    flag = await pool.fetchval(
+        "SELECT value FROM config WHERE guild_id = 0 AND key = $1", POST_RESTORE_KEY
+    )
+    assert flag != "1"
+
+
 async def test_rebuild_failure_keeps_old_data(pool, tmp_path, monkeypatch) -> None:  # noqa: ANN001
     monkeypatch.setenv("BACKUP_DIR", str(tmp_path))
     await _seed_old(pool)

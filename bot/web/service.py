@@ -28,7 +28,11 @@ from bot.services.activation import bot_is_active
 from bot.services.admin_registry import AdminRegistry
 from bot.services.dj_admin import parse_discord_id
 from bot.sync.cycle import CONFIG_GUILD_ID, LAST_ERROR_KEY, LAST_RUN_KEY
-from bot.sync.notion_import import post_upgrade_result, run_upgrade_import_if_needed
+from bot.sync.notion_import import (
+    PG_TRUTH_IMPORTED_KEY,
+    post_upgrade_result,
+    run_upgrade_import_if_needed,
+)
 from bot.sync.rebuild import (
     post_rebuild_result,
     rebuild_from_notion,
@@ -156,6 +160,17 @@ class AdminPageService:
     def maintenance(self) -> str | None:
         """The text for refused writes while an import replaces the data, else None."""
         return self._ctx.maintenance
+
+    async def notion_import_pending(self) -> bool:
+        """True while the one-time import from Notion after the update has not run."""
+        db = self._ctx.db
+        if db is None:
+            return False
+        try:
+            return await config_db.get_value(db, CONFIG_GUILD_ID, PG_TRUTH_IMPORTED_KEY) != "1"
+        except Exception:
+            logger.exception("Reading the Notion import mark failed")
+            return True
 
     async def recreate_notion(self) -> ActionResult:
         recover = self._ctx.notion_recover

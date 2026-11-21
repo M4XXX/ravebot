@@ -37,7 +37,7 @@ def fake(monkeypatch: pytest.MonkeyPatch) -> FakeDb:
     ):
         monkeypatch.setattr(svc_mod, name, getattr(db, name))
     monkeypatch.setattr(svc_mod, "sync_dj", AsyncMock(return_value=True))
-    monkeypatch.setattr(svc_mod, "get_invites_role", AsyncMock(return_value=MagicMock()))
+    monkeypatch.setattr("bot.services.roles.get_invites_role", AsyncMock(return_value=MagicMock()))
     return db
 
 

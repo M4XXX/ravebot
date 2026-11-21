@@ -633,3 +633,15 @@ async def test_retry_import_reconnect_error_returns_result() -> None:
     assert not result.ok
     upgrade.assert_not_awaited()
     assert ctx.maintenance == texts.MAINTENANCE
+
+
+async def test_notion_import_pending_reads_the_mark() -> None:
+    svc, _ctx = _notion_svc()
+    values = {"pg_truth_imported": None}
+    with patch("bot.web.service.config_db.get_value",
+               AsyncMock(side_effect=lambda db, guild, key: values[key])):
+        assert await svc.notion_import_pending() is True
+        values["pg_truth_imported"] = "1"
+        assert await svc.notion_import_pending() is False
+    with patch("bot.web.service.config_db.get_value", AsyncMock(side_effect=OSError("x"))):
+        assert await svc.notion_import_pending() is True
