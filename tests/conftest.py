@@ -74,7 +74,8 @@ def _fake_event_reads(request: pytest.FixtureRequest, monkeypatch: pytest.Monkey
 
     Tests of the repository itself (db, pg, sync) use the real functions.
     """
-    if request.module.__name__.startswith(("tests.db", "tests.pg", "tests.sync")):
+    folder = request.path.parent
+    if folder.name in ("db", "pg", "sync") and folder.parent.name == "tests":
         return
     from bot.db import events as db_events
     from tests.fake_events import fake_events

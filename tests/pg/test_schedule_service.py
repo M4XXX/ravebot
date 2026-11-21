@@ -17,17 +17,6 @@ from bot.timezone import local_today
 
 GUILD = 42
 WEEK = datetime.timedelta(days=7)
-# The real reads, taken before the root conftest swaps in the fake event reads (its
-# module-name check does not see this package as tests.pg).
-_REAL_LIST, _REAL_GET = db_events.list_events, db_events.get_event
-
-
-@pytest.fixture(autouse=True)
-def _real_event_reads(monkeypatch):
-    monkeypatch.setattr(db_events, "list_events", _REAL_LIST)
-    monkeypatch.setattr(db_events, "get_event", _REAL_GET)
-
-
 @pytest.fixture
 def ctx(pool):
     ctx = BotContext(config=MagicMock(), db=pool)
