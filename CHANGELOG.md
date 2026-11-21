@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Times in the lineup, booking menus and messages are Discord timestamps, so every reader sees their own time zone. Embed titles keep the plain date; the admin page and Notion show plain local times.
+- Lineup slot rows are numbered, and buttons show only numbers (`Slot 2`, `Event 1`, `Booking 1`) instead of times or dates.
 - PostgreSQL is now the source of truth for events, slots, DJs and settings; this reverses the earlier decision to keep Notion as the source of truth. The bot reads and writes only PostgreSQL, and no Discord reply waits for Notion any more. Notion is an optional live mirror that the bot keeps up to date in the background.
 - Notion is optional: without `NOTION_API_KEY` and `NOTION_PARENT_PAGE_ID` the bot runs on PostgreSQL alone, with no Notion calls and no startup failure. Both variables are no longer required.
 - Hand edits in Notion (a changed value, a booking, a new DJ, a new event) are checked like the matching command, applied and logged as `Applied from Notion`. A risky edit (a deleted page, a changed key, a failed check, many records missing) is only reported as a warning. A conflict with an unsynced bot change waits for a choice, Keep Postgres or Keep Notion, on the admin page; after 24 hours the bot's version wins.
@@ -17,6 +19,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Events have a genre, a location and a note. `/create event` takes optional `genre`, `location` and `note`; the new `/edit event` sets or clears them. The lineup shows each only when set. Limits: genre 40, location 80, note 300 characters.
+- Schedule rules and defaults: `/schedule show`, `/schedule default`, `/schedule apply` and `/schedule rule add|edit|remove` set the genre or location of every n-th scheduled event (`every` 1 to 52). Two rules that can hit the same date are refused. The setup wizard has steps for the default genre, the default location and the rules.
+- Apply flow: after a default or rule change the bot lists the upcoming events that would change; choose Apply to all, Pick events or Keep all as they are. A value set by hand always beats rules and defaults.
+- Admin page: a Schedule page with the schedule settings, defaults, rules, upcoming events (genre, location, note, set by hand marks) and the apply list.
+- Notion: a `Location` property on the Events database (added automatically). A Notion edit of genre or location counts as set by hand.
+- Database migration 0019 (`events.location`, hand markers, `schedule_rules`).
 - `BACKUP_DIR` (default `/data/backups`) for the safety backups. The image declares `/data/backups` as a volume and the Unraid template maps it to `/mnt/user/appdata/ravebot/backups`; map it in a plain `docker run` with `-v ravebot-backups:/data/backups`.
 - Admin page: download a backup of the whole database and restore it from a file (with a safety backup first), a Notion sync card (last sync, waiting changes, errors, conflicts and warnings with Keep Postgres, Keep Notion and resync choices), resync all to Notion, and rebuild PostgreSQL from Notion after a data loss.
 - `/cancel event`: cancel one upcoming event after a confirm step. The event gets the status

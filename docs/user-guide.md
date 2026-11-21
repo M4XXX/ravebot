@@ -73,8 +73,9 @@ On the first start the bot creates four databases under the parent page (Events,
 | `ID` | Title | Unique event ID, format `YYYY-MM-DD <name>`, e.g. `2026-11-14 Rave Night` |
 | `Date` | Date | Two events may share a date |
 | `Status` | Select | Planning not started, Planning stage, Ready, Done, Canceled |
-| `Genre` | Text | Optional |
-| `Notes` | Text | Optional |
+| `Genre` | Text | Optional, up to 40 characters. A hand edit counts as set by hand |
+| `Location` | Text | Optional, up to 80 characters; added automatically to an existing database. A hand edit counts as set by hand |
+| `Notes` | Text | Optional, the event note, up to 300 characters |
 | `Slots` | Number | Number of DJ slots |
 | `Start` | Text | Start of slot 1, `HH:MM` (24 h), local time (see 2.8) |
 | `Slot length` | Number | Minutes per slot |
@@ -151,7 +152,7 @@ Do not rename or move the databases away from the parent page: the bot finds the
 
 ### 2.8 Time Zone
 
-All start times are local wall-clock times, not UTC. The default zone is `Europe/Berlin`: an event at `21:00` starts at 21:00 CET in winter and 21:00 CEST in summer, so 21:00 stays 21:00 all year. The `Start` column, the slot times in the lineup post, the reminders and the day an event counts as "today" all use this zone. Discord timestamps are not used. The zone is stored in the setting `timezone` and is changed in `/setup` (Time zone step: pick a zone or press **Other** and enter a name such as `Europe/Berlin`). Changing it moves the real start of existing events, because their `Start` text is kept as it is.
+All start times are local wall-clock times, not UTC. The default zone is `Europe/Berlin`: an event at `21:00` starts at 21:00 CET in winter and 21:00 CEST in summer, so 21:00 stays 21:00 all year. The `Start` column and the day an event counts as "today" use this zone. The lineup post, booking menus and messages show times as Discord timestamps, so every reader sees the time in their own time zone; Notion and the admin page show the time of this zone as plain text. The zone is stored in the setting `timezone` and is changed in `/setup` (Time zone step: pick a zone or press **Other** and enter a name such as `Europe/Berlin`). Changing it moves the real start of existing events, because their `Start` text is kept as it is.
 
 ### 2.9 Conflicts and Warnings
 
@@ -389,6 +390,8 @@ Run `/setup` in the channel where you want to set up (admins only). The bot post
    - **Event interval** (days between two scheduled events, 1 to 365).
    - **First event.** Pick the date of the first scheduled event, for example next Saturday; the next ones follow every interval days. Choose "As soon as the interval allows" to start one interval after the day of setup. The date must be today or later.
    - **Events kept ready** (future scheduled events the bot keeps, 1 to 52).
+   - **Default genre** and **Default location** (optional). Scheduled events get them when no rule sets a value.
+   - **Rules** (optional). Add rules such as "every 2nd event: location Hall B", see [7.3](#73-commands) and [7.8](#78-genre-location-notes-and-rules).
    - **Time zone** (default `Europe/Berlin`).
 6. **Automatic invites.** Turn invites on or off, how many days before an event the bot starts asking, and the hours it waits between two invites to the same DJ.
 7. **Summary.** Lists everything. **Activate** writes the settings, switches the bot on, creates the missing future events and posts the first Lineup Update (it reports how many events it created and whether it posted). The channels and roles must be chosen first.
@@ -409,7 +412,13 @@ All commands are for admins: the user IDs in `ADMIN_USER_IDS` plus the admins ad
 |---|---|
 | `/setup` | Guided setup; re-run it with **Change settings** to edit settings. Works while idle. |
 | `/config show` | Shows every setting (stored value or default) and the bot status. Works while idle. |
-| `/create event date:<YYYY-MM-DD> [slots] [start] [slot_minutes]` | Creates an event by hand. `slots`, `start` (`HH:MM`) and `slot_minutes` are optional and default to the setup values, so each event can differ. Works with scheduling on or off; scheduled events ignore it: it neither counts toward the events kept ready nor moves the schedule. |
+| `/create event date:<YYYY-MM-DD> [slots] [start] [slot_minutes] [genre] [location] [note]` | Creates an event by hand. `slots`, `start` (`HH:MM`) and `slot_minutes` are optional and default to the setup values, so each event can differ. `genre`, `location` and `note` are optional; rules never apply to hand-created events. Works with scheduling on or off; scheduled events ignore it: it neither counts toward the events kept ready nor moves the schedule. |
+| `/edit event event:<event> [genre] [location] [note] [clear]` | Sets the genre, location or note of an event. `clear` removes one value: a scheduled event then goes back to the rules, a manual event gets an empty field. |
+| `/schedule show` | Shows the defaults, the rules and the next 10 events with their genre and location (`set by hand` marks hand values). |
+| `/schedule default field:<genre/location> [value]` | Sets the default; no value clears it. |
+| `/schedule rule add field value every start` | Adds a rule: every `every`-th scheduled event (1 to 52), counted from the event picked in `start`, gets the value. |
+| `/schedule rule edit rule [value] [every] [start]`, `/schedule rule remove rule` | Changes or removes a rule. |
+| `/schedule apply` | Lists upcoming events that differ from the rules and lets you choose (see 7.8). |
 | `/post lineup update [event:<event id>]` | Posts the lineup of the upcoming event, or of a chosen future event, in the DJ channel. |
 | `/book dj slot event:<event> slot:<number> dj:<member>` or `guest:<name>` | Books a DJ into a slot without asking for confirmation. Use `dj` for a server member, or `guest` to pick a DJ from the DJ list by name (also DJs without Discord). A slot that no longer exists (the event was deleted or has fewer slots now) is refused. |
 | `/cancel dj slot event:<event> slot:<number> dj:<member>` or `guest:<name>` | Frees a DJ's slot. |
@@ -425,7 +434,7 @@ The old commands `/config set`, `/add-event`, `/lineup post`, `/admin book`, `/a
 ### 7.4 Lineup posts and booking button
 
 - Whenever the lineup of the upcoming event changes, the bot posts a new `Lineup Update` message in the DJ channel. Upcoming event means the earliest event whose local date is today or later and whose status is not Done or Canceled. Older posts stay as they are. The first post comes when you press Activate; later ones follow lineup changes. Run `/post lineup update` to post it immediately.
-- Post format: the title is the event name and date, for example `🎶 Rave Night · Saturday 14.11.2026`. The text starts with how many slots are booked (`4 of 6 slots booked · 2 open`), then one line per slot, for example `**20:00**  🎧 DJ Felix` or `**21:00**  ▫️ *open slot*`. Times are local time (CET or CEST).
+- Post format: the title is the event name and date, for example `🎶 Rave Night · Saturday 14.11.2026` (the title keeps the plain date: Discord shows no timestamps there). The text starts with the genre, the location and the note, each only when set, then how many slots are booked (`4 of 6 slots booked · 2 open`), then one numbered line per slot, for example `1. **20:00**  🎧 DJ Felix` or `2. **21:00**  ▫️ *open slot*`. Times are Discord timestamps: each reader sees them in their own time zone. Buttons show only numbers (`Slot 2`, `Event 1`, `Booking 1`), never a time or date.
 - **Show lineup** in a DM shows the upcoming event. With more than one upcoming event, date buttons sit under the lineup; pressing one switches the same message to that event and keeps the buttons.
 - Every post has a `Book a slot` button. A DJ who presses it gets the booking flow in DMs. If DMs are blocked, the bot says so privately.
 - A member who has the DJ role but no DJ profile yet (the onboarding was never finished) cannot book. When they press `Book a slot` on the post, or `Book a slot` in the DMs, the bot starts the onboarding conversation in their DMs instead, and they press `Book a slot` again once the profile is saved. Members without the DJ role are told to ask an organizer for it.
@@ -468,6 +477,7 @@ What the page shows: the server name, the owners from `ADMIN_USER_IDS` (they can
 
 What you can do:
 - When the bot cannot find its Notion databases, the page shows a red card with **Create new databases** (see 2.7). This is the only way the bot replaces its Notion databases.
+- Open **Schedule** to see the schedule settings, set the defaults, manage rules and edit genre, location and note of upcoming events (see 7.8).
 - Open **Manage DJs** to add, edit and delete DJs, with an optional logo upload. The same works with the `/dj` commands.
 - Add an admin by Discord user ID (17 to 19 digits). The ID does not have to be a server member. An added admin can use every admin command, including `/setup`. While the bot is active, adding an admin writes an entry to the admin log channel; removals do not.
 - Remove an added admin.
@@ -478,6 +488,22 @@ What you can do:
 A DJ added without a Discord user ID is a **guest**. Admins can book guests and they appear in the lineup, but the bot never sends them anything (no invites, reminders or booking notices) and they are not part of the automatic invites.
 
 Sessions end when the bot restarts; you log in again. Every wrong password is answered after a short delay (0.5 seconds), and after 5 wrong attempts from one address within 5 minutes, that address is blocked for 5 minutes.
+
+### 7.8 Genre, location, notes and rules
+
+Every event can have a **genre** (up to 40 characters), a **location** (up to 80 characters, one line) and a **note** (up to 300 characters, line breaks allowed). Values are trimmed; an empty value means none. The lineup shows each of them only when it is set.
+
+Where to set them: `/create event` (options), `/edit event`, the **Schedule** page of the admin page, or the Notion columns `Genre`, `Location` and `Notes`.
+
+**Defaults and rules** fill scheduled events (not events made with `/create event`):
+- The **default genre** and **default location** apply when no rule matches.
+- A **rule** gives every n-th scheduled event a value, counted from a start event you pick from the upcoming dates. Example: location "Hall B", every 2, from the next event gives Hall B to the next event, the one after the next, and so on. `every` is 1 to 52.
+- Two rules for the same field that can hit the same date cannot both exist; the bot names the colliding rule and refuses the new one.
+- A value set by hand (command, admin page or a Notion edit) always beats rules and defaults, and stays when rules change. Clearing a hand value hands the event back to the rules.
+
+**Apply flow.** Changing a default or a rule never rewrites upcoming events by itself. Afterwards the bot lists the events whose value would change and you choose **Apply to all**, **Pick events** (**Apply selected** on the admin page) or **Keep all as they are**. You can run `/schedule apply` or open the apply list on the admin page later. The bot checks again when you press the button and only writes events that are still affected. New scheduled events always get the current rule values.
+
+**Admin page.** The **Schedule** page shows the settings (read only: interval, first date, kept ready, on or off; change them with `/setup`), the defaults, the rules with **Edit** and **Remove**, an **Add rule** form, and the upcoming events with their genre, location and note. A banner links to the apply list when events differ from the rules.
 
 ---
 
