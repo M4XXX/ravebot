@@ -159,3 +159,25 @@ async def test_reanchor_rules_moves_anchors(pool, ctx) -> None:
     rules = {r.id: r for r in await list_rules(pool, GUILD)}
     assert rules[a.id].anchor == origin + datetime.timedelta(days=14)
     assert rules[b.id].anchor == origin + datetime.timedelta(days=14)
+
+
+async def test_admin_form_note_edit_keeps_rule_values_off_hand(pool, ctx) -> None:
+    """The admin form sends the prefilled rule values back: they must not become hand values."""
+    from bot.web.schedule_page import SchedulePageService
+
+    ctx.schedule_service = ScheduleService(ctx)
+    event = await _event(
+        pool, local_today() + WEEK, genre="Techno", location="Club"
+    )
+    page = SchedulePageService(ctx, SimpleNamespace(guilds=[SimpleNamespace(id=GUILD)]))
+    result = await page.set_event(event.page_id, "Techno", " Club ", "Bring earplugs")
+    assert result.ok
+    stored = await db_events.get_event(pool, event.page_id)
+    assert stored.notes == "Bring earplugs"
+    assert (stored.genre, stored.genre_by_hand) == ("Techno", False)
+    assert (stored.location, stored.location_by_hand) == ("Club", False)
+    changed = await page.set_event(event.page_id, "House", "Club", "Bring earplugs")
+    assert changed.ok
+    stored = await db_events.get_event(pool, event.page_id)
+    assert (stored.genre, stored.genre_by_hand) == ("House", True)
+    assert stored.location_by_hand is False

@@ -44,9 +44,31 @@ async def test_bad_input_is_refused_before_the_service() -> None:
 
 async def test_value_errors_become_messages() -> None:
     page, schedule = _page()
+    page.get_event = AsyncMock(return_value=make_event(page_id="u"))
     schedule.set_event_values.side_effect = ValueError(texts.GENRE_TOO_LONG)
     result = await page.set_event("u", "x" * 41, "", "")
     assert not result.ok and result.message == texts.GENRE_TOO_LONG
+
+
+async def test_unchanged_form_fields_are_not_sent() -> None:
+    from bot.services.schedule import UNSET
+
+    page, schedule = _page()
+    stored = make_event(page_id="u", genre="Techno", location="Club", notes="Old")
+    page.get_event = AsyncMock(return_value=stored)
+    schedule.set_event_values.return_value = stored
+    assert (await page.set_event("u", " Techno ", "Club", "New")).ok
+    schedule.set_event_values.assert_awaited_once_with(
+        7, "u", genre=UNSET, location=UNSET, note="New"
+    )
+
+
+async def test_missing_event_is_refused_before_the_service() -> None:
+    page, schedule = _page()
+    page.get_event = AsyncMock(return_value=None)
+    result = await page.set_event("u", "a", "b", "c")
+    assert not result.ok
+    schedule.set_event_values.assert_not_called()
 
 
 async def test_apply_all_passes_only_the_shown_pairs() -> None:

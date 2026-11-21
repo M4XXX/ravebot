@@ -15,7 +15,7 @@ from bot.db import events as db_events
 from bot.db import schedule_rules as db_rules
 from bot.results import ActionResult
 from bot.services import event_replenish
-from bot.services.schedule import FIELDS, RuleConflict, ScheduleDate
+from bot.services.schedule import FIELDS, UNSET, RuleConflict, ScheduleDate
 from bot.services.schedule_rules import Rule
 from bot.ui import texts
 
@@ -62,6 +62,11 @@ def pick_key(uid: str, field: str) -> str:
 def parse_pick(raw: str) -> tuple[str, str] | None:
     uid, _, field = raw.rpartition(":")
     return (uid, field) if uid and field in FIELDS else None
+
+
+def _changed(submitted: str, stored: str | None) -> str | None:
+    """The submitted value, or UNSET when it equals the stored one (both stripped)."""
+    return UNSET if submitted.strip() == (stored or "").strip() else submitted
 
 
 class SchedulePageService:
@@ -239,8 +244,17 @@ class SchedulePageService:
         if guild_id is None:
             return ActionResult(False, NOT_READY)
         try:
+            stored = await self.get_event(uid)
+            if stored is None:
+                return ActionResult(False, NO_EVENT)
+            # The form is prefilled and sends every field: a field the admin did not
+            # change stays as it is (a rule value must not turn into a hand value).
             event = await self._service.set_event_values(
-                guild_id, uid, genre=genre, location=location, note=note
+                guild_id,
+                uid,
+                genre=_changed(genre, stored.genre),
+                location=_changed(location, stored.location),
+                note=_changed(note, stored.notes),
             )
         except LookupError:
             return ActionResult(False, NO_EVENT)
