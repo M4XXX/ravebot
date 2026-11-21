@@ -6,10 +6,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Fixed
-
-- The container failed to start with `PermissionError: ... /root/.postgresql/postgresql.key`: after dropping to the `ravebot` user, `HOME` still pointed at `/root`. The entrypoint now sets `HOME=/home/ravebot`, and the image creates that folder.
-
 ## [1.3.0-rc1] - 2026-11-21
 
 ### Changed
@@ -40,6 +36,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The container failed to start with `PermissionError: ... /root/.postgresql/postgresql.key`: after dropping to the `ravebot` user, `HOME` still pointed at `/root`. The entrypoint now sets `HOME=/home/ravebot`, and the image creates that folder.
 - A booking mirrored to Notion while the Notion poll was reading could be read as a hand edit and freed again; the mirror worker now waits while a poll compares its snapshot.
 - First start after the update with the Notion databases missing: the bot now stays paused until the one-time import ran, instead of working on an empty database. **Retry the import from Notion** reads the databases again first.
 - Past bookings of a deleted DJ are no longer freed by the Notion poll, and slots of past events are never changed from Notion.
