@@ -37,13 +37,13 @@
 | | |
 |---|---|
 | 🎼 **Genre, location and notes** | Every event can have a genre, a location and a note, shown in the lineup only when set. Rules such as "every second event is in Hall B" fill scheduled events by themselves; a value you set by hand always wins. |
-| 🕒 **Times in your own time zone** | The lineup, bookings and reminders show times as Discord timestamps, so everyone sees their own local time. |
+| 🕒 **Times in your own time zone** | The lineup, bookings and reminders show times as Discord timestamps, so everyone sees their own local time. Buttons only carry numbers (*Slot 2*, *Event 1*), never a time a DJ could misread. |
 | 🎧 **DJ onboarding by chat** | A DJ gets the DJ role and the bot asks five short questions in the DMs: name, VRChat name, logo (an image they just send), stream links. No forms, no popups. |
 | 🗓️ **Self-service booking** | DJs book and cancel slots with buttons. Two DJs can never take the same slot. |
 | 📨 **Automatic invites** | DJs in the *Active DJ Booking Group* get a message when slots stay open. Cooldowns keep it friendly, reminders go out the day before. |
 | 📋 **Live lineup post** | A new *Lineup Update* appears in your DJ channel whenever the lineup changes, with a *Book a slot* button. |
 | 🗂️ **Postgres first, Notion optional** | Events, slots, DJs and settings live in PostgreSQL, and no Discord reply ever waits for Notion. With a Notion integration the bot mirrors everything into Notion databases it creates itself; hand edits there are checked and synced back, conflicts wait for your choice. |
-| 🛰️ **Guided setup** | `/setup` walks you through channels, roles, event defaults, time zone and invites. The bot stays idle until you press *Activate*. |
+| 🛰️ **Guided setup** | `/setup` walks you through channels, roles, event defaults, the schedule with default genre, location and rules, time zone and invites. The bot stays idle until you press *Activate*. |
 | 🔔 **Quiet admin log** | Only what matters: bookings, new DJs, problems and the DMs people send the bot, with a *Reply* button. |
 | 💾 **Backups and recovery** | Download a backup of the whole database from the admin page and restore it later. The bot saves a safety backup before every restore, rebuild or import, and can rebuild PostgreSQL from Notion after a data loss. |
 | 🪐 **Admin page** | An optional password protected web page: admins, DJs, the schedule (defaults, rules, genre, location and notes of upcoming events), backups, the Notion sync status with conflicts and warnings, resync and rebuild. |
@@ -86,6 +86,10 @@ PostgreSQL is the source of truth. Every change is written there first and the D
   <tr>
     <td width="50%" valign="top"><b>Admin log channel</b><br><img src="docs/assets/admin-log.png" alt="Admin log channel"></td>
     <td width="50%" valign="top"><b>Admin page (space themed, local network)</b><br><img src="docs/assets/admin-page.png" alt="Admin page"></td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top"><b>Schedule on the admin page: defaults, rules, next events</b><br><img src="docs/assets/admin-schedule.png" alt="Schedule page of the admin page"></td>
+    <td width="50%" valign="top"></td>
   </tr>
 </table>
 
@@ -202,7 +206,7 @@ With Notion turned on, the log also says when the bot finds its Notion databases
 ### Step 6: Set it up in Discord
 
 1. In your server run **`/setup`** in a channel only you can see.
-2. Follow the six steps: DJ channel, log channel, roles, event defaults, time zone and automatic invites.
+2. Follow the steps: DJ channel, log channel, roles, event defaults (slots, start time, slot length), the schedule (interval, first date, events kept ready, default genre and location, rules), time zone and automatic invites.
 3. Press **Activate**. The bot creates your first events and posts the first Lineup Update.
 
 Until you press *Activate* the bot stays idle on purpose: no posts, no invites, no events. Give someone the DJ role to try the onboarding.
@@ -213,8 +217,8 @@ Until you press *Activate* the bot stays idle on purpose: no posts, no invites, 
 
 | Situation | What to do |
 |---|---|
-| Keep a copy of everything | Admin page → **Data and backup** → **Download backup**. One `.ravebot.json.gz` file with every table, including the admin accounts. |
-| Go back to a backup | Admin page → **Restore from a file**. The file must come from the same RaveBot version. The bot saves a safety backup first, pauses bookings while it restores and then writes everything to Notion again. Notion pages made after the backup go to the Notion trash. |
+| Keep a copy of everything | Admin page → **Data and backup** → **Download a backup**. One `.ravebot.json.gz` file with every table, including the admin accounts. |
+| Go back to a backup | Admin page → **Data and backup** → **Restore a backup**. The file must come from the same RaveBot version. The bot saves a safety backup first, pauses bookings while it restores and then writes everything to Notion again. Notion pages made after the backup go to the Notion trash. |
 | The database is lost, Notion still has the data | Start the bot on an empty database: it finds the Notion databases under `NOTION_PARENT_PAGE_ID` and rebuilds events, slots, DJs, logos and settings by itself. The admin page also has **Rebuild from Notion**. Admin accounts are not in Notion: the owners from `ADMIN_USER_IDS` work at once, other admins come back only from a backup file. |
 | Notion is lost, the database is fine | The bot keeps working and the admin page shows **Notion databases not found**. If the integration only lost access, share the page again and restart the bot. If the databases are really gone, press **Create new databases**: the bot creates a new set and fills it from PostgreSQL. |
 | A conflict or warning on the admin page | **Keep Postgres** or **Keep Notion** for a conflict, **Resync Postgres to Notion** for a warning. |
@@ -230,13 +234,13 @@ Every release publishes a new image to GitHub Container Registry and a GitHub re
 | You want | Set the repository to | Update by |
 |---|---|---|
 | Always the newest release | `ghcr.io/m4xxx/ravebot:latest` | Unraid **Docker** tab → **Check for Updates** → **apply update** |
-| A fixed version | `ghcr.io/m4xxx/ravebot:1.1.0` | Change the version number in the container and **Apply** |
+| A fixed version | `ghcr.io/m4xxx/ravebot:1.3.0` | Change the version number in the container and **Apply** |
 
 The database updates itself: migrations run at every start. Read the [release notes](https://github.com/M4XXX/ravebot/releases) before you update.
 
 **Updating from a version that kept its data in Notion (1.1 and older):** map the backup folder first (see step 4). The first start saves a safety backup and copies events, slots and DJs from Notion into PostgreSQL once. Booking and edits are paused until that worked. If it fails (for example two events with the same title in Notion), the log channel says why: fix it in Notion, then press **Retry the import from Notion** on the admin page or restart the bot.
 
-**Making a release (maintainers):** `scripts/release.sh 1.2.0` bumps the version, closes the changelog section, commits and tags. Then `git push origin main v1.2.0` starts the build. Details are in the [developer guide](docs/developer-guide.md#7-automated-releases).
+**Making a release (maintainers):** `scripts/release.sh 1.3.0` bumps the version, closes the changelog section, commits and tags. Then `git push origin main v1.3.0` starts the build. A version with a suffix such as `1.3.0-rc1` becomes a pre-release. Details are in the [developer guide](docs/developer-guide.md#7-automated-releases).
 
 ---
 

@@ -11,11 +11,12 @@ shot() { # name width height source
     --screenshot="$HERE/$1.png" --window-size="$2,$3" "$4" >/dev/null 2>&1
 }
 shot onboarding 760 990 "file://$HERE/src/onboarding.html"
-shot lineup-post 760 390 "file://$HERE/src/lineup.html"
-shot setup-wizard 760 860 "file://$HERE/src/setup.html"
+shot lineup-post 760 520 "file://$HERE/src/lineup.html"
+shot setup-wizard 760 900 "file://$HERE/src/setup.html"
 shot admin-log 760 800 "file://$HERE/src/log.html"
-PYTHONPATH="$HERE/../.." uv run python "$HERE/src/render_admin_page.py" "$TMP/admin.html"
-shot admin-page 900 650 "file://$TMP/admin.html"
+PYTHONPATH="$HERE/../.." uv run python "$HERE/src/render_admin_page.py" "$TMP/admin.html" "$TMP/schedule.html"
+shot admin-page 900 1290 "file://$TMP/admin.html"
+shot admin-schedule 900 1060 "file://$TMP/schedule.html"
 shot logo 512 512 "file://$HERE/logo.svg"
 rm -rf "$TMP"
 echo "done"
