@@ -427,7 +427,11 @@ def create_app(
         problem = _notion_problem(service)
         if not problem:
             return _redirect("/")
-        return _html(render_confirm_recreate(problem, request["session"].csrf))
+        pending = getattr(service, "notion_import_pending", None)
+        import_pending = bool(await pending()) if callable(pending) else False
+        return _html(
+            render_confirm_recreate(problem, request["session"].csrf, import_pending)
+        )
 
     async def post_notion_recreate(request: web.Request) -> web.Response:
         result = await service.recreate_notion()

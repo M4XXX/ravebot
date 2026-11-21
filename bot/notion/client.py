@@ -3,20 +3,22 @@ import dataclasses
 import datetime
 import json
 import logging
-import urllib.parse
 from typing import Any, Literal
 
 from bot.db.events import DuplicateEventError
 from bot.notion.api import NotionApi, NotionWriteError
 from bot.notion.models import (
     BOTDATA_TOO_LARGE_NOTE,
-    MAX_SLOTS,
     PROP_BOTDATA_KEY,
     PROP_BOTDATA_PAYLOAD,
     PROP_BOTDATA_TABLE,
+    PROP_DJ_ALT_LINK,
     PROP_DJ_DISCORD_ID,
     PROP_DJ_DISCORD_NAME,
+    PROP_DJ_LINK,
+    PROP_DJ_LOGO,
     PROP_DJ_NAME,
+    PROP_DJ_VRCHAT_NAME,
     PROP_EVENT_BOT_ID,
     PROP_EVENT_DATE,
     PROP_EVENT_GENRE,
@@ -29,34 +31,22 @@ from bot.notion.models import (
     PROP_SLOT_DJ,
     PROP_SLOT_EVENT,
     PROP_SLOT_NUMBER,
-    DjInfo,
-    EventInfo,
-    SlotInfo,
-    _relation_ids,
-    _title,
-    parse_dj,
-    parse_event,
-    parse_slot,
+    is_http_url,
+    is_trashed,
+    url_prop,
 )
 from bot.notion.schema import NotionIds
-from bot.timezone import local_today
 
 __all__ = [
     "DuplicateEventError",
     "NotionClient",
     "NotionSnapshot",
     "NotionWriteError",
-    "SlotRowMissingError",
 ]
 
 logger = logging.getLogger(__name__)
 
-INITIAL_STATUS = "Planning not started"
 PROP_SLOT_NAME = "Name"
-PROP_DJ_VRCHAT_NAME = "VRChat name"
-PROP_DJ_LOGO = "Logo"
-PROP_DJ_LINK = "Link"
-PROP_DJ_ALT_LINK = "Alternative link"
 
 
 class DjLogoUploadError(Exception):
@@ -71,32 +61,8 @@ class DjLogoUploadError(Exception):
         self.page_id = page_id
 
 
-class SlotRowMissingError(Exception):
-    """The event has no Slots row with the requested slot number."""
-
-    def __init__(self, event_id: str, number: int) -> None:
-        super().__init__(f"Event {event_id!r} has no slot row number {number}")
-        self.event_id = event_id
-        self.number = number
-
-
-def _is_trashed(page: dict[str, Any]) -> bool:
-    return bool(page.get("in_trash") or page.get("is_archived"))
-
-
 def _text(content: str) -> list[dict[str, Any]]:
     return [{"type": "text", "text": {"content": content}}]
-
-
-def _is_http_url(value: str | None) -> bool:
-    if not value:
-        return False
-    parts = urllib.parse.urlsplit(value.strip())
-    return parts.scheme in ("http", "https") and bool(parts.netloc)
-
-
-def _url_prop(value: str | None) -> dict[str, Any]:
-    return {"url": value.strip() if value and _is_http_url(value) else None}
 
 
 _RICH_TEXT_LIMIT = 2000
@@ -118,181 +84,7 @@ class NotionClient:
 
     async def _rows(self, data_source_id: str) -> list[dict[str, Any]]:
         pages = await self._api.query_all(data_source_id)
-        return [p for p in pages if not _is_trashed(p)]
-
-    async def event_id_exists(self, event_id: str) -> bool:
-        pages = await self._api.query_all(
-            self._ids.events_ds,
-            {"filter": {"property": PROP_EVENT_ID, "title": {"equals": event_id}}},
-        )
-        # Compare titles again: do not rely on the server applying the filter.
-        return any(
-            not _is_trashed(p) and _title(p, PROP_EVENT_ID) == event_id for p in pages
-        )
-
-    async def list_events(self, *, include_past: bool = False) -> list[EventInfo]:
-        """All events with slots and DJs joined, sorted by (date, start).
-
-        An event whose slot rows were only partly created (see create_event)
-        shows fewer slots than slot_count until the sync task repairs it.
-        """
-        event_pages = await self._rows(self._ids.events_ds)
-        slot_pages = await self._rows(self._ids.slots_ds)
-        dj_pages = await self._rows(self._ids.djs_ds)
-
-        djs: dict[str, DjInfo] = {}
-        for page in dj_pages:
-            dj = parse_dj(page)
-            djs[dj.page_id] = dj
-
-        events: dict[str, EventInfo] = {}
-        for page in event_pages:
-            event = parse_event(page)
-            if event is not None:
-                events[event.page_id] = event
-
-        by_event: dict[str, list[SlotInfo]] = {}
-        invalid_numbers = 0
-        for page in slot_pages:
-            rel = (page.get("properties") or {}).get(PROP_SLOT_EVENT) or {}
-            event_ids = [r["id"] for r in rel.get("relation") or [] if r.get("id")]
-            if not event_ids:
-                continue
-            slot = parse_slot(page, djs)
-            if slot.number < 1:
-                invalid_numbers += 1
-                continue
-            by_event.setdefault(event_ids[0], []).append(slot)
-        if invalid_numbers:
-            logger.warning(
-                "Skipped %d slot row(s) without a valid slot number", invalid_numbers
-            )
-
-        today = local_today()
-        result = []
-        for page_id, event in events.items():
-            if not include_past and event.date < today:
-                continue
-            slots = tuple(sorted(by_event.get(page_id, ()), key=lambda s: s.number))
-            result.append(dataclasses.replace(event, slots=slots))
-        result.sort(key=lambda e: (e.date, e.start))
-        return result
-
-    async def create_event(
-        self,
-        event_id: str,
-        date: datetime.date,
-        start: datetime.time,
-        slot_count: int,
-        slot_minutes: int,
-        *,
-        genre: str | None = None,
-    ) -> EventInfo:
-        """Create the Events row, then one Slots row per slot (no DJ).
-
-        Raises ValueError for an empty ID, slot_count/slot_minutes below 1 or
-        slot_count above MAX_SLOTS (before any request), DuplicateEventError if
-        the ID exists.
-        If a slot row fails after retries, NotionWriteError propagates and the
-        already created event stays; list_events then shows it with missing
-        slot rows. Calling create_event again with the same ID raises
-        DuplicateEventError, so it is not retryable; the sync service's
-        "create_slots" action (Task 12) repairs events with missing slot rows.
-        """
-        event_id = event_id.strip()
-        if not event_id:
-            raise ValueError("event_id must not be empty")
-        if slot_count < 1 or slot_minutes < 1:
-            raise ValueError("slot_count and slot_minutes must be at least 1")
-        if slot_count > MAX_SLOTS:
-            raise ValueError(f"slot_count must be at most {MAX_SLOTS}")
-        if await self.event_id_exists(event_id):
-            raise DuplicateEventError(event_id)
-
-        props: dict[str, Any] = {
-            PROP_EVENT_ID: {"title": _text(event_id)},
-            PROP_EVENT_DATE: {"date": {"start": date.isoformat()}},
-            PROP_EVENT_STATUS: {"select": {"name": INITIAL_STATUS}},
-            PROP_EVENT_SLOTS: {"number": slot_count},
-            PROP_EVENT_START: {"rich_text": _text(start.strftime("%H:%M"))},
-            PROP_EVENT_SLOT_LENGTH: {"number": slot_minutes},
-        }
-        if genre:
-            props[PROP_EVENT_GENRE] = {"rich_text": _text(genre)}
-        page = await self._api.request(
-            "POST",
-            "/pages",
-            {"parent": self._parent(self._ids.events_ds), "properties": props},
-            f"create event {event_id}",
-        )
-        event = EventInfo(
-            page_id=page["id"],
-            event_id=event_id,
-            date=date,
-            status=INITIAL_STATUS,
-            genre=genre or None,
-            notes=None,
-            slot_count=slot_count,
-            start=start,
-            slot_minutes=slot_minutes,
-            slots=(),
-        )
-        slots = await self.create_slot_rows(event, list(range(1, slot_count + 1)))
-        return dataclasses.replace(event, slots=tuple(slots))
-
-    async def restore_event_shape(
-        self, event: EventInfo, start: datetime.time, slot_minutes: int
-    ) -> None:
-        """PATCH the Events row's ``Start`` and ``Slot length`` back to the given values.
-
-        Used by the sync service when a hand edit changes them while DJs are booked.
-        Raises NotionWriteError after failed retries.
-        """
-        await self._api.request(
-            "PATCH",
-            f"/pages/{event.page_id}",
-            {
-                "properties": {
-                    PROP_EVENT_START: {"rich_text": _text(start.strftime("%H:%M"))},
-                    PROP_EVENT_SLOT_LENGTH: {"number": slot_minutes},
-                }
-            },
-            f"restore Start/Slot length of event {event.event_id}",
-        )
-
-    async def create_slot_rows(self, event: EventInfo, numbers: list[int]) -> list[SlotInfo]:
-        """Create one empty Slots row per given number, linked to the event.
-
-        Rows are created in the given order; a failure raises NotionWriteError
-        and the rows created before it stay.
-        """
-        rows: list[SlotInfo] = []
-        for number in numbers:
-            slot_page = await self._api.request(
-                "POST",
-                "/pages",
-                {
-                    "parent": self._parent(self._ids.slots_ds),
-                    "properties": {
-                        PROP_SLOT_NAME: {"title": _text(f"{event.event_id} #{number}")},
-                        PROP_SLOT_EVENT: {"relation": [{"id": event.page_id}]},
-                        PROP_SLOT_NUMBER: {"number": number},
-                    },
-                },
-                f"create slot {number} of event {event.event_id}",
-            )
-            rows.append(SlotInfo(slot_page["id"], number, None, None, None))
-        return rows
-
-    async def trash_slot_rows(self, rows: list[SlotInfo]) -> None:
-        """Move the given Slots rows to the Notion trash (one PATCH per row)."""
-        for row in rows:
-            await self._api.request(
-                "PATCH",
-                f"/pages/{row.page_id}",
-                {"in_trash": True},
-                f"trash slot row {row.number} ({row.page_id})",
-            )
+        return [p for p in pages if not is_trashed(p)]
 
     async def _logo_prop(
         self, discord_id: int, logo_url: str | None, logo_image: bytes | None
@@ -313,7 +105,7 @@ class NotionClient:
                 {"name": "logo.png", "type": "file_upload",
                  "file_upload": {"id": upload_id}}
             ]}, False
-        if logo_url and _is_http_url(logo_url):
+        if logo_url and is_http_url(logo_url):
             return {"files": [
                 {"name": "logo", "type": "external", "external": {"url": logo_url.strip()}}
             ]}, False
@@ -338,10 +130,6 @@ class NotionClient:
         )
         return page["id"]
 
-    async def trash_dj_page(self, page_id: str) -> None:
-        """Move a DJ row of the Notion DJs database to the trash (a 404 is fine)."""
-        await self.trash_page(page_id)
-
     async def trash_page(self, page_id: str) -> None:
         """Move any page to the Notion trash (a 404 is fine)."""
         try:
@@ -352,75 +140,6 @@ class NotionClient:
         except NotionWriteError as exc:
             if exc.status_code != 404:
                 raise
-
-    @staticmethod
-    def _slot_row(event: EventInfo, number: int) -> SlotInfo:
-        """The event's Slots row with this number; duplicates resolve to the lowest
-        page id (the same rule as the sync planner). Raises SlotRowMissingError."""
-        rows = [s for s in event.slots if s.number == number]
-        if not rows:
-            raise SlotRowMissingError(event.event_id, number)
-        return min(rows, key=lambda s: s.page_id)
-
-    async def _fresh_slot_dj_ids(
-        self, event: EventInfo, slot_index: int
-    ) -> tuple[str, list[str]]:
-        """Return (slot row page id, DJ ids now in its relation), read just now."""
-        number = slot_index + 1
-        row = self._slot_row(event, number)
-        page = await self._api.request(
-            "GET", f"/pages/{row.page_id}", None, f"read slot {number} of {event.event_id}"
-        )
-        if _is_trashed(page):
-            raise SlotRowMissingError(event.event_id, number)
-        return row.page_id, _relation_ids(page, PROP_SLOT_DJ)
-
-    async def _write_slot_djs(
-        self, page_id: str, dj_page_ids: list[str], what: str
-    ) -> None:
-        await self._api.request(
-            "PATCH",
-            f"/pages/{page_id}",
-            {"properties": {PROP_SLOT_DJ: {"relation": [{"id": i} for i in dj_page_ids]}}},
-            what,
-        )
-
-    async def empty_slot(self, event: EventInfo, slot_index: int) -> None:
-        """Remove every DJ from the slot row (also DJs added by hand).
-
-        Raises SlotRowMissingError if the event has no row for the slot,
-        NotionWriteError after failed retries.
-        """
-        number = slot_index + 1
-        row = self._slot_row(event, number)
-        await self._write_slot_djs(
-            row.page_id, [], f"empty slot {number} of {event.event_id}"
-        )
-
-    async def set_event_status(self, event: EventInfo, status: str) -> None:
-        """Write the event's Status. Raises NotionWriteError after failed retries."""
-        await self._api.request(
-            "PATCH",
-            f"/pages/{event.page_id}",
-            {"properties": {PROP_EVENT_STATUS: {"select": {"name": status}}}},
-            f"set status of {event.event_id} to {status}",
-        )
-
-    async def keep_first_dj(self, event: EventInfo, slot_index: int) -> None:
-        """Reduce the slot row's DJ relation to its first entry (sync of hand edits).
-
-        Re-reads the row first; writes nothing if it holds one DJ or none.
-        Raises SlotRowMissingError if the event has no row for the slot,
-        NotionWriteError after failed retries.
-        """
-        page_id, current = await self._fresh_slot_dj_ids(event, slot_index)
-        if len(current) <= 1:
-            return
-        await self._write_slot_djs(
-            page_id,
-            current[:1],
-            f"remove extra DJs from slot {slot_index + 1} of {event.event_id}",
-        )
 
     # ---- mirror writes: Postgres is the truth, write exactly the payload ----
 
@@ -436,7 +155,7 @@ class NotionClient:
             if exc.status_code == 404:
                 return False
             raise
-        return not _is_trashed(page)
+        return not is_trashed(page)
 
     async def _mirror_page(
         self, ds_id: str, props: dict[str, Any], page_id: str | None, context: str
@@ -529,8 +248,8 @@ class NotionClient:
             PROP_DJ_VRCHAT_NAME: {
                 "rich_text": _text(payload["vrchat_name"]) if payload.get("vrchat_name") else []
             },
-            PROP_DJ_LINK: _url_prop(payload.get("link")),
-            PROP_DJ_ALT_LINK: _url_prop(payload.get("alt_link")),
+            PROP_DJ_LINK: url_prop(payload.get("link")),
+            PROP_DJ_ALT_LINK: url_prop(payload.get("alt_link")),
         }
         if discord_name is not None:
             props[PROP_DJ_DISCORD_NAME] = {"rich_text": _text(discord_name)}
@@ -592,7 +311,7 @@ class NotionClient:
         data = await self._api.request(
             "POST", f"/data_sources/{ds_id}/query", {"page_size": 1}, f"check {table} for rows"
         )
-        return any(not _is_trashed(p) for p in data.get("results") or [])
+        return any(not is_trashed(p) for p in data.get("results") or [])
 
     async def read_all(self) -> "NotionSnapshot":
         """All non-trashed pages of the mirrored databases (raw JSON)."""

@@ -165,17 +165,31 @@ def _notion_card(problem: str | None, paused: bool = False) -> str:
     )
 
 
-def render_confirm_recreate(problem: str, csrf: str) -> str:
+def render_confirm_recreate(problem: str, csrf: str, import_pending: bool = False) -> str:
+    if import_pending:
+        warning = (
+            '<p class="msg err"><b>The one-time import from Notion has not run yet.</b> '
+            "Creating the new, empty databases marks the one-time import from Notion as "
+            "done for good with zero events: the bot never imports the old databases "
+            "later. It then starts with no events and no bookings, creates new events on "
+            "its own and starts DJ outreach for them.</p>"
+            "<p>If the integration only lost access to the old databases, share the "
+            "Notion page with it again and retry the import instead.</p>"
+        )
+    else:
+        warning = (
+            "<p>If the one-time import from Notion after the update has not run yet, "
+            "creating the new, empty databases marks the one-time import from Notion as "
+            "done for good: the bot never imports the old databases later.</p>"
+        )
     return _page(
         f"{_TOP}"
         '<section class="card"><h3>Create new Notion databases</h3>'
         f'<p class="muted">{_e(problem)}</p>'
-        "<p>The bot creates a new set of Events, Slots and DJs databases on the Notion "
-        "page. Nothing is copied: bookings and DJs in the old databases stay there, and "
-        "the bookings the bot remembers point to the old events.</p>"
-        "<p>If the one-time import from Notion after the update has not run yet, creating "
-        "the new, empty databases marks the one-time import from Notion as done for good: "
-        "the bot never imports the old databases later.</p>"
+        "<p>The bot creates a new set of Events, Slots, DJs and Bot data databases on the "
+        "Notion page. Nothing is copied: bookings and DJs in the old databases stay there, "
+        "and the bookings the bot remembers point to the old events.</p>"
+        f"{warning}"
         '<div class="actions"><form method="post" action="/notion/recreate">'
         f'{_csrf_field(csrf)}<button class="btn red" type="submit">Create new databases'
         '</button></form><a class="btn g" href="/">Cancel</a></div></section>'

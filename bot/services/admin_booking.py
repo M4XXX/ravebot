@@ -15,14 +15,12 @@ serialized) and queues the slot for the Notion mirror. Notion is never awaited.
 import logging
 from typing import TYPE_CHECKING
 
-import disnake
-
 from bot.db import events as db_events
-from bot.db.bookings import force_slot_holder, release_slot_lock
+from bot.db.bookings import SlotGoneError, force_slot_holder, release_slot_lock
 from bot.db.djs import get_dj_by_discord_id, update_active_booking
 from bot.services.dm import dm_user
 from bot.services.fully_booked import recheck_fully_booked
-from bot.services.roles import get_invites_role
+from bot.services.roles import set_invites_role
 from bot.sync.worker import changed
 from bot.ui import texts
 from bot.ui.embeds import ErrorCode
@@ -167,6 +165,8 @@ class AdminBookingService:
         # The slot's holder becomes exactly this DJ, replacing any displaced holder
         try:
             previous_holder = await force_slot_holder(self.db, event_id, slot_index, dj_id)
+        except SlotGoneError:
+            return False, texts.SLOT_NO_LONGER_EXISTS_ADMIN
         except Exception:
             logger.exception("admin book: force_slot_holder failed")
             return False, DB_FAILED
@@ -286,31 +286,8 @@ class AdminBookingService:
         if guild is None:
             logger.warning("set_dj_active_status: guild %s not in bot cache", guild_id)
             return True, ""
-        member = guild.get_member(dj_id)
-        if member is None:
-            logger.warning(
-                "set_dj_active_status: member %s not in guild cache", dj_id
-            )
-            return True, ""
-        role = await get_invites_role(self.db, guild)
-        if role is None:
-            logger.warning(
-                "set_dj_active_status: 'Active Booking' role not found in guild %s",
-                guild_id,
-            )
-            return True, ""
-        try:
-            if active:
-                await member.add_roles(
-                    role, reason="Admin override via /automatic dj booking"
-                )
-            else:
-                await member.remove_roles(
-                    role, reason="Admin override via /automatic dj booking"
-                )
-        except (disnake.Forbidden, disnake.HTTPException) as exc:
-            logger.warning(
-                "set_dj_active_status: role op failed for user %s: %s", dj_id, exc
-            )
+        await set_invites_role(
+            self.db, guild, dj_id, add=active, reason="Admin override via /automatic dj booking"
+        )
 
         return True, ""

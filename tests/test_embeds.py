@@ -184,7 +184,9 @@ class TestLineupUpdateEmbed:
 
         notes = set()
         for count in range(20, 60):
-            slots = [make_slot(i, dj_page_id=f"d{i}", dj_name="n" * 100) for i in range(1, count + 1)]
+            slots = [
+                make_slot(i, dj_page_id=f"d{i}", dj_name="n" * 100) for i in range(1, count + 1)
+            ]
             last = lineup_text(self._event(slots, slot_count=count)).splitlines()[-1]
             if "not shown" in last:
                 notes.add(last)

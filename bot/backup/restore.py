@@ -76,20 +76,28 @@ def _decode(value: object, pg_type: str) -> object:
     return value
 
 
-def _unpack(data: bytes) -> bytes:
-    """Decompress in chunks; refuse once the output passes ``MAX_UNPACKED``."""
+def _unpack(data: bytes) -> bytearray:
+    """Decompress in chunks; refuse once the output passes ``MAX_UNPACKED``.
+
+    Returns the buffer itself (no ``bytes`` copy); ``_parse`` decodes it and drops it
+    before the JSON is parsed, so at most two unpacked copies exist at once.
+    """
     out = bytearray()
     with gzip.GzipFile(fileobj=io.BytesIO(data)) as stream:
         while chunk := stream.read(_CHUNK):
             out += chunk
             if len(out) > MAX_UNPACKED:
                 raise _Refusal(texts.IMPORT_TOO_LARGE)
-    return bytes(out)
+    return out
 
 
 def _parse(data: bytes) -> dict[str, Any]:
     try:
-        document = json.loads(_unpack(data).decode("utf-8"))
+        raw = _unpack(data)
+        text = raw.decode("utf-8")
+        del raw  # free the unpacked bytes before the parsed document is built
+        document = json.loads(text)
+        del text
     except (OSError, EOFError, ValueError, UnicodeDecodeError):
         raise _Refusal(texts.IMPORT_UNREADABLE) from None
     if not isinstance(document, dict) or document.get("format") != FORMAT:
@@ -123,7 +131,8 @@ def _convert(document: dict[str, Any]) -> dict[str, tuple[list[str], list[list[o
             converted[name] = (names, rows)
         for state in document["sequences"].values():
             int(state["last_value"])
-            bool(state["is_called"])
+            if not isinstance(state["is_called"], bool):
+                raise ValueError("is_called is not a boolean")
     except (KeyError, TypeError, ValueError, AttributeError):
         raise _Refusal(texts.IMPORT_UNREADABLE) from None
     return converted

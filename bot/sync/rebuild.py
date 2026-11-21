@@ -25,7 +25,7 @@ import httpx
 
 from bot import maintenance
 from bot.backup.export import write_safety_export
-from bot.db.config import get_value, set_value
+from bot.db.config import get_value
 from bot.results import ActionResult
 from bot.services.logo import LogoError, download_logo_file
 from bot.sync.mirror_start import ensure_mirror
@@ -132,10 +132,6 @@ async def _import_and_restore_logos(ctx: Any) -> RebuildReport:
         "Rebuilt %d events, %d slots and %d DJs from Notion",
         result.events, result.slots, result.djs,
     )
-    try:
-        await set_value(pool, CONFIG_GUILD_ID, PG_TRUTH_IMPORTED_KEY, "1")
-    except Exception:
-        logger.exception("Recording the finished rebuild failed")
     try:
         failures = await _restore_logos(pool, result.logos)
     except Exception:

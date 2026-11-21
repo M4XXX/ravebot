@@ -121,8 +121,18 @@ async def done(
     )
 
 
-async def failed(pool: Executor, entity: str, key: str, error: str) -> None:
-    """Count the attempt and retry after min(2**attempts * 10 s, 1 h)."""
+async def failed(
+    pool: Executor,
+    entity: str,
+    key: str,
+    error: str,
+    enqueued_at: datetime.datetime | None = None,
+) -> None:
+    """Count the attempt and retry after min(2**attempts * 10 s, 1 h).
+
+    With ``enqueued_at`` (the value the worker read) the row is left alone when it was
+    enqueued again during the failed write: the newer change is retried at once.
+    """
     await pool.execute(
         """
         UPDATE notion_outbox SET
@@ -132,12 +142,14 @@ async def failed(pool: Executor, entity: str, key: str, error: str) -> None:
             ),
             last_error = $3
         WHERE entity = $1 AND entity_key = $2
+          AND ($6::timestamptz IS NULL OR enqueued_at = $6)
         """,
         entity,
         key,
         error,
         BASE_BACKOFF_SECONDS,
         MAX_BACKOFF_SECONDS,
+        enqueued_at,
     )
 
 
@@ -147,9 +159,15 @@ async def stats(pool: Executor) -> OutboxStats:
         SELECT count(*) AS count, min(enqueued_at) AS oldest,
                (SELECT last_error FROM notion_outbox
                 WHERE last_error IS NOT NULL
-                ORDER BY next_attempt_at DESC LIMIT 1) AS last_error
+                -- newest failure: the retry time minus the backoff that failure set
+                ORDER BY next_attempt_at - make_interval(
+                    secs => LEAST(power(2, LEAST(attempts - 1, 20)) * $1, $2)
+                ) DESC
+                LIMIT 1) AS last_error
         FROM notion_outbox
-        """
+        """,
+        BASE_BACKOFF_SECONDS,
+        MAX_BACKOFF_SECONDS,
     )
     if row is None:
         return OutboxStats(count=0, oldest=None, last_error=None)

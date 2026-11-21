@@ -11,9 +11,9 @@ from tests.cogs.test_admin import make_mock_ctx, make_mock_inter
 from tests.cogs.test_events import _make_cog_with_bot
 from tests.cogs.test_onboarding import make_member, make_role
 from tests.conftest import make_real_ctx
+from tests.fake_events import fake_events
 from tests.notion.factories import make_event
 from tests.services.test_lineup import _Ctx, _service
-from tests.fake_events import fake_events
 
 
 @pytest.fixture

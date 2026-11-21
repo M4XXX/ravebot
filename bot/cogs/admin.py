@@ -21,6 +21,7 @@ from datetime import time as time_of_day
 import disnake
 from disnake.ext import commands
 
+from bot.cogs import SERVER_ONLY
 from bot.context import BotContext
 from bot.db import config as db_config
 from bot.db import events as db_events
@@ -50,7 +51,6 @@ from bot.ui.setup_options import FIELD_LABELS, LIMITS, parse_hhmm
 logger = logging.getLogger(__name__)
 
 # Server only: Discord hides the command in private messages
-SERVER_ONLY = disnake.InteractionContextTypes(guild=True)
 
 # Commands that work while the bot is idle (identified by qualified name)
 IDLE_EXEMPT_COMMANDS = frozenset({"setup", "config show"})

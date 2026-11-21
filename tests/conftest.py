@@ -3,10 +3,9 @@
 Fixtures are added here as stories are implemented. Import in individual
 test files is automatic via pytest conftest discovery.
 """
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from unittest.mock import AsyncMock, patch
 
 from bot.config import Config
 

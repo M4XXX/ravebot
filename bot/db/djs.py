@@ -267,6 +267,13 @@ async def delete_dj(pool: asyncpg.Pool, user_id: int) -> bool:
     open DM conversation are removed. True if the DJ row was deleted.
     """
     async with pool.acquire() as conn, conn.transaction():
+        # Lock the DJ's slot rows in a fixed order first: edit_event locks an event's
+        # rows ORDER BY slot_index, so an unordered UPDATE could deadlock with it.
+        await conn.execute(
+            "SELECT 1 FROM slot_locks WHERE discord_user_id = $1"
+            " ORDER BY event_id, slot_index FOR UPDATE",
+            user_id,
+        )
         await conn.execute(
             "UPDATE slot_locks SET discord_user_id = NULL, booked_at = NULL"
             " WHERE discord_user_id = $1",

@@ -1,8 +1,6 @@
 """Tests for bot.services.roles (stored role ids with name fallback)."""
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
 from bot.services import roles
 
 
@@ -52,14 +50,16 @@ async def test_invites_stored_id_wins() -> None:
 
 async def test_invites_fallback_is_exact_name() -> None:
     with _stored(None):
-        assert await roles.get_invites_role(MagicMock(), _guild([_role(1, "active booking")])) is None
+        guild = _guild([_role(1, "active booking")])
+        assert await roles.get_invites_role(MagicMock(), guild) is None
         named = _role(2, "Active Booking")
         assert await roles.get_invites_role(MagicMock(), _guild([named])) is named
 
 
 async def test_invites_deleted_stored_role_returns_none() -> None:
     with _stored("99"):
-        assert await roles.get_invites_role(MagicMock(), _guild([_role(1, "Active Booking")])) is None
+        guild = _guild([_role(1, "Active Booking")])
+        assert await roles.get_invites_role(MagicMock(), guild) is None
 
 
 async def test_non_numeric_stored_value_counts_as_deleted() -> None:
@@ -73,4 +73,6 @@ async def test_reads_the_right_key_for_the_guild() -> None:
     with patch("bot.services.roles.get_value", m):
         await roles.get_dj_role(db, _guild([]))
         await roles.get_invites_role(db, _guild([]))
-    assert [c.args for c in m.await_args_list] == [(db, 1, "dj_role_id"), (db, 1, "invites_role_id")]
+    assert [c.args for c in m.await_args_list] == [
+        (db, 1, "dj_role_id"), (db, 1, "invites_role_id"),
+    ]

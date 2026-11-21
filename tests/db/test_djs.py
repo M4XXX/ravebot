@@ -355,7 +355,10 @@ async def test_delete_dj_cleans_up_in_one_transaction() -> None:
     conn.execute = AsyncMock(return_value="DELETE 1")
     assert await delete_dj(pool, -1) is True
     sql = [c.args[0] for c in conn.execute.await_args_list]
-    assert sql[0].startswith("UPDATE slot_locks SET discord_user_id = NULL")
+    # The DJ's slot rows are locked in a fixed order first (no deadlock with edit_event)
+    assert sql[0].startswith("SELECT 1 FROM slot_locks")
+    assert "ORDER BY event_id, slot_index FOR UPDATE" in sql[0]
+    assert sql[1].startswith("UPDATE slot_locks SET discord_user_id = NULL")
     assert any("reminders_sent" in q for q in sql)
     assert any("outreach_contacts" in q for q in sql)
     assert any("dj_conversations" in q for q in sql)

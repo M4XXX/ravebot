@@ -882,6 +882,10 @@ SLOT_NO_LONGER_EXISTS = (
     "This slot no longer exists: the event was deleted or has fewer slots now. Nothing "
     "was booked. Open the menu again to pick another slot."
 )
+SLOT_NO_LONGER_EXISTS_ADMIN = (
+    "This slot no longer exists: the event was deleted or has fewer slots now. Nothing "
+    "was booked."
+)
 
 # Lines shown in the /cancel event confirm message before "and N more"
 _CONFIRM_MAX_LINES = 15

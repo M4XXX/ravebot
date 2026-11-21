@@ -40,7 +40,7 @@ from dotenv import load_dotenv
 
 from bot.config import Config
 from bot.context import BotContext
-from bot.db.config import set_value
+from bot.db.config import GLOBAL_GUILD_ID, set_value
 from bot.db.pool import create_pool, run_migrations
 from bot.notion.api import NotionApi, NotionWriteError
 from bot.notion.client import NotionClient
@@ -75,7 +75,7 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 # Notion schema/view config keys are global (not per Discord guild).
-NOTION_CONFIG_GUILD_ID = 0
+NOTION_CONFIG_GUILD_ID = GLOBAL_GUILD_ID
 
 NOTION_SETUP_FAILED = (
     "Cannot use the Notion parent page: share the page with your integration "

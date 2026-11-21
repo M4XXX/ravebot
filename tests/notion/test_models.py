@@ -152,3 +152,10 @@ def test_guest_dj_negative_discord_id_parses():
     assert parse_dj(page).discord_id is None
     page["properties"]["Discord ID"]["rich_text"] = [{"plain_text": "--3"}]
     assert parse_dj(page).discord_id is None
+
+
+def test_finished_statuses_are_shared():
+    from bot.notion.models import FINISHED_STATUSES, STATUS_CANCELED
+
+    assert STATUS_CANCELED == "Canceled"
+    assert FINISHED_STATUSES == frozenset({"Done", "Canceled"})

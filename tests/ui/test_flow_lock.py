@@ -6,8 +6,8 @@ import pytest
 
 from bot.ui import texts
 from tests.conftest import make_real_ctx
-from tests.notion.factories import make_event
 from tests.fake_events import fake_events
+from tests.notion.factories import make_event
 
 
 def _inter(user_id: int = 1) -> MagicMock:

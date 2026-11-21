@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from disnake.ext import commands
+
 from tests.fake_events import fake_events
 
 

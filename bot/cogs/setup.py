@@ -5,6 +5,7 @@ from typing import Any
 import disnake
 from disnake.ext import commands
 
+from bot.cogs import SERVER_ONLY
 from bot.context import BotContext
 from bot.db.setup_drafts import SetupDraft, get_draft, save_draft
 from bot.services import activation
@@ -21,7 +22,6 @@ from bot.ui.setup_wizard import (
 logger = logging.getLogger(__name__)
 
 # Server only: Discord hides the command in private messages
-SERVER_ONLY = disnake.InteractionContextTypes(guild=True)
 
 
 class SetupCog(commands.Cog):

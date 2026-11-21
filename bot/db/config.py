@@ -12,6 +12,10 @@ All functions accept asyncpg.Pool as first argument — never touch global state
 """
 import asyncpg
 
+# Guild id 0 holds the bot-wide config rows (Notion database ids, sync and import state),
+# not tied to one Discord server. Never mirrored to Notion, always in the export file.
+GLOBAL_GUILD_ID = 0
+
 
 async def get_value(pool: asyncpg.Pool, guild_id: int, key: str) -> str | None:
     """Fetch a single config value for a guild.

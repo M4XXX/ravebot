@@ -2,6 +2,7 @@
 import datetime
 import logging
 import re
+import urllib.parse
 from dataclasses import dataclass
 from typing import Any
 
@@ -30,6 +31,10 @@ PROP_SLOT_DJ = "DJ"
 PROP_DJ_NAME = "DJ name"
 PROP_DJ_DISCORD_NAME = "Discord name"
 PROP_DJ_DISCORD_ID = "Discord ID"
+PROP_DJ_VRCHAT_NAME = "VRChat name"
+PROP_DJ_LOGO = "Logo"
+PROP_DJ_LINK = "Link"
+PROP_DJ_ALT_LINK = "Alternative link"
 
 _START_RE = re.compile(r"^(\d{1,2}):(\d{2})$")
 
@@ -40,6 +45,23 @@ FINISHED_STATUSES: frozenset[str] = frozenset({"Done", STATUS_CANCELED})
 
 # Upper bound for an event's slot count (Notion's Slots number is free text).
 MAX_SLOTS = 100
+
+
+def is_trashed(obj: dict[str, Any]) -> bool:
+    """True for a Notion page, database or data source in the trash or archived."""
+    return bool(obj.get("in_trash") or obj.get("is_archived") or obj.get("archived"))
+
+
+def is_http_url(value: str | None) -> bool:
+    if not value:
+        return False
+    parts = urllib.parse.urlsplit(value.strip())
+    return parts.scheme in ("http", "https") and bool(parts.netloc)
+
+
+def url_prop(value: str | None) -> dict[str, Any]:
+    """A Notion ``url`` property value: the trimmed http(s) URL, else empty."""
+    return {"url": value.strip() if value and is_http_url(value) else None}
 
 
 @dataclass(frozen=True)

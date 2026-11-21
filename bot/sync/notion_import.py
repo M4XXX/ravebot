@@ -13,7 +13,6 @@ whose number is outside 1..slot_count, a DJ name already taken) roll everything 
 and are listed in ``ImportResult.problems``.
 """
 import dataclasses
-import datetime
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -23,10 +22,10 @@ import asyncpg
 from bot import maintenance
 from bot.backup.export import write_safety_export
 from bot.db import mirror, outbox
-from bot.db.config import get_value, set_value
+from bot.db.config import GLOBAL_GUILD_ID, get_value, set_value
 from bot.db.events import EventDraft, insert_event
-from bot.notion.client import PROP_DJ_LOGO
 from bot.notion.models import (
+    PROP_DJ_LOGO,
     PROP_EVENT_BOT_ID,
     PROP_EVENT_ID,
     PROP_SLOT_DJ,
@@ -45,6 +44,7 @@ from bot.sync.payloads import (
     PROP_DJ_VRCHAT_NAME,
     _url,
     dj_payload,
+    event_draft,
     notion_dj_payload,
     notion_event_payload,
     notion_slot_payload,
@@ -68,7 +68,7 @@ logger = logging.getLogger(__name__)
 PG_TRUTH_IMPORTED_KEY = "pg_truth_imported"
 # Global config key: "1" after a backup import until one sync cycle has run (I4).
 POST_RESTORE_KEY = "sync_post_restore"
-CONFIG_GUILD_ID = 0
+CONFIG_GUILD_ID = GLOBAL_GUILD_ID  # config rows of the bot itself (bot/db/config.py)
 
 _REPLACE_TABLES = "events, slot_locks, djs, notion_mirror, notion_outbox, sync_issues"
 
@@ -118,20 +118,6 @@ def _event_label(page: dict[str, Any]) -> str:
     return f"'{title}'" if title else f"page {page.get('id', '?')}"
 
 
-def _draft(payload: dict[str, Any]) -> EventDraft:
-    hour, minute = payload["start"].split(":")
-    return EventDraft(
-        event_id=payload["event_id"],
-        date=datetime.date.fromisoformat(payload["date"]),
-        start=datetime.time(int(hour), int(minute)),
-        slot_minutes=payload["slot_minutes"],
-        slot_count=payload["slot_count"],
-        status=payload["status"],
-        genre=payload["genre"],
-        notes=payload["notes"],
-    )
-
-
 def _plan_events(
     pages: list[dict[str, Any]], problems: list[str], notes: list[str]
 ) -> list[_Event]:
@@ -153,7 +139,7 @@ def _plan_events(
             continue
         titles.add(title)
         uids.add(uid)
-        events.append(_Event(page["id"], uid, _draft(payload), payload))
+        events.append(_Event(page["id"], uid, event_draft(payload), payload))
     return events
 
 
@@ -339,6 +325,11 @@ async def _write(
     if mode == "replace":
         # Upgrade keeps what Postgres already holds; a rebuild restores the bot tables.
         await restore_botdata(conn, botdata)
+        # In the same transaction: the rebuilt data is the one-time import (no upgrade
+        # import runs over it later), and Notion now matches Postgres, so the next cycle
+        # must not treat pages the rebuild skipped as left over from a backup restore.
+        await set_value(conn, CONFIG_GUILD_ID, PG_TRUTH_IMPORTED_KEY, "1")
+        await set_value(conn, CONFIG_GUILD_ID, POST_RESTORE_KEY, "")
     return len(new_events), slots, len(djs)
 
 
