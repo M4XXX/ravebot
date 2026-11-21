@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- The container failed to start with `PermissionError: ... /root/.postgresql/postgresql.key`: after dropping to the `ravebot` user, `HOME` still pointed at `/root`. The entrypoint now sets `HOME=/home/ravebot`, and the image creates that folder.
+
 ## [1.3.0-rc1] - 2026-11-21
 
 ### Changed

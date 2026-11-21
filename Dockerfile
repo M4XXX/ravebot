@@ -54,7 +54,7 @@ ENV PATH="/app/.venv/bin:$PATH" \
 
 # The bot runs as the non-root user ravebot (uid 1000). The entrypoint starts as root
 # only to make a mapped backup folder writable for it, then drops privileges (setpriv).
-RUN useradd --uid 1000 --user-group --no-create-home --shell /bin/false ravebot
+RUN useradd --uid 1000 --user-group --create-home --home-dir /home/ravebot --shell /bin/false ravebot
 # Safety exports before a restore, rebuild or upgrade import (BACKUP_DIR). Map a host
 # folder or a named volume here so they survive a container recreate.
 RUN mkdir -p /data/backups && chown ravebot:ravebot /data/backups && chmod 700 /data/backups

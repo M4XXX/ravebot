@@ -15,6 +15,10 @@ if [ "$(id -u)" = "0" ]; then
         echo "entrypoint: cannot change the owner of $dir; backups may fail" >&2
     fi
     chmod 700 "$dir" 2>/dev/null || true
+    # setpriv keeps the environment: without this HOME stays /root, and libraries that
+    # look into the home folder (asyncpg reads ~/.postgresql/postgresql.key) fail with
+    # "Permission denied" instead of finding nothing.
+    export HOME=/home/ravebot USER=ravebot LOGNAME=ravebot
     exec setpriv --reuid=ravebot --regid=ravebot --init-groups "$@"
 fi
 
