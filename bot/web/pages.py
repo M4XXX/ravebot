@@ -73,6 +73,15 @@ margin-right:auto}
 .msg.err{background:#c2415a26;border-color:#c2415a88}
 .actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
 .kv{margin:4px 0;padding-left:18px;overflow-wrap:anywhere}
+.fld{display:inline-flex;flex-direction:column;width:230px;max-width:100%;margin:0 8px 12px 0;
+vertical-align:top}
+.fld>span{font-size:12px;font-weight:600;color:#b9c0ff;margin-bottom:4px}
+.fld .in{width:100%;margin:0}
+.fld small{opacity:.6;font-size:11.5px;margin-top:4px;line-height:1.35}
+.sub{margin-top:16px;padding:14px 14px 4px;border:1px solid #9d8cff44;border-radius:8px;
+background:#9d8cff0f}
+.sub h4{margin:0 0 4px;font-size:13px;color:#e8eaff}
+.sub>p{margin:0 0 12px}
 form{margin:0}
 """
 
@@ -579,6 +588,38 @@ def _text_input(name: str, label: str, value: str, maxlen: int) -> str:
     )
 
 
+def _labeled(label: str, control: str, hint: str = "") -> str:
+    """A form control with a visible label above it and an optional hint below."""
+    small = f"<small>{_e(hint)}</small>" if hint else ""
+    return f'<label class="fld"><span>{_e(label)}</span>{control}{small}</label>'
+
+
+def _rule_inputs(
+    values: dict[str, str],
+    anchor_options: list[tuple[str, str]],
+    field_select: str = "",
+) -> str:
+    """Value, interval and first event of a rule, each with a label and a hint."""
+    return (
+        field_select
+        + _labeled(
+            "Value",
+            _text_input("value", "e.g. Techno or Warehouse 9", values.get("value", ""), 80),
+            "The genre or location the matching events get.",
+        )
+        + _labeled(
+            "Every how many events",
+            _every_input(values.get("every", "1")),
+            "1 = every event, 2 = every second event, 3 = every third.",
+        )
+        + _labeled(
+            "Starting with",
+            _anchor_select(anchor_options, values.get("start")),
+            "The first scheduled event the rule applies to.",
+        )
+    )
+
+
 def _anchor_select(options: list[tuple[str, str]], selected: str | None = None) -> str:
     items = "".join(
         f'<option value="{_e(iso)}"{" selected" if iso == selected else ""}>{_e(label)}</option>'
@@ -661,9 +702,18 @@ def render_schedule(
     defaults = (
         '<section class="card"><h3>Defaults</h3>'
         f'<form method="post" action="/schedule/defaults">{_csrf_field(csrf)}'
-        + _text_input("genre", "Default genre", shown_defaults["genre"], 40)
-        + _text_input("location", "Default location", shown_defaults["location"], 80)
-        + '<button class="btn" type="submit">Save defaults</button></form>'
+        + _labeled(
+            "Default genre",
+            _text_input("genre", "Default genre", shown_defaults["genre"], 40),
+            "Up to 40 characters.",
+        )
+        + _labeled(
+            "Default location",
+            _text_input("location", "Default location", shown_defaults["location"], 80),
+            "Up to 80 characters.",
+        )
+        + '<div class="actions"><button class="btn" type="submit">Save defaults</button></div>'
+        "</form>"
         '<p class="muted">Used by scheduled events when no rule sets the value. '
         "Empty means none.</p></section>"
     )
@@ -672,16 +722,20 @@ def render_schedule(
         f'<option value="{k}"{" selected" if values.get("field") == k else ""}>{_e(v)}</option>'
         for k, v in _FIELD_CHOICES
     )
+    field_select = _labeled(
+        "Sets",
+        f'<select class="in" name="field" aria-label="What the rule sets">{field_options}</select>',
+        "Whether the rule sets the genre or the location.",
+    )
     rules = (
         f'<section class="card"><h3>Rules ({len(overview.rules)})</h3>{rows}'
-        f'<form method="post" action="/schedule/rules/add">{_csrf_field(csrf)}'
-        f'<select class="in" name="field" aria-label="What the rule sets">{field_options}</select>'
-        + _text_input("value", "The value", values.get("value", ""), 80)
-        + _every_input(values.get("every", "1"))
-        + _anchor_select(anchor_options, values.get("start"))
-        + '<button class="btn" type="submit">Add rule</button></form>'
+        '<div class="sub"><h4>Add a rule</h4>'
         '<p class="muted">A rule sets the genre or location of every n-th scheduled event, '
-        "counted from the event you pick. A value set by hand always wins.</p></section>"
+        "counted from the event you pick. A value set by hand always wins.</p>"
+        f'<form method="post" action="/schedule/rules/add">{_csrf_field(csrf)}'
+        + _rule_inputs(values, anchor_options, field_select)
+        + '<div class="actions"><button class="btn" type="submit">Add rule</button></div>'
+        "</form></div></section>"
     )
     events = "".join(_event_row(d) for d in overview.dates) or '<p class="muted">None.</p>'
     return _page(
@@ -707,9 +761,14 @@ def render_edit_rule(
         f"({_e(texts.field_name(rule.field))})</h3>"
         f'<form method="post" action="/schedule/rules/{_e(rule.id)}/edit">{_csrf_field(csrf)}'
         f'<input type="hidden" name="field" value="{_e(rule.field)}">'
-        + _text_input("value", "The value", values.get("value", rule.value), 80)
-        + _every_input(values.get("every", str(rule.every)))
-        + _anchor_select(options, values.get("start", rule.anchor.isoformat()))
+        + _rule_inputs(
+            {
+                "value": values.get("value", rule.value),
+                "every": values.get("every", str(rule.every)),
+                "start": values.get("start", rule.anchor.isoformat()),
+            },
+            options,
+        )
         + '<div class="actions"><button class="btn" type="submit">Save</button>'
         '<a class="btn g" href="/schedule">Cancel</a></div></form></section>'
     )

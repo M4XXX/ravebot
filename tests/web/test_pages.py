@@ -287,3 +287,47 @@ def test_missing_databases_card_says_paused_only_when_paused() -> None:
     assert "Booking and the lineup keep working" in page
     page = render_dashboard(SERVER, [], "tok", notion_problem="gone", notion_paused=True)
     assert "booking and edits are paused" in page
+
+
+def _schedule_overview(rules=()):
+    from bot.web.schedule_page import ScheduleOverview
+
+    return ScheduleOverview(
+        enabled=True, interval_days=7, first_date=None, lookahead=4,
+        defaults={}, rules=list(rules), dates=[], anchors=[], pending=0,
+    )
+
+
+def test_rule_form_fields_have_labels_and_hints() -> None:
+    from bot.web.pages import render_schedule
+
+    page = render_schedule(_schedule_overview(), [("Rave Night · 05.12.2026", "2026-12-05")], "t")
+    for label in ("Sets", "Value", "Every how many events", "Starting with"):
+        assert f"<span>{label}</span>" in page
+    assert "1 = every event, 2 = every second event" in page
+    assert "The first scheduled event the rule applies to." in page
+
+
+def test_add_rule_form_is_a_separate_block_after_the_rule_list() -> None:
+    from bot.services.schedule_rules import Rule
+    from bot.web.pages import render_schedule
+    from bot.web.schedule_page import RuleView
+
+    view = RuleView(Rule(1, "location", "Hall B", 2, datetime.date(2026, 12, 5)), "Rave Night")
+    page = render_schedule(_schedule_overview([view]), [], "t")
+    listing = page.index("#1 Location: Hall B")
+    block = page.index('<div class="sub"><h4>Add a rule</h4>')
+    assert listing < block < page.index('action="/schedule/rules/add"')
+
+
+def test_edit_rule_form_uses_the_same_labels() -> None:
+    from bot.services.schedule_rules import Rule
+    from bot.web.pages import render_edit_rule
+    from bot.web.schedule_page import RuleView
+
+    view = RuleView(Rule(1, "genre", "Techno", 2, datetime.date(2026, 12, 5)), "Rave Night")
+    page = render_edit_rule(view, [("Rave Night · 05.12.2026", "2026-12-05")], "t")
+    for label in ("Value", "Every how many events", "Starting with"):
+        assert f"<span>{label}</span>" in page
+    assert 'value="Techno"' in page and 'value="2"' in page
+    assert '<option value="2026-12-05" selected>' in page
