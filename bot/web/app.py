@@ -405,7 +405,7 @@ def create_app(
         except Exception:
             logger.warning("Could not list the bookings of a DJ", exc_info=True)
             return await djs_page(request, ActionResult(False, BOOKINGS_FAILED), 502)
-        bookings = [(e.event_id, texts.slot_phrase(e, i)) for e, i in found]
+        bookings = [(e.event_id, f"slot {i + 1} at {texts.plain_time(e, i)}") for e, i in found]
         return _html(render_confirm_delete_dj(row, bookings, request["session"].csrf))
 
     async def post_dj_delete(request: web.Request) -> web.Response:

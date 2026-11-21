@@ -112,29 +112,39 @@ def _lineup_summary(booked: int, total: int) -> str:
 
 
 def lineup_text(event: EventInfo) -> str:
-    """Lineup body: a summary line, then one line per slot; whole lines, capped at 4096 chars."""
+    """Lineup body: meta line, summary, one line per slot, notes; capped at 4096 chars.
+
+    Over the cap the Notes block goes first (never a partial note), then whole slot lines.
+    """
     by_number = event.resolved_slots()
     slot_lines: list[str] = []
     booked = 0
     for index in range(event.slot_count):
         slot = by_number.get(index + 1)
-        time = f"**{texts.fmt_time(event, index)}**"
+        label = f"**Slot {index + 1}** \u00b7 {texts.slot_time(event, index)}"
         if slot is not None and slot.dj_page_id is not None:
             booked += 1
-            slot_lines.append(f"{time}  {_BOOKED_ICON} {_safe_dj_name(slot.dj_name)}")
+            slot_lines.append(f"{label}  {_BOOKED_ICON} {_safe_dj_name(slot.dj_name)}")
         else:
-            slot_lines.append(f"{time}  {_OPEN_ICON} *open slot*")
-    head = [_lineup_summary(booked, event.slot_count), ""]
+            slot_lines.append(f"{label}  {_OPEN_ICON} *open slot*")
+    meta = texts.event_meta(event)
+    head = [meta, ""] if meta else []
+    head += [_lineup_summary(booked, event.slot_count), ""]
+    note = (event.notes or "").strip()
+    notes_block = ["", f"**{texts.NOTES_HEADING}**", texts.escape_text(note)] if note else []
+    text = "\n".join([*head, *slot_lines, *notes_block])
+    if len(text) <= _MAX_DESCRIPTION:
+        return text
     text = "\n".join([*head, *slot_lines])
     if len(text) <= _MAX_DESCRIPTION:
         return text
     for keep in range(len(slot_lines), -1, -1):
         hidden = len(slot_lines) - keep
-        note = f"{hidden} slot not shown" if hidden == 1 else f"{hidden} slots not shown"
-        candidate = "\n".join([*head, *slot_lines[:keep], note])
+        cut = f"{hidden} slot not shown" if hidden == 1 else f"{hidden} slots not shown"
+        candidate = "\n".join([*head, *slot_lines[:keep], cut])
         if len(candidate) <= _MAX_DESCRIPTION:
             return candidate
-    return head[0]
+    return head[-2]
 
 
 class LineupUpdateEmbed(disnake.Embed):
@@ -159,7 +169,7 @@ class BookingEventPickEmbed(disnake.Embed):
             blocks.append(
                 f"**{texts.event_name(event)} \u00b7 {texts.fmt_date(event)}**\n"
                 f"{_BOOKED_ICON} {open_count} of {event.slot_count} {noun} open"
-                f" \u00b7 starts {texts.fmt_time(event, 0)}"
+                f" \u00b7 starts {texts.slot_time(event, 0)}"
             )
         super().__init__(
             title=texts.PICK_EVENT,

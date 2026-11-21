@@ -129,7 +129,7 @@ async def test_book_slot_override_success(monkeypatch):
     release.assert_not_awaited()
     event = fake_events.list_events.return_value[0]
     dm = svc.bot.get_user.return_value.send.call_args[0][0]
-    assert dm == f"An organizer booked you: {EVENT_NAME}, slot 2 at 21:00."
+    assert dm == f"An organizer booked you: {EVENT_NAME}, slot 2 at {texts.slot_time(event, 1)}."
     svc.log_service.log_changed_by_organizer.assert_awaited_once_with(
         "Admin", "booked", "DJ Scope", event, 1
     )
@@ -166,7 +166,10 @@ async def test_book_slot_override_replaces_displaced_holder(monkeypatch):
     sent_to = [c.args[0] for c in svc.bot.get_user.call_args_list]
     assert 999 in sent_to
     dms = [c.args[0] for c in svc.bot.get_user.return_value.send.call_args_list]
-    assert f"An organizer cancelled your booking: {EVENT_NAME}, slot 1 at 20:00." in dms
+    assert (
+        f"An organizer cancelled your booking: {EVENT_NAME}, "
+        f"slot 1 at {texts.slot_time(fake_events.list_events.return_value[0], 0)}."
+    ) in dms
 
 
 @pytest.mark.asyncio
@@ -308,7 +311,7 @@ async def test_cancel_slot_override_success(monkeypatch):
     queued.assert_called_once_with(svc._ctx, "slot", f"{EVENT_PAGE_ID}:1")
     dm = svc.bot.get_user.return_value.send.call_args[0][0]
     assert dm == (
-        f"An organizer cancelled your booking: {EVENT_NAME}, slot 2 at 21:00."
+        f"An organizer cancelled your booking: {EVENT_NAME}, slot 2 at {texts.slot_time(event, 1)}."
     )
     svc.log_service.log_changed_by_organizer.assert_awaited_once_with(
         "Admin", "removed", "DJ Scope", event, 1

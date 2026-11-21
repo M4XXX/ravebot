@@ -17,6 +17,7 @@ import pytest
 
 from bot.notion.models import EventInfo
 from bot.services.reminders import RemindersService
+from bot.ui import texts
 from bot.ui.embeds import ErrorCode
 from tests.fake_events import fake_events
 from tests.notion.factories import make_event
@@ -143,7 +144,7 @@ async def test_send_reminders_sends_dm_and_records_sent():
     assert dm_text == (
         "**You're on tomorrow!** \U0001f3a7\n"
         "Friday Night Rave\n"
-        "Friday 22.05.2026, slot 1 at 00:00\n"
+        f"Friday 22.05.2026, slot 1 at {texts.slot_time(event, 0)}\n"
         "Check your gear and your stream link. Have a great set!"
     )
     mock_record.assert_awaited_once_with(svc.db, "evt-001", 123, 0)
@@ -229,7 +230,7 @@ async def test_send_reminders_handles_dm_forbidden():
     assert call_kwargs["error_code"] == ErrorCode.ERR_DM_FAILED
     assert "123" not in call_kwargs["trigger"]  # no raw ids
     assert "DJ Test" in call_kwargs["trigger"]
-    assert "slot 1 at 00:00" in call_kwargs["trigger"]
+    assert f"slot 1 at {texts.plain_time(event, 0)}" in call_kwargs["trigger"]
 
 
 @pytest.mark.asyncio
@@ -287,8 +288,9 @@ async def test_send_reminders_slot_unix_from_typed_event():
     ) as mock_record:
         await svc.send_reminders(guild_id=1, ctx=MagicMock(), _now=FIXED_NOW)
     mock_get.assert_awaited_once_with(svc.db, "page-xyz")
-    assert "Friday 22.05.2026, slot 3 at 02:00" in user_mock.send.call_args[0][0]
-    assert "<t:" not in user_mock.send.call_args[0][0]
+    assert f"Friday 22.05.2026, slot 3 at {texts.slot_time(event, 2)}" in (
+        user_mock.send.call_args[0][0]
+    )
     mock_record.assert_awaited_once_with(svc.db, "page-xyz", 7, 2)
 
 

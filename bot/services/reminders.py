@@ -165,7 +165,8 @@ class RemindersService:
                     await self._report_once(
                         key, dj_name,
                         f"The reminder for {dj_name} could not be delivered "
-                        f"({event.event_id}, {texts.slot_phrase(event, slot_index)}) "
+                        f"({event.event_id}, slot {slot_index + 1} at "
+                        f"{texts.plain_time(event, slot_index)}) "
                         "because the bot cannot find them on the server.",
                     )
                     continue
@@ -191,7 +192,8 @@ class RemindersService:
                         await self._report_once(
                             key, dj_name,
                             f"The reminder for {dj_name} could not be delivered "
-                            f"({event.event_id}, {texts.slot_phrase(event, slot_index)}) "
+                            f"({event.event_id}, slot {slot_index + 1} at "
+                        f"{texts.plain_time(event, slot_index)}) "
                             "because their DMs are closed.",
                         )
                     else:

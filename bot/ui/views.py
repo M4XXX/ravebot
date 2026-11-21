@@ -389,7 +389,10 @@ class FallbackMenuView(GatedView):
 
         bookings.sort(key=lambda b: b["slot_unix"])
         view = CancellationView(self.ctx, bookings, lock, user_id)
-        prompt = texts.CANCEL_WHICH
+        prompt = texts.CANCEL_WHICH + "\n" + "\n".join(
+            texts.cancel_list_line(i + 1, b["event"], b["slot_index"])
+            for i, b in enumerate(bookings[:4])
+        )
         if len(bookings) > 4:
             prompt += "\n" + texts.cancel_more(len(bookings))
         try:
@@ -977,7 +980,7 @@ class SlotSelectionView(FlowView):
 
         for row_idx, slot_index in enumerate(open_slot_indices[:MAX_SLOT_BUTTONS]):
             btn = disnake.ui.Button(
-                label=texts.slot_button(event, slot_index),
+                label=texts.slot_button(slot_index),
                 style=disnake.ButtonStyle.secondary,
                 custom_id=f"slot_select:{event_id}:{self._nonce}:{slot_index}",
                 row=row_idx // 5,
@@ -1338,7 +1341,7 @@ class CancellationView(FlowView):
 
         for i, booking in enumerate(bookings[:4]):  # max 4 booking buttons on rows 0-3
             event = booking["event"]
-            label = f"{event.event_id} · {texts.slot_button(event, booking['slot_index'])}"[:80]
+            label = texts.booking_button(i + 1)
 
             btn = disnake.ui.Button(
                 label=label,

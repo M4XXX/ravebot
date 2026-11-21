@@ -1520,7 +1520,7 @@ async def test_event_selection_offers_exactly_the_open_gap_slot() -> None:
     assert isinstance(slot_view, SlotSelectionView)
     assert _slot_button_indices(slot_view) == [1]
     labels = [i.label for i in slot_view.children if i.custom_id.endswith(":1")]
-    assert labels == [texts.slot_button(event, 1)]
+    assert labels == [texts.slot_button(1)]
     cid = slot_view.children[0].custom_id
     assert cid.startswith("slot_select:evt-gap:") and cid.endswith(":1")
 
@@ -1743,7 +1743,7 @@ async def test_cancel_slot_matches_lock_rows_by_page_id_and_slot_time() -> None:
         {"event": event, "slot_index": 3, "slot_unix": int(event.slot_start(3).timestamp())}
     ]
     label = inter.response.send_message.call_args.kwargs["view"].children[0].label
-    assert label == "Cancel Rave · Slot 4 · 21:30"
+    assert label == "Booking 1"
 
 
 async def _run_cancel(user_id, *, lineup=None):
@@ -1866,12 +1866,12 @@ async def test_outreach_pick_slot_sends_lineup_and_open_slot_buttons() -> None:
     assert "open slot" in kwargs["embed"].description
     labels = [c.label for c in kwargs["view"].children]
     assert labels == [
-        texts.slot_button(event, 0),
-        texts.slot_button(event, 2),
-        texts.slot_button(event, 3),
+        texts.slot_button(0),
+        texts.slot_button(2),
+        texts.slot_button(3),
         texts.BTN_NEVER_MIND,
     ]
-    assert labels[0].startswith("Slot 1 · ")
+    assert labels[0] == "Slot 1"
 
 
 @pytest.mark.asyncio

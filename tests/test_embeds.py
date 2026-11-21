@@ -1,7 +1,13 @@
 """Tests for bot/ui/embeds.py — EmbedColors, ErrorCode."""
+import asyncio
 import datetime
+import re
+from unittest.mock import MagicMock
+
+import pytest
 
 from bot.notion.models import EventInfo
+from bot.ui import texts
 from bot.ui.embeds import (
     EmbedColors,
     ErrorCode,
@@ -88,7 +94,8 @@ class TestBookingConfirmEmbed:
         from bot.ui.embeds import BookingConfirmEmbed
         embed = BookingConfirmEmbed(make_event(event_id="Test Rave"), 0)
         assert embed.title == "Confirm your booking"
-        assert embed.description == "Test Rave\nSaturday 13.06.2026, slot 1 at 20:00"
+        t = texts.slot_time(make_event(event_id="Test Rave"), 0)
+        assert embed.description == f"Test Rave\nSaturday 13.06.2026, slot 1 at {t}"
 
 
 class TestBookedEmbed:
@@ -101,8 +108,9 @@ class TestBookedEmbed:
         from bot.ui.embeds import BookedEmbed
         embed = BookedEmbed(make_event(event_id="Test Rave"), 1)
         assert embed.title == "You're booked"
+        t = texts.slot_time(make_event(event_id="Test Rave"), 1)
         assert embed.description == (
-            "Test Rave\nSaturday 13.06.2026, slot 2 at 21:00\nI'll remind you the day before."
+            f"Test Rave\nSaturday 13.06.2026, slot 2 at {t}\nI'll remind you the day before."
         )
 
 
@@ -122,12 +130,13 @@ class TestLineupUpdateEmbed:
         event = self._event(
             [make_slot(1), make_slot(2, dj_page_id="d1", dj_name="Nova")]
         )
+        t = [texts.slot_time(event, i) for i in range(3)]
         assert lineup_text(event) == (
             "1 of 3 slots booked \u00b7 2 open\n"
             "\n"
-            "**18:00**  \u25ab\ufe0f *open slot*\n"
-            "**19:00**  \U0001f3a7 Nova\n"
-            "**20:00**  \u25ab\ufe0f *open slot*"
+            f"**Slot 1** \u00b7 {t[0]}  \u25ab\ufe0f *open slot*\n"
+            f"**Slot 2** \u00b7 {t[1]}  \U0001f3a7 Nova\n"
+            f"**Slot 3** \u00b7 {t[2]}  \u25ab\ufe0f *open slot*"
         )
 
     def test_summary_when_fully_booked_and_when_empty_single_slot(self) -> None:
@@ -203,7 +212,9 @@ class TestLineupUpdateEmbed:
             ],
             slot_count=1,
         )
-        assert lineup_text(event).splitlines()[2] == "**18:00**  \u25ab\ufe0f *open slot*"
+        assert lineup_text(event).splitlines()[2] == (
+            f"**Slot 1** \u00b7 {texts.slot_time(event, 0)}  \u25ab\ufe0f *open slot*"
+        )
 
     def test_embed_title_footer_color(self) -> None:
         from bot.ui.embeds import LineupUpdateEmbed
@@ -248,3 +259,74 @@ class TestLogEntryEmbed:
         embed = LogEntryEmbed("T", "x" * 5000, EmbedColors.IMPERIAL_RED)
         assert len(embed.description) <= 4096
         assert embed.description.endswith("(cut)")
+
+
+class TestLineupLayout:
+    def test_lineup_shows_meta_slots_and_notes(self) -> None:
+        from bot.ui.embeds import lineup_text
+
+        e = make_event(genre="Techno", location="Club Vortex", notes="Doors 19:30")
+        text = lineup_text(e)
+        assert text.startswith("\U0001f3b5 Techno \u00b7 \U0001f4cd Club Vortex\n\n")
+        assert re.search(r"\*\*Slot 1\*\* \u00b7 <t:\d+:t>", text)
+        assert text.endswith("\n\n**Notes**\nDoors 19:30")
+
+    def test_without_meta_or_notes_has_nothing_extra(self) -> None:
+        from bot.ui.embeds import lineup_text
+
+        text = lineup_text(make_event())
+        assert "\U0001f3b5" not in text and "\U0001f4cd" not in text and "Notes" not in text
+        assert text.splitlines()[0].endswith("open")
+        assert not text.endswith("\n")
+
+    def test_only_location_set(self) -> None:
+        from bot.ui.embeds import lineup_text
+
+        assert lineup_text(make_event(location="Club")).startswith("\U0001f4cd Club\n\n")
+
+    def test_long_note_dropped_before_slots(self) -> None:
+        from bot.ui.embeds import lineup_text
+
+        note = "x" * 300
+        count = 1
+        while "not shown" not in lineup_text(make_event(slot_count=count + 1)):
+            count += 1
+        # largest slot count that fits without a note; the note pushes it over
+        assert len(lineup_text(make_event(slot_count=count))) <= 4096
+        assert len(
+            lineup_text(make_event(slot_count=count)) + "\n\n**Notes**\n" + note
+        ) > 4096
+        text = lineup_text(make_event(slot_count=count, notes=note))
+        assert "Notes" not in text and f"**Slot {count}**" in text and "not shown" not in text
+        assert len(text) <= 4096
+
+    def test_note_kept_when_it_fits(self) -> None:
+        from bot.ui.embeds import lineup_text
+
+        assert "**Notes**" in lineup_text(make_event(slot_count=5, notes="x" * 300))
+
+    def test_note_is_escaped(self) -> None:
+        from bot.ui.embeds import lineup_text
+
+        assert "@everyone" not in lineup_text(make_event(notes="@everyone <@1>")).replace(
+            "@\u200beveryone", ""
+        )
+
+
+@pytest.mark.asyncio
+async def test_no_button_label_contains_a_time() -> None:
+    from bot.ui.views import CancellationView, SlotSelectionView
+
+    event = make_event(slot_count=6)
+    lock = asyncio.Lock()
+    slot_view = SlotSelectionView(MagicMock(), event, list(range(6)), lock, 1)
+    cancel_view = CancellationView(
+        MagicMock(),
+        [{"event": event, "slot_index": i, "slot_unix": i} for i in range(4)],
+        lock,
+        1,
+    )
+    labels = [c.label for v in (slot_view, cancel_view) for c in v.children]
+    assert labels
+    assert not [lbl for lbl in labels if re.search(r"\d{1,2}:\d{2}", lbl)]
+    assert [c.label for c in cancel_view.children][:4] == [f"Booking {i}" for i in range(1, 5)]

@@ -513,8 +513,7 @@ async def test_add_event_creates_event_and_replies(monkeypatch: pytest.MonkeyPat
     reply, _ = assert_deferred_reply(inter)
     from bot.ui import texts
 
-    assert "<t:" not in reply
-    assert reply == f"Event created for {texts.fmt_slot_when(created, 0)}."
+    assert reply == f"Event created for {texts.slot_when(created, 0)}."
 
 
 @pytest.mark.asyncio
@@ -1519,11 +1518,11 @@ async def test_dj_remove_asks_first_and_deletes_on_confirm() -> None:
         return_value=[(MagicMock(event_id="Rave One"), 0)]
     )
     inter = make_mock_inter(user_id=1)
-    with patch("bot.cogs.admin.texts.slot_phrase", return_value="slot 1 at 20:00"):
+    with patch("bot.cogs.admin.texts.slot_phrase", return_value="slot 1 at <t:1:t>"):
         await cog.dj_remove.callback(cog, inter, "Moonbeat")
     text = inter.followup.send.call_args.args[0]
     view = inter.followup.send.call_args.kwargs["view"]
-    assert "Moonbeat" in text and "Rave One, slot 1 at 20:00" in text
+    assert "Moonbeat" in text and "Rave One, slot 1 at <t:1:t>" in text
     assert isinstance(view, _ConfirmDelete)
     ctx.dj_admin_service.delete_dj.assert_not_awaited()
 

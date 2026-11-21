@@ -40,20 +40,49 @@ def fmt_date(event: EventInfo) -> str:
     return event.date.strftime("%A %d.%m.%Y")
 
 
-def fmt_time(event: EventInfo, slot_index: int) -> str:
-    """Local HH:MM of the zero-based slot_index."""
+def ts(moment: datetime.datetime, style: str) -> str:
+    """A Discord timestamp token; every reader sees it in their own time zone."""
+    return f"<t:{int(moment.timestamp())}:{style}>"
+
+
+def slot_time(event: EventInfo, slot_index: int) -> str:
+    """Short time of the zero-based slot_index, in the reader's time zone."""
+    return ts(event.slot_start(slot_index), "t")
+
+
+def slot_when(event: EventInfo, slot_index: int) -> str:
+    """Full date and time of the slot, in the reader's time zone."""
+    return ts(event.slot_start(slot_index), "F")
+
+
+def plain_time(event: EventInfo, slot_index: int) -> str:
+    """Local HH:MM in the bot time zone, for places Discord does not render (web, Notion, logs)."""
     return event.slot_start(slot_index).strftime("%H:%M")
 
 
-def fmt_slot_when(event: EventInfo, slot_index: int) -> str:
-    """`Saturday 14.11.2026, 19:00` (local time of the slot)."""
-    start = event.slot_start(slot_index)
-    return f"{start.strftime('%A %d.%m.%Y')}, {start.strftime('%H:%M')}"
-
-
 def slot_phrase(event: EventInfo, slot_index: int) -> str:
-    """`slot 2 at 19:00` for the zero-based slot_index."""
-    return f"slot {slot_index + 1} at {fmt_time(event, slot_index)}"
+    """`slot 2 at <t:...:t>` for the zero-based slot_index."""
+    return f"slot {slot_index + 1} at {slot_time(event, slot_index)}"
+
+
+def slot_button(slot_index: int) -> str:
+    """Button label for a slot; never contains a time."""
+    return f"Slot {slot_index + 1}"
+
+
+NOTES_HEADING = "Notes"
+_GENRE_ICON = "\U0001f3b5"
+_LOCATION_ICON = "\U0001f4cd"
+
+
+def event_meta(event: EventInfo) -> str | None:
+    """`🎵 Techno · 📍 Club Vortex`, only the parts that are set; None when neither."""
+    parts = []
+    if event.genre:
+        parts.append(f"{_GENRE_ICON} {escape_text(event.genre)}")
+    if event.location:
+        parts.append(f"{_LOCATION_ICON} {escape_text(event.location)}")
+    return " \u00b7 ".join(parts) if parts else None
 
 
 FLOW_STALE = "This menu is out of date. Open the menu again to start over."
@@ -224,10 +253,6 @@ PICK_SLOT_TRUNCATED = "Showing the first 24 open slots."
 BTN_NEVER_MIND = "Never mind"
 
 
-def slot_button(event: EventInfo, slot_index: int) -> str:
-    return f"Slot {slot_index + 1} · {fmt_time(event, slot_index)}"
-
-
 PICK_EVENT = "Which event do you want to play?"
 
 
@@ -250,6 +275,18 @@ NO_EVENTS = "There are no upcoming events yet."
 CANCEL_WHICH = "Which booking do you want to cancel?"
 
 
+def booking_button(number: int) -> str:
+    """Button label of the cancel list; never contains a time."""
+    return f"Booking {number}"
+
+
+def cancel_list_line(number: int, event: EventInfo, slot_index: int) -> str:
+    return (
+        f"{booking_button(number)} \u00b7 {escape_text(event_name(event))} \u00b7 "
+        f"Slot {slot_index + 1} \u00b7 {slot_when(event, slot_index)}"
+    )
+
+
 def cancel_more(total: int) -> str:
     return (
         f"You have {total} bookings; your next 4 are shown. "
@@ -259,7 +296,7 @@ def cancel_more(total: int) -> str:
 
 def cancel_confirm(event: EventInfo, slot_index: int) -> str:
     return (
-        f"Cancel slot {slot_index + 1} ({fmt_time(event, slot_index)}) at {event.event_id}?"
+        f"Cancel slot {slot_index + 1} ({slot_time(event, slot_index)}) at {event.event_id}?"
     )
 
 

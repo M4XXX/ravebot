@@ -1,5 +1,6 @@
 """Tests for bot/ui/texts.py."""
 import datetime
+import re
 
 from bot.ui import texts
 from tests.notion.factories import make_event
@@ -15,12 +16,29 @@ def test_fmt_date() -> None:
     assert texts.fmt_date(_event()) == "Saturday 14.11.2026"
 
 
-def test_fmt_time() -> None:
-    assert texts.fmt_time(_event(), 1) == "19:00"
+def test_plain_time() -> None:
+    assert texts.plain_time(_event(), 1) == "19:00"
 
 
 def test_slot_phrase() -> None:
-    assert texts.slot_phrase(_event(), 1) == "slot 2 at 19:00"
+    assert re.fullmatch(r"slot 2 at <t:\d+:t>", texts.slot_phrase(_event(), 1))
+
+
+def test_slot_button_has_no_time() -> None:
+    assert texts.slot_button(1) == "Slot 2"
+
+
+def test_slot_time_is_discord_timestamp() -> None:
+    assert re.fullmatch(r"<t:\d+:t>", texts.slot_time(_event(), 0))
+    assert re.fullmatch(r"<t:\d+:F>", texts.slot_when(_event(), 0))
+
+
+def test_event_meta() -> None:
+    assert texts.event_meta(make_event(genre="Techno", location="Club Vortex")) == (
+        "\U0001f3b5 Techno \u00b7 \U0001f4cd Club Vortex"
+    )
+    assert texts.event_meta(make_event(location="Club")) == "\U0001f4cd Club"
+    assert texts.event_meta(make_event()) is None
 
 
 def _catalog_values() -> list[str]:
@@ -36,7 +54,7 @@ def _catalog_values() -> list[str]:
             values.append(value)
     values += [
         texts.invite_opener("EV"),
-        texts.slot_button(event, 0),
+        texts.slot_button(0),
         texts.booking_body(event, 0),
         texts.cancel_confirm(event, 0),
         texts.reminder(event, 0),
@@ -62,10 +80,10 @@ def test_formatted_texts() -> None:
     event = make_event(
         event_id="EV", date=datetime.date(2026, 11, 14), start=datetime.time(18, 0)
     )
-    assert texts.slot_button(event, 0) == "Slot 1 · 18:00"
-    assert texts.booking_body(event, 0) == "EV\nSaturday 14.11.2026, slot 1 at 18:00"
-    assert texts.cancel_confirm(event, 0) == "Cancel slot 1 (18:00) at EV?"
-    assert texts.dm_booked(event, 0) == "An organizer booked you: EV, slot 1 at 18:00."
+    t = texts.slot_time(event, 0)
+    assert texts.booking_body(event, 0) == f"EV\nSaturday 14.11.2026, slot 1 at {t}"
+    assert texts.cancel_confirm(event, 0) == f"Cancel slot 1 ({t}) at EV?"
+    assert texts.dm_booked(event, 0) == f"An organizer booked you: EV, slot 1 at {t}."
 
 
 # --- /cancel event -----------------------------------------------------------
@@ -81,10 +99,14 @@ def _rave():
     )
 
 
+def _t(index: int) -> str:
+    return texts.slot_time(_rave(), index)
+
+
 def test_dm_event_canceled_lists_every_slot() -> None:
     assert texts.dm_event_canceled(_rave(), [0, 2]) == (
         "The event 2026-11-28 Rave Night was canceled by an organizer. "
-        "Your booking (slot 1 at 22:00, slot 3 at 23:00) is canceled too."
+        f"Your booking (slot 1 at {_t(0)}, slot 3 at {_t(2)}) is canceled too."
     )
 
 
@@ -96,7 +118,7 @@ def test_dj_channel_event_canceled() -> None:
 
 def test_dj_line() -> None:
     assert texts.dj_line("DJ Alpha", _rave(), [0, 2]) == (
-        "- DJ Alpha, slot 1 at 22:00, slot 3 at 23:00"
+        f"- DJ Alpha, slot 1 at {_t(0)}, slot 3 at {_t(2)}"
     )
 
 
@@ -107,7 +129,7 @@ def test_log_event_canceled_text_without_and_with_djs() -> None:
     )
     line = texts.dj_line("DJ Alpha", event, [0])
     assert texts.log_event_canceled_text("Max", event, [line]) == (
-        "Max canceled **2026-11-28 Rave Night**.\nBooked DJs:\n- DJ Alpha, slot 1 at 22:00"
+        f"Max canceled **2026-11-28 Rave Night**.\nBooked DJs:\n- DJ Alpha, slot 1 at {_t(0)}"
     )
 
 
@@ -123,7 +145,7 @@ def test_cancel_event_confirm_lists_djs_and_by_hand_names() -> None:
     assert text == (
         "Cancel the event **2026-11-28 Rave Night**?\n"
         "These DJs are booked and will be told by DM:\n"
-        "- DJ Alpha, slot 1 at 22:00\n"
+        f"- DJ Alpha, slot 1 at {_t(0)}\n"
         "Without a Discord account, tell them yourself: Guesty"
     )
 

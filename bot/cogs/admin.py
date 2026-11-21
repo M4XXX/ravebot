@@ -342,7 +342,7 @@ class AdminCog(commands.Cog):
         mirror_new_event(self.ctx, event)
         note = "" if marked else texts.CREATE_EVENT_NOT_MARKED
         await inter.followup.send(
-            f"Event created for {texts.fmt_slot_when(event, 0)}.{note}",
+            f"Event created for {texts.slot_when(event, 0)}.{note}",
             ephemeral=True
         )
 

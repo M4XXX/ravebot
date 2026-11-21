@@ -295,3 +295,9 @@ def test_event_snapshot_duplicate_rows_do_not_raise_and_use_lowest_page_id() -> 
         make_slot(1, dj_page_id="dj", page_id="p1"), make_slot(1, page_id="p2")])
     assert event_snapshot(a) == event_snapshot(b)
     assert event_snapshot(c) != event_snapshot(a)
+
+
+def test_snapshot_changes_with_location_genre_and_notes() -> None:
+    assert event_snapshot(make_event(location="A")) != event_snapshot(make_event(location="B"))
+    assert event_snapshot(make_event(genre="A")) != event_snapshot(make_event(genre="B"))
+    assert event_snapshot(make_event(notes="A")) != event_snapshot(make_event(notes="B"))
