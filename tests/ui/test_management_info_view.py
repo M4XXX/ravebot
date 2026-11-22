@@ -1,4 +1,5 @@
 """Tests for ManagementInfoView: the admin-only "Send me more information" button."""
+import dataclasses
 import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -204,3 +205,41 @@ async def test_runtime_added_admin_is_accepted() -> None:
     inter = _inter(author_id=777)
     await _click(view, inter)
     assert inter.author.send.await_count == 4
+
+
+@pytest.mark.asyncio
+async def test_guest_dj_data_is_sent_and_discord_name_is_none() -> None:
+    view = ManagementInfoView(_ctx())
+    inter = _inter()
+    event = _event(count=1)
+    event = dataclasses.replace(event, slots=(_slot(1, -5),))
+    guest = {
+        -5: {
+            "discord_user_id": -5, "dj_name": "Guest", "vrchat_name": "guestvrc",
+            "stream_url_primary": "https://guest.example/a", "stream_url_backup": None,
+            "logo_url": None, "has_logo": True,
+        }
+    }
+    ps = [
+        patch(f"{M}.get_record_by_message",
+              AsyncMock(return_value=LineupRecord("ev1", 9, (500,), "h"))),
+        patch(f"{M}.db_events.get_event", AsyncMock(return_value=event)),
+        patch(f"{M}.db_djs.get_dj_details", AsyncMock(return_value=guest)),
+        patch(f"{M}.db_djs.get_logo_image", AsyncMock(return_value=b"\x89PNGdata")),
+    ]
+    for p in ps:
+        p.start()
+    try:
+        await view.send_info.callback(inter)
+    finally:
+        for p in ps:
+            p.stop()
+    sends = inter.author.send.await_args_list
+    assert len(sends) == 2
+    text = sends[1].args[0]
+    assert "VRChat: guestvrc" in text
+    assert "https://guest.example/a" in text
+    assert "Discord: none" in text
+    assert isinstance(sends[1].kwargs["file"], disnake.File)
+    inter.bot.get_user.assert_not_called()
+    inter.bot.fetch_user.assert_not_awaited()

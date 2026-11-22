@@ -232,13 +232,11 @@ class ManagementInfoView(GatedView):
                 s.discord_id for s in event.slots
                 if s.dj_page_id is not None and s.discord_id is not None
             ]
-            djs = await db_djs.get_dj_details(db, [u for u in uids if u > 0])
+            djs = await db_djs.get_dj_details(db, uids)
             names: dict[int, str] = {}
             logos: dict[int, bytes] = {}
             for uid in uids:
-                if uid <= 0:
-                    continue
-                name = await _discord_name(inter.bot, uid)
+                name = await _discord_name(inter.bot, uid)  # None for guests
                 if name:
                     names[uid] = name
                 logo = await db_djs.get_logo_image(db, uid)
