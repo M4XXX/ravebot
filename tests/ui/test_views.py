@@ -3107,3 +3107,40 @@ async def test_admin_cancel_override_ignores_cutoff() -> None:
         except Exception:
             pass
     svc._find.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_cutoff_confirm_rereads_event_moved_earlier() -> None:
+    import dataclasses
+
+    from bot.policy import cancellation_closed_text
+
+    ctx, event, lock, booking, view = await _cutoff_setup()
+    inter = _cutoff_inter()
+    with _rules(cancel_cutoff_minutes=60), _clock(event, -2 * 3600):
+        await view._handle_booking(inter, booking)
+    sent = inter.response.send_message.call_args.kwargs["view"]
+    moved = dataclasses.replace(event, start=datetime.time(0, 5))
+    inter2 = _cutoff_inter()
+    with _rules(cancel_cutoff_minutes=60), _clock(event, -2 * 3600), \
+            patch("bot.db.events.get_event", new=AsyncMock(return_value=moved)), \
+            patch("bot.db.bookings.release_slot_lock", new=AsyncMock()) as release:
+        await sent._handle_confirm(inter2)
+    release.assert_not_awaited()
+    assert inter2.followup.send.call_args[0][0] == cancellation_closed_text(60)
+
+
+@pytest.mark.asyncio
+async def test_cutoff_confirm_failing_or_empty_read_falls_back() -> None:
+    for read in (AsyncMock(side_effect=OSError("db")), AsyncMock(return_value=None)):
+        ctx, event, lock, booking, view = await _cutoff_setup()
+        inter = _cutoff_inter()
+        with _rules(cancel_cutoff_minutes=60), _clock(event, -2 * 3600):
+            await view._handle_booking(inter, booking)
+        sent = inter.response.send_message.call_args.kwargs["view"]
+        inter2 = _cutoff_inter()
+        with _rules(cancel_cutoff_minutes=60), _clock(event, -2 * 3600), \
+                patch("bot.db.events.get_event", new=read), \
+                patch("bot.db.bookings.release_slot_lock", new=AsyncMock()) as release:
+            await sent._handle_confirm(inter2)
+        release.assert_awaited_once()

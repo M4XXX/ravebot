@@ -1546,7 +1546,15 @@ class CancelConfirmView(_SlotConfirmView):
         from bot import policy
 
         rules = await policy.current_rules(self._ctx.db, getattr(inter, "bot", None))
-        if policy.cancellation_closed(self._event, policy.utc_now(), rules):
+        # Re-read the event: an admin may have moved the start since the list was built.
+        event_now = self._event
+        try:
+            fresh = await db_events.get_event(self._ctx.db, event_id)
+            if fresh is not None:
+                event_now = fresh
+        except Exception as exc:
+            logger.warning("_cancel_booking: get_event failed: %s", exc)
+        if policy.cancellation_closed(event_now, policy.utc_now(), rules):
             await inter.followup.send(
                 policy.cancellation_closed_text(rules.cancel_cutoff_minutes),
                 ephemeral=True,
