@@ -628,3 +628,79 @@ async def test_force_book_tells_the_displaced_dj(monkeypatch) -> None:
     assert ok
     assert [uid for uid, _ in sent] == [42, 999]
     assert sent[1][1] == texts.dm_cancelled(_make_event(), 0)
+
+
+# ---------------------------------------------------------------------------
+# Booking rules do not apply to admin overrides (characterization)
+# ---------------------------------------------------------------------------
+
+
+def _patch_stateful_db(monkeypatch, holders: dict[int, int | None]):
+    """In-memory slot holders (index -> discord id); only the database layer is replaced."""
+    from bot.db.bookings import DjSlotLimitReached
+
+    async def force(pool, event_id, index, did, max_per_dj=None):
+        if max_per_dj is not None and sum(1 for h in holders.values() if h == did) >= max_per_dj:
+            raise DjSlotLimitReached(f"{event_id}:{did}")
+        previous = holders.get(index)
+        holders[index] = did
+        return previous
+
+    async def release(pool, event_id, index, expected_holder=None):
+        if holders.get(index) is None or holders[index] != expected_holder:
+            return False
+        holders[index] = None
+        return True
+
+    monkeypatch.setattr("bot.services.admin_booking.force_slot_holder", force)
+    monkeypatch.setattr("bot.services.admin_booking.release_slot_lock", release)
+    monkeypatch.setattr(
+        "bot.services.admin_booking.get_dj_by_discord_id",
+        AsyncMock(return_value={"dj_name": "x"}),
+    )
+    monkeypatch.setattr("bot.services.admin_booking.changed", MagicMock())
+
+
+@pytest.mark.asyncio
+async def test_book_slot_override_ignores_the_slot_limit(monkeypatch):
+    """A DJ holding 2 slots (limit 2) is still booked into a third by an admin."""
+    holders: dict[int, int | None] = {0: 42, 1: 42, 2: None}
+    _patch_stateful_db(monkeypatch, holders)
+    svc = _make_service()
+
+    success, msg = await svc.book_slot_override(
+        admin_name="Admin", dj_id=42, dj_name="DJ Scope", event_name=EVENT_NAME, slot_num=3,
+    )
+
+    assert (success, msg) == (True, "")
+    assert holders == {0: 42, 1: 42, 2: 42}
+
+
+@pytest.mark.asyncio
+async def test_cancel_slot_override_ignores_the_cancellation_cutoff(monkeypatch):
+    """An event starting in 10 minutes (cutoff 60) can still be cancelled by an admin."""
+    from bot import policy
+    from bot.timezone import local_now
+
+    start = local_now() + datetime.timedelta(minutes=10)
+    soon = make_event(
+        event_id=EVENT_NAME,
+        page_id=EVENT_PAGE_ID,
+        date=start.date(),
+        start=start.time().replace(second=0, microsecond=0),
+        slot_minutes=60,
+        slot_count=3,
+        slots=[make_slot(1), make_slot(2, dj_page_id="42", dj_name="DJ Scope", discord_id=42)],
+    )
+    assert policy.cancellation_closed(soon, policy.utc_now(), policy.BookingRules())
+    holders: dict[int, int | None] = {0: None, 1: 42, 2: None}
+    _patch_stateful_db(monkeypatch, holders)
+    svc = _make_service()
+    fake_events.list_events = AsyncMock(return_value=[soon])
+
+    success, msg = await svc.cancel_slot_override(
+        admin_name="Admin", dj_id=42, dj_name="DJ Scope", event_name=EVENT_NAME, slot_num=2,
+    )
+
+    assert (success, msg) == (True, "")
+    assert holders[1] is None

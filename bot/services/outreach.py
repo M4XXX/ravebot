@@ -295,10 +295,15 @@ class OutreachService:
 
         # DJs already playing at this event are not invited to it again
         booked_here = {slot.discord_id for slot in event.slots if slot.discord_id is not None}
+        # DJs at the slot limit for this event would be refused: skip them
+        from bot.policy import at_slot_limit, current_rules
+
+        rules = await current_rules(self.db, self.bot)
         not_yet_asked = [
             dj for dj in all_active
             if dj["discord_user_id"] not in already_contacted
             and dj["discord_user_id"] not in booked_here
+            and not at_slot_limit(event, dj["discord_user_id"], rules)
         ]
         if not not_yet_asked:
             logger.info(

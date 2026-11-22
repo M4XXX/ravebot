@@ -48,6 +48,7 @@ class Store:
             data.setdefault(sw.DRAFT_MARKER, True)
             data.setdefault(sw.STEPS_MARKER, True)
             data.setdefault(sw.STEPS_V4_MARKER, True)
+            data.setdefault(sw.STEPS_V5_MARKER, True)
         return SetupDraft(d.guild_id, d.message_id, d.channel_id, d.step, data)
 
     async def save_draft(self, db, guild_id, message_id, channel_id, step, data):
@@ -56,6 +57,7 @@ class Store:
             data.pop(sw.DRAFT_MARKER, None)  # keeps the tests' data comparisons readable
             data.pop(sw.STEPS_MARKER, None)
             data.pop(sw.STEPS_V4_MARKER, None)
+            data.pop(sw.STEPS_V5_MARKER, None)
         self.drafts[guild_id] = SetupDraft(guild_id, message_id, channel_id, step, data)
 
     async def delete_draft(self, db, guild_id):
@@ -257,6 +259,7 @@ async def test_every_control_refuses_non_admin(store):
         sw.ID_INVITES_TOGGLE, sw.ID_INVITES_CHANGE, sw.ID_ACTIVATE, sw.ID_SAVE, sw.ID_CHANGE,
         sw.ID_RULE_ADD, sw.ID_RULE_REMOVE, sw.ID_RULE_START, sw.ID_RULE_CANCEL,
         sw.ID_MGMT_CHANNEL, sw.ID_MGMT_CLEAR, sw.ID_MGMT_ALL, sw.ID_MGMT_NEW,
+        sw.ID_SLOT_LIMIT_TOGGLE, sw.ID_CUTOFF_TOGGLE, sw.ID_RULES_CHANGE,
     }
     assert all(v.timeout is None for v in sw.registered_views(ctx))
     for _ in sorted(registered):
@@ -357,12 +360,12 @@ async def test_navigation_back_next_and_summary(store):
 
 
 def test_total_steps_follows_step_list():
-    assert sw.total_steps() == len(sw.STEPS) - 1 == 17
+    assert sw.total_steps() == len(sw.STEPS) - 1 == 18
     assert sw.STEPS[-1] == "summary"
     assert sw.STEPS == [
         "welcome", "dj_channel", "log_channel", "roles", "slots", "start_time", "slot_length",
         "schedule", "interval", "first_date", "lookahead", "default_genre", "default_location",
-        "rules", "timezone", "invites", "management_channel", "summary",
+        "rules", "timezone", "invites", "management_channel", "booking_rules", "summary",
     ]
 
 
@@ -511,6 +514,8 @@ async def test_change_settings_prefills_all_stored_values(store):
         "default_genre": "", "default_location": "", "rules": [],
         "orig_event_interval_days": 14, "orig_first_event_date": "",
         "orig_management_channel": None,
+        "slot_limit_enabled": True, "slot_limit_max": 2,
+        "cancel_cutoff_enabled": True, "cancel_cutoff_minutes": 60,
     }
     assert draft.message_id == 55 and draft.step == 0
     assert store.writes == []
@@ -536,6 +541,8 @@ async def test_save_writes_all_keys_applies_zone_and_runs_no_effects(store):
         "default_start_time", "slot_duration_minutes", "event_interval_days",
         "event_lookahead_count", "timezone", "outreach_enabled", "outreach_days_before",
         "outreach_cooldown_hours", "event_schedule_enabled", "first_event_date",
+        "slot_limit_enabled", "slot_limit_max", "cancel_cutoff_enabled",
+        "cancel_cutoff_minutes",
     }
     assert c["slots_per_event"] == "3" and c["outreach_enabled"] == "false"
     assert timezone.get_timezone().key == "Europe/London"
@@ -1292,7 +1299,7 @@ def test_next_step_clamps_at_both_ends():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("data", "total"), [({}, 17), (OFF, 11)])
+@pytest.mark.parametrize(("data", "total"), [({}, 18), (OFF, 12)])
 async def test_step_numbers_are_consecutive(store, data, total):
     ctx = make_ctx()
     guild = make_guild()
@@ -1425,9 +1432,11 @@ async def test_old_invites_draft_goes_next_to_summary_and_back_to_invites(store)
     await view._navigate(make_inter(guild), 1)
     assert store.drafts[GUILD].step == STEP["management_channel"]  # optional, skippable
     await view._navigate(make_inter(guild), 1)
+    assert store.drafts[GUILD].step == STEP["booking_rules"]
+    await view._navigate(make_inter(guild), 1)
     assert store.drafts[GUILD].step == SUMMARY
-    await view._navigate(make_inter(guild), -1)
-    await view._navigate(make_inter(guild), -1)
+    for _ in range(3):
+        await view._navigate(make_inter(guild), -1)
     assert store.drafts[GUILD].step == INVITES
 
 
@@ -2069,10 +2078,10 @@ def _button(view, cid):
     return next(c for c in view.children if c.custom_id == cid)
 
 
-def test_management_step_sits_right_before_summary():
-    assert sw.STEPS[-2:] == ["management_channel", "summary"]
-    assert sw.total_steps() == 17
-    assert sw.total_steps({"event_schedule_enabled": False}) == 11
+def test_management_step_sits_right_before_booking_rules_and_summary():
+    assert sw.STEPS[-3:] == ["management_channel", "booking_rules", "summary"]
+    assert sw.total_steps() == 18
+    assert sw.total_steps({"event_schedule_enabled": False}) == 12
 
 
 @pytest.mark.asyncio
@@ -2130,7 +2139,7 @@ async def test_management_step_asks_backfill_and_blocks_next_until_answered(stor
     assert store.drafts[GUILD].data["management_backfill"] == "all"
     assert not disabled_next(last_view(inter))
     await wizard._navigate(make_inter(guild), 1)
-    assert store.drafts[GUILD].step == SUMMARY
+    assert store.drafts[GUILD].step == STEP["booking_rules"]
     assert store.writes == []
 
 
@@ -2213,7 +2222,7 @@ async def test_old_summary_draft_loads_at_the_new_summary(store):
     )
     store.legacy.add(GUILD)  # keep the stored markers as they are
     await sw.SetupWizardView(ctx)._navigate(make_inter(make_guild()), -1)
-    assert store.drafts[GUILD].step == MGMT
+    assert store.drafts[GUILD].step == STEP["booking_rules"]
 
 
 @pytest.mark.asyncio
@@ -2373,3 +2382,267 @@ def test_management_texts_have_no_em_dash():
     ]
     for s in strings:
         assert "—" not in s
+
+
+# ---------- booking rules step ----------
+
+BOOKING = STEP.get("booking_rules", -1)
+RULE_KEYS = ("slot_limit_enabled", "slot_limit_max", "cancel_cutoff_enabled",
+             "cancel_cutoff_minutes")
+DEFAULT_RULE_DATA = {"slot_limit_enabled": True, "slot_limit_max": 2,
+                     "cancel_cutoff_enabled": True, "cancel_cutoff_minutes": 60}
+STORED_RULES = {(GUILD, "slot_limit_enabled"): "false", (GUILD, "slot_limit_max"): "5",
+                (GUILD, "cancel_cutoff_enabled"): "true",
+                (GUILD, "cancel_cutoff_minutes"): "0"}
+STORED_RULE_DATA = {"slot_limit_enabled": False, "slot_limit_max": 5,
+                    "cancel_cutoff_enabled": True, "cancel_cutoff_minutes": 0}
+
+
+def _rule_config(store):
+    return {key: store.config.get((GUILD, key)) for key in RULE_KEYS}
+
+
+def test_booking_rules_step_sits_right_before_summary():
+    assert sw.STEPS.index("booking_rules") == len(sw.STEPS) - 2
+    assert sw.STEPS[sw.STEPS.index("booking_rules") - 1] == "management_channel"
+    assert sw.step_number("booking_rules") == sw.total_steps() == 18
+    assert (sw.ID_SLOT_LIMIT_TOGGLE, sw.ID_CUTOFF_TOGGLE, sw.ID_RULES_CHANGE) == (
+        "setup:slot_limit_toggle", "setup:cutoff_toggle", "setup:rules_change",
+    )
+
+
+@pytest.mark.asyncio
+async def test_booking_rules_layout_and_registered_views_carry_every_control():
+    rule_ids = {sw.ID_SLOT_LIMIT_TOGGLE, sw.ID_CUTOFF_TOGGLE, sw.ID_RULES_CHANGE}
+    layout = sw._layout(SetupDraft(0, 0, 0, BOOKING, {}))
+    assert set(layout.visible) == rule_ids | {sw.ID_BACK, sw.ID_NEXT}
+    registered = set()
+    for view in sw.registered_views(make_ctx()):
+        registered |= ids(view)
+    assert rule_ids <= registered
+
+
+@pytest.mark.asyncio
+async def test_first_run_draft_starts_with_default_rules(store):
+    data = await sw.prefilled_data(MagicMock(), GUILD, rerun=False)
+    assert {k: data[k] for k in RULE_KEYS} == DEFAULT_RULE_DATA
+    assert data[sw.STEPS_V5_MARKER] is True
+    ctx = make_ctx()
+    seed(store, BOOKING, {**FULL, **data})
+    step = await sw.render_step(ctx, make_guild(), store.drafts[GUILD])
+    view = sw.SetupWizardView(ctx, step)
+    assert ids(view) == {sw.ID_SLOT_LIMIT_TOGGLE, sw.ID_CUTOFF_TOGGLE, sw.ID_RULES_CHANGE,
+                         sw.ID_BACK, sw.ID_NEXT}
+    assert not disabled_next(view)
+    assert f"Step {BOOKING + 1} of {sw.total_steps()}: Booking rules" in step.content
+    assert "Slot limit: on, 2 per event" in step.content
+    assert "Cancellation cutoff: on, 60 minutes before the start" in step.content
+    assert "one DJ can book in one event" in step.content
+    assert "0 means" in step.content and "admin" in step.content.lower()
+    assert _button(view, sw.ID_SLOT_LIMIT_TOGGLE).label == "Slot limit: on"
+    assert _button(view, sw.ID_CUTOFF_TOGGLE).label == "Cancellation cutoff: on"
+    assert _button(view, sw.ID_RULES_CHANGE).label == "Change"
+
+
+@pytest.mark.asyncio
+async def test_rerun_draft_starts_with_stored_rules(store):
+    store.config.update(STORED_RULES)
+    data = await sw.prefilled_data(MagicMock(), GUILD)
+    assert {k: data[k] for k in RULE_KEYS} == STORED_RULE_DATA
+    ctx = make_ctx()
+    seed(store, BOOKING, {**FULL, **data})
+    step = await sw.render_step(ctx, make_guild(), store.drafts[GUILD])
+    assert "Slot limit: off" in step.content
+    assert "Cancellation cutoff: on, 0 minutes before the start" in step.content
+    view = sw.SetupWizardView(ctx, step)
+    assert _button(view, sw.ID_SLOT_LIMIT_TOGGLE).label == "Slot limit: off"
+
+
+@pytest.mark.asyncio
+async def test_old_draft_without_rule_keys_uses_the_stored_rules(store):
+    store.config.update(STORED_RULES)
+    ctx = make_ctx()
+    seed(store, BOOKING, {"rerun": True, **FULL})
+    step = await sw.render_step(ctx, make_guild(), store.drafts[GUILD])
+    assert "Slot limit: off" in step.content
+    store.writes.clear()
+    await sw._write_all(MagicMock(), GUILD, {"rerun": True, **FULL})
+    assert _rule_config(store) == {"slot_limit_enabled": "false", "slot_limit_max": "5",
+                                   "cancel_cutoff_enabled": "true",
+                                   "cancel_cutoff_minutes": "0"}
+    lines = await sw.summary_lines(ctx, make_guild(), {**FULL}, GUILD)
+    assert "Slot limit: off" in lines
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("handler", "flipped"), [
+    ("on_slot_limit_toggle", "slot_limit_enabled"),
+    ("on_cutoff_toggle", "cancel_cutoff_enabled"),
+])
+async def test_booking_rule_toggle_flips_only_its_rule(store, handler, flipped):
+    ctx = make_ctx()
+    seed(store, BOOKING, {**FULL, **DEFAULT_RULE_DATA})
+    inter = make_inter(make_guild())
+    await getattr(sw.SetupWizardView(ctx), handler)(inter)
+    data = store.drafts[GUILD].data
+    assert {k: data[k] for k in RULE_KEYS} == {**DEFAULT_RULE_DATA, flipped: False}
+    inter = make_inter(make_guild())
+    await getattr(sw.SetupWizardView(ctx), handler)(inter)
+    data = store.drafts[GUILD].data
+    assert {k: data[k] for k in RULE_KEYS} == DEFAULT_RULE_DATA
+    assert store.writes == []
+
+
+@pytest.mark.asyncio
+async def test_booking_rule_toggle_on_old_draft_keeps_other_stored_rules(store):
+    store.config.update(STORED_RULES)
+    ctx = make_ctx()
+    seed(store, BOOKING, {"rerun": True, **FULL})
+    await sw.SetupWizardView(ctx).on_cutoff_toggle(make_inter(make_guild()))
+    data = store.drafts[GUILD].data
+    assert {k: data[k] for k in RULE_KEYS} == {**STORED_RULE_DATA,
+                                               "cancel_cutoff_enabled": False}
+
+
+def test_rules_popup_parser_accepts_valid_numbers():
+    parsed, errors = sw.parse_rules_fields({"limit": " 3 ", "cutoff": "90"})
+    assert errors == []
+    assert parsed == {"slot_limit_max": 3, "cancel_cutoff_minutes": 90}
+    parsed, errors = sw.parse_rules_fields({"limit": "100", "cutoff": "0"})
+    assert parsed == {"slot_limit_max": 100, "cancel_cutoff_minutes": 0} and errors == []
+    parsed, errors = sw.parse_rules_fields({"limit": "1", "cutoff": "10080"})
+    assert parsed == {"slot_limit_max": 1, "cancel_cutoff_minutes": 10080} and errors == []
+
+
+@pytest.mark.parametrize(("fields", "bad"), [
+    ({"limit": "0", "cutoff": "60"}, "limit"),
+    ({"limit": "101", "cutoff": "60"}, "limit"),
+    ({"limit": "", "cutoff": "60"}, "limit"),
+    ({"limit": "abc", "cutoff": "60"}, "limit"),
+    ({"limit": "2", "cutoff": "10081"}, "cutoff"),
+    ({"limit": "2", "cutoff": ""}, "cutoff"),
+    ({"limit": "2", "cutoff": "abc"}, "cutoff"),
+    ({"limit": "2", "cutoff": "-1"}, "cutoff"),
+])
+def test_rules_popup_parser_rejects_out_of_range(fields, bad):
+    parsed, errors = sw.parse_rules_fields(fields)
+    assert len(errors) == 1
+    if bad == "limit":
+        assert errors[0] == (
+            "Slots per DJ and event: enter a whole number from 1 to 100."
+        )
+        assert "slot_limit_max" not in parsed
+    else:
+        assert errors[0] == (
+            "Minutes before the event start: enter a whole number from 0 to 10080."
+        )
+        assert "cancel_cutoff_minutes" not in parsed
+
+
+@pytest.mark.asyncio
+async def test_rules_popup_shows_current_values_and_updates_the_draft(store):
+    ctx = make_ctx()
+    modal = await _open_modal(
+        store, ctx, BOOKING, "on_rules_change", {**FULL, **STORED_RULE_DATA}
+    )
+    fields = {c.custom_id: c for row in modal.components for c in row.children}
+    assert fields["limit"].label == "Slots per DJ and event" and fields["limit"].value == "5"
+    assert fields["cutoff"].label == "Minutes before the event start"
+    assert fields["cutoff"].value == "0"
+    bad = _modal_inter({"limit": "0", "cutoff": "60"})
+    await modal.callback(bad)
+    assert "from 1 to 100" in bad.response.send_message.await_args.args[0]
+    assert store.drafts[GUILD].data["slot_limit_max"] == 5
+    good = _modal_inter({"limit": "4", "cutoff": "120"})
+    await modal.callback(good)
+    good.response.defer.assert_awaited_once_with(with_message=False)
+    data = store.drafts[GUILD].data
+    assert {k: data[k] for k in RULE_KEYS} == {**STORED_RULE_DATA, "slot_limit_max": 4,
+                                               "cancel_cutoff_minutes": 120}
+    assert "Slot limit: off" in last_content(good)
+    assert store.writes == []
+
+
+@pytest.mark.asyncio
+async def test_write_all_stores_the_four_rule_keys(store):
+    await sw._write_all(MagicMock(), GUILD, {**FULL, **STORED_RULE_DATA})
+    assert _rule_config(store) == {"slot_limit_enabled": "false", "slot_limit_max": "5",
+                                   "cancel_cutoff_enabled": "true",
+                                   "cancel_cutoff_minutes": "0"}
+    await sw._write_all(MagicMock(), GUILD, {**FULL, **DEFAULT_RULE_DATA})
+    assert _rule_config(store) == {"slot_limit_enabled": "true", "slot_limit_max": "2",
+                                   "cancel_cutoff_enabled": "true",
+                                   "cancel_cutoff_minutes": "60"}
+
+
+@pytest.mark.asyncio
+async def test_summary_lists_the_booking_rules(store):
+    ctx = make_ctx()
+    lines = await sw.summary_lines(ctx, make_guild(), {**FULL, **DEFAULT_RULE_DATA})
+    assert "Slot limit: on, 2 per event" in lines
+    assert "Cancellation cutoff: on, 60 minutes before the start" in lines
+    lines = await sw.summary_lines(ctx, make_guild(), {
+        **FULL, **DEFAULT_RULE_DATA, "slot_limit_enabled": False,
+        "cancel_cutoff_enabled": False,
+    })
+    assert "Slot limit: off" in lines and "Cancellation cutoff: off" in lines
+
+
+def test_draft_at_v4_summary_moves_to_new_summary_once():
+    v4 = {sw.DRAFT_MARKER: True, sw.STEPS_MARKER: True, sw.STEPS_V4_MARKER: True}
+    v4_summary = SetupDraft(1, 2, 3, 17, dict(v4))
+    v4_mgmt = SetupDraft(1, 2, 3, 16, dict(v4))
+    v3_summary = SetupDraft(1, 2, 3, 16, {sw.DRAFT_MARKER: True, sw.STEPS_MARKER: True})
+    legacy_summary = SetupDraft(1, 2, 3, 6, {"rerun": True})
+    for draft in (v4_summary, v4_mgmt, v3_summary, legacy_summary):
+        sw.migrate_legacy_draft(draft)
+        assert draft.data[sw.STEPS_V5_MARKER] is True
+    assert v4_summary.step == STEP["summary"]
+    assert v4_mgmt.step == STEP["management_channel"]
+    assert v3_summary.step == STEP["summary"]
+    assert legacy_summary.step == STEP["summary"]
+    # Migrated once: a draft now on the booking rules step stays there
+    again = SetupDraft(1, 2, 3, BOOKING, dict(v4_summary.data))
+    sw.migrate_legacy_draft(again)
+    assert again.step == BOOKING
+
+
+@pytest.mark.asyncio
+async def test_v4_summary_draft_loads_at_the_new_summary(store):
+    ctx = make_ctx()
+    store.drafts[GUILD] = SetupDraft(GUILD, 55, 7, 17, {
+        "rerun": True, **FULL, sw.DRAFT_MARKER: True, sw.STEPS_MARKER: True,
+        sw.STEPS_V4_MARKER: True,
+    })
+    store.legacy.add(GUILD)  # keep the stored markers as they are
+    await sw.SetupWizardView(ctx)._navigate(make_inter(make_guild()), -1)
+    assert store.drafts[GUILD].step == BOOKING
+    assert store.drafts[GUILD].data[sw.STEPS_V5_MARKER] is True
+
+
+@pytest.mark.asyncio
+async def test_activation_persists_the_booking_rules(store):
+    ctx = make_ctx()
+    await _activate(store, ctx, {**FULL, **STORED_RULE_DATA, "slot_limit_max": 7})
+    assert store.config[(GUILD, "bot_active")] == "true"
+    assert _rule_config(store) == {"slot_limit_enabled": "false", "slot_limit_max": "7",
+                                   "cancel_cutoff_enabled": "true",
+                                   "cancel_cutoff_minutes": "0"}
+
+
+@pytest.mark.asyncio
+async def test_save_persists_the_booking_rules(store):
+    ctx = make_ctx()
+    store.config.update(STORED_RULES)
+    inter = await _save(store, ctx, {**DEFAULT_RULE_DATA, "cancel_cutoff_minutes": 30})
+    assert last_content(inter).startswith("Settings saved.")
+    assert _rule_config(store) == {"slot_limit_enabled": "true", "slot_limit_max": "2",
+                                   "cancel_cutoff_enabled": "true",
+                                   "cancel_cutoff_minutes": "30"}
+
+
+def test_booking_rules_texts_have_no_em_dash():
+    from bot.policy import DEFAULT_RULES, BookingRules
+
+    for rules in (DEFAULT_RULES, BookingRules(False, 3, False, 0)):
+        assert "—" not in texts.setup_booking_rules_step(18, 18, rules)

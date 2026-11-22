@@ -2852,3 +2852,295 @@ async def test_stale_event_press_uses_current_position() -> None:
     assert kw["embed"].footer.text == "New1"
     assert any(f.name == "Events" for f in kw["embed"].fields)
     assert len(kw["view"].children) == 3
+
+
+# Slot limit: do not offer what would be refused
+# ---------------------------------------------------------------------------
+
+def _held_event(page_id: str, name: str, held: int, discord_id: int, slots: int = 3) -> EventInfo:
+    return make_event(
+        event_id=name,
+        page_id=page_id,
+        date=datetime.date(2026, 7, 1),
+        start=datetime.time(20, 0),
+        slot_count=slots,
+        slots=[
+            make_slot(i + 1, dj_page_id=f"p{i}", dj_name="Me", discord_id=discord_id)
+            for i in range(held)
+        ],
+    )
+
+
+def _rules(**kw):
+    from bot.policy import BookingRules
+
+    return patch("bot.policy.current_rules", new=AsyncMock(return_value=BookingRules(**kw)))
+
+
+@pytest.mark.asyncio
+async def test_prepare_booking_offers_only_events_below_the_limit() -> None:
+    from bot.ui.views import prepare_booking
+
+    a = _held_event("evt-a", "A", 2, 77)
+    b = _held_event("evt-b", "B", 0, 77)
+    ctx = _ctx_with_events([a, b])
+    with _rules():
+        start = await prepare_booking(ctx, 77, bot=MagicMock())
+    assert start.error is None
+    from bot.ui import texts as t
+
+    assert t.event_name(b) in start.embed.description
+    assert t.event_name(a) not in start.embed.description
+
+
+@pytest.mark.asyncio
+async def test_prepare_booking_at_the_limit_everywhere() -> None:
+    from bot.policy import no_event_below_limit_text
+    from bot.ui.views import prepare_booking
+
+    ctx = _ctx_with_events([_held_event("evt-a", "A", 2, 77), _held_event("evt-b", "B", 2, 77)])
+    with _rules():
+        start = await prepare_booking(ctx, 77, bot=MagicMock())
+    assert start.error == no_event_below_limit_text(2)
+    assert start.view is None
+    assert not ctx.get_user_lock(77).locked()
+
+
+@pytest.mark.asyncio
+async def test_prepare_booking_limit_disabled_offers_both() -> None:
+    from bot.ui.views import prepare_booking
+
+    ctx = _ctx_with_events([_held_event("evt-a", "A", 2, 77), _held_event("evt-b", "B", 0, 77)])
+    with _rules(slot_limit_enabled=False):
+        start = await prepare_booking(ctx, 77, bot=MagicMock())
+    assert start.error is None
+    assert "A" in start.embed.description and "B" in start.embed.description
+
+
+@pytest.mark.asyncio
+async def test_prepare_booking_higher_limit_offers_event() -> None:
+    from bot.ui.views import prepare_booking
+
+    ctx = _ctx_with_events([_held_event("evt-a", "A", 2, 77)])
+    with _rules(slot_limit_max=3):
+        start = await prepare_booking(ctx, 77, bot=MagicMock())
+    assert start.error is None
+    assert start.view is not None
+
+
+@pytest.mark.asyncio
+async def test_prepare_booking_specific_event_at_the_limit() -> None:
+    from bot.policy import slot_limit_text
+    from bot.ui.views import prepare_booking
+
+    a = _held_event("evt-a", "A", 2, 77)
+    ctx = _ctx_with_events([a, _held_event("evt-b", "B", 0, 77)])
+    with _rules():
+        start = await prepare_booking(ctx, 77, "A", bot=MagicMock())
+    assert start.error == slot_limit_text(2)
+    assert start.view is None
+    assert not ctx.get_user_lock(77).locked()
+
+
+def test_filter_events_stays_backward_compatible() -> None:
+    from bot.policy import BookingRules
+    from bot.ui.views import _filter_events_with_open_slots
+
+    a = _held_event("evt-a", "A", 2, 77)
+    assert _filter_events_with_open_slots([a]) == [a]
+    assert _filter_events_with_open_slots([a], 77, BookingRules()) == []
+    assert _filter_events_with_open_slots([a], 78, BookingRules()) == [a]
+
+
+@pytest.mark.asyncio
+async def test_outreach_accept_refused_at_the_limit() -> None:
+    from bot.policy import slot_limit_text
+    from bot.ui.views import OutreachView
+
+    ctx = make_real_ctx(db=None)
+    event = _held_event("evt-ol", "OL", 2, 40070)
+    fake_events.list_events = AsyncMock(return_value=[event])
+    view = OutreachView(ctx=ctx, event=event, discord_user_id=40070)
+    inter = MagicMock(spec=disnake.MessageInteraction)
+    inter.author.id = 40070
+    inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    inter.followup.send = inter.response.send_message
+    with _rules():
+        await view.accept.callback(inter)
+    assert inter.response.send_message.call_args[0][0] == slot_limit_text(2)
+    assert not ctx.get_user_lock(40070).locked()
+
+
+# ---------------------------------------------------------------------------
+# Cancellation cutoff (DJ-facing cancellation)
+# ---------------------------------------------------------------------------
+
+async def _cutoff_setup(user_id: int = 31001):
+    from bot.ui.views import CancellationView
+
+    ctx = make_real_ctx(db=MagicMock())
+    ctx.notion_client = MagicMock()
+    ctx.log_service = None
+    ctx.lineup_service = None
+    event = _make_event(event_id="evt-cut", djs_booked=1)
+    lock = ctx.get_user_lock(user_id)
+    await lock.acquire()  # the flow lock is held before the view is built
+    booking = {"event": event, "slot_index": 0, "slot_unix": 1751414400}
+    view = CancellationView(ctx, [booking], lock, user_id=user_id)
+    return ctx, event, lock, booking, view
+
+
+def _cutoff_inter() -> MagicMock:
+    inter = MagicMock(spec=disnake.MessageInteraction)
+    inter.author = MagicMock()
+    inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    inter.followup.send = AsyncMock()
+    return inter
+
+
+def _clock(event, seconds_from_start: int):
+    start = event.slot_start(0)
+    now = start + datetime.timedelta(seconds=seconds_from_start)
+    return patch("bot.policy.utc_now", new=lambda: now)
+
+
+@pytest.mark.asyncio
+async def test_cutoff_choose_inside_is_refused() -> None:
+    from bot.policy import cancellation_closed_text
+
+    ctx, event, lock, booking, view = await _cutoff_setup()
+    inter = _cutoff_inter()
+    with _rules(cancel_cutoff_minutes=90), _clock(event, -30 * 60):
+        await view._handle_booking(inter, booking)
+    inter.response.send_message.assert_awaited_once()
+    assert inter.response.send_message.call_args[0][0] == cancellation_closed_text(90)
+    assert "90 minutes" in inter.response.send_message.call_args[0][0]
+    assert "view" not in inter.response.send_message.call_args.kwargs
+    assert inter.response.send_message.call_args.kwargs["ephemeral"] is True
+    assert not lock.locked()
+
+
+@pytest.mark.asyncio
+async def test_cutoff_choose_then_confirm_after_cutoff_is_refused() -> None:
+    from bot.policy import cancellation_closed_text
+    from bot.ui.views import CancelConfirmView
+
+    ctx, event, lock, booking, view = await _cutoff_setup()
+    inter = _cutoff_inter()
+    with _rules(cancel_cutoff_minutes=60), _clock(event, -2 * 3600):
+        await view._handle_booking(inter, booking)
+    sent = inter.response.send_message.call_args.kwargs["view"]
+    assert isinstance(sent, CancelConfirmView)
+    assert lock.locked()
+
+    inter2 = _cutoff_inter()
+    with _rules(cancel_cutoff_minutes=60), _clock(event, -10 * 60), \
+            patch("bot.db.bookings.release_slot_lock", new=AsyncMock()) as release:
+        await sent._handle_confirm(inter2)
+    release.assert_not_awaited()
+    inter2.followup.send.assert_awaited_once()
+    assert inter2.followup.send.call_args[0][0] == cancellation_closed_text(60)
+    assert not lock.locked()
+
+
+@pytest.mark.asyncio
+async def test_cutoff_before_cutoff_works_as_before() -> None:
+    ctx, event, lock, booking, view = await _cutoff_setup()
+    inter = _cutoff_inter()
+    with _rules(), _clock(event, -2 * 3600):
+        await view._handle_booking(inter, booking)
+    sent = inter.response.send_message.call_args.kwargs["view"]
+    inter2 = _cutoff_inter()
+    with _rules(), _clock(event, -2 * 3600), \
+            patch("bot.db.bookings.release_slot_lock", new=AsyncMock()) as release:
+        await sent._handle_confirm(inter2)
+    release.assert_awaited_once()
+    assert "cancelled" in inter2.followup.send.call_args[0][0].lower()
+    assert not lock.locked()
+
+
+@pytest.mark.asyncio
+async def test_cutoff_disabled_always_works() -> None:
+    ctx, event, lock, booking, view = await _cutoff_setup()
+    inter = _cutoff_inter()
+    with _rules(cancel_cutoff_enabled=False), _clock(event, 3600):
+        await view._handle_booking(inter, booking)
+    sent = inter.response.send_message.call_args.kwargs["view"]
+    inter2 = _cutoff_inter()
+    with _rules(cancel_cutoff_enabled=False), _clock(event, 3600), \
+            patch("bot.db.bookings.release_slot_lock", new=AsyncMock()) as release:
+        await sent._handle_confirm(inter2)
+    release.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("offset", "closed"), [(-1, False), (0, True), (1, True)])
+async def test_cutoff_zero_minutes_boundary(offset: int, closed: bool) -> None:
+    from bot.policy import cancellation_closed_text
+
+    ctx, event, lock, booking, view = await _cutoff_setup()
+    inter = _cutoff_inter()
+    with _rules(cancel_cutoff_minutes=0), _clock(event, offset):
+        await view._handle_booking(inter, booking)
+    first = inter.response.send_message.call_args
+    if closed:
+        assert first[0][0] == cancellation_closed_text(0)
+        assert "start of the event" in first[0][0]
+        assert not lock.locked()
+    else:
+        assert "view" in first.kwargs
+
+
+@pytest.mark.asyncio
+async def test_admin_cancel_override_ignores_cutoff() -> None:
+    from bot.services.admin_booking import AdminBookingService
+
+    event = _make_event(event_id="evt-cut", djs_booked=1)
+    svc = AdminBookingService.__new__(AdminBookingService)
+    svc._find = AsyncMock(return_value=event)
+    with _rules(cancel_cutoff_minutes=60), _clock(event, -5 * 60):
+        # the override has no cutoff check: it must reach the lookup and not refuse early
+        try:
+            await svc.cancel_slot_override("Admin", 1, "DJ", "Test Rave", 1)
+        except Exception:
+            pass
+    svc._find.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_cutoff_confirm_rereads_event_moved_earlier() -> None:
+    import dataclasses
+
+    from bot.policy import cancellation_closed_text
+
+    ctx, event, lock, booking, view = await _cutoff_setup()
+    inter = _cutoff_inter()
+    with _rules(cancel_cutoff_minutes=60), _clock(event, -2 * 3600):
+        await view._handle_booking(inter, booking)
+    sent = inter.response.send_message.call_args.kwargs["view"]
+    moved = dataclasses.replace(event, start=datetime.time(0, 5))
+    inter2 = _cutoff_inter()
+    with _rules(cancel_cutoff_minutes=60), _clock(event, -2 * 3600), \
+            patch("bot.db.events.get_event", new=AsyncMock(return_value=moved)), \
+            patch("bot.db.bookings.release_slot_lock", new=AsyncMock()) as release:
+        await sent._handle_confirm(inter2)
+    release.assert_not_awaited()
+    assert inter2.followup.send.call_args[0][0] == cancellation_closed_text(60)
+
+
+@pytest.mark.asyncio
+async def test_cutoff_confirm_failing_or_empty_read_falls_back() -> None:
+    for read in (AsyncMock(side_effect=OSError("db")), AsyncMock(return_value=None)):
+        ctx, event, lock, booking, view = await _cutoff_setup()
+        inter = _cutoff_inter()
+        with _rules(cancel_cutoff_minutes=60), _clock(event, -2 * 3600):
+            await view._handle_booking(inter, booking)
+        sent = inter.response.send_message.call_args.kwargs["view"]
+        inter2 = _cutoff_inter()
+        with _rules(cancel_cutoff_minutes=60), _clock(event, -2 * 3600), \
+                patch("bot.db.events.get_event", new=read), \
+                patch("bot.db.bookings.release_slot_lock", new=AsyncMock()) as release:
+            await sent._handle_confirm(inter2)
+        release.assert_awaited_once()

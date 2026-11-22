@@ -12,6 +12,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Booking rules: a slot limit per DJ and event (default 2) and a cancellation cutoff (default 60 minutes before the start). The limit is checked inside the booking transaction, events at the limit are not offered, invites to such DJs are skipped, and cancelling inside the cutoff is refused. Admin bookings, admin cancellations and Notion hand edits are not limited. Existing installs start with both rules on after the update.
+- Setup wizard step "Booking rules" (before the summary) with two toggle buttons and a popup for the numbers; the summary and `/config show` list both rules.
+- Admin page "Booking rules" to switch the rules and change the numbers.
 - DJ Management lineup message: an optional channel (new setup wizard step, right before the summary) gets one lineup message per fully booked event, with start time, slot length, genre, location, note, and per slot the DJ name and stream links. The bot edits it when bookings, DJ profiles or event details change, shows open slots with a note when the event is no longer fully booked, and never posts a second message for an event or deletes one.
 - "Send me more information" button on that message, admins only: sends the complete current lineup as DMs (Discord name, VRChat name, stream links and logo per DJ). Other users get a private refusal.
 - Setup question for existing fully booked events: post all or only new ones. `/config show` lists the DJ Management channel.

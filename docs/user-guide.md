@@ -395,9 +395,10 @@ Run `/setup` in the channel where you want to set up (admins only). The bot post
    - **Time zone** (default `Europe/Berlin`).
 6. **Automatic invites.** Turn invites on or off, how many days before an event the bot starts asking, and the hours it waits between two invites to the same DJ.
 7. **DJ Management channel (optional).** Pick a channel for the lineup of each fully booked event. Use a staff-only channel. Skip it or press **Clear** to keep the feature off. If fully booked events already exist, the wizard asks whether to post all of them or only new ones, see [7.9](#79-dj-management-lineup-message).
-8. **Summary.** Lists everything (including the DJ Management channel). **Activate** writes the settings, switches the bot on, creates the missing future events and posts the first Lineup Update (it reports how many events it created and whether it posted). The channels and roles must be chosen first.
+8. **Booking rules.** Two switches and two numbers: the slot limit per DJ and event, and the cancellation cutoff. Press a toggle button to switch a rule on or off and **Change** to set the numbers. See [7.10](#710-booking-rules).
+9. **Summary.** Lists everything (including the DJ Management channel and the booking rules). **Activate** writes the settings, switches the bot on, creates the missing future events and posts the first Lineup Update (it reports how many events it created and whether it posted). The channels and roles must be chosen first.
 
-Nothing is stored until Activate. Defaults: 6 slots, 20:00, 60 minutes, scheduling on, every 7 days, first event as soon as the interval allows, 6 events ahead, invites on, 14 days before, 12 hours wait.
+Nothing is stored until Activate. Defaults: 6 slots, 20:00, 60 minutes, scheduling on, every 7 days, first event as soon as the interval allows, 6 events ahead, invites on, 14 days before, 12 hours wait, booking rules on (2 slots per DJ and event, cancellation closes 60 minutes before the start).
 
 **Changing settings later.** Run `/setup` again. An active bot answers with a **Change settings** button. The wizard then starts from the stored values and ends with **Save** instead of Activate. Save only stores the values: it creates no events and posts nothing. Two warnings can appear in the summary: a changed time zone moves the real times of existing events, and a changed invites role does not move members to the new role.
 
@@ -521,6 +522,28 @@ An optional message for the DJ management: one lineup per fully booked event, in
 **Send me more information.** The first message has this button. It works for admins only (see [7.3](#73-commands)), also after a restart. An admin who presses it gets DMs with the complete current lineup: one header DM, then one DM per DJ with the slot and time, DJ name, Discord name, VRChat name, stream link, backup link and the logo as an attached image. The data is read at the moment of the click. The admin also gets a private confirmation. If the DMs are closed the bot says so privately; if a DM fails midway it says how many DJ DMs were sent. Anyone else gets a private refusal and receives nothing.
 
 If the bot cannot use the channel (deleted or no permission), it writes one entry to the admin log channel and keeps running.
+
+### 7.10 Booking rules
+
+Two rules apply to DJs who book or cancel through the bot. Both are on by default.
+
+- **Slot limit.** A DJ can hold at most N slots in one event. Default: 2 (allowed 1 to 100).
+- **Cancellation cutoff.** A DJ cannot cancel a slot through the bot within M minutes before the event starts. The time is measured from the start of the event, not of the DJ's own slot. Default: 60 (allowed 0 to 10080; 0 means cancelling stays open until the event starts).
+
+**What a DJ sees.**
+- Events where the DJ already holds N slots are not offered in the booking menu. If that is true for every open event, the DJ is told so and asked to cancel a slot first.
+- A booking that would exceed the limit is refused with a message that names the limit. This also covers an invite acceptance and two bookings pressed at the same time.
+- Cancelling inside the cutoff is refused with a message that names the cutoff and points to an admin.
+
+**Changing the rules.** Run `/setup` again (the Booking rules step shows the stored values) or use the **Booking rules** page of the [admin page](#77-the-admin-page). Both rules can be switched off, and the numbers can be changed. A change applies to the next action. `/config show` lists both rules.
+
+**What the rules do not limit.**
+- Admins can always book a DJ by hand over the limit and cancel a slot inside the cutoff (see [7.3](#73-commands)).
+- Hand edits in Notion that book a DJ are not limited either.
+- Existing bookings stay when the limit is lowered. Only new bookings are refused; a DJ over the limit can still cancel, subject to the cutoff.
+- Only slots the DJ holds count. Open invites, extra DJs listed on a slot and other events do not.
+
+**Existing installs.** After the update both rules are on with the defaults, because nothing is stored yet. Switch them off in `/setup` or on the admin page if you do not want them.
 
 ---
 

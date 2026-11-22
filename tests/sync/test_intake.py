@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from bot.db.bookings import DjSlotLimitReached
 from bot.db.events import DuplicateEventError, EventDraft, SlotsBookedError
 from bot.notion.models import EventInfo, SlotInfo
 from bot.sync import intake as intake_mod
@@ -114,9 +115,13 @@ class Store:
     async def get_slot_lock_holder(self, db, uid, index):  # noqa: ANN001, ANN201
         return self.holders.get((uid, index))
 
-    async def acquire_slot_lock(self, db, uid, index, did):  # noqa: ANN001, ANN201
+    async def acquire_slot_lock(self, db, uid, index, did, max_per_dj=None):  # noqa: ANN001, ANN201
         if self.holders.get((uid, index)) is not None:
             return False
+        if max_per_dj is not None:
+            held = sum(1 for (u, i), h in self.holders.items() if u == uid and h == did)
+            if held >= max_per_dj:
+                raise DjSlotLimitReached(f"{uid}:{did}")
         self.holders[(uid, index)] = did
         return True
 
@@ -477,3 +482,14 @@ async def test_apply_never_raises(env, monkeypatch: pytest.MonkeyPatch) -> None:
     change = Change("apply", "event", "u1", event_payload(), event_payload(genre="x"), "p")
     assert await env.intake.apply(change) == "rejected"
     assert env.intake.last_reasons
+
+
+async def test_notion_hand_edit_gives_a_dj_a_third_slot_despite_a_limit_of_two(env) -> None:
+    """Characterization: the booking limit (2) does not apply to Notion hand edits."""
+    env.store.add_event("u1", slot_count=4)
+    env.store.add_dj(A, "DJ A")
+    env.store.holders[("u1", 0)] = A
+    env.store.holders[("u1", 1)] = A
+    change = Change("apply", "slot", "u1:2", slot(number=3), slot(number=3, did=A), "page-s")
+    assert await env.intake.apply(change) == "applied"
+    assert [i for (u, i), h in env.store.holders.items() if h == A] == [0, 1, 2]
