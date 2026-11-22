@@ -45,7 +45,7 @@ This work puts both rules on `main` again, and this time makes them configurable
 - Existing bookings above a lowered limit stay. Only new bookings are refused. A DJ above the limit can still cancel (subject to the cutoff).
 - Hand edits that book a DJ (Notion hand edits, applied by the sync intake) count as admin overrides: the limit does not refuse them.
 - The cutoff applies to DJ-facing cancellation only. Admin cancellations, event cancellations by an admin, and Notion hand edits are never blocked.
-- Setup wizard shape: one new step "Booking rules" before the summary, with two toggle buttons (on/off per rule) and two dropdowns (number of slots, minutes) with an "Other" popup for any value, like the existing numeric steps. The summary page and `/config show` list both rules.
+- Setup wizard shape: one new step "Booking rules" before the summary, with two toggle buttons (on/off per rule) and one "Change" popup for the two numbers (the pattern of the Automatic invites step), not dropdowns. The summary page and `/config show` list both rules.
 - Stored in the existing config table with four keys: `slot_limit_enabled`, `slot_limit_max`, `cancel_cutoff_enabled`, `cancel_cutoff_minutes`.
 - What counts toward the limit: only slots the DJ holds (the slot's `discord_user_id` in `slot_locks`). Pending outreach invites, shared or extra DJs listed on a slot, and slots in other events do not count. An invite is not a booking, so a DJ with several open invites can accept them until the limit is reached.
 - There are no swap, move, transfer or waitlist flows in the bot today, so the paths listed under "Constraints" are the complete set. A path added later must apply the rules.

@@ -282,12 +282,33 @@ An event's `Start` is a local wall-clock `HH:MM`; `EventInfo` in `bot/notion/mod
 
 ### Setup wizard
 
-- `/setup` (`SetupCog`) posts one message with `SetupWizardView`. Steps (`STEPS` in `bot/ui/setup_wizard.py`): `welcome`, `dj_channel`, `log_channel`, `roles`, `slots`, `start_time`, `slot_length`, `schedule`, `interval`, `first_date`, `lookahead`, `default_genre`, `default_location`, `rules`, `timezone`, `invites`, `management_channel`, `summary`. `VALUE_STEPS` maps each value step to its config key; all of them share one dropdown (`setup:value`) and one "Other" button (`setup:other`) with the options and parsing in `bot/ui/setup_options.py` (`dropdown_options`, `parse_choice`). While `event_schedule_enabled` is false, `scheduled_step_keys()` (`interval`, `first_date`, `lookahead`) are skipped by `next_step` and not counted. To add a step, insert its key before `summary`, add a branch in `render_step` and its controls to the view.
+- `/setup` (`SetupCog`) posts one message with `SetupWizardView`. Steps (`STEPS` in `bot/ui/setup_wizard.py`): `welcome`, `dj_channel`, `log_channel`, `roles`, `slots`, `start_time`, `slot_length`, `schedule`, `interval`, `first_date`, `lookahead`, `default_genre`, `default_location`, `rules`, `timezone`, `invites`, `management_channel`, `booking_rules`, `summary`. `VALUE_STEPS` maps each value step to its config key; all of them share one dropdown (`setup:value`) and one "Other" button (`setup:other`) with the options and parsing in `bot/ui/setup_options.py` (`dropdown_options`, `parse_choice`). While `event_schedule_enabled` is false, `scheduled_step_keys()` (`interval`, `first_date`, `lookahead`) are skipped by `next_step` and not counted. To add a step, insert its key before `summary`, add a branch in `render_step` and its controls to the view.
 - The message carries no state. The view is persistent (registered in `main.py` through `registered_views()`), and every press reads the draft row found by the message id.
 - Table `setup_drafts` (migration `0011`): `guild_id` (primary key, so one wizard per guild), `message_id`, `channel_id`, `step`, `data` (JSONB with the chosen values), `updated_at`. Access in `bot/db/setup_drafts.py` (`get_draft`, `save_draft`, `delete_draft`). Nothing reaches the `config` table until the last step.
 - Activate (`activate_from_draft`): under a per-guild lock it requires both channels and both roles, writes all settings (`dj_channel`, `log_channel`, `dj_role_id`, `invites_role_id`, `slots_per_event`, `default_start_time`, `slot_duration_minutes`, `event_interval_days`, `event_lookahead_count`, `event_schedule_enabled`, `first_event_date`, `timezone`, `outreach_enabled`, `outreach_days_before`, `outreach_cooldown_hours`), sets `bot_active`, runs `replenish_events` and `LineupService.refresh()` exactly once, then deletes the draft. Save (`save_from_draft`, used on a re-run, `data["rerun"]`) only writes the settings.
 - Re-run: with an active bot `/setup` shows a `Change settings` button; the draft is prefilled from the stored values (`prefilled_data`). If the wizard message was deleted, `/setup` posts it again at the saved step.
 - Roles: `bot/services/roles.py` `get_dj_role()` and `get_invites_role()` read `dj_role_id` and `invites_role_id`. Only when a key is missing they fall back to the role names `DJ` and `Active Booking`; a stored id whose role is gone returns `None`.
+
+### Booking rules
+
+`bot/policy.py` holds both rules (slot limit per DJ and event, cancellation cutoff). They live in the `config` table under four keys per guild: `slot_limit_enabled` (default on), `slot_limit_max` (default 2, range 1 to `MAX_SLOTS`), `cancel_cutoff_enabled` (default on), `cancel_cutoff_minutes` (default 60, range 0 to 10080). A missing, unreadable or out-of-range value falls back to the default of that field, so an existing install enforces both rules after the update.
+
+- `BookingRules` (frozen dataclass), `load_rules(db, guild_id)` (never raises), `current_rules(db, bot)` (first guild of the bot, defaults without one), `save_rules`, `parse_rules_form` (admin page validation).
+- Pure checks: `slots_held`, `at_slot_limit(event, user_id, rules)`, `cancellation_closed(event, now, rules)` (measured from `event.slot_start(0)`), plus the texts `slot_limit_text`, `no_event_below_limit_text`, `cancellation_closed_text` and `rules_summary` (used by the wizard summary and `/config show`).
+- `utc_now()` is the clock hook: tests monkeypatch `bot.policy.utc_now`; code calls `policy.utc_now()` through the module.
+
+Enforcement (rules are read again at each action, nothing is cached):
+- `acquire_slot_lock(pool, event_id, slot_index, user_id, max_per_dj=None)` in `bot/db/bookings.py` is the authoritative slot check. After the slot row lock it takes a transaction-scoped advisory lock on (event, DJ) (`pg_advisory_xact_lock`), counts the DJ's other slots of that event and raises `DjSlotLimitReached` at or above `max_per_dj`, before anything is written. The advisory lock serializes two parallel claims of different slots by the same DJ. `None` runs no count.
+- `BookingConfirmView._handle_confirm` passes `max_per_dj` (only when the rule is on) and answers `DjSlotLimitReached` with `slot_limit_text`. `prepare_booking` drops events at the limit from the picker and returns `no_event_below_limit_text` when none are left. The outreach accept path (`bot/ui/views.py`) and the invite candidate filter in `bot/services/outreach.py` use `at_slot_limit`.
+- `CancellationView` and `CancelConfirmView` check `cancellation_closed` on choose and again on confirm.
+
+Admin paths pass no limit on purpose: `AdminBookingService.book_slot_override` (uses `force_slot_holder`), the Notion intake call `acquire_slot_lock(...)` in `bot/sync/intake.py` (no `max_per_dj`), and `cancel_slot_override` (no cutoff check). Admins and hand edits must be able to correct a lineup.
+
+Wizard step: `booking_rules` (before `summary`). Ids `setup:slot_limit_toggle`, `setup:cutoff_toggle`, `setup:rules_change` (popup `setup_rules:<message id>`, parser `parse_rules_fields`). The four rule keys are kept in the draft data; `draft_rules` fills missing keys from the stored values. `STEPS_V5_MARKER` (`steps_v5`) in the draft data moves a draft that was open at the old summary step to the new summary once. `_write_all` stores the rules on Activate and Save.
+
+Admin page: `GET/POST /booking-rules` in `bot/web/app.py`, `render_booking_rules` in `bot/web/pages.py`, `AdminPageService.booking_rules()` and `set_booking_rules(raw)` in `bot/web/service.py`. Checkboxes count as on when their key is present in the form; invalid input answers 400 with the typed values.
+
+Real-SQL test: `tests/pg/test_slot_limit.py` covers the limit with concurrent claims. Run it with `RAVEBOT_TEST_POSTGRES_URL=postgresql://ravebot@localhost:55432/ravebot_test uv run pytest -m pg tests/pg/test_slot_limit.py` (database setup as in section 3).
 
 ### DJ management lineup message
 
