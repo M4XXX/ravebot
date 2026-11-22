@@ -1862,8 +1862,8 @@ async def test_outreach_pick_slot_sends_lineup_and_open_slot_buttons() -> None:
     kwargs = inter.response.send_message.call_args.kwargs
     assert kwargs["content"] == texts.PICK_SLOT
     assert isinstance(kwargs["embed"], LineupUpdateEmbed)
-    assert "Booked Bob" in kwargs["embed"].description
-    assert "open slot" in kwargs["embed"].description
+    assert any("Booked Bob" in f.value for f in kwargs["embed"].fields)
+    assert any("open slot" in f.value for f in kwargs["embed"].fields)
     labels = [c.label for c in kwargs["view"].children]
     assert labels == [
         texts.slot_button(0),

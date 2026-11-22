@@ -258,8 +258,8 @@ async def test_contact_next_dj_dm_has_opener_lineup_and_view():
     kwargs = mock_user.send.call_args.kwargs
     assert kwargs["content"] == texts.invite_opener(event.event_id)
     assert isinstance(kwargs["embed"], LineupUpdateEmbed)
-    assert "open slot" in kwargs["embed"].description
-    assert "DJ 0" in kwargs["embed"].description
+    assert any("open slot" in f.value for f in kwargs["embed"].fields)
+    assert any("DJ 0" in f.value for f in kwargs["embed"].fields)
     assert isinstance(kwargs["view"], OutreachView)
 
 

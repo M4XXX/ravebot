@@ -51,12 +51,12 @@ class ErrorCode(enum.StrEnum):
 _MAX_DJ_NAME = 100
 
 
-def _safe_dj_name(name: str | None) -> str:
+def _safe_dj_name(name: str | None, limit: int = _MAX_DJ_NAME) -> str:
     """DJ-controlled text rendered literally: truncated, markdown/mentions/tokens escaped."""
     if not name:
         return "Guest DJ"
-    truncated = len(name) > _MAX_DJ_NAME
-    text = name[:_MAX_DJ_NAME]
+    truncated = len(name) > limit
+    text = name[:limit]
     text = disnake.utils.escape_mentions(disnake.utils.escape_markdown(text))
     text = text.replace("<", "<\u200b")  # break <@id>, <t:..>, <#id> tokens
     return text + "\u2026" if truncated else text
@@ -89,7 +89,9 @@ _MAX_DESCRIPTION = 4096
 
 _TITLE_ICON = "\U0001f3b6"
 _BOOKED_ICON = "\U0001f3a7"
-_OPEN_ICON = "\u25ab\ufe0f"
+_OPEN_ICON = "\U0001f7e2"
+# A longer name would wrap inside its half-width column and shift the rows below it
+_MAX_LINEUP_NAME = 24
 _MAX_TITLE = 256
 
 
@@ -111,57 +113,119 @@ def _lineup_summary(booked: int, total: int) -> str:
     return f"{booked} of {total} {noun} booked \u00b7 {total - booked} open"
 
 
-def lineup_text(event: EventInfo) -> str:
-    """Lineup body: meta line, summary, one line per slot, notes; capped at 4096 chars.
-
-    Over the cap the Notes block goes first (never a partial note), then whole slot lines.
-    """
+def lineup_rows(event: EventInfo) -> list[tuple[str, str]]:
+    """One (slot and time, DJ) cell pair per slot; each cell is a single short line."""
     by_number = event.resolved_slots()
-    slot_lines: list[str] = []
-    booked = 0
+    rows: list[tuple[str, str]] = []
     for index in range(event.slot_count):
         slot = by_number.get(index + 1)
-        label = f"**Slot {index + 1}** \u00b7 {texts.slot_time(event, index)}"
         if slot is not None and slot.dj_page_id is not None:
-            booked += 1
-            slot_lines.append(f"{label}  {_BOOKED_ICON} {_safe_dj_name(slot.dj_name)}")
+            dj = _safe_dj_name(slot.dj_name, _MAX_LINEUP_NAME)
         else:
-            slot_lines.append(f"{label}  {_OPEN_ICON} *open slot*")
+            dj = f"{_OPEN_ICON} *open slot*"
+        rows.append((f"**Slot {index + 1}** \u00b7 {texts.slot_time(event, index)}", dj))
+    return rows
+
+
+def lineup_text(event: EventInfo, hidden: int = 0) -> str:
+    """Lineup description: meta line, summary, a "not shown" note, notes; at most 4096 chars.
+
+    The slot rows are the embed's columns (see LineupUpdateEmbed). An overlong Notes
+    block is dropped, never cut.
+    """
+    by_number = event.resolved_slots()
+    booked = sum(
+        1
+        for index in range(event.slot_count)
+        if (slot := by_number.get(index + 1)) is not None and slot.dj_page_id is not None
+    )
     meta = texts.event_meta(event)
     head = [meta, ""] if meta else []
-    head += [_lineup_summary(booked, event.slot_count), ""]
+    head.append(_lineup_summary(booked, event.slot_count))
+    if hidden:
+        head.append(f"{hidden} slot not shown" if hidden == 1 else f"{hidden} slots not shown")
     note = (event.notes or "").strip()
     notes_block = ["", f"**{texts.NOTES_HEADING}**", texts.escape_text(note)] if note else []
-    text = "\n".join([*head, *slot_lines, *notes_block])
-    if len(text) <= _MAX_DESCRIPTION:
-        return text
-    text = "\n".join([*head, *slot_lines])
-    if len(text) <= _MAX_DESCRIPTION:
-        return text
-    for keep in range(len(slot_lines), -1, -1):
-        hidden = len(slot_lines) - keep
-        cut = f"{hidden} slot not shown" if hidden == 1 else f"{hidden} slots not shown"
-        candidate = "\n".join([*head, *slot_lines[:keep], cut])
-        if len(candidate) <= _MAX_DESCRIPTION:
-            return candidate
-    return head[-2]
+    text = "\n".join([*head, *notes_block])
+    return text if len(text) <= _MAX_DESCRIPTION else "\n".join(head)
+
+
+_FIELD_MAX = 1024
+_EMBED_MAX = 6000
+_EMBED_MARGIN = 100  # room for the "not shown" line and rounding
+_MAX_COLUMN_SETS = 12  # two fields each; one more field is left for the Events list
+_BLANK = "\u200b"
+_COLUMN_NAMES = (texts.LINEUP_COL_SLOT, texts.LINEUP_COL_DJ)
+
+
+def _column_sets(
+    rows: list[tuple[str, str]], budget: int
+) -> tuple[list[list[tuple[str, str]]], int]:
+    """Group rows into sets of two columns that fit the field and embed limits.
+
+    Returns (sets, number of rows that did not fit).
+    """
+    sets: list[list[tuple[str, str]]] = []
+    used = 0
+    taken = 0
+    for row in rows:
+        cost = sum(len(cell) + 1 for cell in row)
+        current = sets[-1] if sets else None
+        fits_set = current is not None and all(
+            sum(len(r[i]) + 1 for r in current) + len(row[i]) + 1 <= _FIELD_MAX for i in range(2)
+        )
+        if not fits_set:
+            if len(sets) >= _MAX_COLUMN_SETS:
+                break
+            cost += len(_COLUMN_NAMES[0] + _COLUMN_NAMES[1])
+        if used + cost > budget:
+            break
+        used += cost
+        taken += 1
+        if fits_set and current is not None:
+            current.append(row)
+        else:
+            sets.append([row])
+    return sets, len(rows) - taken
 
 
 class LineupUpdateEmbed(disnake.Embed):
-    """Public lineup post for one event."""
+    """Public lineup post for one event: "Slot and time" and "DJ" as two aligned columns."""
 
     def __init__(self, event: EventInfo, shown: list[EventInfo] | None = None) -> None:
-        super().__init__(
-            title=lineup_title(event),
-            description=lineup_text(event),
-            colour=EmbedColors.MISSION_GOLD,
-        )
+        title = lineup_title(event)
+        events_value = ""
         if shown:
             lines = [
                 texts.event_pick_line(i, other, other.page_id == event.page_id)
                 for i, other in enumerate(shown)
             ]
-            self.add_field(name=texts.EVENTS_FIELD, value="\n".join(lines)[:1024], inline=False)
+            events_value = "\n".join(lines)[:_FIELD_MAX]
+        rows = lineup_rows(event)
+        budget = (
+            _EMBED_MAX
+            - _EMBED_MARGIN
+            - len(title)
+            - len(lineup_text(event))
+            - len(event.event_id)
+            - len(events_value)
+            - len(texts.EVENTS_FIELD)
+        )
+        sets, hidden = _column_sets(rows, budget)
+        super().__init__(
+            title=title,
+            description=lineup_text(event, hidden),
+            colour=EmbedColors.MISSION_GOLD,
+        )
+        for position, group in enumerate(sets):
+            for column in range(2):
+                self.add_field(
+                    name=_COLUMN_NAMES[column] if position == 0 else _BLANK,
+                    value="\n".join(row[column] for row in group),
+                    inline=True,
+                )
+        if events_value:
+            self.add_field(name=texts.EVENTS_FIELD, value=events_value, inline=False)
         self.set_footer(text=event.event_id)
 
 

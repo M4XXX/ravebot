@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- The public lineup post shows the slots as two aligned columns, `Slot` (slot number and time) and `DJ`, instead of one line per slot, so the DJ names line up. The headphone icon in front of a DJ name is gone, open slots show a green circle, and DJ names are cut at 24 characters so they cannot wrap and shift the rows. Times are still Discord timestamps in each reader's time zone.
+
 ### Added
 
 - DJ Management lineup message: an optional channel (new setup wizard step, right before the summary) gets one lineup message per fully booked event, with start time, slot length, genre, location, note, and per slot the DJ name and stream links. The bot edits it when bookings, DJ profiles or event details change, shows open slots with a note when the event is no longer fully booked, and never posts a second message for an event or deletes one.
