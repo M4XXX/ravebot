@@ -1427,6 +1427,16 @@ class CancellationView(FlowView):
         event = booking["event"]
         slot_index = booking["slot_index"]
         slot_unix = booking["slot_unix"]
+        from bot import policy
+
+        rules = await policy.current_rules(self._ctx.db, getattr(inter, "bot", None))
+        if policy.cancellation_closed(event, policy.utc_now(), rules):
+            self._release_flow()
+            await inter.response.send_message(
+                policy.cancellation_closed_text(rules.cancel_cutoff_minutes),
+                ephemeral=True,
+            )
+            return
         view = CancelConfirmView(
             ctx=self._ctx,
             event=event,
@@ -1528,6 +1538,17 @@ class CancelConfirmView(_SlotConfirmView):
         if self._ctx.db is None:
             await inter.followup.send(
                 texts.GENERIC_ERROR,
+                ephemeral=True,
+            )
+            return
+
+        # Cutoff may have passed since the DJ chose the booking; the slot stays held.
+        from bot import policy
+
+        rules = await policy.current_rules(self._ctx.db, getattr(inter, "bot", None))
+        if policy.cancellation_closed(self._event, policy.utc_now(), rules):
+            await inter.followup.send(
+                policy.cancellation_closed_text(rules.cancel_cutoff_minutes),
                 ephemeral=True,
             )
             return
