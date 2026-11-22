@@ -1077,6 +1077,37 @@ async def test_config_show_shows_stored_values(monkeypatch: pytest.MonkeyPatch) 
 
 
 @pytest.mark.asyncio
+async def test_config_show_lists_the_stored_booking_rules(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    text = await _show(
+        monkeypatch,
+        {
+            "slot_limit_enabled": "true",
+            "slot_limit_max": "3",
+            "cancel_cutoff_enabled": "false",
+        },
+    )
+    lines = text.splitlines()
+    assert "Slot limit: on, 3 per event" in lines
+    assert "Cancellation cutoff: off" in lines
+    assert lines.index("Slot limit: on, 3 per event") > lines.index(
+        "Slot length (minutes): 60 (default)"
+    )
+    assert "\u2014" not in text
+
+
+@pytest.mark.asyncio
+async def test_config_show_lists_the_default_booking_rules(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    text = await _show(monkeypatch, {})
+    lines = text.splitlines()
+    assert "Slot limit: on, 2 per event" in lines
+    assert "Cancellation cutoff: on, 60 minutes before the start" in lines
+
+
+@pytest.mark.asyncio
 async def test_config_show_idle_keeps_not_finished_line(monkeypatch: pytest.MonkeyPatch) -> None:
     from bot.ui import texts
 

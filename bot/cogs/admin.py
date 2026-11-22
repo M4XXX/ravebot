@@ -27,6 +27,7 @@ from bot.db import config as db_config
 from bot.db import events as db_events
 from bot.db.djs import get_all_djs
 from bot.db.manual_events import mark_manual
+from bot.policy import load_rules, rules_summary
 from bot.services import activation
 from bot.services.dj_admin import UNKNOWN_DJ, is_guest
 from bot.services.event_defaults import (
@@ -204,6 +205,7 @@ class AdminCog(commands.Cog):
             f"Slots per event: {shown(await stored('slots_per_event'), '6')}",
             f"Start time (local): {shown(await stored('default_start_time'), '20:00')}",
             f"Slot length (minutes): {shown(await stored('slot_duration_minutes'), '60')}",
+            *rules_summary(await load_rules(db, guild_id)),
             "Scheduled events: "
             f"{'on' if _schedule_on(await stored('event_schedule_enabled')) else 'off'}",
             f"One event every (days): {shown(await stored('event_interval_days'), '7')}",
