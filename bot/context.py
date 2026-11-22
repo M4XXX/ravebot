@@ -109,6 +109,8 @@ class BotContext:
     notion_client: "Any | None" = None
     log_service: "AdminLogService | None" = None
     lineup_service: "Any | None" = None
+    # ManagementLineupService: lineup messages in the DJ management channel.
+    management_lineup_service: "Any | None" = None
     outreach_service: "Any | None" = None
     reminders_service: "Any | None" = None
     admin_booking_service: "Any | None" = None

@@ -1319,3 +1319,20 @@ def mgmt_stream_line(url: str | None) -> str:
 
 def mgmt_alt_stream_line(url: str | None) -> str:
     return f"Alt stream: {url or MGMT_NONE}"
+
+
+# Shown in a lineup message that is no longer needed after the lineup got shorter.
+MGMT_LINEUP_SURPLUS = "Lineup continues in the message(s) above."
+MGMT_CHANNEL_TODO = (
+    "Run /setup again to choose the DJ management channel, or give the bot "
+    "permission to view and send messages there."
+)
+
+
+def mgmt_channel_problem(channel_id: int, reason: str) -> str:
+    if reason == "missing":
+        return f"The DJ management lineup could not be posted: channel {channel_id} was not found."
+    return (
+        f"The DJ management lineup could not be posted: the bot may not send or edit "
+        f"messages in channel <#{channel_id}>."
+    )
