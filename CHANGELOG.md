@@ -21,6 +21,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - "Send me more information" button on that message, admins only: sends the complete current lineup as DMs (Discord name, VRChat name, stream links and logo per DJ). Other users get a private refusal.
 - Setup question for existing fully booked events: post all or only new ones. `/config show` lists the DJ Management channel.
 - Database migration 0020 (`management_lineup_messages`).
+- DJ channel tidy-up: when the bot posts a lineup update and the last message in the DJ channel is its own previous lineup post for the same event, the old post is removed. Posts for other events and posts followed by someone else's message stay; a failed post never removes the old one. Also applies to `/post lineup update`. Database migration 0021 (`dj_channel_lineup_posts`).
 
 ## [1.3.0-rc1] - 2026-11-21
 
