@@ -20,6 +20,7 @@ from bot.db.bookings import SlotGoneError, force_slot_holder, release_slot_lock
 from bot.db.djs import get_dj_by_discord_id, update_active_booking
 from bot.services.dm import dm_user
 from bot.services.fully_booked import recheck_fully_booked
+from bot.services.management_lineup import notify_management
 from bot.services.roles import set_invites_role
 from bot.sync.worker import changed
 from bot.ui import texts
@@ -194,6 +195,7 @@ class AdminBookingService:
             )
 
         await recheck_fully_booked(self.db, self.log_service)
+        notify_management(self._ctx)
 
         return True, ""
 
@@ -256,6 +258,7 @@ class AdminBookingService:
             )
 
         await recheck_fully_booked(self.db, self.log_service)
+        notify_management(self._ctx)
 
         return True, ""
 

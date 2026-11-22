@@ -40,6 +40,7 @@ from bot.services.event_defaults import (
 from bot.services.event_replenish import mirror_new_event, replenish_guard
 from bot.services.lineup import future_events, upcoming_event
 from bot.services.logo import MAX_LOGO_BYTES
+from bot.services.management_lineup import notify_management
 from bot.services.outreach import parse_outreach_enabled
 from bot.services.roles import DJ_ROLE_KEY, INVITES_ROLE_KEY
 from bot.services.schedule import UNSET, clean_value
@@ -349,6 +350,7 @@ class AdminCog(commands.Cog):
                     "create_event: could not record %r as manual", event_id, exc_info=True
                 )
 
+        notify_management(self.ctx)
         given_values = {k: v for k, v in values.items() if clean_value(k, v) is not None}
         values_saved = True
         if given_values:

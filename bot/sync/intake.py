@@ -47,6 +47,7 @@ from bot.services.dm import dm_user
 from bot.services.event_defaults import validate_event_draft
 from bot.services.event_replenish import replenish_guard
 from bot.services.fully_booked import recheck_fully_booked
+from bot.services.management_lineup import notify_management
 from bot.services.schedule import resolver_without_bot as _resolver
 from bot.sync.payloads import event_draft
 from bot.sync.plan import Change
@@ -176,6 +177,7 @@ class Intake:
                 raise _Rejected(
                     "Start and slot length cannot change while slots are booked."
                 ) from exc
+            notify_management(self._ctx)
             # Removed slots: the worker trashes their pages. Added slots are left to the
             # sync cycle's slot pass (adopts hand-made pages, pushes missing ones).
             for index in range(draft.slot_count, current.slot_count):
@@ -216,6 +218,7 @@ class Intake:
             except Exception:
                 logger.warning("Could not record %r as manual", draft.event_id, exc_info=True)
         uid = event.page_id
+        notify_management(self._ctx)
         assert change.notion is not None
         await self._synced("event", uid, change.page_id, change.notion)
         # Writes the Bot ID to the Notion page. Its slots are left to the sync cycle's
@@ -262,6 +265,7 @@ class Intake:
                 await update_dj_fields(self._db, dj_id, **updates)
             except asyncpg.UniqueViolationError as exc:
                 raise _Rejected("Another DJ already has this name.") from exc
+            notify_management(self._ctx)
         await self._synced("dj", change.key, change.page_id, notion)
         if updates:
             changed(self._ctx, "dj", change.key)  # Notion shows the cleaned values
@@ -382,6 +386,7 @@ class Intake:
         return row["dj_name"] if row is not None else str(dj_id)
 
     def _notify_lineup(self) -> None:
+        notify_management(self._ctx)
         service = getattr(self._ctx, "lineup_service", None)
         if service is not None:
             service.notify_changed()

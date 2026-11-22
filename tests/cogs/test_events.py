@@ -154,6 +154,38 @@ async def test_poll_notion_refreshes_lineup_with_fetched_events() -> None:
 
 
 @pytest.mark.asyncio
+async def test_poll_refreshes_management_lineup_with_fetched_events() -> None:
+    from bot.cogs.events import EventsCog
+
+    cog = _make_cog_with_bot()
+    events = _make_pages("page-a")
+    fake_events.list_events = AsyncMock(return_value=events)
+    cog.ctx.lineup_service = MagicMock(refresh=AsyncMock(return_value=False))
+    cog.ctx.management_lineup_service = MagicMock(refresh=AsyncMock())
+
+    with patch.object(cog, "_auto_create_events", new=AsyncMock(return_value=0)):
+        await EventsCog._poll_notion.coro(cog)
+
+    cog.ctx.management_lineup_service.refresh.assert_awaited_once_with(events)
+
+
+@pytest.mark.asyncio
+async def test_poll_management_refresh_failure_keeps_lineup() -> None:
+    from bot.cogs.events import EventsCog
+
+    cog = _make_cog_with_bot()
+    events = _make_pages("page-a")
+    fake_events.list_events = AsyncMock(return_value=events)
+    cog.ctx.lineup_service = MagicMock(refresh=AsyncMock(return_value=False))
+    cog.ctx.management_lineup_service = MagicMock(refresh=AsyncMock(side_effect=RuntimeError))
+
+    with patch.object(cog, "_auto_create_events", new=AsyncMock(return_value=0)):
+        await EventsCog._poll_notion.coro(cog)
+
+    cog.ctx.lineup_service.refresh.assert_awaited_once_with(events)
+
+
+@pytest.mark.asyncio
 async def test_poll_runs_sync_cycle_before_lineup() -> None:
     from bot.cogs.events import EventsCog
 

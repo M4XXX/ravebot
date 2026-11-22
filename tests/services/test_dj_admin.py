@@ -144,6 +144,7 @@ async def test_add_and_edit_work_without_notion() -> None:
 
 async def test_edit_changes_fields_and_syncs() -> None:
     service, ctx = _service()
+    ctx.management_lineup_service = MagicMock()
     update = AsyncMock(return_value=True)
     with _Patched(get_dj_row=AsyncMock(return_value=ROW), update_dj_fields=update) as fns:
         result = await service.edit_dj(
@@ -160,6 +161,7 @@ async def test_edit_changes_fields_and_syncs() -> None:
     assert kw["logo_image"].startswith(b"\x89PNG")
     fns["sync_dj"].assert_awaited_once()
     ctx.log_service.log_dj_list_change.assert_awaited_once()
+    ctx.management_lineup_service.notify_changed.assert_called_once_with()
 
 
 async def test_edit_errors() -> None:

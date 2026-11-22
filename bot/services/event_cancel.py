@@ -22,6 +22,7 @@ from bot.db.djs import get_dj_row
 from bot.notion.models import STATUS_CANCELED, EventInfo
 from bot.services.dm import dm_user
 from bot.services.lineup import future_events
+from bot.services.management_lineup import notify_management
 from bot.sync.worker import changed
 from bot.timezone import local_today
 from bot.ui import texts
@@ -210,6 +211,7 @@ class EventCancelService:
         await self._log(admin_name, event, bookings.djs, failed_slots)
         if bookings.djs:
             await self._announce(event)
+        notify_management(self._ctx)
         lineup = self._ctx.lineup_service
         if lineup is not None:
             try:

@@ -291,6 +291,14 @@ async def main() -> None:
         db=ctx.db,
         log_service=ctx.log_service,
     )
+    from bot.services.management_lineup import ManagementLineupService
+
+    ctx.management_lineup_service = ManagementLineupService(
+        bot=bot,
+        db=ctx.db,
+        log_service=ctx.log_service,
+        view=management_info_view,
+    )
     from bot.services.schedule import ScheduleService
 
     ctx.schedule_service = ScheduleService(ctx)

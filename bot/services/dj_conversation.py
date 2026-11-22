@@ -40,6 +40,7 @@ from bot.services.dj_validation import (
     stream_link_ok,
 )
 from bot.services.logo import LogoError, logo_from_message
+from bot.services.management_lineup import notify_management
 from bot.services.roles import set_invites_role
 from bot.ui import texts
 
@@ -508,6 +509,7 @@ class DjConversationService:
         if not updated:
             await delete_conversation(db, user_id)
             return Reply(texts.NO_PROFILE, "info")
+        notify_management(self._ctx)
         await sync_dj(self._ctx, user_id)
         await self._drop(db, user_id)
         overview = await self._overview(db, user_id)
