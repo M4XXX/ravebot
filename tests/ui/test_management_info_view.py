@@ -141,6 +141,7 @@ async def test_admin_gets_header_plus_one_dm_per_dj() -> None:
     assert isinstance(sends[1].kwargs["file"], disnake.File)
     assert sends[1].kwargs["file"].filename == "logo-slot-1.png"
     assert "file" not in sends[2].kwargs
+    assert all(call.kwargs.get("suppress_embeds") is True for call in sends)
     inter.followup.send.assert_awaited_once_with(texts.MGMT_INFO_SENT, ephemeral=True)
 
 

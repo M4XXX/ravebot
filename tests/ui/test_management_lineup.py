@@ -147,3 +147,40 @@ def test_no_em_dash():
     out = _text(build_channel_messages(ev, DJS, "open"))
     out += "".join(p.text for p in build_dm_payloads(ev, DJS, {}, {}))
     assert "—" not in out
+
+
+def _embed_chars(msg):
+    return sum(len(e.title or "") + len(e.description or "") for e in msg)
+
+
+def test_long_notes_and_links_stay_within_discord_limits():
+    long_url = "https://s.example/" + "x" * 5000
+    djs = {
+        11: _dj(11, "Alpha", long_url, long_url, vrc="v" * 3000, logo=long_url),
+        22: _dj(22, "Beta", long_url, long_url),
+    }
+    ev = _event([_slot(1, "Alpha", 11), _slot(2, "Beta", 22)], notes="n" * 10000)
+    for state in ("booked", "open", "canceled"):
+        messages = build_channel_messages(ev, djs, state)
+        for msg in messages:
+            assert len(msg) <= 10
+            assert _embed_chars(msg) <= 6000
+            for e in msg:
+                assert len(e.description or "") <= 4096
+    head = build_channel_messages(ev, djs, "booked")[0][0].description
+    assert "Notes: " + "n" * 900 in head
+    assert "n" * 1001 not in head
+    payloads = build_dm_payloads(ev, djs, {11: "d" * 3000}, {})
+    assert all(len(p.text) <= 2000 for p in payloads)
+    assert payloads[0].text.endswith("...")
+
+
+def test_dm_escapes_vrchat_name_and_logo_url():
+    masked = "[click](https://evil.example)"
+    djs = {11: _dj(11, "Alpha", None, None, vrc=masked, logo=masked)}
+    ev = _event([_slot(1, "Alpha", 11)])
+    text = build_dm_payloads(ev, djs, {}, {})[1].text
+    assert f"VRChat: {masked}" not in text
+    assert f"Logo: {masked}" not in text
+    assert "VRChat: \\[click]" in text
+    assert "Logo: \\[click]" in text

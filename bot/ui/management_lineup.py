@@ -1,7 +1,10 @@
-"""Rendering of the DJ management lineup: channel embeds and DM payloads.
+"""DJ management lineup: channel embeds, DM payloads and the info button.
 
-Pure functions, no Discord or database access. The channel message shows DJ
-name and stream links only; Discord name, VRChat name and logo are DM-only.
+The builders (`build_channel_messages`, `build_dm_payloads`, `content_hash`) are
+pure functions without Discord or database access. `ManagementInfoView` is the
+persistent "Send me more information" button; it reads the database and sends
+DMs at click time. The channel message shows DJ name and stream links only;
+Discord name, VRChat name and logo are DM-only.
 """
 import hashlib
 import io
@@ -31,6 +34,17 @@ LineupState = Literal["booked", "open", "canceled"]
 _MAX_DESCRIPTION = 4000
 _MAX_MESSAGE_CHARS = 5500  # Discord caps a message at 6000 characters of embed text
 _MAX_EMBEDS = 10
+_MAX_NOTES = 1000  # keeps the header (channel embed and header DM) well within limits
+_MAX_VALUE = 1000  # one DJ name or link in the channel message
+_MAX_DM = 2000  # Discord caps a message's text at 2000 characters
+_ELLIPSIS = "..."
+
+
+def _clip(text: str, limit: int) -> str:
+    """`text` cut to at most `limit` characters, ending with an ellipsis if cut."""
+    if len(text) <= limit:
+        return text
+    return text[: limit - len(_ELLIPSIS)] + _ELLIPSIS
 
 
 def lineup_state(event: EventInfo) -> LineupState:
@@ -52,7 +66,7 @@ def _header_lines(event: EventInfo) -> list[str]:
         lines.append(f"Location: {texts.escape_text(event.location)}")
     note = (event.notes or "").strip()
     if note:
-        lines.append(f"Notes: {texts.escape_text(note)}")
+        lines.append(f"Notes: {_clip(texts.escape_text(note), _MAX_NOTES)}")
     return lines
 
 
@@ -62,12 +76,14 @@ def _slot_block(event: EventInfo, number: int, slot: SlotInfo | None, djs: dict[
         return f"{heading}\n{texts.MGMT_OPEN_SLOT}"
     details = djs.get(slot.discord_id) if slot.discord_id is not None else None
     details = details or {}
-    name = _safe_dj_name(details.get("dj_name") or slot.dj_name)
+    name = _clip(_safe_dj_name(details.get("dj_name") or slot.dj_name), _MAX_VALUE)
+    primary = details.get("stream_url_primary")
+    backup = details.get("stream_url_backup")
     return "\n".join([
         heading,
         name,
-        texts.mgmt_stream_line(details.get("stream_url_primary")),
-        texts.mgmt_alt_stream_line(details.get("stream_url_backup")),
+        texts.mgmt_stream_line(_clip(primary, _MAX_VALUE) if primary else None),
+        texts.mgmt_alt_stream_line(_clip(backup, _MAX_VALUE) if backup else None),
     ])
 
 
@@ -146,6 +162,10 @@ def _logo_filename(logo: bytes | None, number: int) -> str:
     return f"logo-slot-{number}.{ext}"
 
 
+def _escaped_or_none(value: str | None) -> str:
+    return texts.escape_text(value) if value else texts.MGMT_NONE
+
+
 def build_dm_payloads(
     event: EventInfo,
     djs: dict[int, dict],
@@ -154,7 +174,7 @@ def build_dm_payloads(
 ) -> list[DmPayload]:
     """Header first, then one payload per booked slot in slot order."""
     header = "\n".join([texts.mgmt_title(event), *_header_lines(event)])
-    payloads = [DmPayload(text=header, logo=None, logo_filename="")]
+    payloads = [DmPayload(text=_clip(header, _MAX_DM), logo=None, logo_filename="")]
     by_number = event.resolved_slots()
     for n in range(1, event.slot_count + 1):
         slot = by_number.get(n)
@@ -168,14 +188,18 @@ def build_dm_payloads(
             texts.mgmt_slot_heading(n, event.slot_start(n - 1).strftime("%H:%M")),
             _safe_dj_name(details.get("dj_name") or slot.dj_name),
             f"Discord: {texts.escape_text(discord_name) if discord_name else texts.MGMT_NONE}",
-            f"VRChat: {details.get('vrchat_name') or texts.MGMT_NONE}",
+            f"VRChat: {_escaped_or_none(details.get('vrchat_name'))}",
             texts.mgmt_stream_line(details.get("stream_url_primary")),
             texts.mgmt_alt_stream_line(details.get("stream_url_backup")),
         ]
         if logo is None:
-            lines.append(f"Logo: {details.get('logo_url') or texts.MGMT_NONE}")
+            lines.append(f"Logo: {_escaped_or_none(details.get('logo_url'))}")
         payloads.append(
-            DmPayload(text="\n".join(lines), logo=logo, logo_filename=_logo_filename(logo, n))
+            DmPayload(
+                text=_clip("\n".join(lines), _MAX_DM),
+                logo=logo,
+                logo_filename=_logo_filename(logo, n),
+            )
         )
     return payloads
 
@@ -252,9 +276,9 @@ class ManagementInfoView(GatedView):
             try:
                 if payload.logo is not None:
                     file = disnake.File(io.BytesIO(payload.logo), filename=payload.logo_filename)
-                    await inter.author.send(payload.text, file=file)
+                    await inter.author.send(payload.text, file=file, suppress_embeds=True)
                 else:
-                    await inter.author.send(payload.text)
+                    await inter.author.send(payload.text, suppress_embeds=True)
             except disnake.Forbidden:
                 if sent == 0:
                     await inter.followup.send(texts.MGMT_INFO_DMS_CLOSED, ephemeral=True)
