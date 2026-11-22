@@ -486,3 +486,20 @@ async def test_record_write_failure_keeps_result_and_deletes_nothing() -> None:
         assert await service._send(GUILD, _EV) == "sent"
     assert log == ["send"]
     assert store.record == _OLD
+
+
+@pytest.mark.asyncio
+async def test_delete_not_found_is_not_a_warning_but_other_errors_are(caplog) -> None:
+    service, cfg, channel, store, log = _tidy(_OLD)
+    channel.delete_error = disnake.NotFound(MagicMock(status=404), "gone")
+    with _Tidy(cfg, store), caplog.at_level("DEBUG", logger="bot.services.lineup"):
+        assert await service._send(GUILD, _EV) == "sent"
+    assert store.record.message_id == 1001
+    assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+
+    caplog.clear()
+    channel.last_message_id = 1001
+    channel.delete_error = RuntimeError("boom")
+    with _Tidy(cfg, store), caplog.at_level("DEBUG", logger="bot.services.lineup"):
+        assert await service._send(GUILD, _EV) == "sent"
+    assert [r.levelname for r in caplog.records if r.levelname == "WARNING"] == ["WARNING"]

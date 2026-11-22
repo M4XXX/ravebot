@@ -45,7 +45,7 @@ The bot posts a lineup update into the DJ channel whenever the upcoming event ch
 - The cache-only "last message" check is the accepted approach. After a reconnect Discord sends the current last message id with the channel; the only window where it can lag is messages written while the bot was disconnected before it reconnected. Likewise a person writing in the few milliseconds between the check and the send is accepted (the check is done as late as possible, right before the send). Both limits are documented in the developer guide.
 - Concurrency: `refresh` and `post_event` already call `_send` under the service's `asyncio.Lock`, so lineup posts are serialized and no extra lock is added.
 - The event identity is `EventInfo.page_id` (the stable event key; the footer shows the display name `event_id` only for people).
-- Rows of a DJ channel that is no longer configured stay in the table (one small row per channel, no cleanup). A message deleted by someone else leaves a stale record that simply never matches the channel's last message id again.
+- Rows of a DJ channel that is no longer configured stay in the table (one small row per channel, no cleanup). After a message was deleted by hand, the channel's last message id may still equal the stored id, so the next post attempts the delete, gets NotFound and ignores it.
 - The by-hand command's replies do not change.
 
 ## Constraints from the codebase

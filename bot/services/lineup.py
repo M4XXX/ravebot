@@ -207,6 +207,8 @@ class LineupService:
         if replace_old:
             try:
                 await channel.get_partial_message(record.message_id).delete()
+            except disnake.NotFound:
+                logger.debug("LineupService: the old lineup post was already gone")
             except Exception:
                 logger.warning("LineupService: deleting the old lineup post failed", exc_info=True)
         return _SENT
