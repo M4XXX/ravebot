@@ -225,7 +225,7 @@ A failed startup rebuild pauses the bot (maintenance) like a failed import.
 
 ### Commands
 
-Registered by `AdminCog` (`bot/cogs/admin.py`) and `SetupCog` (`bot/cogs/setup.py`); all are admin only (`ADMIN_USER_IDS`).
+Registered by `AdminCog` (`bot/cogs/admin.py`) and `SetupCog` (`bot/cogs/setup.py`); all are admin only (`ADMIN_USER_IDS` plus added admins). `AdminsCog` (`bot/cogs/admins_cog.py`) adds `/admins add user`, `/admins remove user` and `/admins list`, owners only (`ADMIN_USER_IDS`).
 
 ```
 /setup
@@ -337,7 +337,9 @@ Real-SQL test: `tests/pg/test_slot_limit.py` covers the limit with concurrent cl
 - `BotContext.is_admin(user_id)` is the single check for every admin command and gate; `ctx.admin_ids()` lists owners plus added admins (startup DM).
 - `bot/web/`: `start_admin_page(ctx, bot)` and `stop_admin_page(runner)` in `__init__.py`; `main` starts the page right before `bot.start(...)` and stops it first in the `finally` block. No `ADMIN_PAGE_PASSWORD` means no page; a bad port or a port in use logs an ERROR and returns `None`, the bot keeps running. It binds `0.0.0.0` (`web.TCPSite`), `Dockerfile` has `EXPOSE 8080`.
 - Schedule page: `service.schedule` (`SchedulePageService`, `bot/web/schedule_page.py`) backs `GET /schedule`, `POST /schedule/defaults`, `/schedule/rules/add`, `/schedule/rules/{id}/edit|remove`, `/schedule/events/{uid}` and `/schedule/apply`. Every POST is refused in maintenance. "Apply to all" sends the pairs the page showed (hidden `shown` fields), so no change the admin did not see is written (the service recomputes and writes only those still pending).
-- `AdminPageService` (`bot/web/service.py`) wraps the registry, the Discord lookups and the admin log entry for added admins.
+- `AdminPageService` (`bot/web/service.py`) parses the typed id and delegates `add_admin`/`remove_admin` to `AdminManagementService` with the actor `"the admin page"`.
+- `AdminManagementService` (`bot/services/admin_management.py`) is the single code path for adding, removing and listing admins; the `/admins` cog and the admin page both use it. It applies the rules (owners cannot be removed, bot accounts cannot be added), saves, and writes `log_admin_added`/`log_admin_removed` with the `actor`. Results are `AdminChange` values.
+- `AdminsCog` (`bot/cogs/admins_cog.py`, `/admins add|remove|list`): `cog_slash_command_check` runs the shared `AdminCog` gate (server only, admin, idle rule) and then `ctx.admins.is_owner`; a non-owner raises `NotOwner` (a `CheckFailure`). Its own `cog_slash_command_error` answers `NotOwner` with `OWNER_ONLY`, other check failures with the normal permission refusal, and anything else with a generic error; all replies are ephemeral. It fails closed when `ctx.admins` is missing.
 - Security measures: login throttle (`LoginThrottle`, also closes the parallel attempt bypass) plus a fixed delay on a wrong password; stateless signed session cookies (the signing key is random per process, so sessions end at restart; logout clears the cookie only); CSRF token on every POST; security headers on every response (CSP, `X-Frame-Options`, `nosniff`, no-store); all user-controlled text is HTML-escaped. There is no HTTPS, so the page is for the local network only.
 
 ## 5. Manual Docker Build & Release
@@ -387,6 +389,7 @@ docker push ghcr.io/YOUR_USER/ravebot:latest
 
 API:
 
+- `log_admin_added(name, user_id, actor=None)`, `log_admin_removed(name, user_id, actor=None)`: admin list changes. `actor` is the owner's display name for `/admins`, or `the admin page`; both are escaped.
 - `log_booked(dj_name, event, slot_index, via)`, `log_cancelled(...)`, `log_changed_by_organizer(...)`, `log_changed_in_notion(...)`: booking changes. Organizer commands emit only `log_changed_by_organizer`.
 - `log_fully_booked(event)`, `log_new_dj(dj_name, vrchat_name)`.
 - `log_user_message(user, text, attachment_names, dj_name, view)`: returns the posted message so the caller can store its id.
