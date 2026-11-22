@@ -684,3 +684,15 @@ async def test_booking_rules_save_without_guild_fails() -> None:
         {"slot_limit_max": "3", "cancel_cutoff_minutes": "5"}
     )
     assert not result.ok
+
+
+async def test_booking_rules_save_failure_returns_fixed_message() -> None:
+    async def boom(db, guild_id, key, value):
+        raise RuntimeError("secret detail")
+
+    with patch("bot.db.config.set_value", boom):
+        result = await _svc().set_booking_rules(
+            {"slot_limit_max": "3", "cancel_cutoff_minutes": "5"}
+        )
+    assert not result.ok
+    assert result.message == "The booking rules could not be saved. Please try again."

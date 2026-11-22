@@ -338,7 +338,11 @@ class AdminPageService:
             return ActionResult(False, " ".join(errors))
         if not self._bot.guilds or self._ctx.db is None:
             return ActionResult(False, texts.SCHEDULE_NOT_READY)
-        await save_rules(self._ctx.db, self._bot.guilds[0].id, rules)
+        try:
+            await save_rules(self._ctx.db, self._bot.guilds[0].id, rules)
+        except Exception:
+            logger.exception("Could not save the booking rules")
+            return ActionResult(False, "The booking rules could not be saved. Please try again.")
         return ActionResult(True, "Booking rules saved.")
 
     def server_info(self) -> ServerInfo | None:
