@@ -540,3 +540,34 @@ async def test_run_gap_detection_skips_a_done_event():
     _svc, result, upsert, _complete = await _run_with_status("Done", None)
     assert result == []
     upsert.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_contact_next_dj_skips_dj_at_the_slot_limit():
+    event = _make_event(days_ahead=5, slots=6, djs_booked=0)
+    svc = _make_service()
+    svc.bot.get_user = MagicMock(return_value=MagicMock(send=AsyncMock()))
+    djs = [_make_dj(101, "AtLimit"), _make_dj(102, "Free")]
+    at_limit = lambda ev, uid, rules: uid == 101  # noqa: E731
+    with patch("bot.policy.at_slot_limit", new=at_limit), \
+         patch("bot.services.outreach.get_active_booking_djs", new=AsyncMock(return_value=djs)), \
+         patch("bot.services.outreach.get_contacted_discord_ids", new=AsyncMock(return_value=[])), \
+         patch("bot.services.outreach.record_outreach_contact", new=AsyncMock()) as record, \
+         patch("bot.services.outreach.update_last_contact_at", new=AsyncMock()), \
+         patch("bot.services.outreach.update_dj_last_contacted_at", new=AsyncMock()):
+        await svc.contact_next_dj(event, guild_id=1, ctx=MagicMock())
+    assert record.await_args.args[2] == 102
+
+
+@pytest.mark.asyncio
+async def test_contact_next_dj_all_at_the_limit_means_no_dj_reachable():
+    event = _make_event(days_ahead=5, slots=6, djs_booked=0)
+    svc = _make_service()
+    with patch("bot.policy.at_slot_limit", new=lambda *a: True), \
+         patch("bot.services.outreach.get_active_booking_djs",
+               new=AsyncMock(return_value=[_make_dj(101)])), \
+         patch("bot.services.outreach.get_contacted_discord_ids", new=AsyncMock(return_value=[])), \
+         patch("bot.services.outreach.record_outreach_contact", new=AsyncMock()) as record:
+        result = await svc.contact_next_dj(event, guild_id=1, ctx=MagicMock())
+    assert result is False
+    record.assert_not_awaited()

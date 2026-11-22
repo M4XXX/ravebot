@@ -2852,3 +2852,121 @@ async def test_stale_event_press_uses_current_position() -> None:
     assert kw["embed"].footer.text == "New1"
     assert any(f.name == "Events" for f in kw["embed"].fields)
     assert len(kw["view"].children) == 3
+
+
+# Slot limit: do not offer what would be refused
+# ---------------------------------------------------------------------------
+
+def _held_event(page_id: str, name: str, held: int, discord_id: int, slots: int = 3) -> EventInfo:
+    return make_event(
+        event_id=name,
+        page_id=page_id,
+        date=datetime.date(2026, 7, 1),
+        start=datetime.time(20, 0),
+        slot_count=slots,
+        slots=[
+            make_slot(i + 1, dj_page_id=f"p{i}", dj_name="Me", discord_id=discord_id)
+            for i in range(held)
+        ],
+    )
+
+
+def _rules(**kw):
+    from bot.policy import BookingRules
+
+    return patch("bot.policy.current_rules", new=AsyncMock(return_value=BookingRules(**kw)))
+
+
+@pytest.mark.asyncio
+async def test_prepare_booking_offers_only_events_below_the_limit() -> None:
+    from bot.ui.views import prepare_booking
+
+    a = _held_event("evt-a", "A", 2, 77)
+    b = _held_event("evt-b", "B", 0, 77)
+    ctx = _ctx_with_events([a, b])
+    with _rules():
+        start = await prepare_booking(ctx, 77, bot=MagicMock())
+    assert start.error is None
+    from bot.ui import texts as t
+
+    assert t.event_name(b) in start.embed.description
+    assert t.event_name(a) not in start.embed.description
+
+
+@pytest.mark.asyncio
+async def test_prepare_booking_at_the_limit_everywhere() -> None:
+    from bot.policy import no_event_below_limit_text
+    from bot.ui.views import prepare_booking
+
+    ctx = _ctx_with_events([_held_event("evt-a", "A", 2, 77), _held_event("evt-b", "B", 2, 77)])
+    with _rules():
+        start = await prepare_booking(ctx, 77, bot=MagicMock())
+    assert start.error == no_event_below_limit_text(2)
+    assert start.view is None
+    assert not ctx.get_user_lock(77).locked()
+
+
+@pytest.mark.asyncio
+async def test_prepare_booking_limit_disabled_offers_both() -> None:
+    from bot.ui.views import prepare_booking
+
+    ctx = _ctx_with_events([_held_event("evt-a", "A", 2, 77), _held_event("evt-b", "B", 0, 77)])
+    with _rules(slot_limit_enabled=False):
+        start = await prepare_booking(ctx, 77, bot=MagicMock())
+    assert start.error is None
+    assert "A" in start.embed.description and "B" in start.embed.description
+
+
+@pytest.mark.asyncio
+async def test_prepare_booking_higher_limit_offers_event() -> None:
+    from bot.ui.views import prepare_booking
+
+    ctx = _ctx_with_events([_held_event("evt-a", "A", 2, 77)])
+    with _rules(slot_limit_max=3):
+        start = await prepare_booking(ctx, 77, bot=MagicMock())
+    assert start.error is None
+    assert start.view is not None
+
+
+@pytest.mark.asyncio
+async def test_prepare_booking_specific_event_at_the_limit() -> None:
+    from bot.policy import slot_limit_text
+    from bot.ui.views import prepare_booking
+
+    a = _held_event("evt-a", "A", 2, 77)
+    ctx = _ctx_with_events([a, _held_event("evt-b", "B", 0, 77)])
+    with _rules():
+        start = await prepare_booking(ctx, 77, "A", bot=MagicMock())
+    assert start.error == slot_limit_text(2)
+    assert start.view is None
+    assert not ctx.get_user_lock(77).locked()
+
+
+def test_filter_events_stays_backward_compatible() -> None:
+    from bot.policy import BookingRules
+    from bot.ui.views import _filter_events_with_open_slots
+
+    a = _held_event("evt-a", "A", 2, 77)
+    assert _filter_events_with_open_slots([a]) == [a]
+    assert _filter_events_with_open_slots([a], 77, BookingRules()) == []
+    assert _filter_events_with_open_slots([a], 78, BookingRules()) == [a]
+
+
+@pytest.mark.asyncio
+async def test_outreach_accept_refused_at_the_limit() -> None:
+    from bot.policy import slot_limit_text
+    from bot.ui.views import OutreachView
+
+    ctx = make_real_ctx(db=None)
+    event = _held_event("evt-ol", "OL", 2, 40070)
+    fake_events.list_events = AsyncMock(return_value=[event])
+    view = OutreachView(ctx=ctx, event=event, discord_user_id=40070)
+    inter = MagicMock(spec=disnake.MessageInteraction)
+    inter.author.id = 40070
+    inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    inter.followup.send = inter.response.send_message
+    with _rules():
+        await view.accept.callback(inter)
+    assert inter.response.send_message.call_args[0][0] == slot_limit_text(2)
+    assert not ctx.get_user_lock(40070).locked()

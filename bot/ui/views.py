@@ -31,6 +31,7 @@ from bot.ui.gates import GatedView, refuse_in_maintenance
 if TYPE_CHECKING:
     from bot.context import BotContext
     from bot.notion.models import EventInfo
+    from bot.policy import BookingRules
 
 logger = logging.getLogger(__name__)
 
@@ -255,7 +256,9 @@ class FallbackMenuView(GatedView):
             return
         # The database is read next: acknowledge first (Discord's 3 second answer limit)
         await inter.response.defer(ephemeral=True)
-        start = await prepare_booking(self.ctx, inter.author.id)
+        start = await prepare_booking(
+            self.ctx, inter.author.id, bot=getattr(inter, "bot", None)
+        )
         if start.error is not None:
             await inter.followup.send(start.error, ephemeral=True)
             return
@@ -676,9 +679,22 @@ def _pick_slot_content(open_slot_indices: list[int]) -> str:
     return texts.PICK_SLOT
 
 
-def _filter_events_with_open_slots(events: list["EventInfo"]) -> list["EventInfo"]:
-    """Return only events that have at least one open slot (see _open_slot_indices)."""
-    return [event for event in events if _open_slot_indices(event)]
+def _filter_events_with_open_slots(
+    events: list["EventInfo"],
+    user_id: int | None = None,
+    rules: "BookingRules | None" = None,
+) -> list["EventInfo"]:
+    """Return only events that have at least one open slot (see _open_slot_indices).
+
+    With a `user_id` and `rules`, events where that user is at the slot limit are
+    dropped as well.
+    """
+    from bot.policy import at_slot_limit
+
+    result = [event for event in events if _open_slot_indices(event)]
+    if user_id is not None and rules is not None:
+        result = [event for event in result if not at_slot_limit(event, user_id, rules)]
+    return result
 
 
 @dataclass
@@ -692,7 +708,7 @@ class BookingStart:
 
 
 async def prepare_booking(
-    ctx: "BotContext", user_id: int, event_id: str | None = None
+    ctx: "BotContext", user_id: int, event_id: str | None = None, bot: Any = None
 ) -> BookingStart:
     """Start the booking flow for a user.
 
@@ -718,18 +734,32 @@ async def prepare_booking(
         if not with_open:
             lock.release()
             return BookingStart(texts.ALL_BOOKED, "", None)
+        from bot.policy import (
+            at_slot_limit,
+            current_rules,
+            no_event_below_limit_text,
+            slot_limit_text,
+        )
         from bot.ui.embeds import BookingEventPickEmbed, LineupUpdateEmbed
 
+        rules = await current_rules(ctx.db, bot)
         chosen = next((e for e in events if event_id and e.event_id == event_id), None)
         if chosen is not None:
             open_slots = _open_slot_indices(chosen)
             if not open_slots:
                 lock.release()
                 return BookingStart(texts.ALL_BOOKED, "", None)
+            if at_slot_limit(chosen, user_id, rules):
+                lock.release()
+                return BookingStart(slot_limit_text(rules.slot_limit_max), "", None)
             slot_view = SlotSelectionView(ctx, chosen, open_slots, lock, user_id)
             return BookingStart(
                 None, _pick_slot_content(open_slots), slot_view, LineupUpdateEmbed(chosen)
             )
+        with_open = _filter_events_with_open_slots(events, user_id, rules)
+        if not with_open:
+            lock.release()
+            return BookingStart(no_event_below_limit_text(rules.slot_limit_max), "", None)
         # Cap to 5 events (one row of buttons)
         with_open = with_open[:MAX_PICK_BUTTONS]
         counts = [len(_open_slot_indices(event)) for event in with_open]
@@ -776,7 +806,9 @@ class LineupPostView(GatedView):
         if not await _has_dj_profile(self.ctx, user.id):
             await self._onboard_before_booking(inter)
             return
-        start = await prepare_booking(self.ctx, user.id, _post_event_id(inter.message))
+        start = await prepare_booking(
+            self.ctx, user.id, _post_event_id(inter.message), bot=getattr(inter, "bot", None)
+        )
         if start.error is not None:
             await inter.followup.send(start.error, ephemeral=True)
             return
@@ -1686,6 +1718,15 @@ class OutreachView(GatedView):
         if not open_slot_indices:
             lock.release()
             await inter.followup.send(texts.INVITE_FILLED, ephemeral=True)
+            return
+
+        # The DJ may have reached the slot limit since the invite went out
+        from bot.policy import at_slot_limit, current_rules, slot_limit_text
+
+        rules = await current_rules(self._ctx.db, getattr(inter, "bot", None))
+        if at_slot_limit(event, inter.author.id, rules):
+            lock.release()
+            await inter.followup.send(slot_limit_text(rules.slot_limit_max), ephemeral=True)
             return
 
         embed = LineupUpdateEmbed(event)
