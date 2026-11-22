@@ -10,9 +10,13 @@ posted for it until the event opens up (the record is then deleted) and fills ag
 
 Message-count changes: a longer lineup posts the extra messages in the stored
 channel; a shorter one edits the surplus messages to a one-line placeholder and
-keeps their ids, so they are reused if the lineup grows again. A missing main
-message (deleted by hand) re-posts the whole lineup in the configured channel and
-replaces all stored ids.
+keeps their ids, so they are reused if the lineup grows again. A missing message
+(deleted by hand) re-posts the whole lineup in the configured channel, replaces
+all stored ids and edits the surviving old messages to a "moved" placeholder
+without the button. A deleted message clears the record's hash at once (raw
+delete listeners), so the next refresh re-posts even if nothing else changed.
+When the stored channel no longer exists, the lineup moves to the configured
+channel. Edits use partial messages (no Read Message History permission needed).
 """
 import asyncio
 import datetime
@@ -145,7 +149,7 @@ class ManagementLineupService:
         if finished and event.status != STATUS_CANCELED:
             return  # Done: the message is left as it is
         messages, digest = await self._render(event)
-        if digest == record.content_hash:
+        if digest == record.content_hash and self.bot.get_channel(record.channel_id) is not None:
             return
         await self._edit(event, record, messages, digest, configured)
 
@@ -230,28 +234,39 @@ class ManagementLineupService:
         digest: str,
         configured: int | None,
     ) -> None:
+        old = list(record.message_ids)
         channel = self.bot.get_channel(record.channel_id)
         if channel is None:
             await self._report(record.channel_id, _MISSING)
+            if configured is not None and configured != record.channel_id:
+                # The stored channel is gone: move the lineup to the configured one
+                await self._repost(event, record, old, [], None, messages, digest, configured)
             return
-        old = list(record.message_ids)
         stored = list(old)
+        missing: int | None = None  # the id being edited when NotFound hit
         try:
             for index, embeds in enumerate(messages):
                 if index < len(old):
-                    message = await channel.fetch_message(old[index])
-                    await message.edit(content=None, **self._send_kwargs(embeds, index == 0))
+                    missing = old[index]
+                    # A partial message needs no Read Message History permission
+                    await channel.get_partial_message(old[index]).edit(
+                        content=None, **self._send_kwargs(embeds, index == 0)
+                    )
+                    missing = None
                 else:
                     message = await channel.send(**self._send_kwargs(embeds, first=False))
                     stored.append(message.id)
             for message_id in old[len(messages):]:
                 try:
-                    message = await channel.fetch_message(message_id)
-                    await message.edit(content=texts.MGMT_LINEUP_SURPLUS, embeds=[])
+                    await channel.get_partial_message(message_id).edit(
+                        content=texts.MGMT_LINEUP_SURPLUS, embeds=[]
+                    )
                 except disnake.NotFound:
                     stored.remove(message_id)  # placeholder gone: nothing to keep
         except disnake.NotFound:
-            await self._repost(event, record, messages, digest, configured)
+            survivors = [m for m in stored if m != missing]
+            await self._repost(event, record, stored, survivors, channel, messages, digest,
+                               configured)
             return
         except disnake.Forbidden:
             await self._report(record.channel_id, _FORBIDDEN)
@@ -268,24 +283,79 @@ class ManagementLineupService:
         self,
         event: EventInfo,
         record: LineupRecord,
+        stored: list[int],
+        survivors: list[int],
+        old_channel: Any,
         messages: Messages,
         digest: str,
         configured: int | None,
     ) -> None:
-        """A lineup message is gone: post the whole lineup again, replace all ids."""
+        """Post the whole lineup again in the configured channel, replacing all ids.
+
+        `stored` holds the old ids plus any sent in the failed edit; `survivors` are
+        the ones still there. Once the lineup moved, the survivors are edited to a
+        "moved" placeholder without the button, so only one lineup stays live.
+        """
         if configured is None:
             logger.info(
                 "ManagementLineupService: lineup of %s is gone and no channel is set",
                 event.page_id,
             )
-            return
-        if not await self._post(event, configured, messages, digest):
-            # Keep the old ids; an empty hash retries on the next refresh
-            current = await ml_db.get_record(self.db, event.page_id)
-            if current is not None and current.message_ids == record.message_ids:
+            if stored != list(record.message_ids):  # keep ids sent in this pass
                 await ml_db.upsert_record(
-                    self.db, event.page_id, record.channel_id, record.message_ids, ""
+                    self.db, event.page_id, record.channel_id, stored, ""
                 )
+            return
+        await self._post(event, configured, messages, digest)
+        current = await ml_db.get_record(self.db, event.page_id)
+        if current is None or current.message_ids == record.message_ids:
+            # Nothing posted: keep the old ids; an empty hash retries next refresh
+            await ml_db.upsert_record(self.db, event.page_id, record.channel_id, stored, "")
+            return
+        if old_channel is None:
+            return
+        for message_id in survivors:
+            try:
+                await old_channel.get_partial_message(message_id).edit(
+                    content=texts.MGMT_LINEUP_MOVED, embeds=[], view=None
+                )
+            except Exception:
+                logger.info(
+                    "ManagementLineupService: could not mark old message %s as moved",
+                    message_id,
+                )
+
+    # --- hand-deleted messages ---------------------------------------------
+
+    async def on_raw_message_delete(self, payload: Any) -> None:
+        """Listener: a tracked lineup message was deleted; re-post on the next refresh."""
+        await self._on_deleted([payload.message_id])
+
+    async def on_raw_bulk_message_delete(self, payload: Any) -> None:
+        """Listener: the bulk variant of on_raw_message_delete."""
+        await self._on_deleted(list(payload.message_ids))
+
+    async def _on_deleted(self, message_ids: list[int]) -> None:
+        """Clear the hash of every record holding one of the ids; never raises."""
+        try:
+            event_ids: list[str] = []
+            for message_id in message_ids:
+                record = await ml_db.get_record_by_message(self.db, message_id)
+                if record is not None and record.event_id not in event_ids:
+                    event_ids.append(record.event_id)
+            if not event_ids:
+                return
+            async with self._lock:  # a running refresh must not write the old hash back
+                for event_id in event_ids:
+                    record = await ml_db.get_record(self.db, event_id)
+                    if record is None or not record.message_ids:
+                        continue
+                    await ml_db.upsert_record(
+                        self.db, event_id, record.channel_id, record.message_ids, ""
+                    )
+            self.notify_changed()
+        except Exception:
+            logger.exception("ManagementLineupService: handling a deleted message failed")
 
     # --- backfill -----------------------------------------------------------
 

@@ -49,6 +49,16 @@ class FakeMessage:
         self.channel.edit_calls.append((self.id, kwargs))
 
 
+class _GoneMessage:
+    """Partial message for an id the channel never had (or lost)."""
+
+    def __init__(self, message_id: int) -> None:
+        self.id = message_id
+
+    async def edit(self, **kwargs) -> None:
+        raise _not_found()
+
+
 class FakeChannel:
     def __init__(self, channel_id: int) -> None:
         self.id = channel_id
@@ -68,10 +78,12 @@ class FakeChannel:
         return msg
 
     async def fetch_message(self, message_id: int) -> FakeMessage:
+        # A staff channel without Read Message History: fetching is forbidden
         self.fetch_calls += 1
-        if message_id not in self.messages or message_id in self.deleted:
-            raise _not_found()
-        return self.messages[message_id]
+        raise _forbidden()
+
+    def get_partial_message(self, message_id: int):
+        return self.messages.get(message_id) or _GoneMessage(message_id)
 
     @property
     def discord_calls(self) -> int:
@@ -101,11 +113,17 @@ class FakeStore:
             self.deleted.append(event_id)
             self.records.pop(event_id, None)
 
+        async def get_record_by_message(pool, message_id):
+            return next(
+                (r for r in self.records.values() if message_id in r.message_ids), None
+            )
+
         base = "bot.services.management_lineup.ml_db"
         monkeypatch.setattr(f"{base}.get_record", get_record)
         monkeypatch.setattr(f"{base}.list_records", list_records)
         monkeypatch.setattr(f"{base}.upsert_record", upsert_record)
         monkeypatch.setattr(f"{base}.delete_record", delete_record)
+        monkeypatch.setattr(f"{base}.get_record_by_message", get_record_by_message)
 
 
 class Env:
@@ -538,6 +556,9 @@ async def test_long_lineup_one_missing_message_reposts_all(env: Env) -> None:
     assert len(new) == len(old)
     assert new[0].kwargs["view"] is env.view
     assert env.store.records["ev-1"].message_ids == tuple(m.id for m in new)
+    # The surviving old messages point to the new lineup and lose the button
+    for msg in old[:-1]:
+        assert msg.edits[-1] == {"content": texts.MGMT_LINEUP_MOVED, "embeds": [], "view": None}
 
 
 @pytest.mark.asyncio
@@ -722,3 +743,156 @@ async def test_network_error_mid_edit_keeps_extra_ids(env: Env, exc: Exception) 
     assert len(record.message_ids) == len(env.channel.sent)
     assert len(env.channel.sent) > sent_before
     assert record.content_hash
+
+
+# --- final review fixes -------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_edit_works_without_read_message_history(env: Env) -> None:
+    await env.service.refresh([_event()])
+    first = env.channel.sent[0]
+    await env.service.refresh([_event(booked=2)])
+    assert env.channel.fetch_calls == 0
+    assert len(first.edits) == 1
+    assert len(env.channel.sent) == 1
+    env.log.log_attention.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_missing_first_message_turns_survivors_into_placeholders(env: Env) -> None:
+    env.djs = _long_djs(40)
+    event = _event(booked=40, count=40, slot_minutes=15)
+    await env.service.refresh([event])
+    old = list(env.channel.sent)
+    env.channel.deleted.add(old[0].id)
+    env.djs[101]["dj_name"] = "Renamed"
+    await env.service.refresh([event])
+    new = env.channel.sent[len(old):]
+    assert env.store.records["ev-1"].message_ids == tuple(m.id for m in new)
+    for msg in old[1:]:
+        assert msg.edits[-1] == {"content": texts.MGMT_LINEUP_MOVED, "embeds": [], "view": None}
+    assert "—" not in texts.MGMT_LINEUP_MOVED
+
+
+@pytest.mark.asyncio
+async def test_extra_chunk_sent_before_not_found_is_not_orphaned(env: Env) -> None:
+    env.djs = _long_djs(40)
+    await env.service.refresh([_event(booked=3, count=3)])
+    first = env.channel.sent[0]
+    # The first extra chunk is sent, the second fails as if the channel vanished.
+    _fail_on_call(env.channel, 2, _not_found())
+    await env.service.refresh([_event(booked=40, count=40, slot_minutes=15)])
+    extra = env.channel.sent[1]
+    new = env.channel.sent[2:]
+    assert new and new[0].kwargs["view"] is env.view
+    assert env.store.records["ev-1"].message_ids == tuple(m.id for m in new)
+    for msg in (first, extra):
+        assert msg.edits[-1] == {"content": texts.MGMT_LINEUP_MOVED, "embeds": [], "view": None}
+
+
+@pytest.mark.asyncio
+async def test_extra_chunk_ids_kept_when_repost_impossible(env: Env) -> None:
+    env.djs = _long_djs(40)
+    await env.service.refresh([_event(booked=3, count=3)])
+    first = env.channel.sent[0]
+    env.config[MANAGEMENT_CHANNEL_KEY] = None
+    _fail_on_call(env.channel, 2, _not_found())
+    await env.service.refresh([_event(booked=40, count=40, slot_minutes=15)])
+    extra = env.channel.sent[1]
+    record = env.store.records["ev-1"]
+    assert record.message_ids == (first.id, extra.id)
+    assert record.content_hash == ""
+
+
+@pytest.mark.asyncio
+async def test_raw_delete_clears_hash_and_notifies(env: Env) -> None:
+    await env.service.refresh([_event()])
+    first = env.channel.sent[0]
+    env.service.notify_changed = MagicMock()  # type: ignore[method-assign]
+    await env.service.on_raw_message_delete(MagicMock(message_id=first.id))
+    record = env.store.records["ev-1"]
+    assert record.content_hash == ""
+    assert record.message_ids == (first.id,)
+    assert record.channel_id == CHANNEL
+    env.service.notify_changed.assert_called_once_with()
+    # With unchanged content the next refresh posts the lineup again
+    env.channel.deleted.add(first.id)
+    await env.service.refresh([_event()])
+    assert len(env.channel.sent) == 2
+    assert env.store.records["ev-1"].message_ids == (env.channel.sent[1].id,)
+
+
+@pytest.mark.asyncio
+async def test_raw_delete_of_untracked_message_is_ignored(env: Env) -> None:
+    await env.service.refresh([_event()])
+    before = dict(env.store.records)
+    env.service.notify_changed = MagicMock()  # type: ignore[method-assign]
+    await env.service.on_raw_message_delete(MagicMock(message_id=123))
+    assert env.store.records == before
+    env.service.notify_changed.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_raw_bulk_delete_clears_each_tracked_record(env: Env) -> None:
+    await env.service.refresh([_event("ev-1"), _event("ev-2")])
+    a, b = env.channel.sent
+    env.store.records["ev-3"] = LineupRecord("ev-3", CHANNEL, (77,), "keep")
+    env.service.notify_changed = MagicMock()  # type: ignore[method-assign]
+    await env.service.on_raw_bulk_message_delete(MagicMock(message_ids={a.id, b.id, 999}))
+    assert env.store.records["ev-1"].content_hash == ""
+    assert env.store.records["ev-2"].content_hash == ""
+    assert env.store.records["ev-3"].content_hash == "keep"
+    env.service.notify_changed.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_raw_bulk_delete_of_untracked_messages_is_ignored(env: Env) -> None:
+    env.service.notify_changed = MagicMock()  # type: ignore[method-assign]
+    await env.service.on_raw_bulk_message_delete(MagicMock(message_ids={1, 2}))
+    env.service.notify_changed.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_raw_delete_never_raises(env: Env, monkeypatch) -> None:
+    async def boom(pool, message_id):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr("bot.services.management_lineup.ml_db.get_record_by_message", boom)
+    await env.service.on_raw_message_delete(MagicMock(message_id=1))
+    await env.service.on_raw_bulk_message_delete(MagicMock(message_ids={1}))
+
+
+@pytest.mark.asyncio
+async def test_lost_channel_reposts_into_configured_channel(env: Env) -> None:
+    await env.service.refresh([_event()])
+    old_id = env.channel.sent[0].id
+    del env.channels[CHANNEL]  # the staff channel was deleted
+    env.config[MANAGEMENT_CHANNEL_KEY] = str(OTHER_CHANNEL)
+    await env.service.refresh([_event()])  # unchanged content
+    other = env.channels[OTHER_CHANNEL]
+    assert len(other.sent) == 1
+    assert other.sent[0].kwargs["view"] is env.view
+    record = env.store.records["ev-1"]
+    assert record.channel_id == OTHER_CHANNEL
+    assert record.message_ids == (other.sent[0].id,)
+    assert old_id not in record.message_ids
+    env.log.log_attention.assert_awaited_once()
+    await env.service.refresh([_event()])
+    assert len(other.sent) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("configured", [None, str(CHANNEL)])
+async def test_lost_channel_without_other_configured_channel_only_reports(
+    env: Env, configured: str | None
+) -> None:
+    await env.service.refresh([_event()])
+    record = env.store.records["ev-1"]
+    del env.channels[CHANNEL]
+    env.config[MANAGEMENT_CHANNEL_KEY] = configured
+    await env.service.refresh([_event(booked=2)])
+    await env.service.refresh([_event(booked=2)])
+    assert env.channels[OTHER_CHANNEL].sent == []
+    assert env.store.records["ev-1"] == record
+    env.log.log_attention.assert_awaited_once()

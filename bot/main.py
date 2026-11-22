@@ -299,6 +299,13 @@ async def main() -> None:
         log_service=ctx.log_service,
         view=management_info_view,
     )
+    # A hand-deleted lineup message is re-posted on the next refresh
+    bot.add_listener(
+        ctx.management_lineup_service.on_raw_message_delete, "on_raw_message_delete"
+    )
+    bot.add_listener(
+        ctx.management_lineup_service.on_raw_bulk_message_delete, "on_raw_bulk_message_delete"
+    )
     from bot.services.schedule import ScheduleService
 
     ctx.schedule_service = ScheduleService(ctx)

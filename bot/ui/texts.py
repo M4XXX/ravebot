@@ -1350,6 +1350,8 @@ def mgmt_alt_stream_line(url: str | None) -> str:
 
 # Shown in a lineup message that is no longer needed after the lineup got shorter.
 MGMT_LINEUP_SURPLUS = "Lineup continues in the message(s) above."
+# Shown in an old lineup message after the lineup was posted again.
+MGMT_LINEUP_MOVED = "This lineup was posted again: see the newest lineup message."
 MGMT_CHANNEL_TODO = (
     "Run /setup again to choose the DJ management channel, or give the bot "
     "permission to view and send messages there."
