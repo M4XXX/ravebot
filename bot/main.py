@@ -171,6 +171,7 @@ async def main() -> None:
 
     # Story 1.3: init AdminLogService and load cogs
     from bot.cogs.admin import AdminCog
+    from bot.cogs.admins_cog import AdminsCog
     from bot.cogs.booking import BookingCog
     from bot.cogs.events import EventsCog
     from bot.cogs.onboarding import OnboardingCog
@@ -348,6 +349,9 @@ async def main() -> None:
     _add_cog(bot, EventsCog(ctx))
     _add_cog(bot, SetupCog(ctx))
     _add_cog(bot, ScheduleCog(ctx))
+
+    from bot.services.admin_management import AdminManagementService
+    _add_cog(bot, AdminsCog(ctx, AdminManagementService(ctx, bot)))
 
     startup_dm_sent = False
 
