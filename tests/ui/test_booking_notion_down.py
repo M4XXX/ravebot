@@ -102,7 +102,7 @@ async def test_booking_replies_while_notion_down(queued) -> None:
         await asyncio.wait_for(view._handle_confirm(inter), timeout=1)
     await _settle()
 
-    acq.assert_awaited_once_with(ctx.db, "evt-uid", 2, USER)
+    acq.assert_awaited_once_with(ctx.db, "evt-uid", 2, USER, max_per_dj=2)  # default rules
     assert isinstance(inter.followup.send.call_args.kwargs.get("embed"), BookedEmbed)
     assert queued == [("slot", "evt-uid:2", "upsert")]
     assert notion.calls == []

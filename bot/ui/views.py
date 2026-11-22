@@ -1203,7 +1203,8 @@ class BookingConfirmView(_SlotConfirmView):
         [Source: epics.md#Story 4.2 AC2, AC3]
         [Source: architecture.md#Slot Booking Atomicity: SELECT...FOR UPDATE in Transaction]
         """
-        from bot.db.bookings import acquire_slot_lock
+        from bot.db.bookings import DjSlotLimitReached, acquire_slot_lock
+        from bot.policy import current_rules, slot_limit_text
         from bot.sync.worker import changed
         from bot.ui.embeds import BookedEmbed
 
@@ -1244,6 +1245,11 @@ class BookingConfirmView(_SlotConfirmView):
             await inter.followup.send(texts.EVENT_WAS_CANCELED, ephemeral=True)
             return
 
+        # The slot limit is checked inside the claim transaction (admins override
+        # elsewhere; the Notion intake claims without a limit)
+        rules = await current_rules(self._ctx.db, getattr(inter, "bot", None))
+        max_per_dj = rules.slot_limit_max if rules.slot_limit_enabled else None
+
         # Acquire exclusive slot lock via SELECT...FOR UPDATE (AC2)
         # AC3: Wrap in try/except — asyncpg auto-rolls back the transaction on exception
         try:
@@ -1252,7 +1258,12 @@ class BookingConfirmView(_SlotConfirmView):
                 event_id,
                 self._slot_index,
                 self._user_id,
+                max_per_dj=max_per_dj,
             )
+        except DjSlotLimitReached:
+            self._release_flow()
+            await inter.followup.send(slot_limit_text(rules.slot_limit_max), ephemeral=True)
+            return
         except Exception:
             logger.exception(
                 "BookingConfirmView: acquire_slot_lock raised — transaction rolled back"

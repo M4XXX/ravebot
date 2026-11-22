@@ -253,3 +253,167 @@ def test_rules_summary():
         "Slot limit: off",
         "Cancellation cutoff: off",
     ]
+
+
+# --- Task 2: slot limit inside the slot claim --------------------------------
+
+
+def _claim_pool(holder=None, count=0):
+    """Mock pool: records every query with whether it ran inside the transaction."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    state = {"in_tx": False, "calls": []}
+
+    class _Tx:
+        async def __aenter__(self):
+            state["in_tx"] = True
+            return self
+
+        async def __aexit__(self, *args):
+            state["in_tx"] = False
+
+    def _record(kind, result):
+        async def run(sql, *args):
+            state["calls"].append((kind, sql, args, state["in_tx"]))
+            return result
+
+        return run
+
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(side_effect=_record("fetchrow", {"discord_user_id": holder}))
+    conn.fetchval = AsyncMock(side_effect=_record("fetchval", count))
+    conn.execute = AsyncMock(side_effect=_record("execute", "UPDATE 1"))
+    conn.transaction = MagicMock(return_value=_Tx())
+
+    class _Acquire:
+        async def __aenter__(self):
+            return conn
+
+        async def __aexit__(self, *args):
+            pass
+
+    pool = MagicMock()
+    pool.acquire = MagicMock(return_value=_Acquire())
+    return pool, state
+
+
+async def test_claim_at_limit_raises_inside_transaction_without_update():
+    from bot.db.bookings import DjSlotLimitReached, acquire_slot_lock
+
+    pool, state = _claim_pool(count=2)
+    with pytest.raises(DjSlotLimitReached):
+        await acquire_slot_lock(pool, "ev", 1, 42, max_per_dj=2)
+    calls = state["calls"]
+    assert all(in_tx for *_, in_tx in calls)
+    kinds = [kind for kind, *_ in calls]
+    assert kinds[0] == "fetchrow"  # the slot row lock comes first
+    count = [c for c in calls if c[0] == "fetchval" and "count(" in c[1].lower()]
+    assert len(count) == 1
+    assert count[0][2] == ("ev", 42, 1)
+    assert "pg_advisory_xact_lock" in " ".join(c[1] for c in calls)
+    lock_pos = next(i for i, c in enumerate(calls) if "pg_advisory_xact_lock" in c[1])
+    assert lock_pos < calls.index(count[0])
+    assert not any("SET discord_user_id" in c[1] for c in calls)
+
+
+async def test_claim_below_limit_claims():
+    from bot.db.bookings import acquire_slot_lock
+
+    pool, state = _claim_pool(count=1)
+    assert await acquire_slot_lock(pool, "ev", 1, 42, max_per_dj=2) is True
+    assert any("SET discord_user_id" in c[1] and c[3] for c in state["calls"])
+
+
+async def test_claim_without_limit_runs_no_count():
+    from bot.db.bookings import acquire_slot_lock
+
+    pool, state = _claim_pool(count=99)
+    assert await acquire_slot_lock(pool, "ev", 1, 42) is True
+    sqls = [c[1] for c in state["calls"]]
+    assert not any("count(" in s.lower() or "advisory" in s for s in sqls)
+
+
+async def test_claim_of_taken_slot_runs_no_count():
+    from bot.db.bookings import acquire_slot_lock
+
+    pool, state = _claim_pool(holder=7, count=99)
+    assert await acquire_slot_lock(pool, "ev", 1, 42, max_per_dj=1) is False
+    assert [c[0] for c in state["calls"]] == ["fetchrow"]
+
+
+def _confirm_setup(store, user_id=501, **rules):
+    from unittest.mock import AsyncMock, MagicMock
+
+    import disnake
+
+    from bot.ui.views import BookingConfirmView
+    from tests.conftest import make_real_ctx
+    from tests.fake_events import fake_events
+
+    _put(store, **rules)
+    ctx = make_real_ctx(db=MagicMock())
+    lock = ctx.get_user_lock(user_id)
+    event = make_event(page_id="ev1", slot_count=6)
+    fake_events.list_events = AsyncMock(return_value=[event])
+    inter = MagicMock(spec=disnake.MessageInteraction)
+    inter.author = MagicMock()
+    inter.author.id = user_id
+    inter.bot = SimpleNamespace(guilds=[SimpleNamespace(id=GUILD)])
+    inter.response.send_message = AsyncMock()
+    inter.response.defer = AsyncMock()
+    inter.response.is_done = MagicMock(return_value=False)
+    inter.followup.send = AsyncMock()
+    return ctx, lock, event, inter, BookingConfirmView
+
+
+async def test_confirm_at_limit_refuses_privately(store):
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from bot.db.bookings import DjSlotLimitReached
+
+    ctx, lock, event, inter, View = _confirm_setup(
+        store, slot_limit_enabled="true", slot_limit_max="3"
+    )
+    await lock.acquire()
+    view = View(ctx, event, 2, 1751400000, lock, 501)
+    changed = MagicMock()
+    acquire = AsyncMock(side_effect=DjSlotLimitReached("ev1"))
+    with patch("bot.db.bookings.acquire_slot_lock", new=acquire), \
+         patch("bot.sync.worker.changed", new=changed):
+        await view._handle_confirm(inter)
+    assert acquire.await_args.kwargs["max_per_dj"] == 3
+    inter.followup.send.assert_awaited_once_with(slot_limit_text(3), ephemeral=True)
+    changed.assert_not_called()
+    assert not lock.locked()
+
+
+async def test_confirm_limit_disabled_passes_none(store):
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    ctx, lock, event, inter, View = _confirm_setup(
+        store, slot_limit_enabled="false", slot_limit_max="3"
+    )
+    await lock.acquire()
+    view = View(ctx, event, 2, 1751400000, lock, 501)
+    acquire = AsyncMock(return_value=True)
+    with patch("bot.db.bookings.acquire_slot_lock", new=acquire), \
+         patch("bot.sync.worker.changed", new=MagicMock()):
+        await view._handle_confirm(inter)
+    assert acquire.await_args.kwargs["max_per_dj"] is None
+
+
+async def test_confirm_limit_enabled_passes_stored_number(store):
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    ctx, lock, event, inter, View = _confirm_setup(
+        store, slot_limit_enabled="true", slot_limit_max="3"
+    )
+    await lock.acquire()
+    view = View(ctx, event, 2, 1751400000, lock, 501)
+    acquire = AsyncMock(return_value=True)
+    changed = MagicMock()
+    with patch("bot.db.bookings.acquire_slot_lock", new=acquire), \
+         patch("bot.sync.worker.changed", new=changed):
+        await view._handle_confirm(inter)
+    assert acquire.await_args.kwargs["max_per_dj"] == 3
+    changed.assert_called_once()

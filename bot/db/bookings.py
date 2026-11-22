@@ -43,11 +43,28 @@ async def _lock_slot_row(
     return await conn.fetchrow(_LOCK_SLOT_ROW, event_id, slot_index)
 
 
+class DjSlotLimitReached(Exception):
+    """The DJ already holds ``max_per_dj`` slots in this event; nothing was written."""
+
+
+# Serializes the limited claims of one DJ in one event (transaction-scoped, released
+# on commit or rollback). Two-int key space: (event, DJ); a hash collision only adds
+# serialization, never a wrong answer.
+_LOCK_DJ_IN_EVENT = "SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2::bigint::text))"
+
+_COUNT_DJ_SLOTS = """
+SELECT count(*) FROM slot_locks s
+JOIN events e ON e.uid = s.event_id AND s.slot_index < e.slot_count
+WHERE s.event_id = $1 AND s.discord_user_id = $2 AND s.slot_index <> $3
+"""
+
+
 async def acquire_slot_lock(
     pool: asyncpg.Pool,
     event_id: str,
     slot_index: int,
     discord_user_id: int,
+    max_per_dj: int | None = None,
 ) -> bool:
     """Try to claim a slot using SELECT...FOR UPDATE inside a transaction.
 
@@ -61,7 +78,14 @@ async def acquire_slot_lock(
          booking never revives a removed slot. Locks the row; blocks concurrent
          callers (an event edit that deletes the row makes the waiter see none).
       2. Check discord_user_id: if not NULL, slot is taken -> return False.
-      3. UPDATE to set discord_user_id -> commit -> return True.
+      3. ``max_per_dj`` set (DJ-facing bookings): take a transaction-scoped advisory
+         lock on (event, DJ), then count the DJ's other slots of this event (limited
+         to its slot count). At or above ``max_per_dj`` -> raise DjSlotLimitReached
+         before anything is written. The advisory lock makes two parallel claims of
+         different slots by the same DJ wait for each other, so the second count sees
+         the first claim (READ COMMITTED: each statement takes a fresh snapshot).
+         ``None`` (Notion intake) runs no count.
+      4. UPDATE to set discord_user_id -> commit -> return True.
 
     [Source: epics.md#Story 4.2 AC2]
     [Source: architecture.md#Slot Booking Atomicity: SELECT...FOR UPDATE in Transaction]
@@ -73,7 +97,15 @@ async def acquire_slot_lock(
             if row is None or row["discord_user_id"] is not None:
                 # The slot no longer exists, or it is already taken
                 return False
-            # Step 3: claim the slot within the same transaction
+            # Step 3: the per-event limit, serialized per (event, DJ)
+            if max_per_dj is not None:
+                await conn.execute(_LOCK_DJ_IN_EVENT, event_id, discord_user_id)
+                held = await conn.fetchval(
+                    _COUNT_DJ_SLOTS, event_id, discord_user_id, slot_index
+                )
+                if held >= max_per_dj:
+                    raise DjSlotLimitReached(f"{event_id}:{discord_user_id}")
+            # Step 4: claim the slot within the same transaction
             await conn.execute(
                 """
                 UPDATE slot_locks
