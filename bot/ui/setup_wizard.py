@@ -268,7 +268,7 @@ def parse_rules_fields(raw: dict[str, str]) -> tuple[dict[str, Any], list[str]]:
          MAX_CUTOFF_MINUTES),
     ):
         text = (raw.get(fid) or "").strip()
-        value = int(text) if text.isascii() and text.isdigit() else None
+        value = int(text) if text.isascii() and text.isdigit() and len(text) <= 6 else None
         if value is None or not low <= value <= high:
             errors.append(
                 texts.setup_invalid(label, f"enter a whole number from {low} to {high}.")

@@ -8,6 +8,8 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+import asyncpg
+
 from bot.db import config as config_db
 from bot.notion.models import MAX_SLOTS, EventInfo
 
@@ -49,7 +51,8 @@ def _parse_int(raw: str | None, low: int, high: int) -> int | None:
     if raw is None:
         return None
     text = raw.strip()
-    if not text.isascii() or not text.isdigit():
+    # Longer than any allowed number; also keeps int() clear of the digit limit.
+    if not text.isascii() or not text.isdigit() or len(text) > 6:
         return None
     value = int(text)
     return value if low <= value <= high else None
@@ -98,6 +101,12 @@ async def save_rules(db: Any, guild_id: int, rules: BookingRules) -> None:
         KEY_CANCEL_CUTOFF_ENABLED: "true" if rules.cancel_cutoff_enabled else "false",
         KEY_CANCEL_CUTOFF_MINUTES: str(rules.cancel_cutoff_minutes),
     }
+    if isinstance(db, asyncpg.Pool):
+        # One transaction, so a failed write never leaves half the rules stored.
+        async with db.acquire() as conn, conn.transaction():
+            for key, value in values.items():
+                await config_db.set_value(conn, guild_id, key, value)
+        return
     for key, value in values.items():
         await config_db.set_value(db, guild_id, key, value)
 
@@ -154,7 +163,13 @@ def cancellation_closed(
     except Exception:
         logger.warning("Event %s has no readable start", event.event_id, exc_info=True)
         return False
-    return now >= start - datetime.timedelta(minutes=rules.cancel_cutoff_minutes)
+    # Count in UTC: subtracting on the local wall clock is off by the DST shift.
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=datetime.UTC)
+    cutoff = start.astimezone(datetime.UTC) - datetime.timedelta(
+        minutes=rules.cancel_cutoff_minutes
+    )
+    return now.astimezone(datetime.UTC) >= cutoff
 
 
 def describe_minutes(minutes: int) -> str:
@@ -172,8 +187,8 @@ def _slots(n: int) -> str:
 
 def slot_limit_text(limit: int) -> str:
     return (
-        f"You already hold {_slots(limit)} in this event, which is the limit. "
-        "Cancel one of them or choose another event."
+        f"You can book at most {_slots(limit)} per event, and you have reached that "
+        "limit in this one. Cancel one first, or pick another event."
     )
 
 

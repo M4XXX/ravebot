@@ -417,3 +417,72 @@ async def test_confirm_limit_enabled_passes_stored_number(store):
         await view._handle_confirm(inter)
     assert acquire.await_args.kwargs["max_per_dj"] == 3
     changed.assert_called_once()
+
+
+def _zone(name):
+    from bot import timezone as tz
+
+    tz.set_timezone(name)
+
+
+@pytest.fixture
+def berlin():
+    from bot import timezone as tz
+
+    _zone("Europe/Berlin")
+    yield
+    tz.set_timezone(tz.DEFAULT_TIMEZONE)
+
+
+def test_cutoff_spring_forward(berlin):
+    # 2027-03-28 03:30 CEST = 01:30 UTC; 60 minutes earlier is 00:30 UTC
+    ev = make_event(date=datetime.date(2027, 3, 28), start=datetime.time(3, 30))
+    rules = BookingRules(True, 2, True, 60)
+    cutoff = datetime.datetime(2027, 3, 28, 0, 30, tzinfo=datetime.UTC)
+    assert cancellation_closed(ev, cutoff, rules)
+    assert not cancellation_closed(ev, cutoff - datetime.timedelta(seconds=1), rules)
+
+
+def test_cutoff_fall_back(berlin):
+    # 2026-10-25 20:00 CET = 19:00 UTC; 1440 minutes earlier is 2026-10-24 19:00 UTC
+    ev = make_event(date=datetime.date(2026, 10, 25), start=datetime.time(20, 0))
+    rules = BookingRules(True, 2, True, 1440)
+    cutoff = datetime.datetime(2026, 10, 24, 19, 0, tzinfo=datetime.UTC)
+    assert cancellation_closed(ev, cutoff, rules)
+    assert not cancellation_closed(ev, cutoff - datetime.timedelta(seconds=1), rules)
+
+
+def test_cutoff_accepts_other_zone_now(berlin):
+    ev = make_event(date=datetime.date(2026, 10, 25), start=datetime.time(20, 0))
+    rules = BookingRules(True, 2, True, 0)
+    tz_west = datetime.timezone(datetime.timedelta(hours=-5))
+    now = datetime.datetime(2026, 10, 25, 14, 0, tzinfo=tz_west)
+    assert cancellation_closed(ev, now, rules)
+
+
+def test_slot_limit_text_states_limit_not_holding():
+    assert slot_limit_text(1) == (
+        "You can book at most 1 slot per event, and you have reached that limit in this "
+        "one. Cancel one first, or pick another event."
+    )
+    assert "3 slots" in slot_limit_text(3)
+    assert "already hold" not in slot_limit_text(3)
+
+
+async def test_load_rules_huge_digit_string_falls_back(store):
+    _put(store, **{policy.RULE_KEYS[1]: "9" * 5000, policy.RULE_KEYS[3]: "1" * 5000})
+    assert await load_rules(object(), GUILD) == DEFAULT_RULES
+
+
+def test_parse_rules_form_huge_digit_string():
+    rules, errors = parse_rules_form(
+        {"slot_limit_max": "9" * 5000, "cancel_cutoff_minutes": "5"}
+    )
+    assert rules is None and len(errors) == 1
+
+
+def test_wizard_fields_reject_huge_digit_string():
+    from bot.ui.setup_wizard import parse_rules_fields
+
+    out, errors = parse_rules_fields({"limit": "9" * 5000, "cutoff": "5"})
+    assert len(errors) == 1 and out == {"cancel_cutoff_minutes": 5}
