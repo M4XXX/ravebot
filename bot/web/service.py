@@ -7,7 +7,6 @@ across a long operation.
 """
 import datetime
 import logging
-import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -25,7 +24,7 @@ from bot.db.issues import IssueRow
 from bot.db.outbox import OutboxStats
 from bot.policy import BookingRules, current_rules, parse_rules_form, save_rules
 from bot.results import ActionResult as ActionResult  # re-export; lives in bot.results
-from bot.services.activation import bot_is_active
+from bot.services.admin_management import AdminManagementService, clean_name
 from bot.services.admin_registry import AdminRegistry
 from bot.services.dj_admin import parse_discord_id
 from bot.sync.cycle import CONFIG_GUILD_ID, LAST_ERROR_KEY, LAST_RUN_KEY
@@ -46,9 +45,7 @@ logger = logging.getLogger(__name__)
 
 _OK_TTL = 300.0
 _FAIL_TTL = 30.0
-_MAX_NAME = 80
-_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f​-‏ -‮⁦-⁩]")
-SAVE_FAILED = "Could not save the change. Try again."
+ACTOR = "the admin page"
 FORMAT_MESSAGE = "Please enter a Discord user ID (17 to 20 digits)."
 ISSUE_CHOICES = ("postgres", "notion", "resynced")
 SYNC_OFF = "The Notion sync is not running, so nothing was changed."
@@ -126,13 +123,6 @@ def _parse_issue_id(raw: str) -> int | None:
     return int(raw)
 
 
-def _clean_name(name: str | None) -> str | None:
-    if not name:
-        return None
-    cleaned = _CONTROL.sub("", name).strip()[:_MAX_NAME].strip()
-    return cleaned or None
-
-
 def _parse_id(raw: str) -> int | None:
     return parse_discord_id(raw)
 
@@ -150,6 +140,7 @@ class AdminPageService:
             raise RuntimeError("The admin page needs the admin registry")
         self._ctx = ctx
         self._registry: AdminRegistry = ctx.admins
+        self._management = AdminManagementService(ctx, bot)
         self._bot = bot
         self._clock = clock
         self._cache: dict[int, tuple[float, UserInfo]] = {}
@@ -378,12 +369,12 @@ class AdminPageService:
             if member is not None:
                 return UserInfo(
                     user_id,
-                    _clean_name(member.display_name),
+                    clean_name(member.display_name),
                     _avatar_url(member),
                     True,
                 )
         user = await self._bot.fetch_user(user_id)
-        name = _clean_name(getattr(user, "global_name", None)) or _clean_name(user.name)
+        name = clean_name(getattr(user, "global_name", None)) or clean_name(user.name)
         return UserInfo(user_id, name, _avatar_url(user), False)
 
     async def list_admins(self) -> list[AdminRow]:
@@ -411,54 +402,17 @@ class AdminPageService:
             return None
 
     async def add_admin(self, raw_id: str) -> ActionResult:
-        registry = self._registry
-        await registry.ensure_loaded()
+        await self._registry.ensure_loaded()
         user_id = _parse_id(raw_id)
         if user_id is None:
             return ActionResult(False, FORMAT_MESSAGE)
-        if registry.is_admin(user_id):
-            return ActionResult(False, "This person is already an admin.")
-        try:
-            user = await self._bot.fetch_user(user_id)
-        except disnake.NotFound:
-            return ActionResult(False, "No Discord user with this ID.")
-        except Exception:
-            logger.warning("Discord lookup failed while adding an admin", exc_info=True)
-            return ActionResult(False, "Could not reach Discord. Try again.")
-        try:
-            added = await registry.add(user_id)
-        except Exception:
-            logger.warning("Could not save the new admin", exc_info=True)
-            return ActionResult(False, SAVE_FAILED)
-        if not added:
-            return ActionResult(False, "This person is already an admin.")
-        name = _clean_name(getattr(user, "global_name", None)) or _clean_name(user.name)
-        name = name or str(user_id)
-        await self._log_added(name, user_id)
-        return ActionResult(True, f"Added {name}.")
-
-    async def _log_added(self, name: str, user_id: int) -> None:
-        try:
-            service = self._ctx.log_service
-            if service is not None and await bot_is_active(self._bot, self._ctx.db):
-                await service.log_admin_added(name, user_id)
-        except Exception:
-            logger.warning("Could not post the admin added log entry", exc_info=True)
+        change = await self._management.add(user_id, ACTOR)
+        return ActionResult(change.ok, change.message)
 
     async def remove_admin(self, raw_id: str) -> ActionResult:
-        registry = self._registry
-        await registry.ensure_loaded()
+        await self._registry.ensure_loaded()
         user_id = _parse_id(raw_id)
         if user_id is None:
             return ActionResult(False, FORMAT_MESSAGE)
-        if registry.is_owner(user_id):
-            return ActionResult(False, "Owners can only be changed with ADMIN_USER_IDS.")
-        if user_id not in registry.added:
-            return ActionResult(False, "This person is not an added admin.")
-        info = await self.describe(user_id)
-        try:
-            await registry.remove(user_id)
-        except Exception:
-            logger.warning("Could not save the admin removal", exc_info=True)
-            return ActionResult(False, SAVE_FAILED)
-        return ActionResult(True, f"Removed {info.name or user_id}.")
+        change = await self._management.remove(user_id, ACTOR)
+        return ActionResult(change.ok, change.message)

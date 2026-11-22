@@ -430,6 +430,9 @@ All commands are for admins: the user IDs in `ADMIN_USER_IDS` plus the admins ad
 | `/dj remove dj:<name>` | Deletes a DJ after you confirm. Their bookings in upcoming events are cancelled. Past bookings stay. |
 | `/list all djs` | Lists all registered DJs and whether they get automatic invites. Guests are marked. |
 | `/automatic dj booking dj:<member> enabled:<on/off>` | Adds a DJ to or removes a DJ from the automatic booking pool and syncs the invites role. |
+| `/admins add user:<user>`, `/admins remove user:<user>`, `/admins list` | Adds an admin, removes an added admin, or lists all admins. Owners only (see below). |
+
+**Managing admins with `/admins`.** Only the owners (the Discord IDs in `ADMIN_USER_IDS`) can use `/admins add`, `/admins remove` and `/admins list`. The answers are visible only to you. Owners cannot be removed with the command, and bot accounts cannot be added. An admin who is not an owner is told that only owners can manage the admin list; everyone else gets the normal permission message. Like the other admin commands, they work on the server only and need the bot to be set up (not idle). Any Discord user can be chosen; the person does not have to be on the server. While the bot is active, adding and removing are written to the admin log channel with the name of the owner who did it, the same as on the admin page.
 
 The old commands `/config set`, `/add-event`, `/lineup post`, `/admin book`, `/admin cancel`, `/admin dj set-active`, `/list-djs`, `/status` and `/intervene` no longer exist. Settings are changed in `/setup`.
 
@@ -481,8 +484,8 @@ What you can do:
 - When the bot cannot find its Notion databases, the page shows a red card with **Create new databases** (see 2.7). This is the only way the bot replaces its Notion databases.
 - Open **Schedule** to see the schedule settings, set the defaults, manage rules and edit genre, location and note of upcoming events (see 7.8).
 - Open **Manage DJs** to add, edit and delete DJs, with an optional logo upload. The same works with the `/dj` commands.
-- Add an admin by Discord user ID (17 to 19 digits). The ID does not have to be a server member. An added admin can use every admin command, including `/setup`. While the bot is active, adding an admin writes an entry to the admin log channel; removals do not.
-- Remove an added admin.
+- Add an admin by Discord user ID (17 to 20 digits). The ID does not have to be a server member. Bot accounts are refused ("Bots cannot be admins."). An added admin can use every admin command, including `/setup`. While the bot is active, adding or removing an admin writes an entry to the admin log channel. The entry names who did it; for changes made on the page it says "the admin page". The owners from `ADMIN_USER_IDS` are the only ones who can manage admins with the `/admins` commands (see 7.3).
+- Remove an added admin (also written to the admin log channel).
 - **Download a backup** and **Restore a backup** (the whole database in one file, see 2.11). While a restore or rebuild runs, the page shows that the bot is busy and bookings are refused.
 - In the **Notion sync** card (only with Notion): see when the last sync ran, how many changes wait for Notion and since when, the last error, and the open conflicts and warnings. Per conflict choose **Keep Postgres** or **Keep Notion**; per warning choose **Resync Postgres to Notion** (see 2.9). **Resync all to Notion** and **Rebuild from Notion** are at the bottom of the card (see 2.11). **Retry the import from Notion** appears there when the import after an update failed.
 - Log out. This clears the cookie in your browser only.

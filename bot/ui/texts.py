@@ -401,6 +401,7 @@ LOG_NOTION_APPLIED_TITLE = "Applied from Notion"
 LOG_FULLY_BOOKED_TITLE = "Event fully booked"
 LOG_NEW_DJ_TITLE = "New DJ"
 LOG_ADMIN_ADDED_TITLE = "Admin added"
+LOG_ADMIN_REMOVED_TITLE = "Admin removed"
 LOG_DJ_LIST_TITLE = "DJ list changed"
 LOG_TODO_FIELD = "What to do"
 LOG_NO_MANUAL_ACTION = "No manual action required."
@@ -478,8 +479,14 @@ def log_new_dj_text(name: str, vrchat_name: str | None) -> str:
     return f"{name} joined the DJ pool."
 
 
-def log_admin_added_text(name: str, user_id: int) -> str:
-    return f"{name} (ID {user_id}) was added as an admin."
+def log_admin_added_text(name: str, user_id: int, actor: str | None = None) -> str:
+    by = f" by {actor}" if actor else ""
+    return f"{name} (ID {user_id}) was added as an admin{by}."
+
+
+def log_admin_removed_text(name: str, user_id: int, actor: str | None = None) -> str:
+    by = f" by {actor}" if actor else ""
+    return f"{name} (ID {user_id}) was removed as an admin{by}."
 
 
 def log_dj_list_text(admin: str, action: str, dj_name: str) -> str:

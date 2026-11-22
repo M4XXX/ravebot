@@ -12,6 +12,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Owner-only commands `/admins add user`, `/admins remove user` and `/admins list` to manage the admin list from Discord. Answers are private; owners cannot be removed and bot accounts cannot be added.
+- Admin removals are now written to the admin log channel, also when done on the admin page. Admin log entries for adding and removing say who did it. The admin page now also refuses to add a bot account.
 - Booking rules: a slot limit per DJ and event (default 2) and a cancellation cutoff (default 60 minutes before the start). The limit is checked inside the booking transaction, events at the limit are not offered, invites to such DJs are skipped, and cancelling inside the cutoff is refused. Admin bookings, admin cancellations and Notion hand edits are not limited. Existing installs start with both rules on after the update.
 - Setup wizard step "Booking rules" (before the summary) with two toggle buttons and a popup for the numbers; the summary and `/config show` list both rules.
 - Admin page "Booking rules" to switch the rules and change the numbers.
