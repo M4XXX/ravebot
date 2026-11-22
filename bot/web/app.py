@@ -38,6 +38,7 @@ from bot.web.pages import (
     issue_choice_ok,
     render_apply,
     render_backup_import,
+    render_booking_rules,
     render_confirm_delete_dj,
     render_confirm_issue,
     render_confirm_rebuild,
@@ -73,6 +74,7 @@ _DONE_TEXT = {
     "rule-removed": "The rule was removed.",
     "event-saved": "The event was saved.",
     "applied": "The changes were applied.",
+    "saved": "Booking rules saved.",
     "kept": texts.APPLY_KEPT,
 }
 ADMIN_NAME = "The admin page"
@@ -229,6 +231,14 @@ _DJ_FIELDS = ("name", "link", "alt_link", "vrchat", "discord_id")
 
 def _dj_values(form: MultiDictProxy[Any]) -> dict[str, str]:
     return {name: (_field(form, name) or "") for name in _DJ_FIELDS}
+
+
+_RULE_FIELDS = (
+    "slot_limit_enabled",
+    "slot_limit_max",
+    "cancel_cutoff_enabled",
+    "cancel_cutoff_minutes",
+)
 
 
 def _sched_values(form: MultiDictProxy[Any], *names: str) -> dict[str, str]:
@@ -441,6 +451,34 @@ def create_app(
         return await djs_page(
             request, ActionResult(result.ok, result.message), 200 if result.ok else 400
         )
+
+    # --- booking rules ---
+
+    async def booking_rules_page(
+        request: web.Request,
+        message: ActionResult | None = None,
+        status: int = 200,
+        values: dict[str, str] | None = None,
+    ) -> web.Response:
+        rules = await service.booking_rules()
+        return _html(render_booking_rules(rules, request["session"].csrf, message, values), status)
+
+    async def get_booking_rules(request: web.Request) -> web.Response:
+        return await booking_rules_page(request, _done(request))
+
+    async def post_booking_rules(request: web.Request) -> web.Response:
+        if refused := _maintenance(service):
+            return await booking_rules_page(request, refused, 503)
+        form = await _read_form(request)
+        values = {
+            name: value
+            for name in _RULE_FIELDS
+            if (value := _field(form, name)) is not None
+        }
+        result = await service.set_booking_rules(values)
+        if not result.ok:
+            return await booking_rules_page(request, result, 400, values)
+        return _redirect("/booking-rules?done=saved")
 
     # --- schedule ---
 
@@ -731,6 +769,8 @@ def create_app(
     app.router.add_post("/djs/edit", post_dj_edit)
     app.router.add_get("/djs/delete", get_dj_delete)
     app.router.add_post("/djs/delete", post_dj_delete)
+    app.router.add_get("/booking-rules", get_booking_rules)
+    app.router.add_post("/booking-rules", post_booking_rules)
     app.router.add_get("/schedule", get_schedule)
     app.router.add_post("/schedule/defaults", post_schedule_defaults)
     app.router.add_post("/schedule/rules/add", post_rule_add)

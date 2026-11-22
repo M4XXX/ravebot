@@ -645,3 +645,42 @@ async def test_notion_import_pending_reads_the_mark() -> None:
         assert await svc.notion_import_pending() is False
     with patch("bot.web.service.config_db.get_value", AsyncMock(side_effect=OSError("x"))):
         assert await svc.notion_import_pending() is True
+
+
+async def test_booking_rules_defaults_and_save() -> None:
+    from bot.policy import DEFAULT_RULES, BookingRules
+
+    store: dict[str, str] = {}
+
+    async def get_value(db, guild_id, key):
+        assert guild_id == 1
+        return store.get(key)
+
+    async def set_value(db, guild_id, key, value):
+        assert guild_id == 1
+        store[key] = value
+
+    svc = _svc()
+    with (
+        patch("bot.db.config.get_value", get_value),
+        patch("bot.db.config.set_value", set_value),
+    ):
+        assert await svc.booking_rules() == DEFAULT_RULES
+        bad = await svc.set_booking_rules({"slot_limit_max": "x", "cancel_cutoff_minutes": "5"})
+        assert not bad.ok and "whole number" in bad.message and store == {}
+        ok = await svc.set_booking_rules(
+            {"slot_limit_enabled": "on", "slot_limit_max": "3", "cancel_cutoff_minutes": "0"}
+        )
+        assert ok.ok and ok.message == "Booking rules saved."
+        assert store == {
+            "slot_limit_enabled": "true", "slot_limit_max": "3",
+            "cancel_cutoff_enabled": "false", "cancel_cutoff_minutes": "0",
+        }
+        assert await svc.booking_rules() == BookingRules(True, 3, False, 0)
+
+
+async def test_booking_rules_save_without_guild_fails() -> None:
+    result = await _svc(bot=_bot()).set_booking_rules(
+        {"slot_limit_max": "3", "cancel_cutoff_minutes": "5"}
+    )
+    assert not result.ok

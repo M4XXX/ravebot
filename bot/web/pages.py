@@ -8,6 +8,7 @@ from html import escape
 from urllib.parse import quote
 
 from bot.db.issues import IssueRow
+from bot.policy import BookingRules
 from bot.ui import texts
 from bot.web.schedule_page import PendingView, RuleView, ScheduleOverview, pick_key
 from bot.web.service import ActionResult, AdminRow, ServerInfo, SyncStatus
@@ -343,6 +344,9 @@ def render_dashboard(
         '<section class="card"><h3>Schedule</h3>'
         '<p class="muted">Genre and location defaults, rules and the next events.</p>'
         '<a class="btn" href="/schedule">Schedule</a></section>'
+        '<section class="card"><h3>Booking rules</h3>'
+        '<p class="muted">Slot limit per DJ and event, and the cancellation cutoff.</p>'
+        '<a class="btn" href="/booking-rules">Booking rules</a></section>'
         f"{_data_card(sync)}"
         f"{_sync_card(sync)}"
     )
@@ -743,6 +747,76 @@ def render_schedule(
         '<a class="btn g" href="/">Back</a></div>'
         f"{_message(message)}{banner}{summary}{defaults}{rules}"
         f'<section class="card"><h3>Next events</h3>{events}</section>'
+    )
+
+
+def _checkbox(name: str, label: str, checked: bool) -> str:
+    return (
+        f'<label class="row"><input type="checkbox" name="{name}" value="on" '
+        f'aria-label="{_e(label)}"{" checked" if checked else ""}> '
+        f'<span class="who">{_e(label)}</span></label>'
+    )
+
+
+def _number_input(name: str, label: str, value: str, high: int) -> str:
+    return (
+        f'<input class="in" type="text" name="{name}" value="{_e(value)}" '
+        f'inputmode="numeric" maxlength="{len(str(high)) + 2}" placeholder="{_e(label)}" '
+        f'aria-label="{_e(label)}" autocomplete="off">'
+    )
+
+
+def render_booking_rules(
+    rules: BookingRules,
+    csrf: str,
+    message: ActionResult | None = None,
+    values: dict[str, str] | None = None,
+) -> str:
+    """The Booking rules form. ``values`` are the typed form values after a refused save
+    (a checkbox is on when its key is present); nothing typed is echoed unescaped."""
+    if values is None:
+        on_limit, on_cutoff = rules.slot_limit_enabled, rules.cancel_cutoff_enabled
+        limit, cutoff = str(rules.slot_limit_max), str(rules.cancel_cutoff_minutes)
+    else:
+        on_limit, on_cutoff = "slot_limit_enabled" in values, "cancel_cutoff_enabled" in values
+        limit, cutoff = values.get("slot_limit_max", ""), values.get("cancel_cutoff_minutes", "")
+    slot_card = (
+        '<section class="card"><h3>Slot limit</h3>'
+        + _checkbox(
+            "slot_limit_enabled", "Limit how many slots one DJ can book in the same event", on_limit
+        )
+        + _labeled(
+            "At most N slots per DJ and event",
+            _number_input("slot_limit_max", "At most N slots per DJ and event", limit, 100),
+            "Existing bookings are kept. Only new bookings are refused. "
+            "Applies to DJ buttons and invites. Admins can always book a DJ by hand.",
+        )
+        + "</section>"
+    )
+    cutoff_card = (
+        '<section class="card"><h3>Cancellation cutoff</h3>'
+        + _checkbox(
+            "cancel_cutoff_enabled",
+            "DJs cannot cancel in the bot shortly before the event",
+            on_cutoff,
+        )
+        + _labeled(
+            "Minutes before the event starts",
+            _number_input(
+                "cancel_cutoff_minutes", "Minutes before the event starts", cutoff, 10080
+            ),
+            "0 means DJs can cancel until the event starts. Admins can always cancel.",
+        )
+        + "</section>"
+    )
+    return _page(
+        f'<div class="top"><div class="brand">{_BRAND}</div>'
+        '<a class="btn g" href="/">Back</a></div>'
+        f"{_message(message)}"
+        f'<form method="post" action="/booking-rules">{_csrf_field(csrf)}'
+        f"{slot_card}{cutoff_card}"
+        '<div class="actions"><button class="btn" type="submit">Save booking rules</button>'
+        "</div></form>"
     )
 
 

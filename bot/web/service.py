@@ -23,6 +23,7 @@ from bot.db import config as config_db
 from bot.db import issues, outbox
 from bot.db.issues import IssueRow
 from bot.db.outbox import OutboxStats
+from bot.policy import BookingRules, current_rules, parse_rules_form, save_rules
 from bot.results import ActionResult as ActionResult  # re-export; lives in bot.results
 from bot.services.activation import bot_is_active
 from bot.services.admin_registry import AdminRegistry
@@ -325,6 +326,20 @@ class AdminPageService:
         from bot.web.schedule_page import SchedulePageService
 
         return SchedulePageService(self._ctx, self._bot)
+
+    async def booking_rules(self) -> BookingRules:
+        """The stored booking rules of the first server, or the defaults."""
+        return await current_rules(self._ctx.db, self._bot)
+
+    async def set_booking_rules(self, raw: dict[str, str]) -> ActionResult:
+        """Validate the form values and store the rules; errors come back as the message."""
+        rules, errors = parse_rules_form(raw)
+        if rules is None:
+            return ActionResult(False, " ".join(errors))
+        if not self._bot.guilds or self._ctx.db is None:
+            return ActionResult(False, texts.SCHEDULE_NOT_READY)
+        await save_rules(self._ctx.db, self._bot.guilds[0].id, rules)
+        return ActionResult(True, "Booking rules saved.")
 
     def server_info(self) -> ServerInfo | None:
         if not self._bot.guilds:
