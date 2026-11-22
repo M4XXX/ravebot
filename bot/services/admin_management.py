@@ -33,6 +33,7 @@ NOT_ADDED = "This person is not an added admin."
 class AdminChange:
     ok: bool
     message: str
+    name: str | None = None  # the person's display name, set on success
 
 
 def clean_name(name: str | None) -> str | None:
@@ -80,7 +81,7 @@ class AdminManagementService:
             return AdminChange(False, ALREADY_ADMIN)
         name = _user_name(user) or str(user_id)
         await self._log("log_admin_added", name, user_id, actor)
-        return AdminChange(True, f"Added {name}.")
+        return AdminChange(True, f"Added {name}.", name)
 
     async def remove(self, user_id: int, actor: str | None) -> AdminChange:
         registry = self._registry
@@ -91,12 +92,14 @@ class AdminManagementService:
             return AdminChange(False, NOT_ADDED)
         name = await self.display_name(user_id) or str(user_id)
         try:
-            await registry.remove(user_id)
+            removed = await registry.remove(user_id)
         except Exception:
             logger.warning("Could not save the admin removal", exc_info=True)
             return AdminChange(False, SAVE_FAILED)
+        if not removed:
+            return AdminChange(False, NOT_ADDED)
         await self._log("log_admin_removed", name, user_id, actor)
-        return AdminChange(True, f"Removed {name}.")
+        return AdminChange(True, f"Removed {name}.", name)
 
     async def list_admins(self) -> list[tuple[int, str | None, bool]]:
         """(user id, display name or None, is owner): owners first, then added admins."""

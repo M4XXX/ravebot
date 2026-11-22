@@ -71,7 +71,7 @@ async def test_add_success_logs_once_with_actor() -> None:
     ctx = _ctx()
     with _patch_add(), _patch_active():
         res = await _svc(ctx=ctx).add(UID, "Max")
-    assert res == AdminChange(True, "Added Glob.")
+    assert res == AdminChange(True, "Added Glob.", "Glob")
     assert ctx.admins.is_admin(UID)
     ctx.log_service.log_admin_added.assert_awaited_once_with("Glob", UID, "Max")
 
@@ -159,7 +159,7 @@ async def test_remove_success_logs_with_actor() -> None:
     ctx = _ctx(added=[UID])
     with _patch_remove(), _patch_active():
         res = await _svc(ctx=ctx).remove(UID, "Max")
-    assert res == AdminChange(True, "Removed Glob.")
+    assert res == AdminChange(True, "Removed Glob.", "Glob")
     assert not ctx.admins.is_admin(UID)
     ctx.log_service.log_admin_removed.assert_awaited_once_with("Glob", UID, "Max")
     ctx.log_service.log_admin_added.assert_not_awaited()
@@ -238,3 +238,22 @@ def test_log_texts() -> None:
         texts.log_admin_removed_text("Nova", 5, "Max")
         == "Nova (ID 5) was removed as an admin by Max."
     )
+
+
+async def test_remove_lost_race_answers_not_added_and_does_not_log() -> None:
+    ctx = _ctx(added=[UID])
+    ctx.admins.remove = AsyncMock(return_value=False)
+    with _patch_active():
+        res = await _svc(ctx=ctx).remove(UID, "Max")
+    assert res == AdminChange(False, "This person is not an added admin.")
+    ctx.log_service.log_admin_removed.assert_not_awaited()
+
+
+async def test_success_carries_the_name() -> None:
+    ctx = _ctx(added=[UID])
+    with _patch_add(), _patch_remove(), _patch_active():
+        removed = await _svc(ctx=ctx).remove(UID, None)
+        added = await _svc(ctx=ctx).add(UID, None)
+    assert (removed.name, added.name) == ("Glob", "Glob")
+    with _patch_active():
+        assert (await _svc(ctx=ctx).add(UID, None)).name is None

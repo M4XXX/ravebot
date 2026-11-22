@@ -11,7 +11,7 @@ from disnake.ext import commands
 from bot.cogs import SERVER_ONLY
 from bot.cogs.admin import AdminCog
 from bot.context import BotContext
-from bot.services.admin_management import AdminManagementService
+from bot.services.admin_management import AdminChange, AdminManagementService, clean_name
 from bot.ui.embeds import _safe_dj_name
 
 logger = logging.getLogger(__name__)
@@ -21,6 +21,17 @@ DENIED = "You don't have permission to use this command."
 OWNER_ONLY = "Only the bot owners can manage the admin list."
 GENERIC_ERROR = "Something went wrong. Please try again in a moment."
 UNKNOWN_USER = "unknown user"
+
+
+def _actor(inter: disnake.ApplicationCommandInteraction) -> str:
+    return clean_name(inter.author.display_name) or str(inter.author.id)
+
+
+def _answer(change: AdminChange, verb: str) -> str:
+    """The reply text; a success names the person with the name escaped for Discord."""
+    if change.ok and change.name:
+        return f"{verb} {_safe_dj_name(change.name, 80)}."
+    return change.message
 
 
 class NotOwner(commands.CheckFailure):
@@ -83,16 +94,16 @@ class AdminsCog(commands.Cog):
         self, inter: disnake.ApplicationCommandInteraction, user: disnake.User
     ) -> None:
         await inter.response.defer(ephemeral=True)
-        change = await self.service.add(user.id, actor=inter.author.display_name)
-        await inter.followup.send(change.message, ephemeral=True)
+        change = await self.service.add(user.id, actor=_actor(inter))
+        await inter.followup.send(_answer(change, "Added"), ephemeral=True)
 
     @admins_base.sub_command(name="remove", description="Remove an added admin")
     async def admins_remove(
         self, inter: disnake.ApplicationCommandInteraction, user: disnake.User
     ) -> None:
         await inter.response.defer(ephemeral=True)
-        change = await self.service.remove(user.id, actor=inter.author.display_name)
-        await inter.followup.send(change.message, ephemeral=True)
+        change = await self.service.remove(user.id, actor=_actor(inter))
+        await inter.followup.send(_answer(change, "Removed"), ephemeral=True)
 
     @admins_base.sub_command(name="list", description="Show the owners and added admins")
     async def admins_list(self, inter: disnake.ApplicationCommandInteraction) -> None:

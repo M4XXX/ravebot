@@ -244,3 +244,39 @@ async def test_unexpected_error_answers_generic_text() -> None:
     inter2.followup.send.assert_awaited_once_with(
         "Something went wrong. Please try again in a moment.", ephemeral=True
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("sub", "word"), [("add", "Added"), ("remove", "Removed")])
+async def test_success_answer_escapes_the_name(sub, word) -> None:
+    service = _service()
+    change = AdminChange(True, f"{word} @everyone **x**.", name="@everyone **x**")
+    getattr(service, sub).return_value = change
+    cog = _cog(service=service)
+    inter = _inter(OWNER)
+    assert await _drive(cog, inter, _calls(cog, inter)[sub]) is True
+    text = inter.followup.send.call_args.args[0]
+    assert text.startswith(f"{word} ") and text.endswith(".")
+    assert "@everyone" not in text
+    assert "\\*\\*x\\*\\*" in text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sub", ["add", "remove"])
+async def test_actor_is_cleaned(sub) -> None:
+    service = _service()
+    cog = _cog(service=service)
+    inter = _inter(OWNER)
+    inter.author.display_name = "Max‮evil"
+    await _drive(cog, inter, _calls(cog, inter)[sub])
+    getattr(service, sub).assert_awaited_once_with(50, actor="Maxevil")
+
+
+@pytest.mark.asyncio
+async def test_actor_falls_back_to_id() -> None:
+    service = _service()
+    cog = _cog(service=service)
+    inter = _inter(OWNER)
+    inter.author.display_name = "‮"
+    await _drive(cog, inter, _calls(cog, inter)["add"])
+    service.add.assert_awaited_once_with(50, actor=str(OWNER))
