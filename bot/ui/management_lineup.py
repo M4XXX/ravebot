@@ -4,16 +4,27 @@ Pure functions, no Discord or database access. The channel message shows DJ
 name and stream links only; Discord name, VRChat name and logo are DM-only.
 """
 import hashlib
+import io
 import json
+import logging
 from dataclasses import dataclass
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import disnake
 
+from bot.db import djs as db_djs
+from bot.db import events as db_events
+from bot.db.management_lineup import get_record_by_message
 from bot.notion.models import STATUS_CANCELED, EventInfo, SlotInfo
 from bot.services.fully_booked import is_fully_booked
 from bot.ui import texts
 from bot.ui.embeds import EmbedColors, _safe_dj_name
+from bot.ui.gates import GatedView, _reply, refuse_in_maintenance
+
+if TYPE_CHECKING:
+    from bot.context import BotContext
+
+logger = logging.getLogger(__name__)
 
 LineupState = Literal["booked", "open", "canceled"]
 
@@ -167,3 +178,94 @@ def build_dm_payloads(
             DmPayload(text="\n".join(lines), logo=logo, logo_filename=_logo_filename(logo, n))
         )
     return payloads
+
+
+async def _discord_name(bot, uid: int) -> str | None:
+    """Discord name of a user; None for guests (ids <= 0) and on any failure."""
+    if uid <= 0:
+        return None
+    try:
+        user = bot.get_user(uid) or await bot.fetch_user(uid)
+    except Exception:
+        return None
+    if user is None:
+        return None
+    return getattr(user, "display_name", None) or getattr(user, "name", None)
+
+
+class ManagementInfoView(GatedView):
+    """Persistent "Send me more information" button; admins only."""
+
+    def __init__(self, ctx: "BotContext") -> None:
+        super().__init__(timeout=None)
+        self.ctx = ctx
+
+    @disnake.ui.button(
+        label="Send me more information",
+        style=disnake.ButtonStyle.secondary,
+        custom_id="mgmt:info",
+    )
+    async def send_info(self, button: disnake.ui.Button, inter: disnake.MessageInteraction) -> None:
+        if await refuse_in_maintenance(inter, self.ctx):
+            return
+        # Privacy: nothing about the lineup is loaded before this check passes
+        if not self.ctx.is_admin(inter.author.id):
+            await _reply(inter, texts.MGMT_INFO_ADMINS_ONLY)
+            return
+        db = self.ctx.db
+        try:
+            record = await get_record_by_message(db, inter.message.id)
+        except Exception:
+            logger.exception("Lineup info: record lookup failed")
+            await _reply(inter, texts.MGMT_INFO_FAILED)
+            return
+        if record is None:
+            await _reply(inter, texts.MGMT_INFO_UNTRACKED)
+            return
+        await inter.response.defer(ephemeral=True)
+        try:
+            event = await db_events.get_event(db, record.event_id)
+            if event is None:
+                await inter.followup.send(texts.MGMT_INFO_UNTRACKED, ephemeral=True)
+                return
+            uids = [
+                s.discord_id for s in event.slots
+                if s.dj_page_id is not None and s.discord_id is not None
+            ]
+            djs = await db_djs.get_dj_details(db, [u for u in uids if u > 0])
+            names: dict[int, str] = {}
+            logos: dict[int, bytes] = {}
+            for uid in uids:
+                if uid <= 0:
+                    continue
+                name = await _discord_name(inter.bot, uid)
+                if name:
+                    names[uid] = name
+                logo = await db_djs.get_logo_image(db, uid)
+                if logo:
+                    logos[uid] = logo
+            payloads = build_dm_payloads(event, djs, names, logos)
+        except Exception:
+            logger.exception("Lineup info: loading the lineup failed")
+            await inter.followup.send(texts.MGMT_INFO_FAILED, ephemeral=True)
+            return
+        sent = 0  # DMs sent, the header included
+        for payload in payloads:
+            try:
+                if payload.logo is not None:
+                    file = disnake.File(io.BytesIO(payload.logo), filename=payload.logo_filename)
+                    await inter.author.send(payload.text, file=file)
+                else:
+                    await inter.author.send(payload.text)
+            except disnake.Forbidden:
+                if sent == 0:
+                    await inter.followup.send(texts.MGMT_INFO_DMS_CLOSED, ephemeral=True)
+                else:
+                    await inter.followup.send(texts.mgmt_info_partial(sent - 1), ephemeral=True)
+                return
+            except Exception:
+                logger.exception("Lineup info: a DM failed")
+                await inter.followup.send(texts.mgmt_info_partial(max(sent - 1, 0)), ephemeral=True)
+                return
+            sent += 1
+        await inter.followup.send(texts.MGMT_INFO_SENT, ephemeral=True)

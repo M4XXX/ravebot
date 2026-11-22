@@ -1336,3 +1336,15 @@ def mgmt_channel_problem(channel_id: int, reason: str) -> str:
         f"The DJ management lineup could not be posted: the bot may not send or edit "
         f"messages in channel <#{channel_id}>."
     )
+
+
+# "Send me more information" button under the DJ management lineup message.
+MGMT_INFO_ADMINS_ONLY = "Only organizers can get this information."
+MGMT_INFO_UNTRACKED = "This lineup is no longer tracked."
+MGMT_INFO_SENT = "I sent you the lineup details in a DM."
+MGMT_INFO_DMS_CLOSED = "I could not send you a DM. Please open your DMs and try again."
+MGMT_INFO_FAILED = "I could not load the lineup details. Please try again later."
+
+
+def mgmt_info_partial(sent: int) -> str:
+    return f"I could not send everything by DM. {sent} DJ(s) were sent before it stopped."
