@@ -84,7 +84,6 @@ def event_button(position: int) -> str:
 EVENTS_FIELD = "Events"
 # Column headings of the slot rows in the public lineup post
 LINEUP_COL_SLOT = "Slot"
-LINEUP_COL_TIME = "Time"
 LINEUP_COL_DJ = "DJ"
 
 

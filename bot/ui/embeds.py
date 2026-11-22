@@ -51,12 +51,12 @@ class ErrorCode(enum.StrEnum):
 _MAX_DJ_NAME = 100
 
 
-def _safe_dj_name(name: str | None) -> str:
+def _safe_dj_name(name: str | None, limit: int = _MAX_DJ_NAME) -> str:
     """DJ-controlled text rendered literally: truncated, markdown/mentions/tokens escaped."""
     if not name:
         return "Guest DJ"
-    truncated = len(name) > _MAX_DJ_NAME
-    text = name[:_MAX_DJ_NAME]
+    truncated = len(name) > limit
+    text = name[:limit]
     text = disnake.utils.escape_mentions(disnake.utils.escape_markdown(text))
     text = text.replace("<", "<\u200b")  # break <@id>, <t:..>, <#id> tokens
     return text + "\u2026" if truncated else text
@@ -89,7 +89,9 @@ _MAX_DESCRIPTION = 4096
 
 _TITLE_ICON = "\U0001f3b6"
 _BOOKED_ICON = "\U0001f3a7"
-_OPEN_ICON = "\u25ab\ufe0f"
+_OPEN_ICON = "\U0001f7e2"
+# A longer name would wrap inside its half-width column and shift the rows below it
+_MAX_LINEUP_NAME = 24
 _MAX_TITLE = 256
 
 
@@ -111,17 +113,17 @@ def _lineup_summary(booked: int, total: int) -> str:
     return f"{booked} of {total} {noun} booked \u00b7 {total - booked} open"
 
 
-def lineup_rows(event: EventInfo) -> list[tuple[str, str, str]]:
-    """One (slot, time, DJ) cell triple per slot; each cell is a single line."""
+def lineup_rows(event: EventInfo) -> list[tuple[str, str]]:
+    """One (slot and time, DJ) cell pair per slot; each cell is a single short line."""
     by_number = event.resolved_slots()
-    rows: list[tuple[str, str, str]] = []
+    rows: list[tuple[str, str]] = []
     for index in range(event.slot_count):
         slot = by_number.get(index + 1)
         if slot is not None and slot.dj_page_id is not None:
-            dj = f"{_BOOKED_ICON} {_safe_dj_name(slot.dj_name)}"
+            dj = _safe_dj_name(slot.dj_name, _MAX_LINEUP_NAME)
         else:
             dj = f"{_OPEN_ICON} *open slot*"
-        rows.append((f"**Slot {index + 1}**", texts.slot_time(event, index), dj))
+        rows.append((f"**Slot {index + 1}** \u00b7 {texts.slot_time(event, index)}", dj))
     return rows
 
 
@@ -151,31 +153,31 @@ def lineup_text(event: EventInfo, hidden: int = 0) -> str:
 _FIELD_MAX = 1024
 _EMBED_MAX = 6000
 _EMBED_MARGIN = 100  # room for the "not shown" line and rounding
-_MAX_COLUMN_SETS = 8  # three fields each; one more field is left for the Events list
+_MAX_COLUMN_SETS = 12  # two fields each; one more field is left for the Events list
 _BLANK = "\u200b"
-_COLUMN_NAMES = (texts.LINEUP_COL_SLOT, texts.LINEUP_COL_TIME, texts.LINEUP_COL_DJ)
+_COLUMN_NAMES = (texts.LINEUP_COL_SLOT, texts.LINEUP_COL_DJ)
 
 
 def _column_sets(
-    rows: list[tuple[str, str, str]], budget: int
-) -> tuple[list[list[tuple[str, str, str]]], int]:
-    """Group rows into sets of three columns that fit the field and embed limits.
+    rows: list[tuple[str, str]], budget: int
+) -> tuple[list[list[tuple[str, str]]], int]:
+    """Group rows into sets of two columns that fit the field and embed limits.
 
     Returns (sets, number of rows that did not fit).
     """
-    sets: list[list[tuple[str, str, str]]] = []
+    sets: list[list[tuple[str, str]]] = []
     used = 0
     taken = 0
     for row in rows:
         cost = sum(len(cell) + 1 for cell in row)
         current = sets[-1] if sets else None
         fits_set = current is not None and all(
-            sum(len(r[i]) + 1 for r in current) + len(row[i]) + 1 <= _FIELD_MAX for i in range(3)
+            sum(len(r[i]) + 1 for r in current) + len(row[i]) + 1 <= _FIELD_MAX for i in range(2)
         )
         if not fits_set:
             if len(sets) >= _MAX_COLUMN_SETS:
                 break
-            cost += len(_COLUMN_NAMES[0] + _COLUMN_NAMES[1] + _COLUMN_NAMES[2])
+            cost += len(_COLUMN_NAMES[0] + _COLUMN_NAMES[1])
         if used + cost > budget:
             break
         used += cost
@@ -188,7 +190,7 @@ def _column_sets(
 
 
 class LineupUpdateEmbed(disnake.Embed):
-    """Public lineup post for one event: slots, times and DJs as three aligned columns."""
+    """Public lineup post for one event: "Slot and time" and "DJ" as two aligned columns."""
 
     def __init__(self, event: EventInfo, shown: list[EventInfo] | None = None) -> None:
         title = lineup_title(event)
@@ -216,7 +218,7 @@ class LineupUpdateEmbed(disnake.Embed):
             colour=EmbedColors.MISSION_GOLD,
         )
         for position, group in enumerate(sets):
-            for column in range(3):
+            for column in range(2):
                 self.add_field(
                     name=_COLUMN_NAMES[column] if position == 0 else _BLANK,
                     value="\n".join(row[column] for row in group),

@@ -132,7 +132,7 @@ class TestLineupUpdateEmbed:
         )
         assert lineup_text(event) == "1 of 3 slots booked \u00b7 2 open"
 
-    def test_rows_are_one_line_per_slot_in_three_columns(self) -> None:
+    def test_rows_are_one_line_per_slot_in_two_columns(self) -> None:
         from bot.ui.embeds import lineup_rows
 
         event = self._event(
@@ -140,12 +140,12 @@ class TestLineupUpdateEmbed:
         )
         t = [texts.slot_time(event, i) for i in range(3)]
         assert lineup_rows(event) == [
-            ("**Slot 1**", t[0], "\u25ab\ufe0f *open slot*"),
-            ("**Slot 2**", t[1], "\U0001f3a7 Nova"),
-            ("**Slot 3**", t[2], "\u25ab\ufe0f *open slot*"),
+            (f"**Slot 1** \u00b7 {t[0]}", "\U0001f7e2 *open slot*"),
+            (f"**Slot 2** \u00b7 {t[1]}", "Nova"),
+            (f"**Slot 3** \u00b7 {t[2]}", "\U0001f7e2 *open slot*"),
         ]
 
-    def test_embed_shows_slots_as_aligned_columns(self) -> None:
+    def test_embed_shows_slots_as_two_aligned_columns(self) -> None:
         from bot.ui.embeds import LineupUpdateEmbed, lineup_rows
 
         event = self._event(
@@ -153,12 +153,30 @@ class TestLineupUpdateEmbed:
         )
         embed = LineupUpdateEmbed(event)
         rows = lineup_rows(event)
-        columns = [f for f in embed.fields if f.name in ("Slot", "Time", "DJ")]
-        assert [f.name for f in columns] == ["Slot", "Time", "DJ"]
+        columns = [f for f in embed.fields if f.name in ("Slot", "DJ")]
+        assert [f.name for f in columns] == ["Slot", "DJ"]
         assert all(f.inline for f in columns)
         for index, field in enumerate(columns):
             assert field.value.split("\n") == [row[index] for row in rows]
         assert "**Slot" not in (embed.description or "")
+
+    def test_no_headphone_icon_in_front_of_a_name(self) -> None:
+        from bot.ui.embeds import lineup_rows
+
+        event = self._event([make_slot(1, dj_page_id="d1", dj_name="Nova")], slot_count=1)
+        cell = lineup_rows(event)[0][1]
+        assert cell == "Nova" and "\U0001f3a7" not in cell
+
+    def test_long_name_is_cut_so_it_cannot_wrap(self) -> None:
+        from bot.ui.embeds import lineup_rows
+
+        name = "The Incredibly Long Stage Name Collective"
+        event = self._event([make_slot(1, dj_page_id="d1", dj_name=name)], slot_count=1)
+        cell = lineup_rows(event)[0][1]
+        assert cell == name[:24] + "\u2026"
+        exact = "x" * 24
+        event = self._event([make_slot(1, dj_page_id="d1", dj_name=exact)], slot_count=1)
+        assert lineup_rows(event)[0][1] == exact  # at the limit: not cut
 
     def test_summary_when_fully_booked_and_when_empty_single_slot(self) -> None:
         from bot.ui.embeds import lineup_text
@@ -176,7 +194,7 @@ class TestLineupUpdateEmbed:
         event = self._event(
             [make_slot(1, dj_page_id="d1", dj_name="**x** @everyone <@1>")], slot_count=1
         )
-        cell = lineup_rows(event)[0][2]
+        cell = lineup_rows(event)[0][1]
         assert "@everyone" not in cell.replace("@\u200beveryone", "")
         assert "<@1>" not in cell
 
@@ -205,19 +223,19 @@ class TestLineupUpdateEmbed:
         shown = len(next(f for f in embed.fields if f.name == "Slot").value.split("\n"))
         rows_after = sum(
             len(f.value.split("\n")) for f in embed.fields if f.name == "\u200b"
-        ) // 3
+        ) // 2
         total_shown = shown + rows_after
         assert total_shown < 100
         assert embed.description.splitlines()[-1] == f"{100 - total_shown} slots not shown"
 
-    def test_all_columns_stay_the_same_length(self) -> None:
+    def test_both_columns_stay_the_same_length(self) -> None:
         from bot.ui.embeds import LineupUpdateEmbed
 
         slots = [make_slot(i, dj_page_id=f"d{i}", dj_name="n" * 100) for i in range(1, 41)]
         embed = LineupUpdateEmbed(self._event(slots, slot_count=40))
-        columns = [f for f in embed.fields if f.name in ("Slot", "Time", "DJ", "\u200b")]
-        for start in range(0, len(columns), 3):
-            lengths = {len(f.value.split("\n")) for f in columns[start : start + 3]}
+        columns = [f for f in embed.fields if f.name in ("Slot", "DJ", "\u200b")]
+        for start in range(0, len(columns), 2):
+            lengths = {len(f.value.split("\n")) for f in columns[start : start + 2]}
             assert len(lengths) == 1
 
     def test_no_note_when_nothing_is_cut(self) -> None:
@@ -254,7 +272,7 @@ class TestLineupUpdateEmbed:
             slot_count=1,
         )
         assert lineup_rows(event)[0] == (
-            "**Slot 1**", texts.slot_time(event, 0), "\u25ab\ufe0f *open slot*"
+            f"**Slot 1** \u00b7 {texts.slot_time(event, 0)}", "\U0001f7e2 *open slot*"
         )
 
     def test_embed_title_footer_color(self) -> None:
@@ -310,8 +328,8 @@ class TestLineupLayout:
         text = lineup_text(e)
         assert text.startswith("\U0001f3b5 Techno \u00b7 \U0001f4cd Club Vortex\n\n")
         assert text.endswith("\n\n**Notes**\nDoors 19:30")
-        assert re.fullmatch(r"<t:\d+:t>", lineup_rows(e)[0][1])
-        assert [f.name for f in LineupUpdateEmbed(e).fields][:3] == ["Slot", "Time", "DJ"]
+        assert re.fullmatch(r"\*\*Slot 1\*\* \u00b7 <t:\d+:t>", lineup_rows(e)[0][0])
+        assert [f.name for f in LineupUpdateEmbed(e).fields][:2] == ["Slot", "DJ"]
 
     def test_without_meta_or_notes_has_nothing_extra(self) -> None:
         from bot.ui.embeds import lineup_text
