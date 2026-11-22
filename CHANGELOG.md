@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- DJ Management lineup message: an optional channel (new setup wizard step, right before the summary) gets one lineup message per fully booked event, with start time, slot length, genre, location, note, and per slot the DJ name and stream links. The bot edits it when bookings, DJ profiles or event details change, shows open slots with a note when the event is no longer fully booked, and never posts a second message for an event or deletes one.
+- "Send me more information" button on that message, admins only: sends the complete current lineup as DMs (Discord name, VRChat name, stream links and logo per DJ). Other users get a private refusal.
+- Setup question for existing fully booked events: post all or only new ones. `/config show` lists the DJ Management channel.
+- Database migration 0020 (`management_lineup_messages`).
+
 ## [1.3.0-rc1] - 2026-11-21
 
 ### Changed

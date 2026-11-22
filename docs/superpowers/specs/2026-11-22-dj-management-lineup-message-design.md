@@ -100,7 +100,7 @@ changes. A button lets an admin receive the full details by DM.
 - Data is read from the database at click time, so it is current even if the message was not yet refreshed.
 - If DMs are closed, the admin gets a private note saying so.
 - The button respects the idle and maintenance gates.
-- Works after a restart (persistent button, tied to the event by the message).
+- Works after a restart (persistent button with the static custom id `mgmt:info`; the event is resolved from the clicked message id via the stored record).
 
 ### Privacy
 
@@ -118,7 +118,7 @@ changes. A button lets an admin receive the full details by DM.
 ## Calls made without the user (marked as the design's own)
 
 - Long lineups: one logical lineup may span several Discord messages. The table stores the channel id and a list of message ids per event; edit, repost-if-deleted and "at most one per event" work per chunk. The button sits on the first message only.
-- Button lookup: the button's custom_id embeds the event key, so it resolves the event after a restart without a message-id lookup.
+- Button lookup: the button has the static custom id `mgmt:info`. The event is resolved from the clicked message id via the stored record (`message_ids` in `management_lineup_messages`).
 - Message ids survive the fully-booked flag being cleared. A refill edits the stored message(s); it never posts a second lineup.
 - Channel change: existing messages keep being edited in the channel stored with them. Only events without a stored message post to the currently configured channel. No automatic move or repost.
 - Profile edits: DJ profile edit paths trigger a refresh of the lineup messages of that DJ's upcoming events, in addition to the existing recheck points and the poll cycle. Edits are queued per event to stay within Discord rate limits.
@@ -129,3 +129,6 @@ changes. A button lets an admin receive the full details by DM.
 - Discord names and VRChat names are in the DMs only, not in the channel message.
 - Logo sent as an attached image in the DM.
 - Unusable channel: quiet no-op plus an admin log problem entry.
+- Clearing the management channel stops new posts only. Existing messages keep being edited in the channel stored with them.
+- A lineup that shrinks leaves its surplus messages edited to a short placeholder. The bot never deletes lineup messages.
+- A missing (deleted) message re-posts the whole lineup in the configured channel and replaces the stored message ids.
