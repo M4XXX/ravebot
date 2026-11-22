@@ -83,7 +83,7 @@ This work puts both rules on `main` again, and this time makes them configurable
 
 ### Setup wizard
 
-- New step "Booking rules" before the summary: shows both rules with their current value, two toggle buttons, two dropdowns with common values and an "Other" popup. The summary page lists both rules. A re-run starts from the stored values; a first run starts from the defaults.
+- New step "Booking rules" before the summary: shows both rules with their current value, two toggle buttons and one "Change" popup for both numbers. The summary page lists both rules. A re-run starts from the stored values; a first run starts from the defaults.
 - Numbers outside the allowed range are rejected with a message, like the other numeric steps.
 
 ### Admin webpage
