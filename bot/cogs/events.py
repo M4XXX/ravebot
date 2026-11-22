@@ -122,6 +122,13 @@ class EventsCog(commands.Cog):
             self.ctx.db, self.ctx.log_service, events, listed_at=listed_at
         )
 
+        service = self.ctx.management_lineup_service
+        if service is not None:
+            try:
+                await service.refresh(events)
+            except Exception:
+                logger.exception("Management lineup refresh failed")
+
         # Post a Lineup Update if the upcoming event changed since the last post
         if self.ctx.lineup_service is None:
             logger.warning("lineup_service not available — skipping lineup update")

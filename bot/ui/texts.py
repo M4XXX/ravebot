@@ -786,6 +786,33 @@ SETUP_LOG_CHANNEL_QUESTION = (
     "Where should I post bookings, new DJs, problems and messages from DJs? "
     "Only organizers should see this channel."
 )
+SETUP_MGMT_CHANNEL_QUESTION = (
+    "Optional: where should I post the lineup of each fully booked event for the DJ "
+    "management? Pick a channel only staff can see. Leaving it empty (skip or Clear) "
+    "turns this feature off."
+)
+
+
+def setup_mgmt_all_label(count: int) -> str:
+    return f"Post all existing ({count})"
+
+
+def setup_mgmt_backfill(count: int, choice: str | None) -> str:
+    """The backfill question of the DJ Management channel step."""
+    noun = "event is" if count == 1 else "events are"
+    lines = [
+        "",
+        f"{count} upcoming {noun} already fully booked without a lineup message. "
+        "Post a message for each of them now, or only for events that become fully "
+        "booked from now on?",
+    ]
+    if choice == "all":
+        lines.append(f"{SETUP_CHECK_OK}Chosen: post all existing")
+    elif choice == "new":
+        lines.append(f"{SETUP_CHECK_OK}Chosen: only new")
+    else:
+        lines.append("Pick one to continue.")
+    return "\n".join(lines)
 
 
 def setup_channel_ok(channel_name: str) -> str:
@@ -1295,3 +1322,58 @@ def setup_rules_save_conflict(pairs: Sequence[tuple[int, str, int, str]]) -> str
         for a, sa, b, sb in pairs
     ]
     return "\n".join([*lines, "Nothing was saved."])
+
+
+# DJ management lineup message (channel embeds and DM payloads).
+MGMT_LINEUP_TITLE_CONTINUED = "Lineup (continued)"
+MGMT_LINEUP_OPEN_NOTE = "No longer fully booked: open slots are marked."
+MGMT_LINEUP_CANCELED = "This event was canceled."
+MGMT_NONE = "none"
+MGMT_OPEN_SLOT = "open"
+
+
+def mgmt_title(event: EventInfo) -> str:
+    return f"{event.event_id}, {event.date.strftime('%d.%m.%Y')}"
+
+
+def mgmt_slot_heading(number: int, hhmm: str) -> str:
+    return f"Slot {number}, {hhmm}"
+
+
+def mgmt_stream_line(url: str | None) -> str:
+    return f"Stream: {url or MGMT_NONE}"
+
+
+def mgmt_alt_stream_line(url: str | None) -> str:
+    return f"Alt stream: {url or MGMT_NONE}"
+
+
+# Shown in a lineup message that is no longer needed after the lineup got shorter.
+MGMT_LINEUP_SURPLUS = "Lineup continues in the message(s) above."
+# Shown in an old lineup message after the lineup was posted again.
+MGMT_LINEUP_MOVED = "This lineup was posted again: see the newest lineup message."
+MGMT_CHANNEL_TODO = (
+    "Run /setup again to choose the DJ management channel, or give the bot "
+    "permission to view and send messages there."
+)
+
+
+def mgmt_channel_problem(channel_id: int, reason: str) -> str:
+    if reason == "missing":
+        return f"The DJ management lineup could not be posted: channel {channel_id} was not found."
+    return (
+        f"The DJ management lineup could not be posted: the bot may not send or edit "
+        f"messages in channel <#{channel_id}>."
+    )
+
+
+# "Send me more information" button under the DJ management lineup message.
+MGMT_INFO_ADMINS_ONLY = "Only organizers can get this information."
+MGMT_INFO_UNTRACKED = "This lineup is no longer tracked."
+MGMT_INFO_SENT = "I sent you the lineup details in a DM."
+MGMT_INFO_DMS_CLOSED = "I could not send you a DM. Please open your DMs and try again."
+MGMT_INFO_FAILED = "I could not load the lineup details. Please try again later."
+
+
+def mgmt_info_partial(sent: int) -> str:
+    return f"I could not send everything by DM. {sent} DJ(s) were sent before it stopped."

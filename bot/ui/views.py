@@ -1303,8 +1303,10 @@ class BookingConfirmView(_SlotConfirmView):
         # Announce the event when this booking filled it, clear the flag when a slot opened.
         # After the lock release: the event read must not hold the DJ's flow.
         from bot.services.fully_booked import recheck_fully_booked
+        from bot.services.management_lineup import notify_management
 
         await recheck_fully_booked(self._ctx.db, self._ctx.log_service)
+        notify_management(self._ctx)
 
 
 # ---------------------------------------------------------------------------
@@ -1528,8 +1530,10 @@ class CancelConfirmView(_SlotConfirmView):
         # Announce the event when this booking filled it, clear the flag when a slot opened.
         # After the lock release: the event read must not hold the DJ's flow.
         from bot.services.fully_booked import recheck_fully_booked
+        from bot.services.management_lineup import notify_management
 
         await recheck_fully_booked(self._ctx.db, self._ctx.log_service)
+        notify_management(self._ctx)
 
 
 # ---------------------------------------------------------------------------

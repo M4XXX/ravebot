@@ -680,7 +680,8 @@ async def test_edit_skip_refused(service, fake):
     assert fake.convs[A].step == "vrchat"
 
 
-async def test_edit_remove_value(service, fake, sync):
+async def test_edit_remove_value(service, fake, sync, ctx):
+    ctx.management_lineup_service = MagicMock()
     _dj(fake)
     await service.start_edit(A, GUILD, "vrchat")
     await service.record_message_id(A, 3)
@@ -690,6 +691,7 @@ async def test_edit_remove_value(service, fake, sync):
         fake.update_dj_fields.await_args.args[0], A, vrchat_name=None
     )
     sync.assert_awaited_once()
+    ctx.management_lineup_service.notify_changed.assert_called_once_with()
     assert A not in fake.convs
 
 

@@ -20,6 +20,7 @@ from bot.db.config import get_value
 from bot.db.manual_events import get_manual_page_ids
 from bot.notion.models import FINISHED_STATUSES, EventInfo
 from bot.services import event_replenish
+from bot.services.management_lineup import notify_management
 from bot.services.schedule_rules import Field, Rule, conflicts, reanchor, resolve
 from bot.sync.worker import changed
 from bot.timezone import local_today
@@ -392,6 +393,7 @@ class ScheduleService:
         return updated
 
     async def _refresh_lineup(self) -> None:
+        notify_management(self.ctx)
         service = self.ctx.lineup_service
         if service is None:
             return

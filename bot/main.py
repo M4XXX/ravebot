@@ -263,6 +263,11 @@ async def main() -> None:
     from bot.ui.log_reply import LogReplyView
 
     bot.add_view(LogReplyView(ctx))  # persistent: Reply works on old log entries
+    from bot.ui.management_lineup import ManagementInfoView
+
+    # persistent: the lineup info button; the lineup service gets this same instance
+    management_info_view = ManagementInfoView(ctx)
+    bot.add_view(management_info_view)
     from bot.ui.setup_wizard import registered_views
 
     for wizard_view in registered_views(ctx):  # persistent: the wizard works after restarts
@@ -285,6 +290,21 @@ async def main() -> None:
         view=post_view,
         db=ctx.db,
         log_service=ctx.log_service,
+    )
+    from bot.services.management_lineup import ManagementLineupService
+
+    ctx.management_lineup_service = ManagementLineupService(
+        bot=bot,
+        db=ctx.db,
+        log_service=ctx.log_service,
+        view=management_info_view,
+    )
+    # A hand-deleted lineup message is re-posted on the next refresh
+    bot.add_listener(
+        ctx.management_lineup_service.on_raw_message_delete, "on_raw_message_delete"
+    )
+    bot.add_listener(
+        ctx.management_lineup_service.on_raw_bulk_message_delete, "on_raw_bulk_message_delete"
     )
     from bot.services.schedule import ScheduleService
 

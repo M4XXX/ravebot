@@ -690,3 +690,13 @@ async def test_no_rebuild_hook_without_notion() -> None:
     s = _Startup(notion_enabled=False)
     await s.run()
     assert s.ctx.notion_start_mirror is None
+
+
+@pytest.mark.asyncio
+async def test_startup_registers_lineup_delete_listeners() -> None:
+    s = _Startup()
+    await s.run()
+    service = s.ctx.management_lineup_service
+    listeners = {c.args[1]: c.args[0] for c in s.bot.add_listener.call_args_list}
+    assert listeners["on_raw_message_delete"] == service.on_raw_message_delete
+    assert listeners["on_raw_bulk_message_delete"] == service.on_raw_bulk_message_delete

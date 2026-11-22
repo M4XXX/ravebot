@@ -14,7 +14,7 @@ import logging
 import zoneinfo
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import disnake
 
@@ -25,6 +25,7 @@ from bot.db.setup_drafts import SetupDraft, delete_draft, get_draft, save_draft
 from bot.notion.models import MAX_SLOTS
 from bot.services import activation
 from bot.services.event_replenish import replenish_events
+from bot.services.management_lineup import MANAGEMENT_CHANNEL_KEY
 from bot.services.outreach import parse_outreach_enabled
 from bot.services.schedule_rules import Field, Rule, reanchor
 from bot.timezone import DEFAULT_TIMEZONE, is_valid_timezone, set_timezone
@@ -66,6 +67,7 @@ STEPS: list[str] = [
     "rules",
     "timezone",
     "invites",
+    "management_channel",
     "summary",
 ]
 
@@ -111,6 +113,9 @@ _INT_VALUE_KEYS = (
 MAX_INVITE_DAYS = 365
 MAX_INVITE_HOURS = 720
 CHANNEL_KEYS = ("dj_channel", "log_channel")
+# Optional: the draft key is the config key; absent means the feature is off.
+MGMT_KEY = MANAGEMENT_CHANNEL_KEY
+MGMT_BACKFILL_KEY = "management_backfill"  # draft only, never stored as config
 ROLE_KEYS = ("dj_role_id", "invites_role_id")
 
 _REQUIRED_PERMISSIONS = (("send_messages", "Send Messages"), ("embed_links", "Embed Links"))
@@ -137,6 +142,10 @@ ID_INVITES_CHANGE = "setup:invites_change"
 ID_ACTIVATE = "setup:activate"
 ID_SAVE = "setup:save"
 ID_CHANGE = "setup:change"
+ID_MGMT_CHANNEL = "setup:mgmt_channel"
+ID_MGMT_CLEAR = "setup:mgmt_clear"
+ID_MGMT_ALL = "setup:mgmt_all"
+ID_MGMT_NEW = "setup:mgmt_new"
 
 # One lock per guild: the activation effects run once even on concurrent presses.
 _guild_locks: dict[int, asyncio.Lock] = {}
@@ -253,6 +262,8 @@ class StepView:
     defaults: dict[str, int] = field(default_factory=dict)  # select id -> stored choice
     options: list[tuple[str, str]] = field(default_factory=list)  # value step dropdown
     selected: str | None = None  # value of the option shown as chosen
+    backfill_count: int = 0  # eligible events named on the "Post all existing" button
+    backfill_choice: str | None = None  # "all" or "new" once answered
 
 
 def _channel_check(guild: Any, channel_id: Any) -> tuple[bool, Any, str | None]:
@@ -365,6 +376,7 @@ async def summary_lines(
     lines = [
         f"DJ channel: {chan('dj_channel')}",
         f"Log channel: {chan('log_channel')}",
+        f"DJ Management channel: {chan(MGMT_KEY)}",
         f"DJ role: {dj} \u00b7 Invites role: {inv}",
         f"Events: {v['slots_per_event']} slots, "
         f"{v['default_start_time']} {zone_abbr(v['timezone'])}, "
@@ -374,11 +386,18 @@ async def summary_lines(
         f"Automatic invites: {invites}",
     ]
     if v["event_schedule_enabled"]:
-        lines[5:5] = [
+        lines[6:6] = [
             f"Default genre: {v['default_genre'] or 'none'}",
             f"Default location: {v['default_location'] or 'none'}",
             f"Rules: {len(data.get('rules') or [])}",
         ]
+    if data.get(MGMT_KEY) and data.get(MGMT_BACKFILL_KEY) in ("all", "new"):
+        choice = (
+            "post a message for each"
+            if data[MGMT_BACKFILL_KEY] == "all"
+            else "no message (only new ones)"
+        )
+        lines.append(f"Existing fully booked events: {choice}")
     gid = guild_id if guild_id is not None else getattr(guild, "id", None)
     if isinstance(gid, int):
         lines.extend(await _moved_rule_lines(ctx, gid, data))
@@ -402,6 +421,9 @@ DRAFT_MARKER = "wizard_v2"  # set in the data of every draft made by the step-pe
 STEPS_MARKER = "steps_v3"
 _FIRST_SHIFTED_STEP = 11  # index of "timezone" before the default and rules steps existed
 _ADDED_STEPS = 3
+# Set in the data of every draft whose step number counts the DJ Management channel step.
+STEPS_V4_MARKER = "steps_v4"
+_OLD_SUMMARY_STEP = 16  # index of "summary" before the DJ Management channel step existed
 
 
 def migrate_legacy_draft(draft: SetupDraft) -> None:
@@ -414,11 +436,16 @@ def migrate_legacy_draft(draft: SetupDraft) -> None:
             if draft.step >= _FIRST_SHIFTED_STEP:
                 draft.step += _ADDED_STEPS
             draft.data[STEPS_MARKER] = True
+        if not draft.data.get(STEPS_V4_MARKER):
+            if draft.step == _OLD_SUMMARY_STEP:
+                draft.step = STEPS.index("summary")
+            draft.data[STEPS_V4_MARKER] = True
         return
     if draft.step in _LEGACY_STEP_KEYS:
         draft.step = STEPS.index(_LEGACY_STEP_KEYS[draft.step])
     draft.data[DRAFT_MARKER] = True
     draft.data[STEPS_MARKER] = True
+    draft.data[STEPS_V4_MARKER] = True
     draft.data.setdefault("event_schedule_enabled", True)
     draft.data.setdefault("first_event_date", "")
 
@@ -521,6 +548,50 @@ async def _render_rules(ctx: "BotContext", draft: SetupDraft) -> StepView:
     )
 
 
+async def _backfill_count(ctx: "BotContext", data: dict[str, Any]) -> int:
+    """Eligible events for the backfill question: 0 when it is not asked."""
+    chosen = data.get(MGMT_KEY)
+    service = getattr(ctx, "management_lineup_service", None)
+    if chosen is None or service is None or chosen == data.get("orig_management_channel"):
+        return 0
+    try:
+        return len(await service.eligible_backfill_events())
+    except Exception:
+        logger.warning("Setup wizard: could not list the events to backfill", exc_info=True)
+        return 0
+
+
+async def _render_management(ctx: "BotContext", guild: Any, draft: SetupDraft) -> StepView:
+    data = draft.data
+    chosen = data.get(MGMT_KEY)
+    ok, _, check = _channel_check(guild, chosen)
+    content = texts.setup_channel_step(
+        step_number("management_channel", data),
+        total_steps(data),
+        "DJ Management channel",
+        texts.SETUP_MGMT_CHANNEL_QUESTION,
+        f"<#{chosen}>" if chosen else None,
+        check,
+    )
+    visible = [ID_MGMT_CHANNEL, ID_MGMT_CLEAR]
+    next_disabled = chosen is not None and not ok
+    count = await _backfill_count(ctx, data)
+    choice = data.get(MGMT_BACKFILL_KEY)
+    if count:
+        content += "\n" + texts.setup_mgmt_backfill(count, choice)
+        visible += [ID_MGMT_ALL, ID_MGMT_NEW]
+        if choice not in ("all", "new"):
+            next_disabled = True
+    return StepView(
+        content,
+        [*visible, ID_BACK, ID_NEXT],
+        next_disabled=next_disabled,
+        defaults={ID_MGMT_CHANNEL: int(chosen)} if chosen else {},
+        backfill_count=count,
+        backfill_choice=choice,
+    )
+
+
 async def render_step(ctx: "BotContext", guild: Any, draft: SetupDraft) -> StepView:
     key = step_key(draft.step)
     data = draft.data
@@ -573,6 +644,8 @@ async def render_step(ctx: "BotContext", guild: Any, draft: SetupDraft) -> StepV
         )
     if key == "rules":
         return await _render_rules(ctx, draft)
+    if key == "management_channel":
+        return await _render_management(ctx, guild, draft)
     if key in VALUE_STEPS:
         config_key = VALUE_STEPS[key]
         v = values(data)
@@ -664,6 +737,21 @@ class SetupWizardView(disnake.ui.View):
             ID_ACTIVATE: ("Activate", disnake.ButtonStyle.success, self.on_activate),
             ID_SAVE: ("Save", disnake.ButtonStyle.success, self.on_save),
             ID_CHANGE: (texts.SETUP_CHANGE_BUTTON, disnake.ButtonStyle.primary, self.on_change),
+            ID_MGMT_CLEAR: ("Clear", disnake.ButtonStyle.secondary, self.on_mgmt_clear),
+            ID_MGMT_ALL: (
+                texts.setup_mgmt_all_label(step.backfill_count),
+                disnake.ButtonStyle.success
+                if step.backfill_choice == "all"
+                else disnake.ButtonStyle.secondary,
+                self.on_mgmt_all,
+            ),
+            ID_MGMT_NEW: (
+                "Only new",
+                disnake.ButtonStyle.success
+                if step.backfill_choice == "new"
+                else disnake.ButtonStyle.secondary,
+                self.on_mgmt_new,
+            ),
         }
         if cid in buttons:
             label, style, handler = buttons[cid]
@@ -699,8 +787,12 @@ class SetupWizardView(disnake.ui.View):
             return item
         default = step.defaults.get(cid)
         defaults = [disnake.Object(id=default)] if default else None
-        if cid in (ID_DJ_CHANNEL, ID_LOG_CHANNEL):
-            key = "dj_channel" if cid == ID_DJ_CHANNEL else "log_channel"
+        if cid in (ID_DJ_CHANNEL, ID_LOG_CHANNEL, ID_MGMT_CHANNEL):
+            key = {
+                ID_DJ_CHANNEL: "dj_channel",
+                ID_LOG_CHANNEL: "log_channel",
+                ID_MGMT_CHANNEL: MGMT_KEY,
+            }[cid]
             item = disnake.ui.ChannelSelect(
                 custom_id=cid,
                 placeholder="Select a channel",
@@ -789,6 +881,8 @@ class SetupWizardView(disnake.ui.View):
         if draft is None:
             return
         draft.data[key] = int(chosen[0])
+        if key == MGMT_KEY:
+            draft.data.pop(MGMT_BACKFILL_KEY, None)  # asked again for the new channel
         await self._show(inter, draft)
 
     async def _choose_channel(self, inter: Any, key: str) -> None:
@@ -1027,6 +1121,28 @@ class SetupWizardView(disnake.ui.View):
             draft.data["rules"] = rules
             await self._show(inter, draft)
 
+    async def _update_draft(self, inter: Any, change: Callable[[dict[str, Any]], None]) -> None:
+        await inter.response.defer()
+        async with guild_lock(inter.guild_id):
+            draft = await self._draft(inter)
+            if draft is None:
+                return
+            change(draft.data)
+            await self._show(inter, draft)
+
+    async def on_mgmt_clear(self, inter: Any) -> None:
+        def clear(data: dict[str, Any]) -> None:
+            data.pop(MGMT_KEY, None)
+            data.pop(MGMT_BACKFILL_KEY, None)
+
+        await self._update_draft(inter, clear)
+
+    async def on_mgmt_all(self, inter: Any) -> None:
+        await self._update_draft(inter, lambda data: data.__setitem__(MGMT_BACKFILL_KEY, "all"))
+
+    async def on_mgmt_new(self, inter: Any) -> None:
+        await self._update_draft(inter, lambda data: data.__setitem__(MGMT_BACKFILL_KEY, "new"))
+
     async def on_activate(self, inter: Any) -> None:
         await inter.response.defer()
         await activate_from_draft(self.ctx, inter)
@@ -1131,6 +1247,9 @@ def _layout(draft: SetupDraft) -> StepView:
         "schedule": [ID_SCHEDULE_TOGGLE, ID_BACK, ID_NEXT],
         "rules": [ID_RULE_REMOVE, ID_RULE_START, ID_RULE_ADD, ID_RULE_CANCEL, ID_BACK, ID_NEXT],
         "invites": [ID_INVITES_TOGGLE, ID_INVITES_CHANGE, ID_BACK, ID_NEXT],
+        "management_channel": [
+            ID_MGMT_CHANNEL, ID_MGMT_CLEAR, ID_MGMT_ALL, ID_MGMT_NEW, ID_BACK, ID_NEXT,
+        ],
         "summary": [ID_BACK, ID_SAVE if draft.data.get("rerun") else ID_ACTIVATE],
     }
     if key in VALUE_STEPS:
@@ -1171,7 +1290,12 @@ async def prefilled_data(
     db: Any, guild_id: int, guild: Any = None, rerun: bool = True
 ) -> dict[str, Any]:
     """Draft data from every stored value (default where missing or invalid)."""
-    data: dict[str, Any] = {"rerun": rerun, DRAFT_MARKER: True}
+    data: dict[str, Any] = {
+        "rerun": rerun,
+        DRAFT_MARKER: True,
+        STEPS_MARKER: True,
+        STEPS_V4_MARKER: True,
+    }
     for key in (*CHANNEL_KEYS, *ROLE_KEYS):
         raw = await db_config.get_value(db, guild_id, key)
         if raw is not None:
@@ -1201,6 +1325,13 @@ async def prefilled_data(
     zone = await db_config.get_value(db, guild_id, "timezone")
     data["timezone"] = zone if zone and is_valid_timezone(zone) else DEFAULT_TIMEZONE
     data["orig_timezone"] = data["timezone"]
+    raw_mgmt = await db_config.get_value(db, guild_id, MGMT_KEY)
+    try:
+        if raw_mgmt:
+            data[MGMT_KEY] = int(raw_mgmt)
+    except ValueError:
+        pass
+    data["orig_management_channel"] = data.get(MGMT_KEY)
     data["orig_invites_role_id"] = data.get("invites_role_id")
     data["outreach_enabled"] = parse_outreach_enabled(
         await db_config.get_value(db, guild_id, "outreach_enabled")
@@ -1238,6 +1369,10 @@ async def _write_all(db: Any, guild_id: int, data: dict[str, Any]) -> None:
             continue
         text = ("true" if value else "false") if isinstance(value, bool) else str(value)
         await db_config.set_value(db, guild_id, key, text)
+    if data.get(MGMT_KEY) is not None:
+        await db_config.set_value(db, guild_id, MGMT_KEY, str(data[MGMT_KEY]))
+    else:
+        await db_config.delete_value(db, guild_id, MGMT_KEY)  # skipped or cleared: off
     set_timezone(v["timezone"])
 
 
@@ -1397,11 +1532,13 @@ async def activate_from_draft(ctx: "BotContext", inter: Any) -> None:
             # An explicit "false" first: a failure below must not leave a half-written
             # setup that the legacy rule (both channels stored) would count as active.
             await db_config.set_value(db, guild_id, activation.ACTIVE_KEY, "false")
+            await _apply_management_backfill(ctx, draft.data, "new")
             await _write_all(db, guild_id, draft.data)
             await _store_schedule(db, guild_id, draft.data, rules)
             await activation.set_active(db, guild_id)
             created, posted = await _run_effects(ctx, guild_id)
             await delete_draft(db, guild_id)
+            await _apply_management_backfill(ctx, draft.data, "all")
         except Exception:
             logger.exception("Setup wizard: activation failed")
             await _private(inter, texts.SETUP_ERROR)
@@ -1412,6 +1549,27 @@ async def activate_from_draft(ctx: "BotContext", inter: Any) -> None:
             ),
             view=None,
         )
+
+
+async def _apply_management_backfill(
+    ctx: "BotContext", data: dict[str, Any], mode: Literal["all", "new"]
+) -> None:
+    """Run the one-time backfill the admin chose, if it is `mode`; never raises.
+
+    "new" runs before the channel is stored (its suppressed records must exist before
+    a poll could post those events); "all" runs after the channel is stored.
+    """
+    if data.get(MGMT_BACKFILL_KEY) != mode:
+        return
+    channel = data.get(MGMT_KEY)
+    service = getattr(ctx, "management_lineup_service", None)
+    if channel is None or service is None:
+        return
+    try:
+        count = await service.backfill(mode, channel_id=int(channel))
+        logger.info("Setup wizard: management lineup backfill %r handled %s events", mode, count)
+    except Exception:
+        logger.exception("Setup wizard: management lineup backfill %r failed", mode)
 
 
 async def _run_effects(ctx: "BotContext", guild_id: int) -> tuple[int, bool]:
@@ -1453,9 +1611,11 @@ async def save_from_draft(ctx: "BotContext", inter: Any) -> None:
             await _private(inter, refusal)
             return
         try:
+            await _apply_management_backfill(ctx, draft.data, "new")
             await _write_all(_db(ctx), guild_id, draft.data)
             await _store_schedule(_db(ctx), guild_id, draft.data, rules)
             await delete_draft(_db(ctx), guild_id)
+            await _apply_management_backfill(ctx, draft.data, "all")
         except Exception:
             logger.exception("Setup wizard: saving failed")
             await _private(inter, texts.SETUP_ERROR)

@@ -394,7 +394,8 @@ Run `/setup` in the channel where you want to set up (admins only). The bot post
    - **Rules** (optional). Add rules such as "every 2nd event: location Hall B", see [7.3](#73-commands) and [7.8](#78-genre-location-notes-and-rules).
    - **Time zone** (default `Europe/Berlin`).
 6. **Automatic invites.** Turn invites on or off, how many days before an event the bot starts asking, and the hours it waits between two invites to the same DJ.
-7. **Summary.** Lists everything. **Activate** writes the settings, switches the bot on, creates the missing future events and posts the first Lineup Update (it reports how many events it created and whether it posted). The channels and roles must be chosen first.
+7. **DJ Management channel (optional).** Pick a channel for the lineup of each fully booked event. Use a staff-only channel. Skip it or press **Clear** to keep the feature off. If fully booked events already exist, the wizard asks whether to post all of them or only new ones, see [7.9](#79-dj-management-lineup-message).
+8. **Summary.** Lists everything (including the DJ Management channel). **Activate** writes the settings, switches the bot on, creates the missing future events and posts the first Lineup Update (it reports how many events it created and whether it posted). The channels and roles must be chosen first.
 
 Nothing is stored until Activate. Defaults: 6 slots, 20:00, 60 minutes, scheduling on, every 7 days, first event as soon as the interval allows, 6 events ahead, invites on, 14 days before, 12 hours wait.
 
@@ -504,6 +505,22 @@ Where to set them: `/create event` (options), `/edit event`, the **Schedule** pa
 **Apply flow.** Changing a default or a rule never rewrites upcoming events by itself. Afterwards the bot lists the events whose value would change and you choose **Apply to all**, **Pick events** (**Apply selected** on the admin page) or **Keep all as they are**. You can run `/schedule apply` or open the apply list on the admin page later. The bot checks again when you press the button and only writes events that are still affected. New scheduled events always get the current rule values.
 
 **Admin page.** The **Schedule** page shows the settings (read only: interval, first date, kept ready, on or off; change them with `/setup`), the defaults, the rules with **Edit** and **Remove**, an **Add rule** form, and the upcoming events with their genre, location and note. A banner links to the apply list when events differ from the rules.
+
+### 7.9 DJ Management lineup message
+
+An optional message for the DJ management: one lineup per fully booked event, in a channel you choose. It is off until you pick a channel in `/setup` (the optional DJ Management channel step, right before the summary). Pick a channel only staff can see: the message contains DJ names and stream links. Skip the step or press **Clear** to turn it off. Clearing the channel later stops new posts only; messages already posted keep being edited in the channel they were posted in. If that channel is deleted, the lineups move to the channel currently set in `/setup`. The bot checks that it can send messages and embeds there.
+
+**Existing events.** When you choose a channel and fully booked upcoming events already exist, the wizard asks what to do and blocks **Next** until you answer:
+- **Post all existing (N)**: posts a message for each of them, in date order, when you activate or save.
+- **Only new**: posts nothing for them. They get a message only after they open up and are fully booked again.
+
+**What the message shows.** The event name and date, start time, slot length, genre, location and note (each only when set), then per slot: number and time, the DJ name, the stream link and the backup stream link (`none` when missing). Long lineups are split over several messages. Discord names, VRChat names and logos are not in the channel message.
+
+**Staying current.** The bot posts the message once, when the event is fully booked, and then edits it whenever the content changes: a swapped DJ, a changed stream link or DJ name, a changed event detail. It never posts a second message for the same event. If a booking is cancelled, the same message stays and shows the open slots with the note `No longer fully booked: open slots are marked.`; when the slots are filled again the note disappears. A canceled event is edited to say it was canceled. The bot never deletes lineup messages: if the lineup gets shorter, surplus messages are edited to a short placeholder. If a message was deleted by hand, the bot posts the lineup again shortly after, and the remaining old messages of that lineup are edited to point to the new one.
+
+**Send me more information.** The first message has this button. It works for admins only (see [7.3](#73-commands)), also after a restart. An admin who presses it gets DMs with the complete current lineup: one header DM, then one DM per DJ with the slot and time, DJ name, Discord name, VRChat name, stream link, backup link and the logo as an attached image. The data is read at the moment of the click. The admin also gets a private confirmation. If the DMs are closed the bot says so privately; if a DM fails midway it says how many DJ DMs were sent. Anyone else gets a private refusal and receives nothing.
+
+If the bot cannot use the channel (deleted or no permission), it writes one entry to the admin log channel and keeps running.
 
 ---
 

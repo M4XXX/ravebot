@@ -55,3 +55,12 @@ async def set_value(pool: asyncpg.Pool, guild_id: int, key: str, value: str) -> 
         key,
         value,
     )
+
+
+async def delete_value(pool: asyncpg.Pool, guild_id: int, key: str) -> None:
+    """Remove a config row; a missing key is not an error."""
+    await pool.execute(
+        "DELETE FROM config WHERE guild_id = $1 AND key = $2",
+        guild_id,
+        key,
+    )

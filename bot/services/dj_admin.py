@@ -36,6 +36,7 @@ from bot.services.dj_validation import (
     clean_text,
 )
 from bot.services.logo import LogoError, process_logo_async
+from bot.services.management_lineup import notify_management
 from bot.sync.worker import changed
 
 if TYPE_CHECKING:
@@ -243,6 +244,7 @@ class DjAdminService:
                 return DjResult(False, _duplicate_text(exc, str(new_name)))
             if not updated:
                 return DjResult(False, UNKNOWN_DJ)
+        notify_management(self._ctx)
         fresh = await get_dj_row(db, dj_id)
         name = fresh["dj_name"] if fresh is not None else row["dj_name"]
         await sync_dj(self._ctx, dj_id)
