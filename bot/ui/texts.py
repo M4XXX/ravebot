@@ -1295,3 +1295,27 @@ def setup_rules_save_conflict(pairs: Sequence[tuple[int, str, int, str]]) -> str
         for a, sa, b, sb in pairs
     ]
     return "\n".join([*lines, "Nothing was saved."])
+
+
+# DJ management lineup message (channel embeds and DM payloads).
+MGMT_LINEUP_TITLE_CONTINUED = "Lineup (continued)"
+MGMT_LINEUP_OPEN_NOTE = "No longer fully booked: open slots are marked."
+MGMT_LINEUP_CANCELED = "This event was canceled."
+MGMT_NONE = "none"
+MGMT_OPEN_SLOT = "open"
+
+
+def mgmt_title(event: EventInfo) -> str:
+    return f"{event.event_id}, {event.date.strftime('%d.%m.%Y')}"
+
+
+def mgmt_slot_heading(number: int, hhmm: str) -> str:
+    return f"Slot {number}, {hhmm}"
+
+
+def mgmt_stream_line(url: str | None) -> str:
+    return f"Stream: {url or MGMT_NONE}"
+
+
+def mgmt_alt_stream_line(url: str | None) -> str:
+    return f"Alt stream: {url or MGMT_NONE}"
