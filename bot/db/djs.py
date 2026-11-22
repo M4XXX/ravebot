@@ -6,6 +6,8 @@ All queries are ownership-scoped via WHERE discord_user_id = $1.
 [Source: architecture.md#Repository Pattern]
 [Source: architecture.md#DJ Data Isolation: Ownership-Scoped Queries]
 """
+from collections.abc import Sequence
+
 import asyncpg
 
 from bot.services.dj_validation import clean_text
@@ -298,3 +300,18 @@ async def mark_logo_synced_if_unchanged(
         user_id,
         image,
     )
+
+
+async def get_dj_details(pool: asyncpg.Pool, user_ids: Sequence[int]) -> dict[int, dict]:
+    """Lineup fields for the given DJs in one query, keyed by discord_user_id."""
+    if not user_ids:
+        return {}
+    rows = await pool.fetch(
+        """
+        SELECT discord_user_id, dj_name, vrchat_name, stream_url_primary,
+               stream_url_backup, logo_url, (logo_image IS NOT NULL) AS has_logo
+        FROM djs WHERE discord_user_id = ANY($1)
+        """,
+        list(user_ids),
+    )
+    return {row["discord_user_id"]: dict(row) for row in rows}

@@ -388,3 +388,30 @@ async def test_mark_only_applies_to_the_logo_that_was_uploaded():
     sql, user_id, image = pool.execute.call_args.args
     assert "logo_image IS NOT DISTINCT FROM $2" in sql
     assert (user_id, image) == (1, b"img")
+
+
+@pytest.mark.asyncio
+async def test_get_dj_details_empty_skips_query() -> None:
+    from bot.db.djs import get_dj_details
+
+    pool = MagicMock()
+    pool.fetch = AsyncMock()
+    assert await get_dj_details(pool, []) == {}
+    pool.fetch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_dj_details_keys_by_user_id() -> None:
+    from bot.db.djs import get_dj_details
+
+    pool = MagicMock()
+    pool.fetch = AsyncMock(
+        return_value=[
+            {"discord_user_id": 1, "dj_name": "A", "has_logo": True},
+            {"discord_user_id": 2, "dj_name": "B", "has_logo": False},
+        ]
+    )
+    result = await get_dj_details(pool, (1, 2))
+    assert set(result) == {1, 2} and result[2]["dj_name"] == "B"
+    sql, ids = pool.fetch.await_args.args
+    assert "= ANY($1)" in sql and "has_logo" in sql and ids == [1, 2]

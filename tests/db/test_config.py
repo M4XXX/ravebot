@@ -94,3 +94,15 @@ async def test_set_value_upsert_works_for_log_channel() -> None:
     assert call_args[1] == 999
     assert call_args[2] == "log_channel"
     assert call_args[3] == "987654"
+
+
+@pytest.mark.asyncio
+async def test_delete_value_deletes_row() -> None:
+    from bot.db.config import delete_value
+
+    pool = MagicMock()
+    pool.execute = AsyncMock()
+    await delete_value(pool, 1, "k")
+    pool.execute.assert_awaited_once_with(
+        "DELETE FROM config WHERE guild_id = $1 AND key = $2", 1, "k"
+    )
