@@ -155,6 +155,8 @@ class Env:
         self.bot = MagicMock()
         self.bot.guilds = [MagicMock(id=GUILD)]
         self.bot.get_channel = MagicMock(side_effect=lambda cid: self.channels.get(cid))
+        self.bot.is_ready = MagicMock(return_value=True)
+        self.bot.fetch_channel = AsyncMock(side_effect=_not_found())
         self.log = MagicMock(log_attention=AsyncMock())
         self.view = MagicMock(spec=disnake.ui.View)
         self.service = ManagementLineupService(self.bot, MagicMock(), self.log, view=self.view)
@@ -896,3 +898,67 @@ async def test_lost_channel_without_other_configured_channel_only_reports(
     assert env.channels[OTHER_CHANNEL].sent == []
     assert env.store.records["ev-1"] == record
     env.log.log_attention.assert_awaited_once()
+
+
+# --- channel cache gap ----------------------------------------------------
+
+
+async def _lost_channel_env(env: Env) -> FakeChannel:
+    """A posted lineup whose channel is no longer in the cache; another channel is configured."""
+    await env.service.refresh([_event()])
+    lost = env.channels.pop(CHANNEL)
+    env.config[MANAGEMENT_CHANNEL_KEY] = str(OTHER_CHANNEL)
+    return lost
+
+
+@pytest.mark.asyncio
+async def test_channel_missing_from_cache_before_ready_is_not_treated_as_deleted(env: Env) -> None:
+    await _lost_channel_env(env)
+    record = env.store.records["ev-1"]
+    env.bot.is_ready.return_value = False
+    await env.service.refresh([_event()])
+    await env.service.refresh([_event(booked=2)])  # changed content as well
+    assert env.channels[OTHER_CHANNEL].sent == []
+    assert env.store.records["ev-1"] == record
+    env.log.log_attention.assert_not_awaited()
+    env.bot.fetch_channel.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cache_miss_but_channel_exists_edits_in_place(env: Env) -> None:
+    lost = await _lost_channel_env(env)
+    env.bot.fetch_channel = AsyncMock(return_value=lost)  # fetched from the API
+    await env.service.refresh([_event(booked=2)])
+    assert env.channels[OTHER_CHANNEL].sent == []
+    assert len(lost.sent) == 1 and len(lost.sent[0].edits) == 1
+    assert env.store.records["ev-1"].channel_id == CHANNEL
+    env.log.log_attention.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [
+        disnake.Forbidden(MagicMock(status=403, reason="Forbidden"), "Missing Access"),
+        disnake.HTTPException(MagicMock(status=500, reason="Server Error"), "boom"),
+        TimeoutError(),
+    ],
+)
+async def test_unknown_channel_state_changes_nothing(env: Env, error: Exception) -> None:
+    await _lost_channel_env(env)
+    record = env.store.records["ev-1"]
+    env.bot.fetch_channel = AsyncMock(side_effect=error)
+    await env.service.refresh([_event()])
+    await env.service.refresh([_event(booked=2)])
+    assert env.channels[OTHER_CHANNEL].sent == []
+    assert env.store.records["ev-1"] == record
+    env.log.log_attention.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_new_post_before_ready_waits_without_a_false_report(env: Env) -> None:
+    env.bot.is_ready.return_value = False
+    del env.channels[CHANNEL]  # not cached yet
+    await env.service.refresh([_event()])
+    assert env.store.records == {}
+    env.log.log_attention.assert_not_awaited()

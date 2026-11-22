@@ -48,6 +48,10 @@ MANAGEMENT_DEBOUNCE_SECONDS = 10
 
 _MISSING = "missing"
 _FORBIDDEN = "forbidden"
+# Result of _resolve_channel
+_PRESENT = "present"
+_GONE = "gone"
+_UNKNOWN = "unknown"
 
 Messages = list[list[disnake.Embed]]
 
@@ -149,8 +153,10 @@ class ManagementLineupService:
         if finished and event.status != STATUS_CANCELED:
             return  # Done: the message is left as it is
         messages, digest = await self._render(event)
-        if digest == record.content_hash and self.bot.get_channel(record.channel_id) is not None:
-            return
+        if digest == record.content_hash:
+            state, _channel = await self._resolve_channel(record.channel_id)
+            if state != _GONE:
+                return
         await self._edit(event, record, messages, digest, configured)
 
     async def _render(self, event: EventInfo) -> tuple[Messages, str]:
@@ -175,6 +181,29 @@ class ManagementLineupService:
                 "ManagementLineupService: bad %s value %r", MANAGEMENT_CHANNEL_KEY, value
             )
             return None
+
+    async def _resolve_channel(self, channel_id: int) -> tuple[str, Any]:
+        """(state, channel): `_PRESENT` with the channel, `_GONE` once Discord says it is
+        deleted, `_UNKNOWN` (channel None) when that cannot be told yet.
+
+        A channel missing from the cache only counts as deleted when the bot is ready and
+        the API answers NotFound; before that, or on any other API trouble, nothing may be
+        moved or reported.
+        """
+        channel = self.bot.get_channel(channel_id)
+        if channel is not None:
+            return _PRESENT, channel
+        if not self.bot.is_ready():
+            return _UNKNOWN, None
+        try:
+            return _PRESENT, await self.bot.fetch_channel(channel_id)
+        except disnake.NotFound:
+            return _GONE, None
+        except Exception:
+            logger.warning(
+                "ManagementLineupService: could not look up channel %s", channel_id, exc_info=True
+            )
+            return _UNKNOWN, None
 
     def _send_kwargs(self, embeds: list[disnake.Embed], first: bool) -> dict[str, Any]:
         kwargs: dict[str, Any] = {"embeds": embeds}
@@ -204,10 +233,12 @@ class ManagementLineupService:
         self, event: EventInfo, channel_id: int, messages: Messages, digest: str
     ) -> bool:
         """Send a new lineup; store its ids. A partial send stores what was sent."""
-        channel = self.bot.get_channel(channel_id)
-        if channel is None:
+        state, channel = await self._resolve_channel(channel_id)
+        if state == _GONE:
             await self._report(channel_id, _MISSING)
             return False
+        if channel is None:
+            return False  # state unknown (not ready, API trouble): try again later
         sent: list[int] = []
         try:
             for index, embeds in enumerate(messages):
@@ -235,8 +266,10 @@ class ManagementLineupService:
         configured: int | None,
     ) -> None:
         old = list(record.message_ids)
-        channel = self.bot.get_channel(record.channel_id)
+        state, channel = await self._resolve_channel(record.channel_id)
         if channel is None:
+            if state != _GONE:
+                return  # state unknown (not ready, API trouble): change nothing, retry later
             await self._report(record.channel_id, _MISSING)
             if configured is not None and configured != record.channel_id:
                 # The stored channel is gone: move the lineup to the configured one
