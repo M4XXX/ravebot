@@ -211,8 +211,9 @@ class ManagementLineupService:
                 sent.append(message.id)
         except disnake.Forbidden:
             await self._report(channel_id, _FORBIDDEN)
-        except disnake.HTTPException as exc:
-            logger.warning("ManagementLineupService: posting %s failed: %s", event.page_id, exc)
+        except Exception:
+            # HTTP errors and network failures (timeouts, disconnects) alike
+            logger.exception("ManagementLineupService: posting %s failed", event.page_id)
         else:
             await ml_db.upsert_record(self.db, event.page_id, channel_id, sent, digest)
             return True
@@ -256,8 +257,9 @@ class ManagementLineupService:
             await self._report(record.channel_id, _FORBIDDEN)
             await ml_db.upsert_record(self.db, event.page_id, record.channel_id, stored, "")
             return
-        except disnake.HTTPException as exc:
-            logger.warning("ManagementLineupService: editing %s failed: %s", event.page_id, exc)
+        except Exception:
+            # HTTP errors and network failures alike: keep every id sent so far
+            logger.exception("ManagementLineupService: editing %s failed", event.page_id)
             await ml_db.upsert_record(self.db, event.page_id, record.channel_id, stored, "")
             return
         await ml_db.upsert_record(self.db, event.page_id, record.channel_id, stored, digest)

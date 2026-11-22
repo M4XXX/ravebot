@@ -3,6 +3,7 @@ import datetime
 import itertools
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import aiohttp
 import disnake
 import pytest
 
@@ -14,6 +15,7 @@ from bot.services.management_lineup import (
     notify_management,
 )
 from bot.ui import texts
+from bot.ui.management_lineup import build_channel_messages
 from tests.fake_events import fake_events
 from tests.notion.factories import make_event, make_slot
 
@@ -634,3 +636,68 @@ def test_context_has_field() -> None:
     from bot.context import BotContext
 
     assert BotContext(config=MagicMock()).management_lineup_service is None
+
+
+def _fail_on_call(channel: FakeChannel, n: int, exc: Exception) -> None:
+    original_send = channel.send
+    calls = {"n": 0}
+
+    async def send(**kwargs):
+        calls["n"] += 1
+        if calls["n"] == n:
+            raise exc
+        return await original_send(**kwargs)
+
+    channel.send = send  # type: ignore[method-assign]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "exc", [TimeoutError(), aiohttp.ClientError("disconnected")]
+)
+async def test_network_error_mid_post_keeps_sent_ids_and_completes_by_edit(
+    env: Env, exc: Exception
+) -> None:
+    env.djs = _long_djs(40)
+    event = _event(booked=40, count=40, slot_minutes=15)
+    _fail_on_call(env.channel, 2, exc)
+    await env.service.refresh([event])
+    first = env.channel.sent[0]
+    record = env.store.records["ev-1"]
+    assert record.message_ids == (first.id,)
+    assert record.content_hash == ""
+    await env.service.refresh([event])
+    record = env.store.records["ev-1"]
+    assert len(first.edits) == 1  # completed by editing, not a second lineup
+    assert record.message_ids == tuple(m.id for m in env.channel.sent)
+    assert record.content_hash
+    assert sum(1 for m in env.channel.sent if "view" in m.kwargs) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "exc", [TimeoutError(), aiohttp.ClientError("disconnected")]
+)
+async def test_network_error_mid_edit_keeps_extra_ids(env: Env, exc: Exception) -> None:
+    env.djs = _long_djs(40)
+    await env.service.refresh([_event(booked=3, count=3)])
+    first = env.channel.sent[0]
+    assert len(build_channel_messages(
+        _event(booked=40, count=40, slot_minutes=15), env.djs, "booked"
+    )) >= 3
+    long_event = _event(booked=40, count=40, slot_minutes=15)
+    # Counting from here: send 1 is the first extra chunk, send 2 fails.
+    _fail_on_call(env.channel, 2, exc)
+    await env.service.refresh([long_event])
+    extra = env.channel.sent[1]
+    record = env.store.records["ev-1"]
+    assert record.message_ids == (first.id, extra.id)
+    assert record.content_hash == ""
+    sent_before = len(env.channel.sent)
+    await env.service.refresh([long_event])
+    record = env.store.records["ev-1"]
+    assert record.message_ids[:2] == (first.id, extra.id)
+    assert record.message_ids == tuple(m.id for m in env.channel.sent)
+    assert len(record.message_ids) == len(env.channel.sent)
+    assert len(env.channel.sent) > sent_before
+    assert record.content_hash
