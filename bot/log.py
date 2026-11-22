@@ -254,12 +254,29 @@ class AdminLogService:
 
         await self._post_built(build)
 
-    async def log_admin_added(self, name: str, user_id: int) -> None:
+    async def log_admin_added(
+        self, name: str, user_id: int, actor: str | None = None
+    ) -> None:
         await self._post_built(
             lambda: LogEntryEmbed(
                 texts.LOG_ADMIN_ADDED_TITLE,
-                texts.log_admin_added_text(_safe_dj_name(name), user_id),
+                texts.log_admin_added_text(
+                    _safe_dj_name(name), user_id, _safe_dj_name(actor) if actor else None
+                ),
                 EmbedColors.SUCCESS_GREEN,
+            )
+        )
+
+    async def log_admin_removed(
+        self, name: str, user_id: int, actor: str | None = None
+    ) -> None:
+        await self._post_built(
+            lambda: LogEntryEmbed(
+                texts.LOG_ADMIN_REMOVED_TITLE,
+                texts.log_admin_removed_text(
+                    _safe_dj_name(name), user_id, _safe_dj_name(actor) if actor else None
+                ),
+                EmbedColors.MISSION_GOLD,
             )
         )
 

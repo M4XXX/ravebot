@@ -189,6 +189,12 @@ GREEN, GOLD, RED, BLUE = 0x2E7D32, 0xFFD700, 0xED4245, 0x5865F2
         (lambda s: s.log_new_dj("Nova", None), "New DJ", "Nova joined the DJ pool.", GREEN),
         (lambda s: s.log_admin_added("Nova", 123456789012345678), "Admin added",
          "Nova (ID 123456789012345678) was added as an admin.", GREEN),
+        (lambda s: s.log_admin_added("Nova", 123456789012345678, "Max"), "Admin added",
+         "Nova (ID 123456789012345678) was added as an admin by Max.", GREEN),
+        (lambda s: s.log_admin_removed("Nova", 123456789012345678), "Admin removed",
+         "Nova (ID 123456789012345678) was removed as an admin.", GOLD),
+        (lambda s: s.log_admin_removed("Nova", 123456789012345678, "Max"), "Admin removed",
+         "Nova (ID 123456789012345678) was removed as an admin by Max.", GOLD),
     ],
 )
 async def test_typed_entries(call, title, body, color) -> None:
@@ -206,6 +212,18 @@ async def test_mentions_in_names_are_neutralised() -> None:
     assert "@everyone" not in embed.description
     assert "<@1>" not in embed.description
     assert "\\*x\\*" in embed.description
+
+
+async def test_admin_entries_escape_names_and_actor() -> None:
+    service, channel = _service()
+    await service.log_admin_added("@everyone *x*", 1, "<@2> _y_")
+    await service.log_admin_removed("@everyone *x*", 1, "<@2> _y_")
+    for call in channel.send.call_args_list:
+        embed = call.kwargs["embed"]
+        assert "@everyone" not in embed.description
+        assert "<@2>" not in embed.description
+        assert "\\*x\\*" in embed.description
+        assert "\\_y\\_" in embed.description
 
 
 async def test_attention_has_todo_field() -> None:

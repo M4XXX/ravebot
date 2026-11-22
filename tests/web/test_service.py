@@ -58,6 +58,7 @@ def _guild(member=None, fetched=None):
 def _bot(guild=None, user=None, user_exc=None):
     bot = MagicMock()
     bot.guilds = [guild] if guild is not None else []
+    bot.get_user = MagicMock(return_value=None)
     bot.fetch_user = AsyncMock(return_value=user, side_effect=user_exc)
     return bot
 
@@ -69,6 +70,7 @@ def _ctx(owners=frozenset({10}), added=()):
     ctx = BotContext(config=MagicMock(), db=object(), admins=reg)
     ctx.log_service = MagicMock()
     ctx.log_service.log_admin_added = AsyncMock()
+    ctx.log_service.log_admin_removed = AsyncMock()
     return ctx
 
 
@@ -81,7 +83,7 @@ def _patch_add(value=True):
 
 
 def _patch_active(value=True):
-    return patch("bot.web.service.bot_is_active", AsyncMock(return_value=value))
+    return patch("bot.services.admin_management.bot_is_active", AsyncMock(return_value=value))
 
 
 def test_requires_registry() -> None:
@@ -232,7 +234,7 @@ async def test_add_admin_success_logs_once() -> None:
         res = await _svc(bot=bot, ctx=ctx).add_admin(str(UID))
     assert (res.ok, res.message) == (True, "Added Glob.")
     assert UID in ctx.admins.added
-    ctx.log_service.log_admin_added.assert_awaited_once_with("Glob", UID)
+    ctx.log_service.log_admin_added.assert_awaited_once_with("Glob", UID, "the admin page")
 
 
 async def test_add_admin_name_falls_back_to_id() -> None:
@@ -327,11 +329,15 @@ async def test_remove_admin_cases() -> None:
     assert (res.ok, res.message) == (False, "Owners can only be changed with ADMIN_USER_IDS.")
     res = await svc.remove_admin(str(UID + 5))
     assert (res.ok, res.message) == (False, "This person is not an added admin.")
-    with patch("bot.services.admin_registry.remove_web_admin", AsyncMock(return_value=True)):
+    with patch("bot.services.admin_registry.remove_web_admin", AsyncMock(return_value=True)), \
+            _patch_active():
         res = await svc.remove_admin(str(UID + 1))
     assert (res.ok, res.message) == (True, "Removed Glob.")
     assert UID + 1 not in ctx.admins.added
     ctx.log_service.log_admin_added.assert_not_awaited()
+    ctx.log_service.log_admin_removed.assert_awaited_once_with(
+        "Glob", UID + 1, "the admin page"
+    )
 
 
 async def test_list_admins_owners_first() -> None:
