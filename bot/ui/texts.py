@@ -6,6 +6,7 @@ from collections.abc import Sequence
 import disnake
 
 from bot.notion.models import EventInfo
+from bot.policy import BookingRules, rules_summary
 
 _DATED_ID = re.compile(r"^\d{4}-\d{2}-\d{2}\s+(?P<name>.+)$")
 
@@ -948,6 +949,19 @@ def setup_invites_step(number: int, total: int, v: dict) -> str:
             f"Start asking: {v['outreach_days_before']} days before an event",
             "Wait between two invites to the same DJ: "
             f"{v['outreach_cooldown_hours']} hours",
+        ]
+    )
+
+
+def setup_booking_rules_step(number: int, total: int, rules: BookingRules) -> str:
+    return "\n".join(
+        [
+            f"**Step {number} of {total}: Booking rules**",
+            "Slot limit: how many slots one DJ can book in one event.",
+            "Cancellation cutoff: DJs cannot cancel in the bot within this many minutes "
+            "before the event starts (0 means they can cancel until it starts).",
+            "Admins can always book and cancel for DJs, whatever these rules say.",
+            *rules_summary(rules),
         ]
     )
 

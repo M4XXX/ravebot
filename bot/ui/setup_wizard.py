@@ -23,6 +23,16 @@ from bot.db import events as db_events
 from bot.db import schedule_rules as db_rules
 from bot.db.setup_drafts import SetupDraft, delete_draft, get_draft, save_draft
 from bot.notion.models import MAX_SLOTS
+from bot.policy import (
+    MAX_CUTOFF_MINUTES,
+    MAX_SLOT_LIMIT,
+    MIN_SLOT_LIMIT,
+    RULE_KEYS,
+    BookingRules,
+    load_rules,
+    rules_summary,
+    save_rules,
+)
 from bot.services import activation
 from bot.services.event_replenish import replenish_events
 from bot.services.management_lineup import MANAGEMENT_CHANNEL_KEY
@@ -68,6 +78,7 @@ STEPS: list[str] = [
     "timezone",
     "invites",
     "management_channel",
+    "booking_rules",
     "summary",
 ]
 
@@ -146,6 +157,9 @@ ID_MGMT_CHANNEL = "setup:mgmt_channel"
 ID_MGMT_CLEAR = "setup:mgmt_clear"
 ID_MGMT_ALL = "setup:mgmt_all"
 ID_MGMT_NEW = "setup:mgmt_new"
+ID_SLOT_LIMIT_TOGGLE = "setup:slot_limit_toggle"
+ID_CUTOFF_TOGGLE = "setup:cutoff_toggle"
+ID_RULES_CHANGE = "setup:rules_change"
 
 # One lock per guild: the activation effects run once even on concurrent presses.
 _guild_locks: dict[int, asyncio.Lock] = {}
@@ -243,6 +257,36 @@ def parse_invites_fields(raw: dict[str, str]) -> tuple[dict[str, Any], list[str]
     return out, errors
 
 
+# --- booking rules: draft keys are the config keys ---
+
+def parse_rules_fields(raw: dict[str, str]) -> tuple[dict[str, Any], list[str]]:
+    out: dict[str, Any] = {}
+    errors: list[str] = []
+    for fid, label, key, low, high in (
+        ("limit", "Slots per DJ and event", "slot_limit_max", MIN_SLOT_LIMIT, MAX_SLOT_LIMIT),
+        ("cutoff", "Minutes before the event start", "cancel_cutoff_minutes", 0,
+         MAX_CUTOFF_MINUTES),
+    ):
+        text = (raw.get(fid) or "").strip()
+        value = int(text) if text.isascii() and text.isdigit() else None
+        if value is None or not low <= value <= high:
+            errors.append(
+                texts.setup_invalid(label, f"enter a whole number from {low} to {high}.")
+            )
+        else:
+            out[key] = value
+    return out, errors
+
+
+async def draft_rules(db: Any, guild_id: int | None, data: dict[str, Any]) -> BookingRules:
+    """The draft's booking rules; a key missing from an older draft comes from the
+    stored value (default when nothing is stored)."""
+    if all(key in data for key in RULE_KEYS):
+        return BookingRules(**{key: data[key] for key in RULE_KEYS})
+    stored = dataclasses.asdict(await load_rules(db, guild_id))
+    return BookingRules(**{key: data.get(key, stored[key]) for key in RULE_KEYS})
+
+
 # --- checks ---
 
 def missing_permissions(channel: Any, me: Any) -> list[str]:
@@ -259,6 +303,7 @@ class StepView:
     next_disabled: bool = False
     next_label: str = "Next"
     toggle_label: str = "Turn off"
+    second_toggle_label: str = "Turn off"  # a step with two toggles (booking rules)
     defaults: dict[str, int] = field(default_factory=dict)  # select id -> stored choice
     options: list[tuple[str, str]] = field(default_factory=list)  # value step dropdown
     selected: str | None = None  # value of the option shown as chosen
@@ -373,6 +418,7 @@ async def summary_lines(
         if v["outreach_enabled"]
         else "off"
     )
+    rules = await draft_rules(_db(ctx), guild_id or getattr(guild, "id", None), data)
     lines = [
         f"DJ channel: {chan('dj_channel')}",
         f"Log channel: {chan('log_channel')}",
@@ -384,6 +430,7 @@ async def summary_lines(
         _schedule_summary(v),
         f"Time zone: {v['timezone']}",
         f"Automatic invites: {invites}",
+        *rules_summary(rules),
     ]
     if v["event_schedule_enabled"]:
         lines[6:6] = [
@@ -424,6 +471,9 @@ _ADDED_STEPS = 3
 # Set in the data of every draft whose step number counts the DJ Management channel step.
 STEPS_V4_MARKER = "steps_v4"
 _OLD_SUMMARY_STEP = 16  # index of "summary" before the DJ Management channel step existed
+# Set in the data of every draft whose step number counts the Booking rules step.
+STEPS_V5_MARKER = "steps_v5"
+_V4_SUMMARY_STEP = 17  # index of "summary" before the Booking rules step existed
 
 
 def migrate_legacy_draft(draft: SetupDraft) -> None:
@@ -440,12 +490,17 @@ def migrate_legacy_draft(draft: SetupDraft) -> None:
             if draft.step == _OLD_SUMMARY_STEP:
                 draft.step = STEPS.index("summary")
             draft.data[STEPS_V4_MARKER] = True
+        if not draft.data.get(STEPS_V5_MARKER):
+            if draft.step == _V4_SUMMARY_STEP:
+                draft.step = STEPS.index("summary")
+            draft.data[STEPS_V5_MARKER] = True
         return
     if draft.step in _LEGACY_STEP_KEYS:
         draft.step = STEPS.index(_LEGACY_STEP_KEYS[draft.step])
     draft.data[DRAFT_MARKER] = True
     draft.data[STEPS_MARKER] = True
     draft.data[STEPS_V4_MARKER] = True
+    draft.data[STEPS_V5_MARKER] = True
     draft.data.setdefault("event_schedule_enabled", True)
     draft.data.setdefault("first_event_date", "")
 
@@ -646,6 +701,16 @@ async def render_step(ctx: "BotContext", guild: Any, draft: SetupDraft) -> StepV
         return await _render_rules(ctx, draft)
     if key == "management_channel":
         return await _render_management(ctx, guild, draft)
+    if key == "booking_rules":
+        rules = await draft_rules(_db(ctx), draft.guild_id, data)
+        return StepView(
+            texts.setup_booking_rules_step(step_number(key, data), total, rules),
+            [ID_SLOT_LIMIT_TOGGLE, ID_CUTOFF_TOGGLE, ID_RULES_CHANGE, ID_BACK, ID_NEXT],
+            toggle_label=f"Slot limit: {'on' if rules.slot_limit_enabled else 'off'}",
+            second_toggle_label=(
+                f"Cancellation cutoff: {'on' if rules.cancel_cutoff_enabled else 'off'}"
+            ),
+        )
     if key in VALUE_STEPS:
         config_key = VALUE_STEPS[key]
         v = values(data)
@@ -734,6 +799,17 @@ class SetupWizardView(disnake.ui.View):
             ID_RULE_CANCEL: ("Cancel", disnake.ButtonStyle.secondary, self.on_rule_cancel),
             ID_INVITES_TOGGLE: (step.toggle_label, disnake.ButtonStyle.secondary, self.on_toggle),
             ID_INVITES_CHANGE: ("Change", disnake.ButtonStyle.secondary, self.on_invites_change),
+            ID_SLOT_LIMIT_TOGGLE: (
+                step.toggle_label,
+                disnake.ButtonStyle.secondary,
+                self.on_slot_limit_toggle,
+            ),
+            ID_CUTOFF_TOGGLE: (
+                step.second_toggle_label,
+                disnake.ButtonStyle.secondary,
+                self.on_cutoff_toggle,
+            ),
+            ID_RULES_CHANGE: ("Change", disnake.ButtonStyle.secondary, self.on_rules_change),
             ID_ACTIVATE: ("Activate", disnake.ButtonStyle.success, self.on_activate),
             ID_SAVE: ("Save", disnake.ButtonStyle.success, self.on_save),
             ID_CHANGE: (texts.SETUP_CHANGE_BUTTON, disnake.ButtonStyle.primary, self.on_change),
@@ -1000,6 +1076,45 @@ class SetupWizardView(disnake.ui.View):
             draft.data["outreach_enabled"] = not values(draft.data)["outreach_enabled"]
             await self._show(inter, draft)
 
+    async def _flip_rule(self, inter: Any, key: str) -> None:
+        await inter.response.defer()
+        async with guild_lock(inter.guild_id):
+            draft = await self._draft(inter)
+            if draft is None:
+                return
+            rules = dataclasses.asdict(
+                await draft_rules(_db(self.ctx), draft.guild_id, draft.data)
+            )
+            rules[key] = not rules[key]
+            draft.data.update(rules)  # an older draft gets all four keys here
+            await self._show(inter, draft)
+
+    async def on_slot_limit_toggle(self, inter: Any) -> None:
+        await self._flip_rule(inter, "slot_limit_enabled")
+
+    async def on_cutoff_toggle(self, inter: Any) -> None:
+        await self._flip_rule(inter, "cancel_cutoff_enabled")
+
+    async def on_rules_change(self, inter: Any) -> None:
+        draft = await self._draft(inter)
+        if draft is None:
+            return
+        rules = await draft_rules(_db(self.ctx), draft.guild_id, draft.data)
+        await inter.response.send_modal(
+            ValuesModal(
+                self,
+                inter.message.id,
+                "Booking rules",
+                f"setup_rules:{inter.message.id}",
+                [
+                    ("limit", "Slots per DJ and event", str(rules.slot_limit_max)),
+                    ("cutoff", "Minutes before the event start",
+                     str(rules.cancel_cutoff_minutes)),
+                ],
+                parse_rules_fields,
+            )
+        )
+
     async def on_legacy(self, inter: Any) -> None:
         """A control of an old wizard message: show the draft's current step instead."""
         await inter.response.defer()
@@ -1250,6 +1365,9 @@ def _layout(draft: SetupDraft) -> StepView:
         "management_channel": [
             ID_MGMT_CHANNEL, ID_MGMT_CLEAR, ID_MGMT_ALL, ID_MGMT_NEW, ID_BACK, ID_NEXT,
         ],
+        "booking_rules": [
+            ID_SLOT_LIMIT_TOGGLE, ID_CUTOFF_TOGGLE, ID_RULES_CHANGE, ID_BACK, ID_NEXT,
+        ],
         "summary": [ID_BACK, ID_SAVE if draft.data.get("rerun") else ID_ACTIVATE],
     }
     if key in VALUE_STEPS:
@@ -1295,6 +1413,7 @@ async def prefilled_data(
         DRAFT_MARKER: True,
         STEPS_MARKER: True,
         STEPS_V4_MARKER: True,
+        STEPS_V5_MARKER: True,
     }
     for key in (*CHANNEL_KEYS, *ROLE_KEYS):
         raw = await db_config.get_value(db, guild_id, key)
@@ -1352,6 +1471,7 @@ async def prefilled_data(
     data["rules"] = [
         setup_rules.rule_to_dict(r) for r in await db_rules.list_rules(db, guild_id)
     ]
+    data.update(dataclasses.asdict(await load_rules(db, guild_id)))
     return data
 
 
@@ -1373,6 +1493,7 @@ async def _write_all(db: Any, guild_id: int, data: dict[str, Any]) -> None:
         await db_config.set_value(db, guild_id, MGMT_KEY, str(data[MGMT_KEY]))
     else:
         await db_config.delete_value(db, guild_id, MGMT_KEY)  # skipped or cleared: off
+    await save_rules(db, guild_id, await draft_rules(db, guild_id, data))
     set_timezone(v["timezone"])
 
 
