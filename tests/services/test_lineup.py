@@ -301,3 +301,188 @@ def test_snapshot_changes_with_location_genre_and_notes() -> None:
     assert event_snapshot(make_event(location="A")) != event_snapshot(make_event(location="B"))
     assert event_snapshot(make_event(genre="A")) != event_snapshot(make_event(genre="B"))
     assert event_snapshot(make_event(notes="A")) != event_snapshot(make_event(notes="B"))
+
+
+# --- replacing the previous lineup post in the DJ channel -------------------
+
+from bot.db.dj_channel_posts import LastLineupPost  # noqa: E402
+
+_CHANNEL_ID = 111
+
+
+class FakeDjChannel:
+    """Behaves like a real channel: last_message_id follows every send."""
+
+    def __init__(self, log: list, last_message_id: int | None = 500) -> None:
+        self.id = _CHANNEL_ID
+        self.log = log
+        self.last_message_id = last_message_id
+        self.next_id = 1000
+        self.send_error: Exception | None = None
+        self.delete_error: Exception | None = None
+        self.deleted: list[int] = []
+
+    async def send(self, **kwargs):
+        if self.send_error is not None:
+            raise self.send_error
+        self.log.append("send")
+        self.next_id += 1
+        self.last_message_id = self.next_id
+        return MagicMock(id=self.next_id)
+
+    def get_partial_message(self, message_id: int):
+        async def _delete():
+            self.log.append("delete")
+            if self.delete_error is not None:
+                raise self.delete_error
+            self.deleted.append(message_id)
+
+        return MagicMock(id=message_id, delete=_delete)
+
+
+class FakeStore:
+    def __init__(self, log: list, record: LastLineupPost | None = None) -> None:
+        self.log = log
+        self.record = record
+        self.get_error: Exception | None = None
+        self.set_error: Exception | None = None
+
+    async def get(self, db, channel_id):
+        if self.get_error is not None:
+            raise self.get_error
+        return self.record
+
+    async def set(self, db, channel_id, event_id, message_id):
+        if self.set_error is not None:
+            raise self.set_error
+        self.log.append("set")
+        self.record = LastLineupPost(channel_id, event_id, message_id)
+
+
+def _tidy(record: LastLineupPost | None = None, last_message_id: int | None = 500):
+    log: list = []
+    channel = FakeDjChannel(log, last_message_id)
+    store = FakeStore(log, record)
+    service, cfg, _c, _l, _n = _service(channel=channel)
+    return service, cfg, channel, store, log
+
+
+class _Tidy(_Ctx):
+    def __init__(self, cfg: FakeConfig, store: FakeStore) -> None:
+        super().__init__(cfg)
+        self.ps = (
+            *self.ps,
+            patch("bot.services.lineup.get_last_post", new=store.get),
+            patch("bot.services.lineup.set_last_post", new=store.set),
+        )
+
+
+_EV = _ev("e", datetime.date(2026, 11, 14))
+_OLD = LastLineupPost(_CHANNEL_ID, "e", 500)
+
+
+@pytest.mark.asyncio
+async def test_first_post_stores_record_without_delete() -> None:
+    service, cfg, channel, store, log = _tidy(None)
+    with _Tidy(cfg, store):
+        assert await service.refresh([_EV]) is True
+    assert store.record == LastLineupPost(_CHANNEL_ID, "e", 1001)
+    assert channel.deleted == []
+    assert log == ["send", "set"]
+
+
+@pytest.mark.asyncio
+async def test_same_event_replaces_old_post_after_send() -> None:
+    service, cfg, channel, store, log = _tidy(_OLD)
+    with _Tidy(cfg, store):
+        assert await service.post_event(_EV) is True
+    assert log == ["send", "set", "delete"]
+    assert channel.deleted == [500]
+    assert store.record == LastLineupPost(_CHANNEL_ID, "e", 1001)
+
+
+@pytest.mark.asyncio
+async def test_person_wrote_after_keeps_old_post() -> None:
+    service, cfg, channel, store, log = _tidy(_OLD, last_message_id=777)
+    with _Tidy(cfg, store):
+        assert await service.post_event(_EV) is True
+    assert channel.deleted == [] and "delete" not in log
+    assert store.record.message_id == 1001
+
+
+@pytest.mark.asyncio
+async def test_record_of_another_event_is_replaced_without_delete() -> None:
+    service, cfg, channel, store, log = _tidy(LastLineupPost(_CHANNEL_ID, "other", 500))
+    with _Tidy(cfg, store):
+        assert await service.post_event(_EV) is True
+    assert "delete" not in log
+    assert store.record == LastLineupPost(_CHANNEL_ID, "e", 1001)
+
+
+@pytest.mark.asyncio
+async def test_send_failure_keeps_record_and_deletes_nothing() -> None:
+    service, cfg, channel, store, log = _tidy(_OLD)
+    channel.send_error = disnake.HTTPException(MagicMock(status=500), "x")
+    with _Tidy(cfg, store):
+        assert await service._send(GUILD, _EV) == "failed"
+    assert store.record == _OLD
+    assert log == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error", [disnake.NotFound(MagicMock(status=404), "gone"), RuntimeError("boom")]
+)
+async def test_delete_failure_is_swallowed(error: Exception) -> None:
+    service, cfg, channel, store, log = _tidy(_OLD)
+    channel.delete_error = error
+    with _Tidy(cfg, store):
+        assert await service._send(GUILD, _EV) == "sent"
+    assert log == ["send", "set", "delete"]
+    assert store.record.message_id == 1001
+
+
+@pytest.mark.asyncio
+async def test_unknown_last_message_id_does_not_delete() -> None:
+    service, cfg, channel, store, log = _tidy(_OLD, last_message_id=None)
+    with _Tidy(cfg, store):
+        assert await service._send(GUILD, _EV) == "sent"
+    assert "delete" not in log
+
+
+@pytest.mark.asyncio
+async def test_new_service_instance_replaces_after_restart() -> None:
+    service, cfg, channel, store, log = _tidy(_OLD)
+    with _Tidy(cfg, store):
+        assert await service._send(GUILD, _EV) == "sent"
+        assert channel.deleted == [500]
+        fresh = LineupService(bot=service.bot, db=MagicMock(), log_service=service.log_service)
+        assert await fresh._send(GUILD, _EV) == "sent"
+    assert channel.deleted == [500, 1001]
+
+
+@pytest.mark.asyncio
+async def test_refresh_replaces_too() -> None:
+    service, cfg, channel, store, log = _tidy(_OLD)
+    with _Tidy(cfg, store):
+        assert await service.refresh([_EV]) is True
+    assert log == ["send", "set", "delete"]
+
+
+@pytest.mark.asyncio
+async def test_record_read_failure_counts_as_no_record() -> None:
+    service, cfg, channel, store, log = _tidy(_OLD)
+    store.get_error = RuntimeError("db down")
+    with _Tidy(cfg, store):
+        assert await service._send(GUILD, _EV) == "sent"
+    assert log == ["send", "set"]
+
+
+@pytest.mark.asyncio
+async def test_record_write_failure_keeps_result_and_deletes_nothing() -> None:
+    service, cfg, channel, store, log = _tidy(_OLD)
+    store.set_error = RuntimeError("db down")
+    with _Tidy(cfg, store):
+        assert await service._send(GUILD, _EV) == "sent"
+    assert log == ["send"]
+    assert store.record == _OLD

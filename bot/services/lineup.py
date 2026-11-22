@@ -1,8 +1,9 @@
 """Lineup service: posts a Lineup Update for the upcoming event on every change.
 
-A new post per change (never edited or deleted). The last posted state is kept as a
-snapshot in config (`lineup_post_snapshot`) so a poll cycle and a debounced refresh
-never post the same state twice.
+A new post per change (never edited); the bot's previous post for the same event is
+deleted once the new one is sent, if nobody has written in the channel since. The last
+posted state is kept as a snapshot in config (`lineup_post_snapshot`) so a poll cycle and a
+debounced refresh never post the same state twice.
 """
 import asyncio
 import datetime
@@ -14,6 +15,7 @@ import disnake
 
 from bot.db import events as db_events
 from bot.db.config import get_value, set_value
+from bot.db.dj_channel_posts import get_last_post, set_last_post
 from bot.notion.models import FINISHED_STATUSES, EventInfo
 from bot.services import activation
 from bot.timezone import local_today
@@ -178,12 +180,33 @@ class LineupService:
         if channel is None:
             logger.warning("LineupService: channel %s not found", dj_channel_id)
             return _FAILED
+        try:
+            record = await get_last_post(self.db, channel.id)
+        except Exception:
+            logger.warning("LineupService: reading the last lineup post failed", exc_info=True)
+            record = None
+        # Read before sending: last_message_id moves to the new post once it is sent
+        replace_old = (
+            record is not None
+            and record.event_id == event.page_id
+            and getattr(channel, "last_message_id", None) == record.message_id
+        )
         kwargs: dict[str, Any] = {"embed": LineupUpdateEmbed(event)}
         if self.view is not None:
             kwargs["view"] = self.view
         try:
-            await channel.send(**kwargs)
+            sent = await channel.send(**kwargs)
         except disnake.HTTPException as exc:
             logger.warning("LineupService: sending the lineup post failed: %s", exc)
             return _FAILED
+        try:
+            await set_last_post(self.db, channel.id, event.page_id, sent.id)
+        except Exception:
+            logger.warning("LineupService: storing the last lineup post failed", exc_info=True)
+            return _SENT
+        if replace_old:
+            try:
+                await channel.get_partial_message(record.message_id).delete()
+            except Exception:
+                logger.warning("LineupService: deleting the old lineup post failed", exc_info=True)
         return _SENT
