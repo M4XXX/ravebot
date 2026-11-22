@@ -383,7 +383,6 @@ Run `/setup` in the channel where you want to set up (admins only). The bot post
 1. **Welcome and checks.** Shows whether the Discord connection and the database work and, when Notion is set up, the four Notion databases. The bot stays idle until you press **Activate** at the end.
 2. **DJ channel.** Pick the channel for the Lineup Update and the `Book a slot` button. The bot checks it can send messages and embeds there.
 3. **Log channel.** Pick the channel for bookings, new DJs, problems and DJ messages. Only organizers should see it. The same permission check runs.
-   - **DJ Management channel (optional).** Pick a channel for the lineup of each fully booked event, see [7.9](#79-dj-management-lineup-message). Use a staff-only channel. Skip it or press **Clear** to keep the feature off.
 4. **Roles.** Pick the DJ role (the welcome DM goes to members who get it) and the invites role (the bot gives it to DJs who want automatic invites). The two roles must differ, `@everyone` and integration roles are refused, and the bot's own role must be above both. A button can create the invites role (default name `Active Booking`). Any role selection needs the Manage Roles permission: the bot refuses roles it cannot manage.
 5. **Event settings, one step each.** Every step has a dropdown with common values and an **Other** button for your own value.
    - **Slots per event** (1 to 100), **Start time** (local, `HH:MM`) and **Slot length** (minutes, 1 to 1440). They are the defaults for every event the bot creates, scheduled or by hand.
@@ -395,7 +394,8 @@ Run `/setup` in the channel where you want to set up (admins only). The bot post
    - **Rules** (optional). Add rules such as "every 2nd event: location Hall B", see [7.3](#73-commands) and [7.8](#78-genre-location-notes-and-rules).
    - **Time zone** (default `Europe/Berlin`).
 6. **Automatic invites.** Turn invites on or off, how many days before an event the bot starts asking, and the hours it waits between two invites to the same DJ.
-7. **Summary.** Lists everything. **Activate** writes the settings, switches the bot on, creates the missing future events and posts the first Lineup Update (it reports how many events it created and whether it posted). The channels and roles must be chosen first.
+7. **DJ Management channel (optional).** Pick a channel for the lineup of each fully booked event. Use a staff-only channel. Skip it or press **Clear** to keep the feature off. If fully booked events already exist, the wizard asks whether to post all of them or only new ones, see [7.9](#79-dj-management-lineup-message).
+8. **Summary.** Lists everything (including the DJ Management channel). **Activate** writes the settings, switches the bot on, creates the missing future events and posts the first Lineup Update (it reports how many events it created and whether it posted). The channels and roles must be chosen first.
 
 Nothing is stored until Activate. Defaults: 6 slots, 20:00, 60 minutes, scheduling on, every 7 days, first event as soon as the interval allows, 6 events ahead, invites on, 14 days before, 12 hours wait.
 
