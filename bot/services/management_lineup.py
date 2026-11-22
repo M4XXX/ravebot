@@ -301,13 +301,21 @@ class ManagementLineupService:
             if is_fully_booked(e) and e.page_id not in recorded
         ]
 
-    async def backfill(self, mode: Literal["all", "new"]) -> int:
-        """Post ("all") or suppress ("new") the eligible events; the count handled."""
+    async def backfill(
+        self, mode: Literal["all", "new"], channel_id: int | None = None
+    ) -> int:
+        """Post ("all") or suppress ("new") the eligible events; the count handled.
+
+        `channel_id` replaces the configured channel: the setup wizard suppresses
+        ("new") before it stores the channel, so no poll can post in between.
+        """
         async with self._lock:
-            guild_id = self._get_guild_id()
-            if guild_id is None:
-                return 0
-            configured = await self._configured_channel(guild_id)
+            configured = channel_id
+            if configured is None:
+                guild_id = self._get_guild_id()
+                if guild_id is None:
+                    return 0
+                configured = await self._configured_channel(guild_id)
             if configured is None:
                 return 0
             count = 0

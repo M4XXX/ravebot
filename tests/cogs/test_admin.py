@@ -1965,3 +1965,10 @@ async def test_create_event_warns_when_values_not_saved(
     reply, _ = assert_deferred_reply(inter)
     assert reply.startswith("Event created for")
     assert reply.endswith(texts.CREATE_EVENT_VALUES_NOT_SAVED)
+
+
+@pytest.mark.asyncio
+async def test_config_show_lists_the_management_channel(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert "DJ Management channel: not set" in await _show(monkeypatch, {})
+    text = await _show(monkeypatch, {"management_channel": "9"})
+    assert "DJ Management channel: <#9>" in text

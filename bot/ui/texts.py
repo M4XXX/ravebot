@@ -786,6 +786,33 @@ SETUP_LOG_CHANNEL_QUESTION = (
     "Where should I post bookings, new DJs, problems and messages from DJs? "
     "Only organizers should see this channel."
 )
+SETUP_MGMT_CHANNEL_QUESTION = (
+    "Optional: where should I post the lineup of each fully booked event for the DJ "
+    "management? Pick a channel only staff can see. Leaving it empty (skip or Clear) "
+    "turns this feature off."
+)
+
+
+def setup_mgmt_all_label(count: int) -> str:
+    return f"Post all existing ({count})"
+
+
+def setup_mgmt_backfill(count: int, choice: str | None) -> str:
+    """The backfill question of the DJ Management channel step."""
+    noun = "event is" if count == 1 else "events are"
+    lines = [
+        "",
+        f"{count} upcoming {noun} already fully booked without a lineup message. "
+        "Post a message for each of them now, or only for events that become fully "
+        "booked from now on?",
+    ]
+    if choice == "all":
+        lines.append(f"{SETUP_CHECK_OK}Chosen: post all existing")
+    elif choice == "new":
+        lines.append(f"{SETUP_CHECK_OK}Chosen: only new")
+    else:
+        lines.append("Pick one to continue.")
+    return "\n".join(lines)
 
 
 def setup_channel_ok(channel_name: str) -> str:

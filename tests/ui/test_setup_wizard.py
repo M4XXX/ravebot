@@ -31,7 +31,7 @@ class Store:
     def __init__(self) -> None:
         self.drafts: dict[int, SetupDraft] = {}
         self.config: dict[tuple[int, str], str] = {}
-        self.writes: list[tuple[str, str]] = []
+        self.writes: list[tuple[str, str | None]] = []
         self.legacy: set[int] = set()  # guilds whose draft was saved by the old wizard
         self.rules: list[Rule] = []  # stored schedule rules
         self.defaults: dict[str, str | None] = {}  # stored default genre/location
@@ -47,6 +47,7 @@ class Store:
             # every current draft carries both markers
             data.setdefault(sw.DRAFT_MARKER, True)
             data.setdefault(sw.STEPS_MARKER, True)
+            data.setdefault(sw.STEPS_V4_MARKER, True)
         return SetupDraft(d.guild_id, d.message_id, d.channel_id, d.step, data)
 
     async def save_draft(self, db, guild_id, message_id, channel_id, step, data):
@@ -54,6 +55,7 @@ class Store:
         if guild_id not in self.legacy:
             data.pop(sw.DRAFT_MARKER, None)  # keeps the tests' data comparisons readable
             data.pop(sw.STEPS_MARKER, None)
+            data.pop(sw.STEPS_V4_MARKER, None)
         self.drafts[guild_id] = SetupDraft(guild_id, message_id, channel_id, step, data)
 
     async def delete_draft(self, db, guild_id):
@@ -90,6 +92,10 @@ class Store:
         self.config[(guild_id, key)] = value
         self.writes.append((key, value))
 
+    async def delete_value(self, db, guild_id, key):
+        self.config.pop((guild_id, key), None)
+        self.writes.append((key, None))
+
 
 @pytest.fixture(autouse=True)
 def _reset_zone():
@@ -111,6 +117,7 @@ def store():
         patch("bot.cogs.setup.save_draft", s.save_draft),
         patch("bot.ui.setup_wizard.db_config.get_value", s.get_value),
         patch("bot.ui.setup_wizard.db_config.set_value", s.set_value),
+        patch("bot.ui.setup_wizard.db_config.delete_value", s.delete_value),
         patch("bot.services.activation.get_value", s.get_value),
         patch("bot.services.activation.set_value", s.set_value),
         patch("bot.services.activation.is_active", s.is_active),
@@ -134,6 +141,7 @@ def make_ctx(events=None):
     ctx.db.fetchval = AsyncMock(return_value=1)
     ctx.maintenance = None
     ctx.mirror = None
+    ctx.management_lineup_service = None
     fake_events.list_events = AsyncMock(return_value=events or [])
     ctx.lineup_service.refresh = AsyncMock(return_value=True)
     ctx.schedule_service.upcoming_dates = AsyncMock(side_effect=fake_dates)
@@ -248,6 +256,7 @@ async def test_every_control_refuses_non_admin(store):
         sw.ID_SCHEDULE_TOGGLE, sw.ID_LEGACY_EVENTS, sw.ID_LEGACY_ZONE,
         sw.ID_INVITES_TOGGLE, sw.ID_INVITES_CHANGE, sw.ID_ACTIVATE, sw.ID_SAVE, sw.ID_CHANGE,
         sw.ID_RULE_ADD, sw.ID_RULE_REMOVE, sw.ID_RULE_START, sw.ID_RULE_CANCEL,
+        sw.ID_MGMT_CHANNEL, sw.ID_MGMT_CLEAR, sw.ID_MGMT_ALL, sw.ID_MGMT_NEW,
     }
     assert all(v.timeout is None for v in sw.registered_views(ctx))
     for _ in sorted(registered):
@@ -348,12 +357,12 @@ async def test_navigation_back_next_and_summary(store):
 
 
 def test_total_steps_follows_step_list():
-    assert sw.total_steps() == len(sw.STEPS) - 1 == 16
+    assert sw.total_steps() == len(sw.STEPS) - 1 == 17
     assert sw.STEPS[-1] == "summary"
     assert sw.STEPS == [
         "welcome", "dj_channel", "log_channel", "roles", "slots", "start_time", "slot_length",
         "schedule", "interval", "first_date", "lookahead", "default_genre", "default_location",
-        "rules", "timezone", "invites", "summary",
+        "rules", "timezone", "invites", "management_channel", "summary",
     ]
 
 
@@ -501,6 +510,7 @@ async def test_change_settings_prefills_all_stored_values(store):
         "event_schedule_enabled": True, "first_event_date": "",
         "default_genre": "", "default_location": "", "rules": [],
         "orig_event_interval_days": 14, "orig_first_event_date": "",
+        "orig_management_channel": None,
     }
     assert draft.message_id == 55 and draft.step == 0
     assert store.writes == []
@@ -1282,7 +1292,7 @@ def test_next_step_clamps_at_both_ends():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("data", "total"), [({}, 16), (OFF, 10)])
+@pytest.mark.parametrize(("data", "total"), [({}, 17), (OFF, 11)])
 async def test_step_numbers_are_consecutive(store, data, total):
     ctx = make_ctx()
     guild = make_guild()
@@ -1413,7 +1423,10 @@ async def test_old_invites_draft_goes_next_to_summary_and_back_to_invites(store)
     seed(store, 5, dict(FULL), legacy=True)  # old wizard: step 5 was Invites
     view = sw.SetupWizardView(ctx)
     await view._navigate(make_inter(guild), 1)
+    assert store.drafts[GUILD].step == STEP["management_channel"]  # optional, skippable
+    await view._navigate(make_inter(guild), 1)
     assert store.drafts[GUILD].step == SUMMARY
+    await view._navigate(make_inter(guild), -1)
     await view._navigate(make_inter(guild), -1)
     assert store.drafts[GUILD].step == INVITES
 
@@ -2009,3 +2022,354 @@ def test_step_numbers_of_an_open_draft_shift_past_the_new_steps():
     again = SetupDraft(1, 2, 3, STEP["timezone"], dict(old_timezone.data))
     sw.migrate_legacy_draft(again)
     assert again.step == STEP["timezone"]
+
+
+# ---------- DJ management channel step and backfill question ----------
+
+MGMT = STEP["management_channel"]
+MGMT_CH = 900
+MGMT_KEY = "management_channel"
+
+
+class FakeMgmt:
+    """Stands in for ManagementLineupService; records what the config held at each call."""
+
+    def __init__(self, store, eligible=0, error=None):
+        self.store = store
+        self.eligible = [SimpleNamespace(page_id=f"ev{i}") for i in range(eligible)]
+        self.error = error
+        self.calls: list[tuple[str, int | None, str | None, str | None]] = []
+
+    async def eligible_backfill_events(self, events=None):
+        return list(self.eligible)
+
+    async def backfill(self, mode, channel_id=None):
+        self.calls.append((
+            mode,
+            channel_id,
+            self.store.config.get((GUILD, MGMT_KEY)),
+            self.store.config.get((GUILD, "bot_active")),
+        ))
+        if self.error is not None:
+            raise self.error
+        return len(self.eligible)
+
+
+def mgmt_ctx(store, eligible=0, error=None):
+    ctx = make_ctx()
+    ctx.management_lineup_service = FakeMgmt(store, eligible, error)
+    return ctx
+
+
+def mgmt_guild(**kwargs):
+    return make_guild(channel_ids=(100, 200, MGMT_CH, 901), **kwargs)
+
+
+def _button(view, cid):
+    return next(c for c in view.children if c.custom_id == cid)
+
+
+def test_management_step_sits_right_before_summary():
+    assert sw.STEPS[-2:] == ["management_channel", "summary"]
+    assert sw.total_steps() == 17
+    assert sw.total_steps({"event_schedule_enabled": False}) == 11
+
+
+@pytest.mark.asyncio
+async def test_management_layout_and_registered_views_carry_every_control():
+    mgmt_ids = {sw.ID_MGMT_CHANNEL, sw.ID_MGMT_CLEAR, sw.ID_MGMT_ALL, sw.ID_MGMT_NEW}
+    assert (sw.ID_MGMT_CHANNEL, sw.ID_MGMT_CLEAR, sw.ID_MGMT_ALL, sw.ID_MGMT_NEW) == (
+        "setup:mgmt_channel", "setup:mgmt_clear", "setup:mgmt_all", "setup:mgmt_new",
+    )
+    layout = sw._layout(SetupDraft(0, 0, 0, MGMT, {}))
+    assert mgmt_ids | {sw.ID_BACK, sw.ID_NEXT} == set(layout.visible)
+    registered = set()
+    for view in sw.registered_views(make_ctx()):
+        registered |= ids(view)
+    assert mgmt_ids <= registered
+
+
+@pytest.mark.asyncio
+async def test_management_step_without_channel_allows_next_and_explains(store):
+    ctx = mgmt_ctx(store, eligible=2)
+    seed(store, MGMT, dict(FULL))
+    step = await sw.render_step(ctx, mgmt_guild(), store.drafts[GUILD])
+    view = sw.SetupWizardView(ctx, step)
+    assert ids(view) == {sw.ID_MGMT_CHANNEL, sw.ID_MGMT_CLEAR, sw.ID_BACK, sw.ID_NEXT}
+    assert not disabled_next(view)
+    assert f"Step {MGMT + 1} of {sw.total_steps()}" in step.content
+    assert "DJ Management channel" in step.content
+    assert "staff" in step.content.lower()
+    assert "turns this feature off" in step.content
+
+
+@pytest.mark.asyncio
+async def test_management_step_asks_backfill_and_blocks_next_until_answered(store):
+    ctx = mgmt_ctx(store, eligible=2)
+    guild = mgmt_guild()
+    seed(store, MGMT, {**FULL, "orig_management_channel": None})
+    wizard = sw.SetupWizardView(ctx)
+    inter = make_inter(guild, values=[str(MGMT_CH)])
+    await wizard._choose_channel(inter, MGMT_KEY)
+    assert store.drafts[GUILD].data[MGMT_KEY] == MGMT_CH
+    view = last_view(inter)
+    assert {sw.ID_MGMT_ALL, sw.ID_MGMT_NEW} <= ids(view)
+    assert disabled_next(view)
+    assert _button(view, sw.ID_MGMT_ALL).label == "Post all existing (2)"
+    assert _button(view, sw.ID_MGMT_NEW).label == "Only new"
+    assert "2 upcoming events are already fully booked" in last_content(inter)
+    # Next does not move while unanswered
+    await wizard._navigate(make_inter(guild), 1)
+    assert store.drafts[GUILD].step == MGMT
+    inter = make_inter(guild)
+    await wizard.on_mgmt_new(inter)
+    assert store.drafts[GUILD].data["management_backfill"] == "new"
+    assert not disabled_next(last_view(inter))
+    inter = make_inter(guild)
+    await wizard.on_mgmt_all(inter)
+    assert store.drafts[GUILD].data["management_backfill"] == "all"
+    assert not disabled_next(last_view(inter))
+    await wizard._navigate(make_inter(guild), 1)
+    assert store.drafts[GUILD].step == SUMMARY
+    assert store.writes == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["no_events", "unchanged", "no_service"])
+async def test_management_step_without_backfill_question(store, case):
+    ctx = mgmt_ctx(store, eligible=0 if case == "no_events" else 3)
+    if case == "no_service":
+        ctx.management_lineup_service = None
+    orig = MGMT_CH if case == "unchanged" else None
+    seed(store, MGMT, {**FULL, MGMT_KEY: MGMT_CH, "orig_management_channel": orig})
+    step = await sw.render_step(ctx, mgmt_guild(), store.drafts[GUILD])
+    view = sw.SetupWizardView(ctx, step)
+    assert sw.ID_MGMT_ALL not in ids(view) and sw.ID_MGMT_NEW not in ids(view)
+    assert not disabled_next(view)
+
+
+@pytest.mark.asyncio
+async def test_management_step_channel_change_or_clear_resets_the_answer(store):
+    ctx = mgmt_ctx(store, eligible=1)
+    guild = mgmt_guild()
+    seed(store, MGMT, {**FULL, MGMT_KEY: MGMT_CH, "management_backfill": "all"})
+    wizard = sw.SetupWizardView(ctx)
+    inter = make_inter(guild, values=["901"])
+    await wizard._choose_channel(inter, MGMT_KEY)
+    data = store.drafts[GUILD].data
+    assert data[MGMT_KEY] == 901 and "management_backfill" not in data
+    assert disabled_next(last_view(inter))
+    await wizard.on_mgmt_all(make_inter(guild))
+    assert store.drafts[GUILD].data["management_backfill"] == "all"
+    inter = make_inter(guild)
+    await wizard.on_mgmt_clear(inter)
+    data = store.drafts[GUILD].data
+    assert MGMT_KEY not in data and "management_backfill" not in data
+    assert not disabled_next(last_view(inter))
+    assert "No channel selected yet." in last_content(inter)
+
+
+@pytest.mark.asyncio
+async def test_management_step_bad_channel_blocks_next(store):
+    ctx = mgmt_ctx(store)
+    seed(store, MGMT, {**FULL, MGMT_KEY: MGMT_CH})
+    guild = mgmt_guild(perms={"send_messages": True, "embed_links": False})
+    step = await sw.render_step(ctx, guild, store.drafts[GUILD])
+    assert step.next_disabled
+    assert "Embed Links" in step.content
+
+
+@pytest.mark.asyncio
+async def test_management_controls_refuse_non_admin(store):
+    ctx = mgmt_ctx(store, eligible=1)
+    seed(store, MGMT, dict(FULL))
+    inter = make_inter(mgmt_guild(), user=999)
+    assert await sw.SetupWizardView(ctx).interaction_check(inter) is False
+
+
+def test_draft_at_old_summary_moves_to_new_summary_once():
+    old_summary = SetupDraft(1, 2, 3, 16, {sw.DRAFT_MARKER: True, sw.STEPS_MARKER: True})
+    old_invites = SetupDraft(1, 2, 3, 15, {sw.DRAFT_MARKER: True, sw.STEPS_MARKER: True})
+    v2_summary = SetupDraft(1, 2, 3, 13, {sw.DRAFT_MARKER: True})
+    legacy_summary = SetupDraft(1, 2, 3, 6, {"rerun": True})
+    for draft in (old_summary, old_invites, v2_summary, legacy_summary):
+        sw.migrate_legacy_draft(draft)
+        assert draft.data[sw.STEPS_V4_MARKER] is True
+    assert old_summary.step == STEP["summary"]
+    assert old_invites.step == STEP["invites"]
+    assert v2_summary.step == STEP["summary"]
+    assert legacy_summary.step == STEP["summary"]
+    # Migrated once: a draft now on the management step stays there
+    again = SetupDraft(1, 2, 3, MGMT, dict(old_summary.data))
+    sw.migrate_legacy_draft(again)
+    assert again.step == MGMT
+
+
+@pytest.mark.asyncio
+async def test_old_summary_draft_loads_at_the_new_summary(store):
+    ctx = make_ctx()
+    store.drafts[GUILD] = SetupDraft(
+        GUILD, 55, 7, 16, {**FULL, sw.DRAFT_MARKER: True, sw.STEPS_MARKER: True}
+    )
+    store.legacy.add(GUILD)  # keep the stored markers as they are
+    await sw.SetupWizardView(ctx)._navigate(make_inter(make_guild()), -1)
+    assert store.drafts[GUILD].step == MGMT
+
+
+@pytest.mark.asyncio
+async def test_prefill_reads_the_management_channel(store):
+    store.config[(GUILD, MGMT_KEY)] = str(MGMT_CH)
+    data = await sw.prefilled_data(MagicMock(), GUILD)
+    assert data[MGMT_KEY] == MGMT_CH and data["orig_management_channel"] == MGMT_CH
+    assert data[sw.STEPS_MARKER] is True and data[sw.STEPS_V4_MARKER] is True
+    store.config[(GUILD, MGMT_KEY)] = "junk"
+    data = await sw.prefilled_data(MagicMock(), GUILD)
+    assert MGMT_KEY not in data and data["orig_management_channel"] is None
+
+
+@pytest.mark.asyncio
+async def test_write_all_stores_and_deletes_the_management_channel(store):
+    await sw._write_all(MagicMock(), GUILD, {**FULL, MGMT_KEY: MGMT_CH})
+    assert store.config[(GUILD, MGMT_KEY)] == str(MGMT_CH)
+    await sw._write_all(MagicMock(), GUILD, dict(FULL))
+    assert (GUILD, MGMT_KEY) not in store.config
+    assert (MGMT_KEY, None) in store.writes
+
+
+@pytest.mark.asyncio
+async def test_write_all_never_stores_the_backfill_answer(store):
+    await sw._write_all(MagicMock(), GUILD, {**FULL, MGMT_KEY: MGMT_CH,
+                                            "management_backfill": "all"})
+    assert not any("backfill" in key for _, key in store.config)
+
+
+async def _activate(store, ctx, data):
+    seed(store, SUMMARY, data)
+    inter = make_inter(mgmt_guild())
+    await inter.response.defer()
+    with patch("bot.ui.setup_wizard.replenish_events", AsyncMock(return_value=0)):
+        await sw.activate_from_draft(ctx, inter)
+    return inter
+
+
+@pytest.mark.asyncio
+async def test_activate_backfill_all_runs_after_channel_and_activation(store):
+    ctx = mgmt_ctx(store, eligible=2)
+    await _activate(store, ctx, {**FULL, MGMT_KEY: MGMT_CH, "management_backfill": "all"})
+    assert ctx.management_lineup_service.calls == [("all", MGMT_CH, str(MGMT_CH), "true")]
+    assert store.config[(GUILD, "bot_active")] == "true"
+
+
+@pytest.mark.asyncio
+async def test_activate_backfill_new_runs_before_the_channel_is_stored(store):
+    ctx = mgmt_ctx(store, eligible=2)
+    await _activate(store, ctx, {**FULL, MGMT_KEY: MGMT_CH, "management_backfill": "new"})
+    assert ctx.management_lineup_service.calls == [("new", MGMT_CH, None, "false")]
+    assert store.config[(GUILD, MGMT_KEY)] == str(MGMT_CH)
+    assert store.config[(GUILD, "bot_active")] == "true"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("data", [
+    {MGMT_KEY: MGMT_CH},
+    {"management_backfill": "all"},
+    {"management_backfill": "new"},
+])
+async def test_activate_without_answer_or_channel_runs_no_backfill(store, data):
+    ctx = mgmt_ctx(store, eligible=2)
+    await _activate(store, ctx, {**FULL, **data})
+    assert ctx.management_lineup_service.calls == []
+    assert store.config[(GUILD, "bot_active")] == "true"
+
+
+@pytest.mark.asyncio
+async def test_activate_without_service_ignores_the_answer(store):
+    ctx = make_ctx()
+    inter = await _activate(
+        store, ctx, {**FULL, MGMT_KEY: MGMT_CH, "management_backfill": "all"}
+    )
+    assert store.config[(GUILD, "bot_active")] == "true"
+    assert "RaveBot is active" in last_content(inter)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["all", "new"])
+async def test_failing_backfill_does_not_fail_activation(store, mode):
+    ctx = mgmt_ctx(store, eligible=2, error=RuntimeError("boom"))
+    inter = await _activate(
+        store, ctx, {**FULL, MGMT_KEY: MGMT_CH, "management_backfill": mode}
+    )
+    assert len(ctx.management_lineup_service.calls) == 1
+    assert store.config[(GUILD, "bot_active")] == "true"
+    assert store.config[(GUILD, MGMT_KEY)] == str(MGMT_CH)
+    assert GUILD not in store.drafts
+    assert "RaveBot is active" in last_content(inter)
+    inter.followup.send.assert_not_awaited()
+
+
+async def _save(store, ctx, data):
+    seed(store, SUMMARY, {"rerun": True, **FULL, **data})
+    inter = make_inter(mgmt_guild())
+    await inter.response.defer()
+    await sw.save_from_draft(ctx, inter)
+    return inter
+
+
+@pytest.mark.asyncio
+async def test_save_runs_backfill_in_the_right_order(store):
+    ctx = mgmt_ctx(store, eligible=1)
+    store.config[(GUILD, "bot_active")] = "true"
+    await _save(store, ctx, {MGMT_KEY: MGMT_CH, "management_backfill": "new"})
+    await _save(store, ctx, {MGMT_KEY: 901, "management_backfill": "all"})
+    assert ctx.management_lineup_service.calls == [
+        ("new", MGMT_CH, None, "true"),
+        ("all", 901, "901", "true"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_failing_backfill_does_not_fail_save(store):
+    ctx = mgmt_ctx(store, eligible=1, error=RuntimeError("boom"))
+    inter = await _save(store, ctx, {MGMT_KEY: MGMT_CH, "management_backfill": "all"})
+    assert store.config[(GUILD, MGMT_KEY)] == str(MGMT_CH)
+    assert GUILD not in store.drafts
+    assert last_content(inter).startswith("Settings saved.")
+
+
+@pytest.mark.asyncio
+async def test_save_with_cleared_channel_deletes_the_key(store):
+    ctx = mgmt_ctx(store, eligible=1)
+    store.config[(GUILD, MGMT_KEY)] = str(MGMT_CH)
+    await _save(store, ctx, {"orig_management_channel": MGMT_CH})
+    assert (GUILD, MGMT_KEY) not in store.config
+    assert ctx.management_lineup_service.calls == []
+
+
+@pytest.mark.asyncio
+async def test_summary_lists_the_management_channel(store):
+    ctx = make_ctx()
+    lines = await sw.summary_lines(ctx, make_guild(), {**FULL, MGMT_KEY: MGMT_CH})
+    assert f"DJ Management channel: <#{MGMT_CH}>" in lines
+    assert lines.index(f"DJ Management channel: <#{MGMT_CH}>") == 2
+    lines = await sw.summary_lines(ctx, make_guild(), dict(FULL))
+    assert "DJ Management channel: not set" in lines
+    joined = "\n".join(await sw.summary_lines(
+        ctx, make_guild(), {**FULL, MGMT_KEY: MGMT_CH, "management_backfill": "new"}
+    ))
+    assert "Existing fully booked events: no message (only new ones)" in joined
+    joined = "\n".join(await sw.summary_lines(
+        ctx, make_guild(), {**FULL, MGMT_KEY: MGMT_CH, "management_backfill": "all"}
+    ))
+    assert "Existing fully booked events: post a message for each" in joined
+
+
+def test_management_texts_have_no_em_dash():
+    strings = [
+        texts.SETUP_MGMT_CHANNEL_QUESTION,
+        texts.setup_mgmt_backfill(3, None),
+        texts.setup_mgmt_backfill(1, "all"),
+        texts.setup_mgmt_backfill(1, "new"),
+        texts.setup_mgmt_all_label(4),
+    ]
+    for s in strings:
+        assert "—" not in s

@@ -472,6 +472,27 @@ async def test_suppressed_record_deleted_when_open_even_if_channel_unset(env: En
 
 
 @pytest.mark.asyncio
+async def test_backfill_new_with_channel_id_works_before_the_channel_is_stored(
+    env: Env,
+) -> None:
+    # The setup wizard suppresses before it stores the channel (no poll gap).
+    env.config[MANAGEMENT_CHANNEL_KEY] = None
+    fake_events.list_events = AsyncMock(return_value=_three_events())
+    assert await env.service.backfill("new", channel_id=OTHER_CHANNEL) == 3
+    assert {r.channel_id for r in env.store.records.values()} == {OTHER_CHANNEL}
+    assert all(r.message_ids == () for r in env.store.records.values())
+    assert env.channel.discord_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_backfill_all_with_channel_id_posts_there(env: Env) -> None:
+    fake_events.list_events = AsyncMock(return_value=_three_events())
+    assert await env.service.backfill("all", channel_id=OTHER_CHANNEL) == 3
+    assert env.channel.sent == []
+    assert len(env.channels[OTHER_CHANNEL].sent) == 3
+
+
+@pytest.mark.asyncio
 async def test_backfill_new_returns_zero_without_eligible_events(env: Env) -> None:
     fake_events.list_events = AsyncMock(return_value=[_event(booked=1)])
     assert await env.service.backfill("new") == 0
