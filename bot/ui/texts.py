@@ -1413,3 +1413,36 @@ MGMT_INFO_FAILED = "I could not load the lineup details. Please try again later.
 
 def mgmt_info_partial(sent: int) -> str:
     return f"I could not send everything by DM. {sent} DJ(s) were sent before it stopped."
+
+
+# --- event announcements ---------------------------------------------------
+
+ANNOUNCE_CANCELED = "This event was canceled."
+ANNOUNCE_CHANNEL_TODO = (
+    "Choose the announcement channel again with /announcements channel or on the admin "
+    "page, or give the bot permission to view, send and edit messages there."
+)
+ANNOUNCE_TEMPLATE_TODO = (
+    "Open the Announcements page on the admin page, shorten or fix the template and press "
+    "Check and preview. The next check posts it as long as the event has not started."
+)
+
+
+def announce_channel_problem(channel_id: int, reason: str) -> str:
+    if reason == "missing":
+        return f"An event announcement could not be posted: channel {channel_id} was not found."
+    return (
+        f"An event announcement could not be posted or edited: the bot may not send or "
+        f"edit messages in channel <#{channel_id}>."
+    )
+
+
+def announce_too_long(event_name: str, length: int, limit: int) -> str:
+    return (
+        f"The announcement for {escape_text(event_name)} was not posted: it has {length} "
+        f"characters filled, the limit is {limit}."
+    )
+
+
+def announce_template_invalid(kind: str, problem: str) -> str:
+    return f"The {kind} announcement template cannot be posted: {problem}"
