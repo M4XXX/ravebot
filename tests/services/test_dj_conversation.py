@@ -920,7 +920,7 @@ async def test_record_message_id_failure_is_logged(service, fake, monkeypatch, c
 async def test_decline_deletes_open_onboarding_conversation(service, fake):
     await onboard_to(service, A, "vrchat")
     r = await service.decline(A)
-    assert r == Reply(texts.ONBOARD_DECLINED, "info")
+    assert r == Reply(texts.ONBOARD_DECLINED, "info", menu_after=True)
     assert A not in fake.convs
 
 
@@ -928,12 +928,12 @@ async def test_decline_keeps_an_open_edit_conversation(service, fake):
     fake.djs[A] = {"dj_name": "Neon Fox", "active_booking": True}
     await service.start_edit(A, GUILD, "vrchat")
     r = await service.decline(A)
-    assert r == Reply(texts.ONBOARD_DECLINED, "info")
+    assert r == Reply(texts.ONBOARD_DECLINED, "info", menu_after=True)
     assert fake.convs[A].kind == "edit"
 
 
 async def test_decline_without_conversation_only_answers(service, fake):
-    assert await service.decline(A) == Reply(texts.ONBOARD_DECLINED, "info")
+    assert await service.decline(A) == Reply(texts.ONBOARD_DECLINED, "info", menu_after=True)
     assert fake.convs == {}
 
 

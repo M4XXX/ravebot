@@ -167,7 +167,10 @@ class FlowView(GatedView):
             self._used = True
         release_if = getattr(self._lock, "release_if", None)
         if release_if is not None:
-            release_if(self._token)
+            if used:
+                release_if(self._token)
+            else:
+                release_if(self._token, notify=False)  # abandoned: no unprompted menu
         elif self._lock.locked():
             self._lock.release()
 

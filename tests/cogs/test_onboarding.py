@@ -816,3 +816,22 @@ async def test_generic_error_send_failure_is_only_logged(
     message.channel.send.assert_awaited_once_with(texts.GENERIC_ERROR)
     log_service.log_user_message.assert_not_called()
     assert "Could not send the error" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_on_message_uses_the_menu_service_when_set() -> None:
+    from bot.cogs.onboarding import OnboardingCog
+
+    ctx = make_real_ctx(db=MagicMock())
+    ctx.menu_service = MagicMock(post_now=AsyncMock())
+    cog = OnboardingCog(ctx)
+    message = MagicMock(spec=disnake.Message)
+    message.guild = None
+    message.author.id = 11111
+    message.author.bot = False
+    message.channel.send = AsyncMock()
+
+    await cog.on_message(message)
+
+    ctx.menu_service.post_now.assert_awaited_once_with(message.channel, 11111)
+    message.channel.send.assert_not_awaited()

@@ -88,6 +88,11 @@ class Reply:
     allow_as_is: bool = False
     allow_remove: bool = False
     in_group: bool = False  # overview only: the DJ is in the Active DJ Booking Group
+    menu_after: bool = False  # the conversation ended: the DM menu follows
+
+    @property
+    def ends_conversation(self) -> bool:
+        return self.menu_after or self.kind in ("done", "cancelled")
 
 
 def is_expired(conv: Conversation, now: datetime | None = None) -> bool:
@@ -274,7 +279,7 @@ class DjConversationService:
             conv = await self._open(db, user_id)
             if conv is not None and conv.kind == ONBOARDING:
                 await delete_conversation(db, user_id)
-            return Reply(texts.ONBOARD_DECLINED, "info")
+            return Reply(texts.ONBOARD_DECLINED, "info", menu_after=True)
 
         return await self._run(user_id, body)
 

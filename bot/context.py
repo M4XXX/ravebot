@@ -5,6 +5,7 @@ Every multi-step DM flow acquires the user's lock on entry via get_user_lock().
 [Source: architecture.md#Inter-Component Communication: Direct Calls via Shared BotContext]
 [Source: architecture.md#Per-User Flow Lock: asyncio.Lock per user_id]
 """
+import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -16,6 +17,7 @@ if TYPE_CHECKING:
     from bot.config import Config
     from bot.log import AdminLogService
 
+logger = logging.getLogger(__name__)
 
 # An ephemeral Discord view stops working after 15 minutes (disnake forces this timeout),
 # so a flow that has not finished by then was abandoned and its lock is free again.
@@ -42,6 +44,8 @@ class FlowLock:
         self._token = 0  # 0 = free
         self._issued = 0
         self._since = 0.0
+        # Called when a held lock is freed by release() or release_if(); the DM menu hook.
+        self.on_release: Callable[[], None] | None = None
 
     def locked(self) -> bool:
         if self._token and self._clock() - self._since > self._ttl:
@@ -56,9 +60,20 @@ class FlowLock:
         self._since = self._clock()
         return True
 
+    def _notify(self) -> None:
+        if self.on_release is None:
+            return
+        try:
+            self.on_release()
+        except Exception:
+            logger.warning("FlowLock: on_release failed", exc_info=True)
+
     def release(self) -> None:
-        """Free the lock, whoever holds it."""
+        """Free the lock, whoever holds it. Fires on_release when it was held."""
+        held = self._token != 0
         self._token = 0
+        if held:
+            self._notify()
 
     @property
     def token(self) -> int:
@@ -68,10 +83,15 @@ class FlowLock:
     def owns(self, token: int) -> bool:
         return token != 0 and self.locked() and self._token == token
 
-    def release_if(self, token: int) -> bool:
-        """Free the lock only if `token` is the current flow. True if it was freed."""
+    def release_if(self, token: int, notify: bool = True) -> bool:
+        """Free the lock only if `token` is the current flow. True if it was freed.
+
+        `notify` False frees it without firing on_release (an abandoned flow).
+        """
         if token != 0 and self._token == token:
             self._token = 0
+            if notify:
+                self._notify()
             return True
         return False
 
@@ -137,6 +157,8 @@ class BotContext:
     # A startup rebuild result still to post in the admin log (posted once in on_ready).
     rebuild_report: "Any | None" = None
     dj_conversations: "Any | None" = None
+    # MenuService: sends the DM menu again after a flow ended (None until set in main.py).
+    menu_service: "Any | None" = None
     mirror: "Any | None" = None
     # SyncCycle run by the Notion poll (None while Notion is disabled or not set up).
     sync_cycle: "Any | None" = None
@@ -179,7 +201,13 @@ class BotContext:
             if len(self.user_locks) > 1000:
                 self._drop_free_locks()
             lock = self.user_locks[user_id] = FlowLock()
+            lock.on_release = lambda: self._menu_after_flow(user_id)
         return lock
+
+    def _menu_after_flow(self, user_id: int) -> None:
+        """A flow of this user ended: have the DM menu sent again."""
+        if self.menu_service is not None:
+            self.menu_service.schedule(user_id)
 
     def _drop_free_locks(self) -> None:
         """Forget locks nobody holds, so the dict does not grow without bound."""
