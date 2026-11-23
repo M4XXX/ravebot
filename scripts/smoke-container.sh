@@ -57,8 +57,13 @@ echo "Starting PostgreSQL ..."
 "$cli" run -d --name "$db" --network "$net" --network-alias db \
   -e POSTGRES_USER=ravebot -e POSTGRES_PASSWORD=ravebot -e POSTGRES_DB=ravebot \
   docker.io/library/postgres:16-alpine >/dev/null
-for _ in $(seq 1 60); do
-  if "$cli" exec "$db" pg_isready -U ravebot -d ravebot >/dev/null 2>&1; then break; fi
+# The image starts a temporary server for its first-time setup, shuts it down and starts the
+# real one. Wait for the second "ready to accept connections" so no check lands in between.
+for _ in $(seq 1 90); do
+  ready="$("$cli" logs "$db" 2>&1 | grep -c "ready to accept connections" || true)"
+  if [ "${ready:-0}" -ge 2 ] && "$cli" exec "$db" pg_isready -U ravebot -d ravebot >/dev/null 2>&1; then
+    break
+  fi
   sleep 1
 done
 if ! "$cli" exec "$db" pg_isready -U ravebot -d ravebot >/dev/null 2>&1; then
@@ -67,7 +72,6 @@ if ! "$cli" exec "$db" pg_isready -U ravebot -d ravebot >/dev/null 2>&1; then
   "$cli" logs "$db" >&2 || true
   exit 1
 fi
-sleep 2  # the image's init restarts the server once; pg_isready can answer in between
 
 env_args=(
   -e POSTGRES_URL=postgresql://ravebot:ravebot@db:5432/ravebot
