@@ -286,3 +286,16 @@ async def test_delete_db_error_is_reported() -> None:
     assert result.message == "The database could not be updated. The DJ was not deleted."
     ch.assert_not_called()
     assert ctx.notion_client.method_calls == []
+
+
+def test_admin_delete_lock_release_sends_no_menu() -> None:
+    import asyncio
+    from unittest.mock import MagicMock
+
+    from bot.context import FlowLock
+
+    lock = FlowLock()
+    lock.on_release = MagicMock()
+    asyncio.run(lock.acquire())
+    lock.release_if(lock.token, notify=False)
+    lock.on_release.assert_not_called()

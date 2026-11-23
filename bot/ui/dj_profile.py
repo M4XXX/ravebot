@@ -113,6 +113,9 @@ async def send_reply(
     service = _service(ctx)
     if record and sent is not None and service is not None:
         await service.record_message_id(user_id, sent.id)
+    menu_service = getattr(ctx, "menu_service", None)
+    if reply.ends_conversation and menu_service is not None:
+        menu_service.schedule(user_id)
 
 
 async def respond(

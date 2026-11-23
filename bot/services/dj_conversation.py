@@ -88,6 +88,11 @@ class Reply:
     allow_as_is: bool = False
     allow_remove: bool = False
     in_group: bool = False  # overview only: the DJ is in the Active DJ Booking Group
+    menu_after: bool = False  # the conversation ended: the DM menu follows
+
+    @property
+    def ends_conversation(self) -> bool:
+        return self.menu_after or self.kind in ("done", "cancelled")
 
 
 def is_expired(conv: Conversation, now: datetime | None = None) -> bool:
@@ -274,7 +279,7 @@ class DjConversationService:
             conv = await self._open(db, user_id)
             if conv is not None and conv.kind == ONBOARDING:
                 await delete_conversation(db, user_id)
-            return Reply(texts.ONBOARD_DECLINED, "info")
+            return Reply(texts.ONBOARD_DECLINED, "info", menu_after=True)
 
         return await self._run(user_id, body)
 
@@ -449,7 +454,7 @@ class DjConversationService:
             # A row and a leftover summary: the post-insert steps cannot be told apart
             # from done ones without double logging, so only clear the conversation.
             await self._drop(db, user_id)
-            return Reply(texts.ALREADY_DJ, "info")
+            return Reply(texts.ALREADY_DJ, "info", menu_after=True)
         vrchat = data.get("vrchat") or None
         async with self._name_lock:
             if await dj_name_exists(db, name):
@@ -471,7 +476,7 @@ class DjConversationService:
                     await self._back_to(db, conv, "name")
                     return _error(conv, texts.name_taken(name))
                 await self._drop(db, user_id)
-                return Reply(texts.ALREADY_DJ, "info")
+                return Reply(texts.ALREADY_DJ, "info", menu_after=True)
         # Saved: every remaining step is best effort and must not undo the success.
         log_service = self._ctx.log_service
         if log_service is not None:
@@ -508,7 +513,7 @@ class DjConversationService:
             updated = await update_dj_fields(db, user_id, **{_COLUMNS[field]: value})
         if not updated:
             await delete_conversation(db, user_id)
-            return Reply(texts.NO_PROFILE, "info")
+            return Reply(texts.NO_PROFILE, "info", menu_after=True)
         notify_management(self._ctx)
         await sync_dj(self._ctx, user_id)
         await self._drop(db, user_id)

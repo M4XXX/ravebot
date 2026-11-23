@@ -279,6 +279,9 @@ async def main() -> None:
     from bot.ui.views import FallbackMenuView
 
     ctx.dj_conversations = DjConversationService(ctx, client=bot)
+    from bot.services.menu import MenuService
+
+    ctx.menu_service = MenuService(bot, ctx)
     for dj_view in dj_profile.registered_views(ctx):  # persistent: old DM buttons keep working
         bot.add_view(dj_view)
     bot.add_view(FallbackMenuView(ctx, all_buttons=True))  # persistent: menus after restarts

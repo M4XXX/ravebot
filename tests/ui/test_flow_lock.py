@@ -244,3 +244,18 @@ async def test_untracked_view_expires_without_an_edit() -> None:
     assert view._expiry_task is None
     await view.on_timeout()
     assert not lock.locked()
+
+
+async def test_menu_follows_never_mind_but_not_an_expired_flow() -> None:
+    ctx = make_real_ctx(db=MagicMock())
+    ctx.menu_service = MagicMock()
+    lock, view = await _flow(ctx)
+    await view._handle_cancel(_inter())
+    ctx.menu_service.schedule.assert_called_once_with(1)
+
+    ctx.menu_service.reset_mock()
+    lock, view = await _flow(ctx)
+    view._edit = AsyncMock()
+    await view._expire()
+    assert not lock.locked()
+    ctx.menu_service.schedule.assert_not_called()

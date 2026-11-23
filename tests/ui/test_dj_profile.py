@@ -551,3 +551,19 @@ async def test_idle_bot_buttons_answer_idle_reply(build, ctx, client, monkeypatc
     inter = make_inter(client, 1)
     assert await view.interaction_check(inter) is False
     inter.response.send_message.assert_awaited_once_with(IDLE_REPLY, ephemeral=True)
+
+
+# --- the DM menu after a conversation ends ---
+
+
+async def test_not_now_schedules_the_menu(ctx, fake, client) -> None:
+    ctx.menu_service = MagicMock()
+    inter = make_inter(client, 1)
+    await press(dj_profile.OnboardingIntroView(ctx), "onboarding:pass_for_now", inter)
+    ctx.menu_service.schedule.assert_called_once_with(A)
+
+
+async def test_a_question_does_not_schedule_the_menu(ctx, fake, client) -> None:
+    ctx.menu_service = MagicMock()
+    await press(dj_profile.OnboardingIntroView(ctx), "onboarding:go_active", make_inter(client))
+    ctx.menu_service.schedule.assert_not_called()

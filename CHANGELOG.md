@@ -22,6 +22,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Setup question for existing fully booked events: post all or only new ones. `/config show` lists the DJ Management channel.
 - Database migration 0020 (`management_lineup_messages`).
 - DJ channel tidy-up: when the bot posts a lineup update and the last message in the DJ channel is its own previous lineup post for the same event, the old post is removed. Posts for other events and posts followed by someone else's message stay; a failed post never removes the old one. Also applies to `/post lineup update`. Database migration 0021 (`dj_channel_lineup_posts`).
+- DM menu after flows: about 2 seconds after a booking, cancel, invite answer or DJ setup ends (done, cancelled, declined or failed), the bot sends the menu again, so the menu is the last message in the DM. Showing the lineup does not send it. The bot deletes its own previous menu in that DM. Flows that time out without an answer send no menu. Database migration 0022 (`dm_menus`).
 
 ## [1.3.0-rc1] - 2026-11-21
 

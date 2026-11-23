@@ -224,6 +224,10 @@ class OnboardingCog(commands.Cog):
             except disnake.HTTPException:
                 logger.warning("on_message: could not send the open-flow hint", exc_info=True)
             return
+        menu_service = self.ctx.menu_service
+        if menu_service is not None:
+            await menu_service.post_now(message.channel, message.author.id)
+            return
         active: bool | None = None
         onboarded = False
         if self.ctx.db is not None:
