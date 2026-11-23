@@ -46,6 +46,11 @@ class FakeMessage:
         self.kwargs = kwargs
         self.content = kwargs.get("content")
 
+    async def delete(self) -> None:
+        self.channel.deleted.add(self.id)
+        if self.channel.delete_error is not None:
+            raise self.channel.delete_error
+
     async def edit(self, **kwargs) -> None:
         if self.id in self.channel.deleted:
             raise _not_found()
@@ -73,6 +78,7 @@ class FakeChannel:
         self.send_error: Exception | None = None
         self.edit_error: Exception | None = None
         self.gate: asyncio.Event | None = None
+        self.delete_error: Exception | None = None
 
     async def send(self, **kwargs) -> FakeMessage:
         await asyncio.sleep(0)
@@ -97,6 +103,7 @@ class FakeStore:
         self.posts: dict[int, AnnouncementPost] = {}
         self._next = itertools.count(1)
         self.claims = 0
+        self.mark_error: Exception | None = None
 
     def add_rule(self, days: int = 3, at: datetime.time = datetime.time(18, 0),
                  created: datetime.datetime = CREATED) -> AnnouncementRule:
@@ -134,6 +141,8 @@ class FakeStore:
             return [p for p in self.posts.values() if event_id in (None, p.event_id)]
 
         async def mark_posted(db, post_id, message_id, digest):
+            if self.mark_error is not None:
+                raise self.mark_error
             self._update(post_id, state="posted", message_id=message_id, digest=digest)
 
         async def set_digest(db, post_id, digest):
@@ -180,6 +189,14 @@ class Env:
 
         monkeypatch.setattr("bot.services.announcements.activation.is_active", is_active)
         monkeypatch.setattr("bot.services.announcements.load_settings", load_settings)
+
+        self.past: list = []
+
+        async def list_events(db, *, include_past: bool = False):
+            upcoming = await fake_events.list_events(db)
+            return [*self.past, *upcoming] if include_past else upcoming
+
+        monkeypatch.setattr("bot.db.events.list_events", list_events)
 
         self.bot = MagicMock()
         self.bot.guilds = [MagicMock(id=GUILD)]
@@ -537,3 +554,85 @@ async def test_send_helper_accepts_an_optional_file(env: Env) -> None:
     await env.service._send(channel, "with poster", file=file)
     assert channel.sent[1].kwargs["file"] is file
     assert channel.sent[1].kwargs["content"] == "with poster"
+
+
+# --- fix round 1 -----------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", [{"general_enabled": False}, {"channel_id": None}])
+async def test_cancel_edits_existing_posts_with_type_off_or_no_channel(
+    env: Env, change: dict
+) -> None:
+    env.store.add_rule(3)
+    env.events(_event())
+    await env.service.tick(DUE)
+    env.configure(**change)
+    env.events(_event(status="Canceled"))
+    await env.service.tick(DUE + datetime.timedelta(minutes=1))
+    assert env.channel.sent[0].content == texts.ANNOUNCE_CANCELED
+    assert [p.state for p in env.store.posts.values()] == ["canceled"]
+    assert len(env.channel.sent) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", [{"general_enabled": False}, {"channel_id": None}])
+async def test_lineup_edits_continue_with_type_off_or_no_channel_until_the_start(
+    env: Env, change: dict
+) -> None:
+    env.store.add_rule(3)
+    env.store.add_rule(1)  # due later: must not post while off
+    env.events(_event())
+    await env.service.tick(DUE)
+    env.configure(**change)
+    env.events(_event(names=("Alpha",)))
+    await env.service.tick(datetime.datetime(2026, 12, 4, 18, 5, tzinfo=ZONE))
+    assert len(env.channel.edit_calls) == 1
+    assert "Alpha" in env.channel.sent[0].content
+    assert len(env.channel.sent) == 1
+    env.events(_event(names=("Omega",)))
+    await env.service.tick(START)
+    assert len(env.channel.edit_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_deleted_event_posts_get_the_canceled_text(env: Env) -> None:
+    env.store.add_rule(3)
+    env.events(_event("ev-1"), _event("ev-2"))
+    await env.service.tick(DUE)
+    msgs = list(env.channel.sent)
+    # ev-1 deleted; ev-2 is now in the past (only in the include_past list)
+    env.past = [_event("ev-2")]
+    env.events()
+    await env.service.tick(DUE + datetime.timedelta(minutes=1))
+    await env.service.tick(DUE + datetime.timedelta(minutes=2))
+    states = {p.event_id: p.state for p in env.store.posts.values()}
+    assert states == {"ev-1": "canceled", "ev-2": "posted"}
+    assert msgs[0].content == texts.ANNOUNCE_CANCELED
+    assert msgs[1].content != texts.ANNOUNCE_CANCELED
+    assert len(env.channel.edit_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_failed_record_after_send_deletes_the_message_and_retries_once(env: Env) -> None:
+    env.store.add_rule(3)
+    env.events(_event())
+    env.store.mark_error = RuntimeError("db down")
+    await env.service.tick(DUE)
+    first = env.channel.sent[0]
+    assert first.id in env.channel.deleted
+    assert env.store.posts == {}
+    env.store.mark_error = None
+    await env.service.tick(DUE + datetime.timedelta(minutes=1))
+    assert len(env.channel.sent) == 2
+    assert [p.message_id for p in env.store.posts.values()] == [env.channel.sent[1].id]
+
+
+@pytest.mark.asyncio
+async def test_failed_delete_after_failed_record_is_logged_and_never_raises(env: Env) -> None:
+    env.store.add_rule(3)
+    env.events(_event())
+    env.store.mark_error = RuntimeError("db down")
+    env.channel.delete_error = RuntimeError("discord down")
+    await env.service.tick(DUE)
+    assert env.store.posts == {}

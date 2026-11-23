@@ -8,7 +8,9 @@ The same claim/render/send/edit/mark code serves both announcement kinds.
 General announcements (this module so far): every rule due for an upcoming event posts
 once, but only when the lineup is fully booked; otherwise the rule is marked `gone` for
 that event and never retried. Posted general announcements follow the event until it
-starts. A canceled event gets its posted announcements edited once to a fixed text.
+starts. A canceled or deleted event gets its posted announcements edited once to a
+fixed text. The type switch and the channel gate new posts only: existing posts are
+kept current (edited, canceled) in their stored channel either way.
 A message deleted by hand (NotFound on edit) is marked `gone` and never reposted.
 Ticks are serialised by a lock, so a row still `claimed` when a tick starts is stale
 and released for a retry. Nothing here raises into the caller.
@@ -113,14 +115,24 @@ class AnnouncementService:
             if post.state == CLAIMED:  # ticks are serialised: a leftover claim is stale
                 await ann_db.release_claim(self.db, post.id)
         settings = await load_settings(self.db, guild_id)
-        if not settings.general_enabled or settings.channel_id is None:
-            return
+        # Existing posts are kept current (edited, canceled) in their stored channel
+        # whatever the switches say; the switches and the channel gate new posts only.
         rules = await ann_db.list_rules(self.db, guild_id)
+        known = {e.page_id for e in await db_events.list_events(self.db, include_past=True)}
         events = await db_events.list_events(self.db)
         by_event: dict[str, list[AnnouncementPost]] = {}
         for post in posts:
             if post.state != CLAIMED:
                 by_event.setdefault(post.event_id, []).append(post)
+        for event_id, event_posts in by_event.items():
+            if event_id in known:
+                continue
+            for post in event_posts:  # the event was deleted: like a cancel
+                if post.state == POSTED:
+                    try:
+                        await self._cancel(post)
+                    except Exception:
+                        logger.exception("AnnouncementService: cancel of post %s failed", post.id)
         for event in events:
             try:
                 await self._tick_event(
@@ -147,7 +159,7 @@ class AnnouncementService:
         templates = self._templates(settings)
         existing = {(p.kind, p.rule_id) for p in posts}
         for plan in self._new_plans(event, settings, rules, now):
-            if (plan.kind, plan.rule_id) not in existing:
+            if settings.channel_id is not None and (plan.kind, plan.rule_id) not in existing:
                 await self._claim_and_post(event, plan, settings.channel_id, now)
         for post in posts:
             if post.state == POSTED and post.kind in templates and self._editable(post, event, now):
@@ -168,6 +180,8 @@ class AnnouncementService:
         rules: list[AnnouncementRule],
         now: datetime.datetime,
     ) -> list[Plan]:
+        if not settings.general_enabled:
+            return []
         return [
             Plan(GENERAL, rule.id, settings.general_template)
             for rule in rules
@@ -212,6 +226,7 @@ class AnnouncementService:
         if not is_fully_booked(event):
             await ann_db.set_state(self.db, post.id, GONE)  # skipped means skipped
             return
+        message = None
         try:
             text = await self._render(event, plan, now)
             if text is None:
@@ -227,6 +242,14 @@ class AnnouncementService:
                 "AnnouncementService: posting %s/%s for %s failed",
                 plan.kind, plan.rule_id, event.page_id,
             )
+            if message is not None:  # sent but not recorded: undo, so a retry is no copy
+                try:
+                    await message.delete()
+                except Exception:
+                    logger.warning(
+                        "AnnouncementService: could not delete unrecorded message %s",
+                        message.id, exc_info=True,
+                    )
             await ann_db.release_claim(self.db, post.id)
 
     async def _send_to(self, channel_id: int, text: str) -> Any:
