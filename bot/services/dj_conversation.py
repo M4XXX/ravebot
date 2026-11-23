@@ -454,7 +454,7 @@ class DjConversationService:
             # A row and a leftover summary: the post-insert steps cannot be told apart
             # from done ones without double logging, so only clear the conversation.
             await self._drop(db, user_id)
-            return Reply(texts.ALREADY_DJ, "info")
+            return Reply(texts.ALREADY_DJ, "info", menu_after=True)
         vrchat = data.get("vrchat") or None
         async with self._name_lock:
             if await dj_name_exists(db, name):
@@ -476,7 +476,7 @@ class DjConversationService:
                     await self._back_to(db, conv, "name")
                     return _error(conv, texts.name_taken(name))
                 await self._drop(db, user_id)
-                return Reply(texts.ALREADY_DJ, "info")
+                return Reply(texts.ALREADY_DJ, "info", menu_after=True)
         # Saved: every remaining step is best effort and must not undo the success.
         log_service = self._ctx.log_service
         if log_service is not None:
@@ -513,7 +513,7 @@ class DjConversationService:
             updated = await update_dj_fields(db, user_id, **{_COLUMNS[field]: value})
         if not updated:
             await delete_conversation(db, user_id)
-            return Reply(texts.NO_PROFILE, "info")
+            return Reply(texts.NO_PROFILE, "info", menu_after=True)
         notify_management(self._ctx)
         await sync_dj(self._ctx, user_id)
         await self._drop(db, user_id)

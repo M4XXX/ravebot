@@ -835,7 +835,7 @@ async def test_delete_failure_after_insert_still_done(
     assert A in fake.convs
     monkeypatch.setattr(svc_mod, "delete_conversation", fake.delete_conversation)
     r = await service.confirm(A, 7)
-    assert r == Reply(texts.ALREADY_DJ, "info")
+    assert r == Reply(texts.ALREADY_DJ, "info", menu_after=True)
     ctx.log_service.log_new_dj.assert_awaited_once()
     fake.insert_dj.assert_awaited_once()
     assert A not in fake.convs

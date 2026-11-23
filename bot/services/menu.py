@@ -26,6 +26,7 @@ class MenuService:
         self.ctx = ctx
         self.delay = delay
         self._pending: dict[int, asyncio.Task] = {}
+        self._send_locks: dict[int, asyncio.Lock] = {}
 
     def schedule(self, user_id: int) -> None:
         """Send the menu to the user after the delay. A newer call replaces a pending one."""
@@ -52,9 +53,11 @@ class MenuService:
                 return
             user = self.bot.get_user(user_id) or await self.bot.fetch_user(user_id)
             channel = await user.create_dm()
-            await self.post_now(channel, user_id)
+            await self._post(channel, user_id, recheck=True)
         except asyncio.CancelledError:
             raise
+        except (disnake.Forbidden, disnake.NotFound):
+            logger.warning("MenuService: DMs of %s are closed; no menu sent", user_id)
         except Exception:
             logger.warning("MenuService: could not send the menu to %s", user_id, exc_info=True)
 
@@ -68,9 +71,22 @@ class MenuService:
 
     async def post_now(self, channel: disnake.abc.Messageable, user_id: int) -> None:
         """Send the menu now: delete the old menu of this user, send, remember the new one."""
+        self._cancel(user_id)
+        await self._post(channel, user_id, recheck=False)
+
+    async def _post(
+        self, channel: disnake.abc.Messageable, user_id: int, *, recheck: bool
+    ) -> None:
+        """One menu at a time per user; a scheduled menu re-checks the skip rules inside."""
         from bot.ui.views import FallbackMenuView
 
-        self._cancel(user_id)
+        send_lock = self._send_locks.setdefault(user_id, asyncio.Lock())
+        async with send_lock:
+            if recheck and await self._should_skip(user_id):
+                return
+            await self._send_menu(channel, user_id, FallbackMenuView)
+
+    async def _send_menu(self, channel, user_id: int, view_cls) -> None:
         db = self.ctx.db
         active: bool | None = None
         onboarded = False
@@ -89,7 +105,7 @@ class MenuService:
                 old = await dm_menus.get_menu(db, user_id)
             except Exception:
                 logger.warning("MenuService: menu lookup failed for %s", user_id, exc_info=True)
-        sent = await channel.send(texts.MENU, view=FallbackMenuView(self.ctx, active, onboarded))
+        sent = await channel.send(texts.MENU, view=view_cls(self.ctx, active, onboarded))
         if db is not None:
             try:
                 await dm_menus.set_menu(db, user_id, sent.channel.id, sent.id)

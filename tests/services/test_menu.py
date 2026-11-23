@@ -169,3 +169,45 @@ async def test_post_now_cancels_pending_menu() -> None:
         for p in ps:
             p.stop()
     assert channel.send.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_scheduled_menu_rechecks_the_lock_before_sending() -> None:
+    ctx = _ctx(locked=True)  # a flow took the lock while the menu was on its way
+    channel, _ = _channel()
+    svc = _scheduled(ctx, channel, delay=0.0)
+    _, ps = _patches()
+    await _with(ps, svc._post(channel, USER, recheck=True))
+    channel.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_two_menus_at_once_leave_only_the_newest() -> None:
+    svc = MenuService(MagicMock(), _ctx())
+    channel, partial = _channel()
+    ids = iter([501, 502])
+    sent = []
+
+    async def _send(*a, **k):
+        await asyncio.sleep(0.01)
+        m = MagicMock(id=next(ids))
+        m.channel.id = 7
+        sent.append(m)
+        return m
+
+    channel.send = AsyncMock(side_effect=_send)
+    state = {"old": None}
+
+    async def _get(db, uid):
+        return state["old"]
+
+    async def _set(db, uid, cid, mid):
+        state["old"] = LastMenu(uid, cid, mid)
+
+    _, ps = _patches()
+    ps += [
+        patch("bot.services.menu.dm_menus.get_menu", new=_get),
+        patch("bot.services.menu.dm_menus.set_menu", new=_set),
+    ]
+    await _with(ps, asyncio.gather(svc.post_now(channel, USER), svc.post_now(channel, USER)))
+    assert channel.get_partial_message.call_args_list[0].args == (501,)

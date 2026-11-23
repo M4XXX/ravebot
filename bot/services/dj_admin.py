@@ -278,7 +278,7 @@ class DjAdminService:
             return await self._delete(admin_name, dj_id, name)
         finally:
             if flow is not None:
-                flow.release()
+                flow.release_if(flow.token, notify=False)  # the DJ did nothing: no menu
 
     async def _delete(self, admin_name: str, dj_id: int, name: str) -> DjResult:
         db = self._ctx.db
