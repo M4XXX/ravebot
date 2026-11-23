@@ -7,7 +7,8 @@ TABLES = (
     "slot_locks, reminders_sent, outreach_contacts, outreach_sequences, dj_conversations, "
     "djs, config, web_admins, fully_booked_events, log_replies, setup_drafts, "
     "manual_events, events, notion_mirror, notion_outbox, sync_issues, schedule_rules, "
-    "management_lineup_messages, dj_channel_lineup_posts, dm_menus"
+    "management_lineup_messages, dj_channel_lineup_posts, dm_menus, announcement_rules, "
+    "announcement_posts"
 )
 
 
