@@ -36,6 +36,7 @@ from bot.web.auth import (
 )
 from bot.web.pages import (
     issue_choice_ok,
+    render_announcements,
     render_apply,
     render_backup_import,
     render_booking_rules,
@@ -44,11 +45,13 @@ from bot.web.pages import (
     render_confirm_rebuild,
     render_confirm_recreate,
     render_confirm_remove,
+    render_confirm_remove_announcement_rule,
     render_confirm_remove_rule,
     render_confirm_resync,
     render_confirm_retry_import,
     render_dashboard,
     render_djs,
+    render_edit_announcement_rule,
     render_edit_dj,
     render_edit_event,
     render_edit_rule,
@@ -56,7 +59,20 @@ from bot.web.pages import (
     render_notice,
     render_schedule,
 )
-from bot.web.service import FORMAT_MESSAGE, ActionResult
+from bot.web.service import (
+    ANN_KINDS,
+    ANN_RULE_ADDED,
+    ANN_RULE_NOT_FOUND,
+    ANN_RULE_REMOVED,
+    ANN_RULE_UPDATED,
+    ANN_SETTINGS_RULE,
+    ANN_SETTINGS_SAVED,
+    FORMAT_MESSAGE,
+    ActionResult,
+    ann_template_reset,
+    ann_template_saved,
+    normalize_newlines,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +83,13 @@ BACKUP_PATH = "/backup/import"
 APPLY_PATH = "/schedule/apply"
 MAX_APPLY = 64 * 1024  # 104 changes (52 events x 2 fields) as shown and pick fields
 UPLOAD_PATHS = frozenset({"/djs/add", "/djs/edit", BACKUP_PATH})
+# A template of up to 8000 characters, url-encoded (up to 6 bytes per character)
+MAX_TEMPLATE = 64 * 1024
+TEMPLATE_PATHS = frozenset(
+    f"/announcements/templates/{kind}/{action}"
+    for kind in ANN_KINDS
+    for action in ("check", "save")
+)
 _DONE_TEXT = {
     "defaults-saved": "The defaults are saved.",
     "rule-added": "The rule was added.",
@@ -77,6 +100,18 @@ _DONE_TEXT = {
     "saved": "Booking rules saved.",
     "kept": texts.APPLY_KEPT,
 }
+# Announcements page: ?done= keys and their fixed texts (nothing user-made is echoed)
+_ANN_DONE = {
+    "settings-saved": ANN_SETTINGS_SAVED,
+    "settings-rule": ANN_SETTINGS_RULE,
+    "rule-added": ANN_RULE_ADDED,
+    "rule-updated": ANN_RULE_UPDATED,
+    "rule-removed": ANN_RULE_REMOVED,
+    **{f"{kind}-saved": ann_template_saved(kind) for kind in ANN_KINDS},
+    **{f"{kind}-reset": ann_template_reset(kind) for kind in ANN_KINDS},
+}
+_ANN_DONE_KEYS = {text: key for key, text in _ANN_DONE.items()}
+NO_TEMPLATE_TEXT = "The template text is missing. Reload the page and try again."
 ADMIN_NAME = "The admin page"
 WRONG_PASSWORD = "Wrong password."
 OWNER_MESSAGE = "Owners can only be changed with ADMIN_USER_IDS."
@@ -136,7 +171,11 @@ async def security_middleware(request: web.Request, handler: Handler) -> web.Str
     try:
         if request.method not in _SAFE_METHODS:
             length = request.content_length or 0
-            body_max = MAX_APPLY if request.path == APPLY_PATH else MAX_BODY
+            body_max = MAX_BODY
+            if request.path == APPLY_PATH:
+                body_max = MAX_APPLY
+            elif request.path in TEMPLATE_PATHS:
+                body_max = MAX_TEMPLATE
             if request.path not in UPLOAD_PATHS and (
                 length > body_max
                 or "chunked" in request.headers.get("Transfer-Encoding", "").lower()
@@ -658,6 +697,125 @@ def create_app(
             return _redirect("/schedule?done=kept")  # kept: do not list them again
         return await after_change(request, "applied")
 
+    # --- announcements ---
+
+    async def announcements_page(
+        request: web.Request,
+        message: ActionResult | None = None,
+        status: int = 200,
+        **values: Any,
+    ) -> web.Response:
+        data = await service.announcements()
+        if data is None:
+            return _html(render_notice(texts.SCHEDULE_NOT_READY), 503)
+        page = render_announcements(data, request["session"].csrf, message, **values)
+        return _html(page, status)
+
+    async def ann_after(
+        request: web.Request, result: ActionResult, **values: Any
+    ) -> web.Response:
+        """Post/redirect/get with a fixed ?done= text; any other result shows the page."""
+        key = _ANN_DONE_KEYS.get(result.message)
+        if result.ok and key is not None:
+            return _redirect(f"/announcements?done={key}")
+        return await announcements_page(request, result, 200 if result.ok else 400, **values)
+
+    async def get_announcements(request: web.Request) -> web.Response:
+        text = _ANN_DONE.get(request.query.get("done", ""))
+        return await announcements_page(request, ActionResult(True, text) if text else None)
+
+    async def post_announcement_settings(request: web.Request) -> web.Response:
+        if refused := _maintenance(service):
+            return await announcements_page(request, refused, 503)
+        form = await _read_form(request)
+        values = {
+            name: value
+            for name in ("channel", *ANN_KINDS)
+            if (value := _field(form, name)) is not None
+        }
+        result = await service.save_announcement_settings(values)
+        return await ann_after(request, result, settings_values=values)
+
+    async def post_announcement_rule_add(request: web.Request) -> web.Response:
+        if refused := _maintenance(service):
+            return await announcements_page(request, refused, 503)
+        values = _sched_values(await _read_form(request), "days", "time")
+        result = await service.add_rule(values)
+        return await ann_after(request, result, rule_values=values)
+
+    async def _ann_rule_or_none(request: web.Request) -> Any:
+        return await service.get_announcement_rule(int(request.match_info["id"]))
+
+    async def _no_ann_rule(request: web.Request) -> web.Response:
+        return await announcements_page(request, ActionResult(False, ANN_RULE_NOT_FOUND), 404)
+
+    async def get_announcement_rule_edit(request: web.Request) -> web.Response:
+        rule = await _ann_rule_or_none(request)
+        if rule is None:
+            return await _no_ann_rule(request)
+        return _html(render_edit_announcement_rule(rule, request["session"].csrf))
+
+    async def post_announcement_rule_edit(request: web.Request) -> web.Response:
+        if refused := _maintenance(service):
+            return await announcements_page(request, refused, 503)
+        rule = await _ann_rule_or_none(request)
+        if rule is None:
+            return await _no_ann_rule(request)
+        values = _sched_values(await _read_form(request), "days", "time")
+        result = await service.edit_rule(rule.id, values)
+        if result.ok:
+            return await ann_after(request, result)
+        if result.message == ANN_RULE_NOT_FOUND:
+            return await _no_ann_rule(request)
+        page = render_edit_announcement_rule(rule, request["session"].csrf, result, values)
+        return _html(page, 400)
+
+    async def get_announcement_rule_remove(request: web.Request) -> web.Response:
+        rule = await _ann_rule_or_none(request)
+        if rule is None:
+            return await _no_ann_rule(request)
+        return _html(render_confirm_remove_announcement_rule(rule, request["session"].csrf))
+
+    async def post_announcement_rule_remove(request: web.Request) -> web.Response:
+        if refused := _maintenance(service):
+            return await announcements_page(request, refused, 503)
+        rule = await _ann_rule_or_none(request)
+        if rule is None:
+            return await _no_ann_rule(request)
+        result = await service.remove_rule(rule.id)
+        if not result.ok and result.message == ANN_RULE_NOT_FOUND:
+            return await _no_ann_rule(request)
+        return await ann_after(request, result)
+
+    async def _template_text(request: web.Request) -> str | None:
+        text = _field(await _read_form(request), "text")
+        return None if text is None else normalize_newlines(text)
+
+    async def post_template_check(request: web.Request) -> web.Response:
+        kind = request.match_info["kind"]
+        text = await _template_text(request)
+        if text is None:
+            return await announcements_page(request, ActionResult(False, NO_TEMPLATE_TEXT), 400)
+        check = await service.check_template(kind, text)
+        return await announcements_page(
+            request, drafts={kind: text}, checked=(kind, check)
+        )
+
+    async def post_template_save(request: web.Request) -> web.Response:
+        if refused := _maintenance(service):
+            return await announcements_page(request, refused, 503)
+        kind = request.match_info["kind"]
+        text = await _template_text(request)
+        if text is None:
+            return await announcements_page(request, ActionResult(False, NO_TEMPLATE_TEXT), 400)
+        result = await service.save_template(kind, text)
+        if result.ok:
+            return await ann_after(request, result)
+        check = await service.check_template(kind, text)
+        return await announcements_page(
+            request, result, 400, drafts={kind: text}, checked=(kind, check)
+        )
+
     # --- Notion databases ---
 
     async def get_notion_recreate(request: web.Request) -> web.Response:
@@ -771,6 +929,18 @@ def create_app(
     app.router.add_post("/djs/delete", post_dj_delete)
     app.router.add_get("/booking-rules", get_booking_rules)
     app.router.add_post("/booking-rules", post_booking_rules)
+    app.router.add_get("/announcements", get_announcements)
+    app.router.add_post("/announcements", post_announcement_settings)
+    app.router.add_post("/announcements/settings", post_announcement_settings)
+    app.router.add_post("/announcements/rules/add", post_announcement_rule_add)
+    ann_rule = r"/announcements/rules/{id:\d{1,18}}"
+    app.router.add_get(f"{ann_rule}/edit", get_announcement_rule_edit)
+    app.router.add_post(f"{ann_rule}/edit", post_announcement_rule_edit)
+    app.router.add_get(f"{ann_rule}/remove", get_announcement_rule_remove)
+    app.router.add_post(f"{ann_rule}/remove", post_announcement_rule_remove)
+    ann_template = r"/announcements/templates/{kind:general|start}"
+    app.router.add_post(f"{ann_template}/check", post_template_check)
+    app.router.add_post(f"{ann_template}/save", post_template_save)
     app.router.add_get("/schedule", get_schedule)
     app.router.add_post("/schedule/defaults", post_schedule_defaults)
     app.router.add_post("/schedule/rules/add", post_rule_add)
