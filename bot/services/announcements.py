@@ -11,6 +11,12 @@ that event and never retried. Posted general announcements follow the event unti
 starts. A canceled or deleted event gets its posted announcements edited once to a
 fixed text. The type switch and the channel gate new posts only: existing posts are
 kept current (edited, canceled) in their stored channel either way.
+
+The start announcement (one post per event, no rule) is created while the event runs
+(first slot start up to the end of the last slot) and only for a fully booked lineup;
+an incomplete one is marked `gone`. It is edited on every tick when its digest changes
+(slot change), once to the ended rendering at the event end (state `ended`, never touched
+again), and canceled like the general posts. A bot that was offline posts it late.
 A message deleted by hand (NotFound on edit) is marked `gone` and never reposted.
 Ticks are serialised by a lock, so a row still `claimed` when a tick starts is stale
 and released for a retry. Nothing here raises into the caller.
@@ -34,7 +40,14 @@ from bot.services.announcement_settings import (
     is_rule_due,
     load_settings,
 )
-from bot.services.announcement_template import GENERAL, MAX_LENGTH, check_template, render
+from bot.services.announcement_template import (
+    GENERAL,
+    MAX_LENGTH,
+    START,
+    check_template,
+    event_end,
+    render,
+)
 from bot.services.fully_booked import is_fully_booked
 from bot.ui import texts
 
@@ -50,6 +63,7 @@ CLAIMED = "claimed"
 POSTED = "posted"
 GONE = "gone"
 CANCELED = "canceled"
+ENDED = "ended"
 
 # Report reasons
 _MISSING = "missing"
@@ -118,8 +132,10 @@ class AnnouncementService:
         # Existing posts are kept current (edited, canceled) in their stored channel
         # whatever the switches say; the switches and the channel gate new posts only.
         rules = await ann_db.list_rules(self.db, guild_id)
-        known = {e.page_id for e in await db_events.list_events(self.db, include_past=True)}
+        all_events = await db_events.list_events(self.db, include_past=True)
+        known = {e.page_id for e in all_events}
         events = await db_events.list_events(self.db)
+        upcoming = {e.page_id for e in events}
         by_event: dict[str, list[AnnouncementPost]] = {}
         for post in posts:
             if post.state != CLAIMED:
@@ -133,6 +149,13 @@ class AnnouncementService:
                         await self._cancel(post)
                     except Exception:
                         logger.exception("AnnouncementService: cancel of post %s failed", post.id)
+        # A running event that left the upcoming list (past midnight) still needs its
+        # start post edited to the ended rendering.
+        events = [*events, *(
+            e for e in all_events
+            if e.page_id not in upcoming
+            and any(p.kind == START and p.state == POSTED for p in by_event.get(e.page_id, []))
+        )]
         for event in events:
             try:
                 await self._tick_event(
@@ -154,24 +177,26 @@ class AnnouncementService:
                 if post.state == POSTED:
                     await self._cancel(post)
             return
-        if event.status in FINISHED_STATUSES:
-            return
         templates = self._templates(settings)
         existing = {(p.kind, p.rule_id) for p in posts}
-        for plan in self._new_plans(event, settings, rules, now):
-            if settings.channel_id is not None and (plan.kind, plan.rule_id) not in existing:
-                await self._claim_and_post(event, plan, settings.channel_id, now)
+        if event.status not in FINISHED_STATUSES:
+            for plan in self._new_plans(event, settings, rules, now):
+                if settings.channel_id is not None and (plan.kind, plan.rule_id) not in existing:
+                    await self._claim_and_post(event, plan, settings.channel_id, now)
         for post in posts:
             if post.state == POSTED and post.kind in templates and self._editable(post, event, now):
-                await self._update(event, Plan(post.kind, post.rule_id, templates[post.kind]),
-                                   post, now)
+                current = await self._update(
+                    event, Plan(post.kind, post.rule_id, templates[post.kind]), post, now
+                )
+                if current and post.kind == START and now >= event_end(event):
+                    await ann_db.set_state(self.db, post.id, ENDED)  # done for good
 
     # --- plans --------------------------------------------------------------
 
     @staticmethod
     def _templates(settings: AnnouncementSettings) -> dict[str, str]:
         """Template per kind whose posts are kept current."""
-        return {GENERAL: settings.general_template}
+        return {GENERAL: settings.general_template, START: settings.start_template}
 
     @staticmethod
     def _new_plans(
@@ -180,19 +205,22 @@ class AnnouncementService:
         rules: list[AnnouncementRule],
         now: datetime.datetime,
     ) -> list[Plan]:
-        if not settings.general_enabled:
-            return []
-        return [
-            Plan(GENERAL, rule.id, settings.general_template)
-            for rule in rules
-            if is_rule_due(event, rule, settings, now)
-        ]
+        plans: list[Plan] = []
+        if settings.general_enabled:
+            plans += [
+                Plan(GENERAL, rule.id, settings.general_template)
+                for rule in rules
+                if is_rule_due(event, rule, settings, now)
+            ]
+        if settings.start_enabled and event.slot_start(0) <= now < event_end(event):
+            plans.append(Plan(START, None, settings.start_template))
+        return plans
 
     @staticmethod
     def _editable(post: AnnouncementPost, event: EventInfo, now: datetime.datetime) -> bool:
         if post.kind == GENERAL:
             return now < event.slot_start(0)
-        return False
+        return post.kind == START
 
     # --- render -------------------------------------------------------------
 
@@ -281,15 +309,18 @@ class AnnouncementService:
 
     async def _update(
         self, event: EventInfo, plan: Plan, post: AnnouncementPost, now: datetime.datetime
-    ) -> None:
+    ) -> bool:
+        """Edit the post when its text changed. True when the message is up to date."""
         text = await self._render(event, plan, now)
         if text is None:
-            return
+            return False
         new_digest = digest(text)
         if new_digest == post.digest:
-            return
+            return True
         if await self._edit(post, text):
             await ann_db.set_digest(self.db, post.id, new_digest)
+            return True
+        return False
 
     async def _cancel(self, post: AnnouncementPost) -> None:
         if await self._edit(post, texts.ANNOUNCE_CANCELED):
