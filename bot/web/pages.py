@@ -7,11 +7,26 @@ import json
 from html import escape
 from urllib.parse import quote
 
+from bot.db.announcements import AnnouncementRule
 from bot.db.issues import IssueRow
 from bot.policy import BookingRules
+from bot.services.announcement_template import (
+    DEFAULT_TEMPLATES,
+    GENERAL,
+    MAX_LENGTH,
+    PLACEHOLDERS,
+    START,
+    TemplateCheck,
+)
 from bot.ui import texts
 from bot.web.schedule_page import PendingView, RuleView, ScheduleOverview, pick_key
-from bot.web.service import ActionResult, AdminRow, ServerInfo, SyncStatus
+from bot.web.service import (
+    ActionResult,
+    AdminRow,
+    AnnouncementPageData,
+    ServerInfo,
+    SyncStatus,
+)
 
 _CDN = "https://cdn.discordapp.com/"
 _BRAND = "Rave<span>Bot</span>&nbsp;Admin&nbsp;Page"
@@ -84,6 +99,13 @@ background:#9d8cff0f}
 .sub h4{margin:0 0 4px;font-size:13px;color:#e8eaff}
 .sub>p{margin:0 0 12px}
 form{margin:0}
+.ta{display:block;width:100%;margin:0 0 8px;font:12.5px/1.45 ui-monospace,Menlo,Consolas,monospace}
+.pv{white-space:pre-wrap;overflow-wrap:anywhere;margin:0 0 12px;padding:10px 12px;border-radius:6px;
+background:#00000040;font:12.5px/1.45 ui-monospace,Menlo,Consolas,monospace}
+.ph{display:grid;grid-template-columns:max-content 1fr;gap:2px 12px;margin:8px 0 12px;
+font-size:12.5px}
+.ph dt{font-family:ui-monospace,Menlo,Consolas,monospace;color:#cfc6ff}
+.ph dd{margin:0;opacity:.8}
 """
 
 
@@ -347,6 +369,9 @@ def render_dashboard(
         '<section class="card"><h3>Booking rules</h3>'
         '<p class="muted">Slot limit per DJ and event, and the cancellation cutoff.</p>'
         '<a class="btn" href="/booking-rules">Booking rules</a></section>'
+        '<section class="card"><h3>Announcements</h3>'
+        '<p class="muted">Event announcements: channel, switches, rules and templates.</p>'
+        '<a class="btn" href="/announcements">Announcements</a></section>'
         f"{_data_card(sync)}"
         f"{_sync_card(sync)}"
     )
@@ -934,4 +959,256 @@ def render_notice(message: str) -> str:
         f'<div class="top"><div class="brand">{_BRAND}</div></div>'
         f'<section class="card"><p>{_e(message)}</p>'
         '<a class="btn g" href="/">Back to the admin page</a></section>'
+    )
+
+
+# --- event announcements ---
+
+TEMPLATE_MAXLENGTH = 6000
+_PLACEHOLDER_HELP = {
+    "title": "the event name",
+    "date": "start date and time, shown in each reader's time zone",
+    "countdown": "time until the start, for example \"in 3 days\"",
+    "description": "the event's notes",
+    "notes": "the event's notes (same as {description})",
+    "location": "the location (empty when none)",
+    "genre": "the genre (empty when none)",
+    "lineup": "one line per slot: start time and DJ, or open slot",
+    "slots": "number of slots",
+    "booked": "number of booked slots",
+    "now_playing": "the DJ playing now (empty before the start)",
+    "next_up": "the next DJ (empty after the last slot)",
+    "status": "a short line: starting soon, live now or ended",
+}
+_KIND_TITLE = {GENERAL: "General announcement", START: "Start announcement"}
+_KIND_HELP = {
+    GENERAL: "Posted before the event by the rules above.",
+    START: "Posted when the event starts and edited as the slots change.",
+}
+
+
+def _hhmm(value: datetime.time) -> str:
+    return f"{value.hour:02d}:{value.minute:02d}"
+
+
+def _ann_rule_text(rule: AnnouncementRule) -> str:
+    return texts.announce_rule_line(rule.id, rule.days_before, _hhmm(rule.post_time))
+
+
+def _ann_input(name: str, label: str, value: str, maxlen: int, numeric: bool = False) -> str:
+    mode = ' inputmode="numeric"' if numeric else ""
+    return (
+        f'<input class="in" type="text" name="{name}" value="{_e(value)}" '
+        f'maxlength="{maxlen}"{mode} placeholder="{_e(label)}" aria-label="{_e(label)}" '
+        'autocomplete="off">'
+    )
+
+
+def _ann_rule_inputs(values: dict[str, str]) -> str:
+    return _labeled(
+        "Days before the event",
+        _ann_input("days", "Days before the event", values.get("days", ""), 5, True),
+        "0 to 365. 0 means on the day of the event.",
+    ) + _labeled(
+        "Time of day",
+        _ann_input("time", "Time of day, HH:MM", values.get("time", ""), 10),
+        "HH:MM in the bot's time zone, for example 18:00.",
+    )
+
+
+def _ann_rule_row(rule: AnnouncementRule) -> str:
+    return (
+        f'<div class="row"><div class="who"><b>{_e(_ann_rule_text(rule))}</b></div>'
+        f'<a class="btn g" href="/announcements/rules/{_e(rule.id)}/edit">Edit</a>'
+        f'<a class="btn red" href="/announcements/rules/{_e(rule.id)}/remove">Remove</a></div>'
+    )
+
+
+def _ann_settings_card(
+    data: AnnouncementPageData, csrf: str, values: dict[str, str] | None
+) -> str:
+    stored = data.settings
+    if values is None:
+        channel = str(stored.channel_id) if stored.channel_id else ""
+        general_on, start_on = stored.general_enabled, stored.start_enabled
+    else:
+        channel = values.get("channel", "")
+        general_on, start_on = GENERAL in values, START in values
+    if stored.channel_id is None:
+        current = "No channel is set."
+    elif data.channel_name:
+        current = f"Current channel: #{data.channel_name} ({stored.channel_id})"
+    else:
+        current = f"Current channel: {stored.channel_id} (not found on the server)"
+    warn = ""
+    if stored.channel_id is None and (stored.general_enabled or stored.start_enabled):
+        warn = '<p class="msg err">No channel is set, so nothing is posted.</p>'
+    return (
+        '<section class="card"><h3>Announcement settings</h3>'
+        f'<p class="kv">{_e(current)}</p>{warn}'
+        f'<form method="post" action="/announcements/settings">{_csrf_field(csrf)}'
+        + _labeled(
+            "Channel ID",
+            _ann_input("channel", "Channel ID", channel, 25, True),
+            "A text channel the bot can post in. Empty clears the channel.",
+        )
+        + _checkbox(GENERAL, "General announcement (before the event, by the rules)", general_on)
+        + _checkbox(START, "Start announcement (when the event starts)", start_on)
+        + '<div class="actions"><button class="btn" type="submit">Save settings</button></div>'
+        "</form>"
+        '<p class="muted">Turning the general announcement on creates a default rule '
+        "(3 days before at 18:00) when there are no rules. An announcement is only posted "
+        "when every slot of the event is booked. Without a channel nothing is posted.</p>"
+        "</section>"
+    )
+
+
+def _ann_rules_card(
+    data: AnnouncementPageData, csrf: str, values: dict[str, str] | None
+) -> str:
+    rows = "".join(_ann_rule_row(r) for r in data.rules)
+    if not rows:
+        rows = '<p class="muted">No rules: the general announcement posts nothing.</p>'
+    return (
+        f'<section class="card"><h3>General announcement rules ({len(data.rules)})</h3>{rows}'
+        '<div class="sub"><h4>Add a rule</h4>'
+        '<p class="muted">Each rule posts one message per event: the given number of days '
+        "before the event at the given time.</p>"
+        f'<form method="post" action="/announcements/rules/add">{_csrf_field(csrf)}'
+        + _ann_rule_inputs(values or {"days": "", "time": "18:00"})
+        + '<div class="actions"><button class="btn" type="submit">Add rule</button></div>'
+        "</form></div></section>"
+    )
+
+
+def _ann_check_panel(check: TemplateCheck, event) -> str:
+    if check.ok:
+        verdict = '<p class="msg ok" role="status">The template is valid and can be posted.</p>'
+    else:
+        items = "".join(f"<li>{_e(p)}</li>" for p in check.problems)
+        verdict = (
+            '<div class="msg err" role="status">The template cannot be posted.'
+            f"<ul>{items}</ul></div>"
+        )
+    warnings = ""
+    if check.warnings:
+        warnings = '<ul class="kv">' + "".join(f"<li>{_e(w)}</li>" for w in check.warnings)
+        warnings += "</ul>"
+    left = MAX_LENGTH - check.length
+    rest = f"{left} left" if left >= 0 else f"{-left} over"
+    if event is None:
+        source = "the sample event (there is no upcoming event)"
+    else:
+        source = f"the next event: {event.event_id} on {event.date.strftime('%d.%m.%Y')}"
+    return (
+        f'<div class="sub"><h4>Check</h4>{verdict}{warnings}'
+        f'<p class="muted">{check.length} / {MAX_LENGTH} characters ({rest})</p>'
+        f'<p class="muted">Preview filled with {_e(source)}. Times are Discord time codes '
+        "(&lt;t:...&gt;); Discord shows them in each reader's time zone.</p>"
+        f'<pre class="pv">{_e(check.preview)}</pre></div>'
+    )
+
+
+def _ann_template_card(
+    kind: str,
+    data: AnnouncementPageData,
+    csrf: str,
+    draft: str | None,
+    check: TemplateCheck | None,
+) -> str:
+    stored = data.settings.general_template if kind == GENERAL else data.settings.start_template
+    text = stored if draft is None else draft
+    state = "the default template" if stored == DEFAULT_TEMPLATES[kind] else "a custom template"
+    save = f"/announcements/templates/{kind}/save"
+    names = "".join(
+        f"<dt>{_e('{' + name + '}')}</dt><dd>{_e(_PLACEHOLDER_HELP.get(name, ''))}</dd>"
+        for name in PLACEHOLDERS[kind]
+    )
+    panel = _ann_check_panel(check, data.event) if check is not None else ""
+    return (
+        f'<section class="card"><h3>{_e(_KIND_TITLE[kind])} template</h3>'
+        f'<p class="muted">{_e(_KIND_HELP[kind])} The stored text is {state}. '
+        "Discord markdown and role mentions (&lt;@&amp;role id&gt;) work; @everyone and "
+        "@here never ping.</p>"
+        f'<form method="post" action="{save}">{_csrf_field(csrf)}'
+        f'<textarea class="in ta" name="text" rows="12" maxlength="{TEMPLATE_MAXLENGTH}" '
+        f'aria-label="{_e(_KIND_TITLE[kind])} template">\n{_e(text)}</textarea>'
+        '<div class="actions">'
+        f'<button class="btn g" type="submit" formaction="/announcements/templates/{kind}/check">'
+        "Check and preview</button>"
+        '<button class="btn" type="submit">Save</button></div></form>'
+        f"{panel}"
+        f'<dl class="ph">{names}</dl>'
+        '<p class="muted">Write {{ and }} for a literal brace. Save always runs the check '
+        "first and refuses a template that cannot be posted. An empty text means the default "
+        "template.</p>"
+        f'<form method="post" action="{save}">{_csrf_field(csrf)}'
+        '<input type="hidden" name="text" value="">'
+        '<button class="btn red" type="submit">Reset to default</button></form>'
+        "</section>"
+    )
+
+
+def render_announcements(
+    data: AnnouncementPageData,
+    csrf: str,
+    message: ActionResult | None = None,
+    *,
+    settings_values: dict[str, str] | None = None,
+    rule_values: dict[str, str] | None = None,
+    drafts: dict[str, str] | None = None,
+    checked: tuple[str, TemplateCheck] | None = None,
+) -> str:
+    """The Announcements page. ``drafts`` keep typed template text after a check or a
+    refused save; ``checked`` is the check result shown under that type's editor."""
+    drafts = drafts or {}
+    cards = "".join(
+        _ann_template_card(
+            kind,
+            data,
+            csrf,
+            drafts.get(kind),
+            checked[1] if checked is not None and checked[0] == kind else None,
+        )
+        for kind in (GENERAL, START)
+    )
+    return _page(
+        f'<div class="top"><div class="brand">{_BRAND}</div>'
+        '<a class="btn g" href="/">Back</a></div>'
+        f"{_message(message)}"
+        f"{_ann_settings_card(data, csrf, settings_values)}"
+        f"{_ann_rules_card(data, csrf, rule_values)}"
+        f"{cards}"
+    )
+
+
+def render_edit_announcement_rule(
+    rule: AnnouncementRule,
+    csrf: str,
+    message: ActionResult | None = None,
+    values: dict[str, str] | None = None,
+) -> str:
+    shown = values or {"days": str(rule.days_before), "time": _hhmm(rule.post_time)}
+    return _page(
+        f"{_TOP}{_message(message)}"
+        f'<section class="card"><h3>Edit rule #{_e(rule.id)}</h3>'
+        f'<form method="post" action="/announcements/rules/{_e(rule.id)}/edit">'
+        f"{_csrf_field(csrf)}"
+        + _ann_rule_inputs(shown)
+        + '<p class="muted">A change applies to events this rule has not posted for yet.</p>'
+        '<div class="actions"><button class="btn" type="submit">Save</button>'
+        '<a class="btn g" href="/announcements">Cancel</a></div></form></section>'
+    )
+
+
+def render_confirm_remove_announcement_rule(rule: AnnouncementRule, csrf: str) -> str:
+    return _page(
+        f"{_TOP}"
+        '<section class="card"><h3>Remove a rule</h3>'
+        f"<p>Remove rule {_e(_ann_rule_text(rule))}?</p>"
+        '<p class="muted">Announcements this rule already posted stay in the channel.</p>'
+        f'<div class="actions"><form method="post" '
+        f'action="/announcements/rules/{_e(rule.id)}/remove">'
+        f'{_csrf_field(csrf)}<button class="btn red" type="submit">Remove</button></form>'
+        '<a class="btn g" href="/announcements">Cancel</a></div></section>'
     )

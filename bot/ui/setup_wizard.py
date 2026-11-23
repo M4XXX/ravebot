@@ -33,7 +33,8 @@ from bot.policy import (
     rules_summary,
     save_rules,
 )
-from bot.services import activation
+from bot.services import activation, announcement_settings
+from bot.services.announcement_settings import ANNOUNCE_CHANNEL_KEY
 from bot.services.event_replenish import replenish_events
 from bot.services.management_lineup import MANAGEMENT_CHANNEL_KEY
 from bot.services.outreach import parse_outreach_enabled
@@ -78,6 +79,7 @@ STEPS: list[str] = [
     "timezone",
     "invites",
     "management_channel",
+    "announcement_channel",
     "booking_rules",
     "summary",
 ]
@@ -127,6 +129,7 @@ CHANNEL_KEYS = ("dj_channel", "log_channel")
 # Optional: the draft key is the config key; absent means the feature is off.
 MGMT_KEY = MANAGEMENT_CHANNEL_KEY
 MGMT_BACKFILL_KEY = "management_backfill"  # draft only, never stored as config
+ANN_KEY = ANNOUNCE_CHANNEL_KEY  # optional like MGMT_KEY; absent means off
 ROLE_KEYS = ("dj_role_id", "invites_role_id")
 
 _REQUIRED_PERMISSIONS = (("send_messages", "Send Messages"), ("embed_links", "Embed Links"))
@@ -157,6 +160,8 @@ ID_MGMT_CHANNEL = "setup:mgmt_channel"
 ID_MGMT_CLEAR = "setup:mgmt_clear"
 ID_MGMT_ALL = "setup:mgmt_all"
 ID_MGMT_NEW = "setup:mgmt_new"
+ID_ANN_CHANNEL = "setup:ann_channel"
+ID_ANN_CLEAR = "setup:ann_clear"
 ID_SLOT_LIMIT_TOGGLE = "setup:slot_limit_toggle"
 ID_CUTOFF_TOGGLE = "setup:cutoff_toggle"
 ID_RULES_CHANGE = "setup:rules_change"
@@ -403,6 +408,21 @@ async def _moved_rule_lines(ctx: "BotContext", guild_id: int, data: dict[str, An
     ]
 
 
+_ANNOUNCEMENT_LINES = 3
+
+
+async def _announcement_lines(ctx: "BotContext", guild_id: Any, channel: Any) -> list[str]:
+    """Channel plus the two read-only switches; off when the settings cannot be read."""
+    general = start = False
+    if isinstance(guild_id, int):
+        try:
+            loaded = await announcement_settings.load_settings(_db(ctx), guild_id)
+            general, start = loaded.general_enabled, loaded.start_enabled
+        except Exception:
+            logger.warning("Setup wizard: could not read the announcement settings", exc_info=True)
+    return texts.announcement_summary_lines(channel, general, start)
+
+
 async def summary_lines(
     ctx: "BotContext", guild: Any, data: dict[str, Any], guild_id: int | None = None
 ) -> list[str]:
@@ -419,10 +439,12 @@ async def summary_lines(
         else "off"
     )
     rules = await draft_rules(_db(ctx), guild_id or getattr(guild, "id", None), data)
+    gid = guild_id if guild_id is not None else getattr(guild, "id", None)
     lines = [
         f"DJ channel: {chan('dj_channel')}",
         f"Log channel: {chan('log_channel')}",
         f"DJ Management channel: {chan(MGMT_KEY)}",
+        *await _announcement_lines(ctx, gid, data.get(ANN_KEY)),
         f"DJ role: {dj} \u00b7 Invites role: {inv}",
         f"Events: {v['slots_per_event']} slots, "
         f"{v['default_start_time']} {zone_abbr(v['timezone'])}, "
@@ -433,7 +455,7 @@ async def summary_lines(
         *rules_summary(rules),
     ]
     if v["event_schedule_enabled"]:
-        lines[6:6] = [
+        lines[6 + _ANNOUNCEMENT_LINES:6 + _ANNOUNCEMENT_LINES] = [
             f"Default genre: {v['default_genre'] or 'none'}",
             f"Default location: {v['default_location'] or 'none'}",
             f"Rules: {len(data.get('rules') or [])}",
@@ -445,7 +467,6 @@ async def summary_lines(
             else "no message (only new ones)"
         )
         lines.append(f"Existing fully booked events: {choice}")
-    gid = guild_id if guild_id is not None else getattr(guild, "id", None)
     if isinstance(gid, int):
         lines.extend(await _moved_rule_lines(ctx, gid, data))
     previous_zone = data.get("orig_timezone", DEFAULT_TIMEZONE)
@@ -474,6 +495,10 @@ _OLD_SUMMARY_STEP = 16  # index of "summary" before the DJ Management channel st
 # Set in the data of every draft whose step number counts the Booking rules step.
 STEPS_V5_MARKER = "steps_v5"
 _V4_SUMMARY_STEP = 17  # index of "summary" before the Booking rules step existed
+_V5_SUMMARY_STEP = 18  # index of "summary" before the Announcement channel step existed
+# Set in the data of every draft whose step number counts the Announcement channel step.
+STEPS_V6_MARKER = "steps_v6"
+_FIRST_V6_SHIFTED_STEP = 17  # index of "booking_rules" before the Announcement channel step
 
 
 def migrate_legacy_draft(draft: SetupDraft) -> None:
@@ -488,12 +513,16 @@ def migrate_legacy_draft(draft: SetupDraft) -> None:
             draft.data[STEPS_MARKER] = True
         if not draft.data.get(STEPS_V4_MARKER):
             if draft.step == _OLD_SUMMARY_STEP:
-                draft.step = STEPS.index("summary")
+                draft.step = _V4_SUMMARY_STEP
             draft.data[STEPS_V4_MARKER] = True
         if not draft.data.get(STEPS_V5_MARKER):
             if draft.step == _V4_SUMMARY_STEP:
-                draft.step = STEPS.index("summary")
+                draft.step = _V5_SUMMARY_STEP
             draft.data[STEPS_V5_MARKER] = True
+        if not draft.data.get(STEPS_V6_MARKER):
+            if draft.step >= _FIRST_V6_SHIFTED_STEP:
+                draft.step += 1
+            draft.data[STEPS_V6_MARKER] = True
         return
     if draft.step in _LEGACY_STEP_KEYS:
         draft.step = STEPS.index(_LEGACY_STEP_KEYS[draft.step])
@@ -501,6 +530,7 @@ def migrate_legacy_draft(draft: SetupDraft) -> None:
     draft.data[STEPS_MARKER] = True
     draft.data[STEPS_V4_MARKER] = True
     draft.data[STEPS_V5_MARKER] = True
+    draft.data[STEPS_V6_MARKER] = True
     draft.data.setdefault("event_schedule_enabled", True)
     draft.data.setdefault("first_event_date", "")
 
@@ -647,6 +677,26 @@ async def _render_management(ctx: "BotContext", guild: Any, draft: SetupDraft) -
     )
 
 
+def _render_announcement(guild: Any, draft: SetupDraft) -> StepView:
+    data = draft.data
+    chosen = data.get(ANN_KEY)
+    ok, _, check = _channel_check(guild, chosen)
+    content = texts.setup_channel_step(
+        step_number("announcement_channel", data),
+        total_steps(data),
+        "Announcement channel",
+        texts.SETUP_ANNOUNCEMENT_CHANNEL_QUESTION,
+        f"<#{chosen}>" if chosen else None,
+        check,
+    )
+    return StepView(
+        content,
+        [ID_ANN_CHANNEL, ID_ANN_CLEAR, ID_BACK, ID_NEXT],
+        next_disabled=chosen is not None and not ok,
+        defaults={ID_ANN_CHANNEL: int(chosen)} if chosen else {},
+    )
+
+
 async def render_step(ctx: "BotContext", guild: Any, draft: SetupDraft) -> StepView:
     key = step_key(draft.step)
     data = draft.data
@@ -701,6 +751,8 @@ async def render_step(ctx: "BotContext", guild: Any, draft: SetupDraft) -> StepV
         return await _render_rules(ctx, draft)
     if key == "management_channel":
         return await _render_management(ctx, guild, draft)
+    if key == "announcement_channel":
+        return _render_announcement(guild, draft)
     if key == "booking_rules":
         rules = await draft_rules(_db(ctx), draft.guild_id, data)
         return StepView(
@@ -814,6 +866,7 @@ class SetupWizardView(disnake.ui.View):
             ID_SAVE: ("Save", disnake.ButtonStyle.success, self.on_save),
             ID_CHANGE: (texts.SETUP_CHANGE_BUTTON, disnake.ButtonStyle.primary, self.on_change),
             ID_MGMT_CLEAR: ("Clear", disnake.ButtonStyle.secondary, self.on_mgmt_clear),
+            ID_ANN_CLEAR: ("Clear", disnake.ButtonStyle.secondary, self.on_ann_clear),
             ID_MGMT_ALL: (
                 texts.setup_mgmt_all_label(step.backfill_count),
                 disnake.ButtonStyle.success
@@ -863,11 +916,12 @@ class SetupWizardView(disnake.ui.View):
             return item
         default = step.defaults.get(cid)
         defaults = [disnake.Object(id=default)] if default else None
-        if cid in (ID_DJ_CHANNEL, ID_LOG_CHANNEL, ID_MGMT_CHANNEL):
+        if cid in (ID_DJ_CHANNEL, ID_LOG_CHANNEL, ID_MGMT_CHANNEL, ID_ANN_CHANNEL):
             key = {
                 ID_DJ_CHANNEL: "dj_channel",
                 ID_LOG_CHANNEL: "log_channel",
                 ID_MGMT_CHANNEL: MGMT_KEY,
+                ID_ANN_CHANNEL: ANN_KEY,
             }[cid]
             item = disnake.ui.ChannelSelect(
                 custom_id=cid,
@@ -1252,6 +1306,9 @@ class SetupWizardView(disnake.ui.View):
 
         await self._update_draft(inter, clear)
 
+    async def on_ann_clear(self, inter: Any) -> None:
+        await self._update_draft(inter, lambda data: data.pop(ANN_KEY, None))
+
     async def on_mgmt_all(self, inter: Any) -> None:
         await self._update_draft(inter, lambda data: data.__setitem__(MGMT_BACKFILL_KEY, "all"))
 
@@ -1365,6 +1422,7 @@ def _layout(draft: SetupDraft) -> StepView:
         "management_channel": [
             ID_MGMT_CHANNEL, ID_MGMT_CLEAR, ID_MGMT_ALL, ID_MGMT_NEW, ID_BACK, ID_NEXT,
         ],
+        "announcement_channel": [ID_ANN_CHANNEL, ID_ANN_CLEAR, ID_BACK, ID_NEXT],
         "booking_rules": [
             ID_SLOT_LIMIT_TOGGLE, ID_CUTOFF_TOGGLE, ID_RULES_CHANGE, ID_BACK, ID_NEXT,
         ],
@@ -1414,6 +1472,7 @@ async def prefilled_data(
         STEPS_MARKER: True,
         STEPS_V4_MARKER: True,
         STEPS_V5_MARKER: True,
+        STEPS_V6_MARKER: True,
     }
     for key in (*CHANNEL_KEYS, *ROLE_KEYS):
         raw = await db_config.get_value(db, guild_id, key)
@@ -1451,6 +1510,12 @@ async def prefilled_data(
     except ValueError:
         pass
     data["orig_management_channel"] = data.get(MGMT_KEY)
+    raw_ann = await db_config.get_value(db, guild_id, ANN_KEY)
+    try:
+        if raw_ann:
+            data[ANN_KEY] = int(raw_ann)
+    except ValueError:
+        pass
     data["orig_invites_role_id"] = data.get("invites_role_id")
     data["outreach_enabled"] = parse_outreach_enabled(
         await db_config.get_value(db, guild_id, "outreach_enabled")
@@ -1493,6 +1558,10 @@ async def _write_all(db: Any, guild_id: int, data: dict[str, Any]) -> None:
         await db_config.set_value(db, guild_id, MGMT_KEY, str(data[MGMT_KEY]))
     else:
         await db_config.delete_value(db, guild_id, MGMT_KEY)  # skipped or cleared: off
+    if data.get(ANN_KEY) is not None:
+        await db_config.set_value(db, guild_id, ANN_KEY, str(data[ANN_KEY]))
+    else:
+        await db_config.delete_value(db, guild_id, ANN_KEY)  # skipped or cleared: off
     await save_rules(db, guild_id, await draft_rules(db, guild_id, data))
     set_timezone(v["timezone"])
 

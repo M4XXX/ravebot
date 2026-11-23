@@ -18,15 +18,29 @@ from bot import maintenance as maintenance_ops
 from bot.backup.export import export_database
 from bot.backup.restore import import_database
 from bot.context import BotContext
+from bot.db import announcements as db_ann
 from bot.db import config as config_db
+from bot.db import events as db_events
 from bot.db import issues, outbox
+from bot.db.announcements import AnnouncementRule
 from bot.db.issues import IssueRow
 from bot.db.outbox import OutboxStats
+from bot.notion.models import EventInfo
 from bot.policy import BookingRules, current_rules, parse_rules_form, save_rules
 from bot.results import ActionResult as ActionResult  # re-export; lives in bot.results
+from bot.services import announcement_settings as ann_settings
 from bot.services.admin_management import AdminManagementService, clean_name
 from bot.services.admin_registry import AdminRegistry
+from bot.services.announcement_settings import AnnouncementSettings
+from bot.services.announcement_template import (
+    DEFAULT_TEMPLATES,
+    GENERAL,
+    START,
+    TemplateCheck,
+    check_template,
+)
 from bot.services.dj_admin import parse_discord_id
+from bot.services.lineup import upcoming_event
 from bot.sync.cycle import CONFIG_GUILD_ID, LAST_ERROR_KEY, LAST_RUN_KEY
 from bot.sync.notion_import import (
     PG_TRUTH_IMPORTED_KEY,
@@ -39,7 +53,10 @@ from bot.sync.rebuild import (
     run_startup_rebuild_if_needed,
     run_startup_recovery,
 )
+from bot.timezone import local_today
 from bot.ui import texts
+from bot.ui.setup_options import parse_hhmm
+from bot.ui.setup_wizard import missing_permissions
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +75,27 @@ RETRY_NO_NOTION = "Notion is not set up, so there is nothing to import."
 RETRY_DONE = "The import from Notion worked. Booking and the Notion sync run again."
 RETRY_FAILED = "The import from Notion failed again: {problem}"
 RETRY_ERROR = "The import from Notion failed. Check the bot log."
+ANN_KINDS = (GENERAL, START)
+ANN_MAX_DAYS = 365
+ANN_SETTINGS_SAVED = "The announcement settings are saved."
+ANN_SETTINGS_RULE = (
+    "The announcement settings are saved. The general announcement had no rules, so "
+    "a default rule was created: 3 days before at 18:00."
+)
+ANN_RULE_ADDED = "The announcement rule was added."
+ANN_RULE_UPDATED = "The announcement rule was updated."
+ANN_RULE_REMOVED = "The announcement rule was removed."
+ANN_RULE_NOT_FOUND = "This rule no longer exists."
+ANN_CHANNEL_FORMAT = (
+    "Enter the channel ID (17 to 20 digits), or leave it empty to clear the channel."
+)
+ANN_NO_TEXT_CHANNEL = "There is no text channel with this ID on the server."
+ANN_UNKNOWN_KIND = "There is no announcement type with this name."
+ANN_SAVE_FAILED = "The change could not be saved. Please try again."
+ANN_EMPTY_WARNING = (
+    "The text is empty: saving it resets to the default template. "
+    "The preview shows the default template."
+)
 _OPERATIONS = {
     "upgrade": "The import from Notion is running.",
     "rebuild": "A rebuild from Notion is running.",
@@ -105,6 +143,54 @@ class SyncStatus:
     problem: str | None
     maintenance: str | None
     can_retry: bool = False
+
+
+@dataclass(frozen=True)
+class AnnouncementPageData:
+    """What the Announcements page shows; ``event`` fills the preview (None: sample)."""
+
+    settings: AnnouncementSettings
+    rules: list[AnnouncementRule]
+    event: EventInfo | None
+    channel_name: str | None = None
+
+
+def ann_template_saved(kind: str) -> str:
+    return f"The {kind} template is saved."
+
+
+def ann_template_reset(kind: str) -> str:
+    return f"The {kind} template is back to the default."
+
+
+def normalize_newlines(text: str) -> str:
+    """Browser textareas post CRLF; store LF only. Nothing else is stripped."""
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _parse_rule_form(raw: dict[str, str]) -> tuple[int, datetime.time] | str:
+    """Days (0 to 365) and HH:MM, or the error text."""
+    errors = []
+    days_text = (raw.get("days") or "").strip()
+    is_number = days_text.isascii() and days_text.isdigit() and len(days_text) <= 3
+    days = int(days_text) if is_number else -1
+    if not 0 <= days <= ANN_MAX_DAYS:
+        errors.append(texts.ANNOUNCE_RULE_DAYS_INVALID)
+    clean = parse_hhmm(raw.get("time") or "")
+    if clean is None:
+        errors.append(texts.ANNOUNCE_RULE_TIME_INVALID)
+    if errors:
+        return " ".join(errors)
+    assert clean is not None
+    return days, datetime.time(int(clean[:2]), int(clean[3:]))
+
+
+def _merge_checks(real: TemplateCheck, sample: TemplateCheck) -> TemplateCheck:
+    """The check with the next event, plus the problems only the sample event has."""
+    extra = [f"With the sample event: {p}" for p in sample.problems if p not in real.problems]
+    warnings = real.warnings + [w for w in sample.warnings if w not in real.warnings]
+    problems = real.problems + extra
+    return TemplateCheck(not problems, problems, warnings, real.length, real.preview)
 
 
 def _parse_time(raw: str | None) -> datetime.datetime | None:
@@ -335,6 +421,196 @@ class AdminPageService:
             logger.exception("Could not save the booking rules")
             return ActionResult(False, "The booking rules could not be saved. Please try again.")
         return ActionResult(True, "Booking rules saved.")
+
+    # --- event announcements ---
+
+    def _ann_target(self) -> tuple[Any, int] | None:
+        """(db, guild id) of the first server, or None while the bot is not ready."""
+        if not self._bot.guilds or self._ctx.db is None:
+            return None
+        return self._ctx.db, self._bot.guilds[0].id
+
+    async def _next_event(self) -> EventInfo | None:
+        """The next upcoming event that is not finished, for the check and the preview."""
+        db = self._ctx.db
+        if db is None:
+            return None
+        try:
+            return upcoming_event(await db_events.list_events(db), local_today())
+        except Exception:
+            logger.warning("Could not read the events for the template preview", exc_info=True)
+            return None
+
+    def _channel_name(self, channel_id: int | None) -> str | None:
+        if channel_id is None or not self._bot.guilds:
+            return None
+        channel = self._bot.guilds[0].get_channel(channel_id)
+        name = getattr(channel, "name", None)
+        return name if isinstance(name, str) else None
+
+    async def announcements(self) -> AnnouncementPageData | None:
+        """Settings, rules and the preview event, or None while the bot is not ready."""
+        target = self._ann_target()
+        if target is None:
+            return None
+        db, guild_id = target
+        current = await ann_settings.load_settings(db, guild_id)
+        return AnnouncementPageData(
+            settings=current,
+            rules=await db_ann.list_rules(db, guild_id),
+            event=await self._next_event(),
+            channel_name=self._channel_name(current.channel_id),
+        )
+
+    def _check_channel(self, raw: str, stored: int | None = None) -> int | None | str:
+        """The channel id (None clears it), or the error text.
+
+        The channel the settings already hold is not checked for permissions again, so a
+        switch can still be turned off after that channel is gone.
+        """
+        text = raw.strip()
+        if not text:
+            return None
+        channel_id = parse_discord_id(text)
+        if channel_id is None:
+            return ANN_CHANNEL_FORMAT
+        if channel_id == stored:
+            return channel_id
+        guild = self._bot.guilds[0]
+        channel = guild.get_channel(channel_id)
+        if not isinstance(channel, disnake.TextChannel):
+            return ANN_NO_TEXT_CHANNEL
+        missing = missing_permissions(channel, guild.me)
+        if missing:
+            return texts.announce_channel_unusable(f"#{channel.name}", missing)
+        return channel_id
+
+    async def save_announcement_settings(self, raw: dict[str, str]) -> ActionResult:
+        """Channel id (empty clears it, absent keeps it) and the two switches (a key
+        present means on).
+
+        ``set_enabled`` runs only when a switch changes, so a repeated "on" keeps the
+        moment the general announcement was switched on.
+        """
+        target = self._ann_target()
+        if target is None:
+            return ActionResult(False, texts.SCHEDULE_NOT_READY)
+        db, guild_id = target
+        try:
+            current = await ann_settings.load_settings(db, guild_id)
+        except Exception:
+            logger.exception("Could not save the announcement settings")
+            return ActionResult(False, ANN_SAVE_FAILED)
+        channel = self._check_channel(raw.get("channel") or "", current.channel_id)
+        if isinstance(channel, str):
+            return ActionResult(False, channel)
+        wanted = {GENERAL: GENERAL in raw, START: START in raw}
+        try:
+            if "channel" in raw and channel != current.channel_id:
+                await ann_settings.set_channel(db, guild_id, channel)
+            stored = {GENERAL: current.general_enabled, START: current.start_enabled}
+            rule_created = False
+            for kind in ANN_KINDS:
+                if wanted[kind] == stored[kind]:
+                    continue
+                had_rules = bool(await db_ann.list_rules(db, guild_id)) if wanted[kind] else True
+                await ann_settings.set_enabled(db, guild_id, kind, wanted[kind])
+                if kind == GENERAL and not had_rules:
+                    rule_created = bool(await db_ann.list_rules(db, guild_id))
+        except Exception:
+            logger.exception("Could not save the announcement settings")
+            return ActionResult(False, ANN_SAVE_FAILED)
+        return ActionResult(True, ANN_SETTINGS_RULE if rule_created else ANN_SETTINGS_SAVED)
+
+    async def get_announcement_rule(self, rule_id: int) -> AnnouncementRule | None:
+        target = self._ann_target()
+        if target is None:
+            return None
+        rules = await db_ann.list_rules(*target)
+        return next((r for r in rules if r.id == rule_id), None)
+
+    async def add_rule(self, raw: dict[str, str]) -> ActionResult:
+        parsed = _parse_rule_form(raw)
+        if isinstance(parsed, str):
+            return ActionResult(False, parsed)
+        target = self._ann_target()
+        if target is None:
+            return ActionResult(False, texts.SCHEDULE_NOT_READY)
+        try:
+            await db_ann.add_rule(*target, *parsed)
+        except Exception:
+            logger.exception("Could not add an announcement rule")
+            return ActionResult(False, ANN_SAVE_FAILED)
+        return ActionResult(True, ANN_RULE_ADDED)
+
+    async def edit_rule(self, rule_id: int, raw: dict[str, str]) -> ActionResult:
+        parsed = _parse_rule_form(raw)
+        if isinstance(parsed, str):
+            return ActionResult(False, parsed)
+        target = self._ann_target()
+        if target is None:
+            return ActionResult(False, texts.SCHEDULE_NOT_READY)
+        try:
+            saved = await db_ann.update_rule(*target, rule_id, *parsed)
+        except Exception:
+            logger.exception("Could not change an announcement rule")
+            return ActionResult(False, ANN_SAVE_FAILED)
+        if saved is None:
+            return ActionResult(False, ANN_RULE_NOT_FOUND)
+        return ActionResult(True, ANN_RULE_UPDATED)
+
+    async def remove_rule(self, rule_id: int) -> ActionResult:
+        target = self._ann_target()
+        if target is None:
+            return ActionResult(False, texts.SCHEDULE_NOT_READY)
+        try:
+            removed = await db_ann.delete_rule(*target, rule_id)
+        except Exception:
+            logger.exception("Could not remove an announcement rule")
+            return ActionResult(False, ANN_SAVE_FAILED)
+        if not removed:
+            return ActionResult(False, ANN_RULE_NOT_FOUND)
+        return ActionResult(True, ANN_RULE_REMOVED)
+
+    async def check_template(self, kind: str, text: str) -> TemplateCheck:
+        """The same check a save runs, with the next event (or the sample) as preview."""
+        if kind not in ANN_KINDS:
+            raise ValueError(f"Unknown announcement kind: {kind!r}")
+        text = normalize_newlines(text)
+        event = await self._next_event()
+        if not text.strip():
+            check = check_template(DEFAULT_TEMPLATES[kind], kind, event)
+            return TemplateCheck(
+                check.ok, check.problems, [ANN_EMPTY_WARNING, *check.warnings],
+                check.length, check.preview,
+            )
+        sample = check_template(text, kind, None)
+        if event is None:
+            return sample
+        return _merge_checks(check_template(text, kind, event), sample)
+
+    async def save_template(self, kind: str, text: str) -> ActionResult:
+        """Check and store a template; an invalid one is refused, empty text resets it."""
+        if kind not in ANN_KINDS:
+            return ActionResult(False, ANN_UNKNOWN_KIND)
+        target = self._ann_target()
+        if target is None:
+            return ActionResult(False, texts.SCHEDULE_NOT_READY)
+        text = normalize_newlines(text)
+        event = await self._next_event()
+        try:
+            check = await ann_settings.save_template(*target, kind, text, event=event)
+        except Exception:
+            logger.exception("Could not save the %s announcement template", kind)
+            return ActionResult(False, ANN_SAVE_FAILED)
+        if not check.ok:
+            return ActionResult(False, "The template was not saved: " + " ".join(check.problems))
+        if not text.strip():
+            return ActionResult(True, ann_template_reset(kind))
+        message = ann_template_saved(kind)
+        if check.warnings:
+            message += " " + " ".join(check.warnings)
+        return ActionResult(True, message)
 
     def server_info(self) -> ServerInfo | None:
         if not self._bot.guilds:

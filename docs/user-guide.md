@@ -550,6 +550,54 @@ Two rules apply to DJs who book or cancel through the bot. Both are on by defaul
 
 **Existing installs.** After the update both rules are on with the defaults, because nothing is stored yet. Switch them off in `/setup` or on the admin page if you do not want them.
 
+### 7.11 Event announcements
+
+The bot can announce events in a Discord channel. There are two kinds, each with its own switch (both off by default):
+
+- **General announcement:** information before the event (title, date, notes, location, genre, lineup), posted by rules.
+- **Start announcement:** posted when the event starts. It shows the DJ who plays now ("now playing") and the next one ("next up"), changes with every slot, and after the last slot it is edited once to say the event ended.
+
+**Setup.** Choose the announcement channel in the optional **Announcement channel** step of `/setup` (between the DJ Management channel step and the booking rules step), or later with `/announcements channel` or on the Announcements page of the [admin page](#77-the-admin-page). Without a channel nothing is posted. The bot needs permission to view the channel, send messages and embed links. The summary and `/config show` list the channel and both switches.
+
+**Switches.** Turn each kind on or off with `/announcements general on|off` and `/announcements start on|off`, or with the checkboxes on the admin page. A switch only controls new posts: posts that exist are still kept up to date.
+
+**General rules.** A rule has the days before the event and the time of day (in the bot's time zone). Add as many as you like; each rule posts its own message, once per event. Switching the general announcement on with no rules creates the default rule: 3 days before at 18:00. No rules means no general posts. A rule only posts for an event when its time is after the moment the rule was created or the announcement was switched on, so switching on never floods the channel with posts for the past. If the bot was offline at the post time, the rule posts late as long as the event has not started. Deleting a rule keeps the messages it already posted.
+
+**Lineup must be complete.** An announcement is posted only when every slot is booked. If the lineup is incomplete at the time, that post is skipped for good and not retried. This also applies to the start announcement.
+
+**Edits.** A posted general announcement follows changes of the event and the lineup until the event starts, also when a slot becomes free (the message then shows it as open); after the start it is left as it is. The start announcement follows the slots until the event ends. Announcements are never deleted. A canceled or deleted event gets its announcements edited to "This event was canceled." and nothing new. A message deleted by hand is not posted again. If the channel changes, existing posts stay (and are still edited) where they are; new posts go to the new channel.
+
+**Templates.** Each kind has a template, a Discord message with placeholders. Edit it on the Announcements page. An empty template uses the default. Discord markdown and role mentions (`<@&role id>`) work; role mentions ping, `@everyone` and `@here` never do. A template that is invalid or longer than 2000 characters after filling is not posted; the admin log gets one entry per template version for an invalid template and one entry per event and template version for a too long fill, each written once per bot start (the record is in memory), and the post goes out once the template is fixed.
+
+| Placeholder | Content |
+|---|---|
+| `{title}` | event name |
+| `{date}` | start as a Discord timestamp, full (shown in each reader's time zone) |
+| `{countdown}` | start as a relative Discord timestamp |
+| `{description}`, `{notes}` | the event's notes (empty when none) |
+| `{location}`, `{genre}` | as stored (empty when none) |
+| `{lineup}` | one line per slot: slot start and DJ name, or "open slot" |
+| `{slots}`, `{booked}` | number of slots, number of booked slots |
+| `{now_playing}` | DJ of the running slot (empty before the start) |
+| `{next_up}` | next DJ (empty after the last slot) |
+| `{status}` | a short live or ended line |
+
+An unknown placeholder stays visible as typed, so a typo is noticed. A line whose placeholders are all empty is left out, so a missing genre leaves no empty `Genre:` line.
+
+**Check and preview.** The button **Check and preview** under each template checks it on the server and shows the result and the filled message (with the next real event when there is one, otherwise sample data): unknown placeholders, the length and how many characters are left, malformed role mentions, and a warning for `@everyone` and `@here`. **Save always runs the same check first** and refuses a template that cannot be posted, whatever was pressed before. **Reset to default** restores the default template. The page uses no JavaScript, so there is no live checking while typing.
+
+**Commands** (admins only, answers are private):
+
+| Command | What it does |
+|---|---|
+| `/announcements show` | Shows the channel, both switches, the rules and the template state. |
+| `/announcements channel [channel]` | Sets the announcement channel; no value clears it. |
+| `/announcements general on\|off`, `/announcements start on\|off` | Switches a kind. Switching general on without rules creates the default rule. |
+| `/announcements rule add days time` | Adds a rule (`days` 0 to 365, `time` as `HH:MM`). |
+| `/announcements rule edit id [days] [time]`, `/announcements rule remove id` | Changes or removes a rule; the ids are in `/announcements show`. |
+
+Templates are edited on the admin page only.
+
 ---
 
 ## 8. Troubleshooting

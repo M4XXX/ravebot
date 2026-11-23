@@ -13,6 +13,9 @@ Scope: everything a non-admin can reach from outside: slash commands, buttons an
 | DJ-facing views | They act on `inter.author` only or are bound to one user by `GatedView`; none looks up another person's data from a button id. |
 | Public output | The public lineup shows slot, time and DJ name only. Names are escaped so a mention in a name does not ping. Discord ids, VRChat names and the other DJ table columns are not posted anywhere public. Stream links appear only in the DJ Management message (admin channel). |
 | Answers of admin commands | All are ephemeral, except the setup wizard message and the "already active" entry message, which are posted in the channel on purpose (a private wizard message could not be edited after 15 minutes or after a restart). They show setup values such as channels, time zone and booking rules, no personal data. |
+| Announcements (`/announcements`) | The cog has the same `cog_slash_command_check` as the other admin cogs (admin list, idle gate, server-only). All answers are ephemeral; `cogs/announcements_cog.py` is in the guard's answer list. |
+| Announcements admin page | `GET /announcements`, `/announcements/settings`, the rule routes and the four template routes (`check` and `save` for each kind) sit behind the session middleware, and unsafe methods need CSRF. Template and channel input is escaped when shown again. The four template routes have a body limit of 64 KiB (`MAX_TEMPLATE`), and the textarea limit keeps the worst case url-encoded size below it. The page needs no JavaScript and the Content-Security-Policy is unchanged. |
+| Announcement output | Posts allow role mentions only; `@everyone`, `@here` and user mentions never ping. Event data (DJ names) is escaped like the lineup post. |
 
 ## Open points (not changed)
 

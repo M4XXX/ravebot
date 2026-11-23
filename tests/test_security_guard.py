@@ -245,6 +245,7 @@ def test_user_views_never_read_another_persons_data_by_id() -> None:
 ANSWER_MODULES = [
     "cogs/admin.py", "cogs/schedule_cog.py", "cogs/setup.py", "cogs/admins_cog.py",
     "ui/management_lineup.py", "ui/schedule_views.py", "ui/log_reply.py", "ui/setup_rules.py",
+    "cogs/announcements_cog.py",
 ]
 # A public answer is allowed only here: the setup wizard message must stay editable after
 # restarts, which an ephemeral message does not.
