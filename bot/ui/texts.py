@@ -1446,3 +1446,77 @@ def announce_too_long(event_name: str, length: int, limit: int) -> str:
 
 def announce_template_invalid(kind: str, problem: str) -> str:
     return f"The {kind} announcement template cannot be posted: {problem}"
+
+
+# --- /announcements commands -----------------------------------------------
+
+ANNOUNCE_NOT_READY = "The bot is not ready yet. Try again in a moment."
+ANNOUNCE_CHANNEL_CLEARED = "Announcement channel cleared. Nothing posts until a channel is set."
+ANNOUNCE_RULE_TIME_INVALID = "Enter the time as HH:MM, for example 18:00."
+ANNOUNCE_RULE_DAYS_INVALID = "Days before must be a whole number from 0 to 365."
+ANNOUNCE_RULE_EDIT_NEEDS_OPTION = "Give the days or a time to change."
+ANNOUNCE_RULE_NOT_FOUND = "There is no rule with that id. /announcements show lists them."
+ANNOUNCE_NOTHING_POSTS = "Nothing posts until a channel is set with /announcements channel."
+ANNOUNCE_SHOW_NO_RULES = "No rules. Turn the general announcement on to create the default rule."
+
+
+def announce_channel_set(mention: str) -> str:
+    return f"Announcement channel set to {mention}."
+
+
+def announce_channel_unusable(mention: str, missing: list[str]) -> str:
+    return f"I cannot use {mention}: I am missing the permission {', '.join(missing)} there."
+
+
+def announce_switch_already(kind: str, on: bool) -> str:
+    return f"The {kind} announcement is already {'on' if on else 'off'}."
+
+
+def announce_switch_changed(kind: str, on: bool) -> str:
+    return f"The {kind} announcement is now {'on' if on else 'off'}."
+
+
+def announce_default_rule_created(rule_line: str) -> str:
+    return f"A default rule was created: {rule_line}."
+
+
+def announce_rule_line(rule_id: int, days: int, at: str) -> str:
+    return f"#{rule_id}: {days} days before at {at}"
+
+
+def announce_rule_added(line: str) -> str:
+    return f"Rule added: {line}."
+
+
+def announce_rule_edited(line: str) -> str:
+    return f"Rule changed: {line}."
+
+
+def announce_rule_removed(rule_id: int) -> str:
+    return f"Rule #{rule_id} removed."
+
+
+def announce_show(
+    channel: str,
+    general_on: bool,
+    start_on: bool,
+    rules: list[str],
+    general_custom: bool,
+    start_custom: bool,
+) -> str:
+    def state(on: bool) -> str:
+        return "on" if on else "off"
+
+    def kind(custom: bool) -> str:
+        return "custom" if custom else "default"
+
+    lines = [
+        f"Channel: {channel}",
+        f"General announcement: {state(general_on)}",
+        f"Start announcement: {state(start_on)}",
+        "Rules:",
+        *(rules or [ANNOUNCE_SHOW_NO_RULES]),
+        f"General template: {kind(general_custom)}",
+        f"Start template: {kind(start_custom)}",
+    ]
+    return "\n".join(lines)

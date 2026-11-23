@@ -172,6 +172,7 @@ async def main() -> None:
     # Story 1.3: init AdminLogService and load cogs
     from bot.cogs.admin import AdminCog
     from bot.cogs.admins_cog import AdminsCog
+    from bot.cogs.announcements_cog import AnnouncementsCog
     from bot.cogs.booking import BookingCog
     from bot.cogs.events import EventsCog
     from bot.cogs.onboarding import OnboardingCog
@@ -314,6 +315,10 @@ async def main() -> None:
 
     ctx.schedule_service = ScheduleService(ctx)
 
+    from bot.services.announcements import AnnouncementService
+
+    ctx.announcement_service = AnnouncementService(bot, ctx.db, ctx.log_service)
+
     # Story 5.1: init OutreachService after log_service is ready
     from bot.services.outreach import OutreachService
     ctx.outreach_service = OutreachService(
@@ -352,6 +357,7 @@ async def main() -> None:
     _add_cog(bot, EventsCog(ctx))
     _add_cog(bot, SetupCog(ctx))
     _add_cog(bot, ScheduleCog(ctx))
+    _add_cog(bot, AnnouncementsCog(ctx))
 
     from bot.services.admin_management import AdminManagementService
     _add_cog(bot, AdminsCog(ctx, AdminManagementService(ctx, bot)))
