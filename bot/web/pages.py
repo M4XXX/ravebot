@@ -964,7 +964,7 @@ def render_notice(message: str) -> str:
 
 # --- event announcements ---
 
-TEMPLATE_MAXLENGTH = 8000
+TEMPLATE_MAXLENGTH = 6000
 _PLACEHOLDER_HELP = {
     "title": "the event name",
     "date": "start date and time, shown in each reader's time zone",

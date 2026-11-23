@@ -588,6 +588,43 @@ async def test_settings_without_channel_field_keep_the_channel(store) -> None:
     assert store.set_enabled_calls == [(START, True)]
 
 
+async def test_settings_unchanged_channel_gone_still_lets_a_switch_turn_off(store) -> None:
+    gone = 888888888888888888
+    store.config[ann_settings.ANNOUNCE_CHANNEL_KEY] = str(gone)
+    store.config[ann_settings.ANNOUNCE_GENERAL_KEY] = "true"
+    sessions, headers, csrf = await _session()
+    async with make_client(AnnService(), sessions) as client:
+        resp = await client.post(
+            "/announcements/settings", headers=headers, allow_redirects=False,
+            data=_form(csrf, channel=str(gone)),
+        )
+        other = await client.post(
+            "/announcements/settings", headers=headers, data=_form(csrf, channel=str(gone + 1)),
+        )
+    assert resp.status == 303
+    assert store.set_enabled_calls == [(GENERAL, False)]
+    assert store.config[ann_settings.ANNOUNCE_CHANNEL_KEY] == str(gone)
+    assert other.status == 400  # a different channel is still checked
+
+
+async def test_settings_unchanged_channel_keeps_the_format_check(store) -> None:
+    sessions, headers, csrf = await _session()
+    async with make_client(AnnService(), sessions) as client:
+        resp = await client.post(
+            "/announcements/settings", headers=headers, data=_form(csrf, channel="abc"),
+        )
+    assert resp.status == 400
+
+
+async def test_template_textarea_limit_stays_below_the_body_limit(store) -> None:
+    from bot.web.app import MAX_TEMPLATE
+    from bot.web.pages import TEMPLATE_MAXLENGTH
+
+    # worst case: a 3-byte BMP character url-encodes to 9 bytes; 1 KiB for the other fields
+    assert TEMPLATE_MAXLENGTH * 9 + 1024 <= MAX_TEMPLATE
+    assert TEMPLATE_MAXLENGTH >= 2000
+
+
 @pytest.mark.parametrize(
     ("raw", "message"),
     [

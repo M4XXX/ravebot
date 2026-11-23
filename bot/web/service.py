@@ -462,14 +462,20 @@ class AdminPageService:
             channel_name=self._channel_name(current.channel_id),
         )
 
-    def _check_channel(self, raw: str) -> int | None | str:
-        """The channel id (None clears it), or the error text."""
+    def _check_channel(self, raw: str, stored: int | None = None) -> int | None | str:
+        """The channel id (None clears it), or the error text.
+
+        The channel the settings already hold is not checked for permissions again, so a
+        switch can still be turned off after that channel is gone.
+        """
         text = raw.strip()
         if not text:
             return None
         channel_id = parse_discord_id(text)
         if channel_id is None:
             return ANN_CHANNEL_FORMAT
+        if channel_id == stored:
+            return channel_id
         guild = self._bot.guilds[0]
         channel = guild.get_channel(channel_id)
         if not isinstance(channel, disnake.TextChannel):
@@ -490,12 +496,16 @@ class AdminPageService:
         if target is None:
             return ActionResult(False, texts.SCHEDULE_NOT_READY)
         db, guild_id = target
-        channel = self._check_channel(raw.get("channel") or "")
+        try:
+            current = await ann_settings.load_settings(db, guild_id)
+        except Exception:
+            logger.exception("Could not save the announcement settings")
+            return ActionResult(False, ANN_SAVE_FAILED)
+        channel = self._check_channel(raw.get("channel") or "", current.channel_id)
         if isinstance(channel, str):
             return ActionResult(False, channel)
         wanted = {GENERAL: GENERAL in raw, START: START in raw}
         try:
-            current = await ann_settings.load_settings(db, guild_id)
             if "channel" in raw and channel != current.channel_id:
                 await ann_settings.set_channel(db, guild_id, channel)
             stored = {GENERAL: current.general_enabled, START: current.start_enabled}

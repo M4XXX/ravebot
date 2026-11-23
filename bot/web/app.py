@@ -83,7 +83,8 @@ BACKUP_PATH = "/backup/import"
 APPLY_PATH = "/schedule/apply"
 MAX_APPLY = 64 * 1024  # 104 changes (52 events x 2 fields) as shown and pick fields
 UPLOAD_PATHS = frozenset({"/djs/add", "/djs/edit", BACKUP_PATH})
-# A template of up to 8000 characters, url-encoded (up to 6 bytes per character)
+# A template of up to 6000 characters, url-encoded: a BMP character of 3 UTF-8 bytes becomes
+# 9 bytes (%XX%XX%XX), so 6000 characters need at most 54000 bytes of the 64 KiB
 MAX_TEMPLATE = 64 * 1024
 TEMPLATE_PATHS = frozenset(
     f"/announcements/templates/{kind}/{action}"
@@ -938,7 +939,7 @@ def create_app(
     app.router.add_post(f"{ann_rule}/edit", post_announcement_rule_edit)
     app.router.add_get(f"{ann_rule}/remove", get_announcement_rule_remove)
     app.router.add_post(f"{ann_rule}/remove", post_announcement_rule_remove)
-    ann_template = r"/announcements/templates/{kind:general|start}"
+    ann_template = "/announcements/templates/{kind:" + "|".join(ANN_KINDS) + "}"
     app.router.add_post(f"{ann_template}/check", post_template_check)
     app.router.add_post(f"{ann_template}/save", post_template_save)
     app.router.add_get("/schedule", get_schedule)
