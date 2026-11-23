@@ -54,6 +54,7 @@ async def test_update_rule_and_missing() -> None:
     rule = await a.update_rule(pool, 5, 4, 2, T)
     sql, *args = pool.fetchrow.await_args.args
     assert "UPDATE announcement_rules" in sql
+    assert "created_at = now()" in sql  # an edit never posts retroactively
     assert "RETURNING" in sql
     assert args == [5, 4, 2, T]
     assert rule.id == 4

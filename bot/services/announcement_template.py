@@ -174,7 +174,7 @@ def render(template: str, event: EventInfo, kind: str, now: datetime.datetime) -
 
 
 def sample_event() -> EventInfo:
-    """A plausible event: 4 slots, three booked, one open, one with a long DJ name."""
+    """A plausible event: 4 slots, two booked (one with a long DJ name), two open."""
     slots = (
         SlotInfo("s1", 1, "dj1", "DJ Nova", None),
         SlotInfo("s2", 2, "dj2", "The Extraordinarily Long Named DJ " * 3, None),

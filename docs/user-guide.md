@@ -557,7 +557,7 @@ The bot can announce events in a Discord channel. There are two kinds, each with
 - **General announcement:** information before the event (title, date, notes, location, genre, lineup), posted by rules.
 - **Start announcement:** posted when the event starts. It shows the DJ who plays now ("now playing") and the next one ("next up"), changes with every slot, and after the last slot it is edited once to say the event ended.
 
-**Setup.** Choose the announcement channel in the optional **Announcement channel** step of `/setup` (before the summary), or later with `/announcements channel` or on the Announcements page of the [admin page](#77-the-admin-page). Without a channel nothing is posted. The bot needs permission to view the channel, send messages and embed links. The summary and `/config show` list the channel and both switches.
+**Setup.** Choose the announcement channel in the optional **Announcement channel** step of `/setup` (between the DJ Management channel step and the booking rules step), or later with `/announcements channel` or on the Announcements page of the [admin page](#77-the-admin-page). Without a channel nothing is posted. The bot needs permission to view the channel, send messages and embed links. The summary and `/config show` list the channel and both switches.
 
 **Switches.** Turn each kind on or off with `/announcements general on|off` and `/announcements start on|off`, or with the checkboxes on the admin page. A switch only controls new posts: posts that exist are still kept up to date.
 
@@ -565,9 +565,9 @@ The bot can announce events in a Discord channel. There are two kinds, each with
 
 **Lineup must be complete.** An announcement is posted only when every slot is booked. If the lineup is incomplete at the time, that post is skipped for good and not retried. This also applies to the start announcement.
 
-**Edits.** A posted announcement is edited when the event's details or lineup change, until the event starts. If a slot is freed after posting, the message stays as it is. A canceled or deleted event gets its announcements edited to "This event was canceled." and nothing new. A message deleted by hand is not posted again. If the channel changes, existing posts stay (and are still edited) where they are; new posts go to the new channel.
+**Edits.** A posted general announcement follows changes of the event and the lineup until the event starts, also when a slot becomes free (the message then shows it as open); after the start it is left as it is. The start announcement follows the slots until the event ends. Announcements are never deleted. A canceled or deleted event gets its announcements edited to "This event was canceled." and nothing new. A message deleted by hand is not posted again. If the channel changes, existing posts stay (and are still edited) where they are; new posts go to the new channel.
 
-**Templates.** Each kind has a template, a Discord message with placeholders. Edit it on the Announcements page. An empty template uses the default. Discord markdown and role mentions (`<@&role id>`) work; role mentions ping, `@everyone` and `@here` never do. A template that is invalid or longer than 2000 characters after filling is not posted; the admin log gets one entry per template version and the post goes out once the template is fixed.
+**Templates.** Each kind has a template, a Discord message with placeholders. Edit it on the Announcements page. An empty template uses the default. Discord markdown and role mentions (`<@&role id>`) work; role mentions ping, `@everyone` and `@here` never do. A template that is invalid or longer than 2000 characters after filling is not posted; the admin log gets one entry per template version for an invalid template and one entry per event and template version for a too long fill, each written once per bot start (the record is in memory), and the post goes out once the template is fixed.
 
 | Placeholder | Content |
 |---|---|

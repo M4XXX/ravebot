@@ -377,6 +377,33 @@ async def test_edit_when_lineup_changes_until_the_start_only(env: Env) -> None:
 
 
 @pytest.mark.asyncio
+async def test_general_post_of_a_started_event_is_ended_and_not_canceled_when_it_vanishes(
+    env: Env,
+) -> None:
+    env.store.add_rule(3)
+    env.events(_event())
+    await env.service.tick(DUE)
+    await env.service.tick(START)
+    assert [p.state for p in env.store.posts.values()] == ["ended"]
+    env.events()  # e.g. a Notion replace import dropped the past event
+    await env.service.tick(START + datetime.timedelta(hours=1))
+    assert env.channel.edit_calls == []
+    assert [p.state for p in env.store.posts.values()] == ["ended"]
+
+
+@pytest.mark.asyncio
+async def test_general_post_of_an_upcoming_event_that_vanishes_is_canceled(env: Env) -> None:
+    env.store.add_rule(3)
+    env.events(_event())
+    await env.service.tick(DUE)
+    env.events()
+    await env.service.tick(DUE + datetime.timedelta(minutes=1))
+    assert len(env.channel.edit_calls) == 1
+    assert env.channel.sent[0].content == texts.ANNOUNCE_CANCELED
+    assert [p.state for p in env.store.posts.values()] == ["canceled"]
+
+
+@pytest.mark.asyncio
 async def test_canceled_event_gets_the_fixed_text_once(env: Env) -> None:
     env.store.add_rule(3)
     env.events(_event())

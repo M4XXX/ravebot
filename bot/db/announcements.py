@@ -81,7 +81,7 @@ async def update_rule(
     post_time: datetime.time,
 ) -> AnnouncementRule | None:
     row = await db.fetchrow(
-        "UPDATE announcement_rules SET days_before = $3, post_time = $4 "
+        "UPDATE announcement_rules SET days_before = $3, post_time = $4, created_at = now() "
         f"WHERE guild_id = $1 AND id = $2 RETURNING {_RULE_COLS}",
         guild_id,
         rule_id,

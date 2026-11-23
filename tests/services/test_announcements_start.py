@@ -155,7 +155,10 @@ async def test_start_and_general_posts_are_independent(env: Env) -> None:
     await env.service.tick(DUE)
     assert len(env.channel.sent) == 1  # general only
     await env.service.tick(EVENT_START)
-    assert sorted(p.kind for p in env.store.by_state("posted")) == ["general", "start"]
+    assert sorted((p.kind, p.state) for p in env.store.posts.values()) == [
+        ("general", "ended"),  # final once the event has started
+        ("start", "posted"),
+    ]
     assert len(env.channel.sent) == 2
 
 
@@ -192,3 +195,24 @@ async def test_canceled_event_gets_no_start_post(env: Env) -> None:
     env.events(_event(status="Canceled"))
     await env.service.tick(EVENT_START)
     assert env.channel.sent == []
+
+
+@pytest.mark.asyncio
+async def test_start_post_created_late_for_a_running_event_no_longer_upcoming(
+    env: Env,
+) -> None:
+    ev = _event(count=5, booked=5)  # 20:00 to 01:00 the next day
+    env.events()  # dated before today: not in the upcoming list
+    env.past = [ev]
+    await env.service.tick(EVENT_START + 4 * HOUR + 30 * MIN)  # 00:30
+    assert len(env.channel.sent) == 1
+    assert [p.kind for p in env.store.by_state("posted")] == ["start"]
+
+
+@pytest.mark.asyncio
+async def test_no_start_post_for_a_past_event_that_ended(env: Env) -> None:
+    env.events()
+    env.past = [_event()]
+    await env.service.tick(END + HOUR)
+    assert env.channel.sent == []
+    assert env.store.posts == {}

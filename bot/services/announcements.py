@@ -144,17 +144,18 @@ class AnnouncementService:
             if event_id in known:
                 continue
             for post in event_posts:  # the event was deleted: like a cancel
-                if post.state == POSTED:
+                if post.state == POSTED:  # started events' general posts are `ended` already
                     try:
                         await self._cancel(post)
                     except Exception:
                         logger.exception("AnnouncementService: cancel of post %s failed", post.id)
         # A running event that left the upcoming list (past midnight) still needs its
-        # start post edited to the ended rendering.
+        # start post created late or edited to the ended rendering.
         events = [*events, *(
             e for e in all_events
             if e.page_id not in upcoming
-            and any(p.kind == START and p.state == POSTED for p in by_event.get(e.page_id, []))
+            and (now < event_end(e)
+                 or any(p.kind == START and p.state == POSTED for p in by_event.get(e.page_id, [])))
         )]
         for event in events:
             try:
@@ -172,19 +173,26 @@ class AnnouncementService:
         rules: list[AnnouncementRule],
         now: datetime.datetime,
     ) -> None:
+        existing = {(p.kind, p.rule_id) for p in posts}
+        live: list[AnnouncementPost] = []  # posted and still followed
+        for post in posts:
+            if post.state != POSTED:
+                continue
+            if self._editable(post, event, now):
+                live.append(post)
+            else:  # a general post is final once the event has started
+                await ann_db.set_state(self.db, post.id, ENDED)
         if event.status == STATUS_CANCELED:
-            for post in posts:
-                if post.state == POSTED:
-                    await self._cancel(post)
+            for post in live:
+                await self._cancel(post)
             return
         templates = self._templates(settings)
-        existing = {(p.kind, p.rule_id) for p in posts}
         if event.status not in FINISHED_STATUSES:
             for plan in self._new_plans(event, settings, rules, now):
                 if settings.channel_id is not None and (plan.kind, plan.rule_id) not in existing:
                     await self._claim_and_post(event, plan, settings.channel_id, now)
-        for post in posts:
-            if post.state == POSTED and post.kind in templates and self._editable(post, event, now):
+        for post in live:
+            if post.kind in templates:
                 current = await self._update(
                     event, Plan(post.kind, post.rule_id, templates[post.kind]), post, now
                 )
