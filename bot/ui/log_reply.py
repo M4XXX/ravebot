@@ -67,6 +67,10 @@ class ReplyModal(disnake.ui.Modal):
         )
 
     async def callback(self, inter: disnake.ModalInteraction) -> None:
+        # Only an admin is shown this popup; the check is kept here as well.
+        if not self._ctx.is_admin(inter.author.id):
+            await inter.response.send_message(texts.LOG_REPLY_ORGANIZERS_ONLY, ephemeral=True)
+            return
         text = inter.text_values["message"]
         await inter.response.defer(ephemeral=True)
         if not await dm_user(inter.bot, self.user_id, text):
