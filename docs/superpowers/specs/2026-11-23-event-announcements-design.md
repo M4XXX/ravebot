@@ -53,6 +53,18 @@ Only for the event start template: `{now_playing}` (DJ name of the running slot)
 
 A placeholder whose value is empty leaves no stray blank line (the builder decides the exact rule; the aim is that a missing genre does not leave an empty `Genre:` line when the admin wrote the label and placeholder on one line).
 
+## Template check in the editor
+The template editor checks the template and tells the admin whether it is valid and can be posted. A template that cannot be posted cannot be saved.
+
+"Valid and post-able" means:
+- it is not empty (an empty template means: use the default),
+- every `{...}` is a known placeholder for that type, with balanced braces; unknown ones are listed by name,
+- filled with sample data and with the next real event (when there is one) it stays within Discord's 2000 characters; the check says how many characters it has and how many are left,
+- role mentions in it are well formed (`<@&digits>`); `@everyone` and `@here` are flagged as "will not ping",
+- the preview shows the filled message, including a lineup with open slots and one with a long DJ name.
+
+How the check runs is open, because the admin page allows no scripts today (its Content-Security-Policy has no `script-src`, and the pages carry no JavaScript). See the owner's decision below; until then the plan assumes the safe default: the check runs on the server when the admin presses **Check and preview** and again on **Save**, and the page shows the result, with no change to the Content-Security-Policy.
+
 ## Surfaces
 - **Setup wizard:** a new optional step (like the DJ Management channel step) to choose the announcement channel or skip it. The summary and `/config show` list it and the two switches.
 - **Commands (admins only, same checks as the other admin commands):**
