@@ -2,13 +2,22 @@
 # Prepare a release locally: bump the version, close the changelog section, commit, tag.
 # Nothing is pushed. The last line tells you the command that starts the release build.
 #
-# Usage:  scripts/release.sh 1.1.0 [--no-tests]
+# Usage:  scripts/release.sh 1.1.0 [--no-tests] [--no-smoke]
+# The tests and the container smoke test (scripts/smoke-container.sh) run first.
 set -euo pipefail
 
 version="${1:-}"
-skip_tests="${2:-}"
+skip_tests=""
+skip_smoke=""
+for flag in "${@:2}"; do
+  case "$flag" in
+    --no-tests) skip_tests="--no-tests" ;;
+    --no-smoke) skip_smoke="--no-smoke" ;;
+    *) echo "unknown option: $flag" >&2; exit 2 ;;
+  esac
+done
 if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
-  echo "usage: scripts/release.sh MAJOR.MINOR.PATCH[-prerelease] [--no-tests]" >&2
+  echo "usage: scripts/release.sh MAJOR.MINOR.PATCH[-prerelease] [--no-tests] [--no-smoke]" >&2
   exit 2
 fi
 tag="v$version"
@@ -38,6 +47,10 @@ fi
 
 if [ "$skip_tests" != "--no-tests" ]; then
   uv run pytest -q
+fi
+if [ "$skip_smoke" != "--no-smoke" ]; then
+  # Start the image once like it runs in production before anything is tagged
+  bash scripts/smoke-container.sh
 fi
 
 today="$(date +%Y-%m-%d)"

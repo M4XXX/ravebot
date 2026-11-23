@@ -84,7 +84,7 @@ async def test_refuses_sequence_with_non_boolean_is_called() -> None:
     assert not result.ok and result.message == texts.IMPORT_UNREADABLE
 
 
-@pytest.mark.parametrize("file_revision", ["0099", "0001"])
+@pytest.mark.parametrize("file_revision", ["0099", "0021"])  # unknown, and newer than 0017
 async def test_refuses_other_revision_naming_both(file_revision: str) -> None:
     ctx = _ctx("0017")
     result = await restore.import_database(ctx, _file(alembic_revision=file_revision))
@@ -115,3 +115,14 @@ async def test_refuses_a_file_that_unpacks_too_large(monkeypatch) -> None:  # no
     assert not result.ok and result.message == texts.IMPORT_TOO_LARGE
     # just under the limit still reads
     assert restore._unpack(gzip.compress(b"y" * 1000)) == b"y" * 1000
+
+
+def test_only_known_older_revisions_count_as_older() -> None:
+    from bot.db.pool import revision_order
+
+    order = revision_order()
+    assert restore._is_older(order[0], order[-1])
+    assert restore._is_older(order[-2], order[-1])
+    assert not restore._is_older(order[-1], order[-1])
+    assert not restore._is_older(order[-1], order[0])  # newer than the running one
+    assert not restore._is_older("9999_future", order[-1])  # unknown

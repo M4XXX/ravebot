@@ -36,3 +36,29 @@ def test_docs_name_backup_dir_and_the_volume() -> None:
     assert f"-v ravebot-backups:{DEFAULT_BACKUP_DIR}" in readme
     for guide in ("developer-guide.md", "user-guide.md"):
         assert "BACKUP_DIR" in (ROOT / "docs" / guide).read_text(), guide
+
+
+def test_no_image_is_published_before_it_has_started_like_in_production() -> None:
+    """A release needs the container smoke test and the real-SQL tests first."""
+    release = (ROOT / "scripts" / "release.sh").read_text()
+    assert "scripts/smoke-container.sh" in release
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text()
+    image_job = workflow.split("\n  image:\n", 1)[1].split("\n  release:\n", 1)[0]
+    assert "needs: [test, real-sql, smoke]" in image_job
+    assert "scripts/smoke-container.sh" in workflow
+    assert "pytest -m pg" in workflow
+    ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
+    assert "scripts/smoke-container.sh" in ci
+
+
+def test_smoke_script_covers_the_production_start() -> None:
+    script = (ROOT / "scripts" / "smoke-container.sh").read_text()
+    for needle in (
+        "uid 1000",  # runs as the non-root user
+        "/data/backups",  # the mapped, root-owned folder
+        "alembic",  # migrations in the image
+        "write_safety_export",  # a safety export is written
+        "Migrations complete",  # the real start-up
+        "improper token",  # reaches the Discord login
+    ):
+        assert needle in script, needle
