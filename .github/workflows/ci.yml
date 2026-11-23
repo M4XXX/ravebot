@@ -65,4 +65,4 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # Builds the image and starts it like in production (see the script header)
       - name: Start the image with PostgreSQL and a mapped backup folder
-        run: scripts/smoke-container.sh
+        run: bash scripts/smoke-container.sh

@@ -50,7 +50,7 @@ if [ "$skip_tests" != "--no-tests" ]; then
 fi
 if [ "$skip_smoke" != "--no-smoke" ]; then
   # Start the image once like it runs in production before anything is tagged
-  scripts/smoke-container.sh
+  bash scripts/smoke-container.sh
 fi
 
 today="$(date +%Y-%m-%d)"
