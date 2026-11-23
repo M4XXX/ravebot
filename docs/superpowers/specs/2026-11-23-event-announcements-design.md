@@ -63,7 +63,7 @@ The template editor checks the template and tells the admin whether it is valid 
 - role mentions in it are well formed (`<@&digits>`); `@everyone` and `@here` are flagged as "will not ping",
 - the preview shows the filled message, including a lineup with open slots and one with a long DJ name.
 
-How the check runs is open, because the admin page allows no scripts today (its Content-Security-Policy has no `script-src`, and the pages carry no JavaScript). See the owner's decision below; until then the plan assumes the safe default: the check runs on the server when the admin presses **Check and preview** and again on **Save**, and the page shows the result, with no change to the Content-Security-Policy.
+**How it runs (decided by the owner):** the admin presses **Check and preview**; the server checks the template and the page shows the result and the preview. **Save always runs the same check first** and refuses an invalid template, whatever was pressed before, so an unchecked or changed template can never be saved. The page keeps the Content-Security-Policy as it is: no JavaScript, no live checking while typing.
 
 ## Surfaces
 - **Setup wizard:** a new optional step (like the DJ Management channel step) to choose the announcement channel or skip it. The summary and `/config show` list it and the two switches.
