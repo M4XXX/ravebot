@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.3.0-rc2] - 2026-11-23
+
 ### Changed
 
 - The public lineup post shows the slots as two aligned columns, `Slot` (slot number and time) and `DJ`, instead of one line per slot, so the DJ names line up. The headphone icon in front of a DJ name is gone, open slots show a green circle, and DJ names are cut at 24 characters so they cannot wrap and shift the rows. Times are still Discord timestamps in each reader's time zone.
