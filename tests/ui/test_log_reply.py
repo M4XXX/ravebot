@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import disnake
 import pytest
 
+from bot.ui import texts
 from bot.ui.log_reply import LogReplyView, ReplyModal
 from tests.conftest import make_real_ctx
 
@@ -81,8 +82,9 @@ async def test_unknown_message_gives_private_note() -> None:
     inter.response.send_modal.assert_not_awaited()
 
 
-def _modal_inter(text, organizer="Orga"):
+def _modal_inter(text, organizer="Orga", author_id=ADMIN):
     inter = MagicMock(spec=disnake.ModalInteraction)
+    inter.author.id = author_id
     inter.author.display_name = organizer
     inter.author.name = organizer
     inter.text_values = {"message": text}
@@ -231,3 +233,16 @@ async def test_added_admin_is_accepted_and_stranger_still_refused() -> None:
     stranger.response.send_message.assert_awaited_once_with(
         "Only organizers can reply.", ephemeral=True
     )
+
+
+async def test_modal_submit_by_a_non_admin_sends_nothing() -> None:
+    msg = MagicMock()
+    msg.id = 7
+    modal = ReplyModal(_ctx(), 42, "Sam", msg)
+    inter = _modal_inter("hello", author_id=ADMIN + 1)
+    inter.bot.get_user = MagicMock()
+    await modal.callback(inter)
+    inter.response.send_message.assert_awaited_once()
+    assert inter.response.send_message.await_args.args[0] == texts.LOG_REPLY_ORGANIZERS_ONLY
+    inter.response.defer.assert_not_awaited()
+    inter.bot.get_user.assert_not_called()
