@@ -76,6 +76,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # No image is published before the image has started once like in production
       - name: Start the image with PostgreSQL and a mapped backup folder
+        env:
+          CONTAINER_CLI: docker
         run: bash scripts/smoke-container.sh
 
   image:

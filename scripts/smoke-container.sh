@@ -61,7 +61,12 @@ for _ in $(seq 1 60); do
   if "$cli" exec "$db" pg_isready -U ravebot -d ravebot >/dev/null 2>&1; then break; fi
   sleep 1
 done
-"$cli" exec "$db" pg_isready -U ravebot -d ravebot >/dev/null || { echo "PostgreSQL did not start" >&2; exit 1; }
+if ! "$cli" exec "$db" pg_isready -U ravebot -d ravebot >/dev/null 2>&1; then
+  echo "PostgreSQL did not start" >&2
+  "$cli" ps -a >&2 || true
+  "$cli" logs "$db" >&2 || true
+  exit 1
+fi
 sleep 2  # the image's init restarts the server once; pg_isready can answer in between
 
 env_args=(
