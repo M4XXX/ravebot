@@ -28,7 +28,7 @@ from bot.db import events as db_events
 from bot.db.djs import get_all_djs
 from bot.db.manual_events import mark_manual
 from bot.policy import load_rules, rules_summary
-from bot.services import activation
+from bot.services import activation, announcement_settings
 from bot.services.dj_admin import UNKNOWN_DJ, is_guest
 from bot.services.event_defaults import (
     DEFAULT_SLOT_COUNT,
@@ -193,12 +193,21 @@ class AdminCog(commands.Cog):
             return f"<@&{raw}>" if raw else f"{fallback} (default)"
 
         raw_enabled = await stored("outreach_enabled")
+        channel_id: int | None = None
+        general_on = start_on = False
+        try:
+            loaded = await announcement_settings.load_settings(db, guild_id)
+            channel_id, general_on = loaded.channel_id, loaded.general_enabled
+            start_on = loaded.start_enabled
+        except Exception:
+            logger.warning("AdminCog: could not read the announcement settings", exc_info=True)
         active = await activation.is_active(db, guild_id)
         lines = [
             "**Bot settings**",
             f"DJ channel: {channel(await stored('dj_channel'))}",
             f"Log channel: {channel(await stored('log_channel'))}",
             f"DJ Management channel: {channel(await stored(MANAGEMENT_CHANNEL_KEY))}",
+            *texts.announcement_summary_lines(channel_id, general_on, start_on),
             f"DJ role: {role(await stored(DJ_ROLE_KEY), 'DJ')}",
             f"Invites role: {role(await stored(INVITES_ROLE_KEY), 'Active Booking')}",
             f"Time zone: {shown(await stored('timezone'), DEFAULT_TIMEZONE)}",

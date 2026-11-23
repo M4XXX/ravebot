@@ -49,6 +49,7 @@ class Store:
             data.setdefault(sw.STEPS_MARKER, True)
             data.setdefault(sw.STEPS_V4_MARKER, True)
             data.setdefault(sw.STEPS_V5_MARKER, True)
+            data.setdefault(sw.STEPS_V6_MARKER, True)
         return SetupDraft(d.guild_id, d.message_id, d.channel_id, d.step, data)
 
     async def save_draft(self, db, guild_id, message_id, channel_id, step, data):
@@ -58,6 +59,7 @@ class Store:
             data.pop(sw.STEPS_MARKER, None)
             data.pop(sw.STEPS_V4_MARKER, None)
             data.pop(sw.STEPS_V5_MARKER, None)
+            data.pop(sw.STEPS_V6_MARKER, None)
         self.drafts[guild_id] = SetupDraft(guild_id, message_id, channel_id, step, data)
 
     async def delete_draft(self, db, guild_id):
@@ -260,6 +262,7 @@ async def test_every_control_refuses_non_admin(store):
         sw.ID_RULE_ADD, sw.ID_RULE_REMOVE, sw.ID_RULE_START, sw.ID_RULE_CANCEL,
         sw.ID_MGMT_CHANNEL, sw.ID_MGMT_CLEAR, sw.ID_MGMT_ALL, sw.ID_MGMT_NEW,
         sw.ID_SLOT_LIMIT_TOGGLE, sw.ID_CUTOFF_TOGGLE, sw.ID_RULES_CHANGE,
+        sw.ID_ANN_CHANNEL, sw.ID_ANN_CLEAR,
     }
     assert all(v.timeout is None for v in sw.registered_views(ctx))
     for _ in sorted(registered):
@@ -360,12 +363,13 @@ async def test_navigation_back_next_and_summary(store):
 
 
 def test_total_steps_follows_step_list():
-    assert sw.total_steps() == len(sw.STEPS) - 1 == 18
+    assert sw.total_steps() == len(sw.STEPS) - 1 == 19
     assert sw.STEPS[-1] == "summary"
     assert sw.STEPS == [
         "welcome", "dj_channel", "log_channel", "roles", "slots", "start_time", "slot_length",
         "schedule", "interval", "first_date", "lookahead", "default_genre", "default_location",
-        "rules", "timezone", "invites", "management_channel", "booking_rules", "summary",
+        "rules", "timezone", "invites", "management_channel", "announcement_channel",
+        "booking_rules", "summary",
     ]
 
 
@@ -1299,7 +1303,7 @@ def test_next_step_clamps_at_both_ends():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("data", "total"), [({}, 18), (OFF, 12)])
+@pytest.mark.parametrize(("data", "total"), [({}, 19), (OFF, 13)])
 async def test_step_numbers_are_consecutive(store, data, total):
     ctx = make_ctx()
     guild = make_guild()
@@ -1432,10 +1436,12 @@ async def test_old_invites_draft_goes_next_to_summary_and_back_to_invites(store)
     await view._navigate(make_inter(guild), 1)
     assert store.drafts[GUILD].step == STEP["management_channel"]  # optional, skippable
     await view._navigate(make_inter(guild), 1)
+    assert store.drafts[GUILD].step == STEP["announcement_channel"]  # optional, skippable
+    await view._navigate(make_inter(guild), 1)
     assert store.drafts[GUILD].step == STEP["booking_rules"]
     await view._navigate(make_inter(guild), 1)
     assert store.drafts[GUILD].step == SUMMARY
-    for _ in range(3):
+    for _ in range(4):
         await view._navigate(make_inter(guild), -1)
     assert store.drafts[GUILD].step == INVITES
 
@@ -2079,9 +2085,11 @@ def _button(view, cid):
 
 
 def test_management_step_sits_right_before_booking_rules_and_summary():
-    assert sw.STEPS[-3:] == ["management_channel", "booking_rules", "summary"]
-    assert sw.total_steps() == 18
-    assert sw.total_steps({"event_schedule_enabled": False}) == 12
+    assert sw.STEPS[-4:] == [
+        "management_channel", "announcement_channel", "booking_rules", "summary"
+    ]
+    assert sw.total_steps() == 19
+    assert sw.total_steps({"event_schedule_enabled": False}) == 13
 
 
 @pytest.mark.asyncio
@@ -2139,7 +2147,7 @@ async def test_management_step_asks_backfill_and_blocks_next_until_answered(stor
     assert store.drafts[GUILD].data["management_backfill"] == "all"
     assert not disabled_next(last_view(inter))
     await wizard._navigate(make_inter(guild), 1)
-    assert store.drafts[GUILD].step == STEP["booking_rules"]
+    assert store.drafts[GUILD].step == STEP["announcement_channel"]
     assert store.writes == []
 
 
@@ -2404,8 +2412,8 @@ def _rule_config(store):
 
 def test_booking_rules_step_sits_right_before_summary():
     assert sw.STEPS.index("booking_rules") == len(sw.STEPS) - 2
-    assert sw.STEPS[sw.STEPS.index("booking_rules") - 1] == "management_channel"
-    assert sw.step_number("booking_rules") == sw.total_steps() == 18
+    assert sw.STEPS[sw.STEPS.index("booking_rules") - 1] == "announcement_channel"
+    assert sw.step_number("booking_rules") == sw.total_steps() == 19
     assert (sw.ID_SLOT_LIMIT_TOGGLE, sw.ID_CUTOFF_TOGGLE, sw.ID_RULES_CHANGE) == (
         "setup:slot_limit_toggle", "setup:cutoff_toggle", "setup:rules_change",
     )
@@ -2645,4 +2653,146 @@ def test_booking_rules_texts_have_no_em_dash():
     from bot.policy import DEFAULT_RULES, BookingRules
 
     for rules in (DEFAULT_RULES, BookingRules(False, 3, False, 0)):
-        assert "—" not in texts.setup_booking_rules_step(18, 18, rules)
+        assert "—" not in texts.setup_booking_rules_step(19, 19, rules)
+
+
+# ---------- announcement channel step ----------
+
+ANN = STEP.get("announcement_channel", -1)
+ANN_CH = 902
+ANN_KEY = "announcement_channel"
+
+
+def ann_guild(**kwargs):
+    return make_guild(channel_ids=(100, 200, ANN_CH, 903), **kwargs)
+
+
+def test_announcement_step_sits_between_management_and_booking_rules():
+    index = sw.STEPS.index("announcement_channel")
+    assert sw.STEPS[index - 1] == "management_channel"
+    assert sw.STEPS[index + 1] == "booking_rules"
+    assert (sw.ID_ANN_CHANNEL, sw.ID_ANN_CLEAR) == ("setup:ann_channel", "setup:ann_clear")
+    assert sw.step_number("announcement_channel") == 18
+
+
+@pytest.mark.asyncio
+async def test_announcement_layout_and_registered_views_carry_every_control():
+    layout = sw._layout(SetupDraft(0, 0, 0, ANN, {}))
+    assert set(layout.visible) == {sw.ID_ANN_CHANNEL, sw.ID_ANN_CLEAR, sw.ID_BACK, sw.ID_NEXT}
+    registered = set()
+    for view in sw.registered_views(make_ctx()):
+        registered |= ids(view)
+    assert {sw.ID_ANN_CHANNEL, sw.ID_ANN_CLEAR} <= registered
+
+
+@pytest.mark.asyncio
+async def test_announcement_step_without_channel_allows_next(store):
+    ctx = make_ctx()
+    seed(store, ANN, dict(FULL))
+    step = await sw.render_step(ctx, ann_guild(), store.drafts[GUILD])
+    view = sw.SetupWizardView(ctx, step)
+    assert ids(view) == {sw.ID_ANN_CHANNEL, sw.ID_ANN_CLEAR, sw.ID_BACK, sw.ID_NEXT}
+    assert not disabled_next(view)
+    assert f"Step {ANN + 1} of {sw.total_steps()}" in step.content
+    assert "Announcement channel" in step.content
+    assert "turns" in step.content
+
+
+@pytest.mark.asyncio
+async def test_announcement_choose_and_clear_update_the_draft(store):
+    ctx = make_ctx()
+    guild = ann_guild()
+    seed(store, ANN, dict(FULL))
+    wizard = sw.SetupWizardView(ctx)
+    inter = make_inter(guild, values=[str(ANN_CH)])
+    await wizard._choose_channel(inter, ANN_KEY)
+    assert store.drafts[GUILD].data[ANN_KEY] == ANN_CH
+    assert not disabled_next(last_view(inter))
+    await wizard.on_ann_clear(make_inter(guild))
+    assert ANN_KEY not in store.drafts[GUILD].data
+
+
+@pytest.mark.asyncio
+async def test_announcement_channel_without_permissions_shows_the_channel_check(store):
+    ctx = make_ctx()
+    guild = ann_guild()
+    seed(store, ANN, {**FULL, ANN_KEY: 999})  # not in the guild
+    ann_step = await sw.render_step(ctx, guild, store.drafts[GUILD])
+    seed(store, STEP["dj_channel"], {**FULL, "dj_channel": 999})
+    dj_step = await sw.render_step(ctx, guild, store.drafts[GUILD])
+    assert sw.SetupWizardView(ctx, ann_step) and ann_step.next_disabled
+    check = sw._channel_check(guild, 999)[2]
+    assert check in ann_step.content and check in dj_step.content
+
+
+@pytest.mark.asyncio
+async def test_prefill_reads_the_announcement_channel(store):
+    store.config[(GUILD, ANN_KEY)] = str(ANN_CH)
+    data = await sw.prefilled_data(MagicMock(), GUILD)
+    assert data[ANN_KEY] == ANN_CH
+    assert data[sw.STEPS_V6_MARKER] is True
+    store.config[(GUILD, ANN_KEY)] = "junk"
+    data = await sw.prefilled_data(MagicMock(), GUILD)
+    assert ANN_KEY not in data
+
+
+@pytest.mark.asyncio
+async def test_write_all_stores_and_deletes_the_announcement_channel(store):
+    await sw._write_all(MagicMock(), GUILD, {**FULL, ANN_KEY: ANN_CH})
+    assert store.config[(GUILD, ANN_KEY)] == str(ANN_CH)
+    await sw._write_all(MagicMock(), GUILD, dict(FULL))
+    assert (GUILD, ANN_KEY) not in store.config
+    assert (ANN_KEY, None) in store.writes
+
+
+@pytest.mark.asyncio
+async def test_summary_lists_announcement_channel_and_switches(store, monkeypatch):
+    from bot.services.announcement_settings import AnnouncementSettings
+
+    def settings(general, start):
+        return AnnouncementSettings(None, general, start, "", "", None)
+
+    async def load(general, start):
+        async def fake(db, guild_id):
+            return settings(general, start)
+
+        monkeypatch.setattr(sw.announcement_settings, "load_settings", fake)
+        return await sw.summary_lines(make_ctx(), make_guild(), {**FULL, ANN_KEY: ANN_CH}, GUILD)
+
+    lines = await load(True, False)
+    assert f"Announcement channel: <#{ANN_CH}>" in lines
+    assert "General announcements: on" in lines
+    assert "Event start announcements: off" in lines
+    lines = await load(False, True)
+    assert "General announcements: off" in lines
+    assert "Event start announcements: on" in lines
+    lines = await sw.summary_lines(make_ctx(), make_guild(), dict(FULL), GUILD)
+    assert "Announcement channel: not set" in lines
+
+
+@pytest.mark.asyncio
+async def test_summary_survives_a_failing_settings_read(store, monkeypatch):
+    async def boom(db, guild_id):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(sw.announcement_settings, "load_settings", boom)
+    lines = await sw.summary_lines(make_ctx(), make_guild(), dict(FULL), GUILD)
+    assert "General announcements: off" in lines
+    assert "Event start announcements: off" in lines
+
+
+def test_drafts_before_the_announcement_step_shift_past_it():
+    base = {sw.DRAFT_MARKER: True, sw.STEPS_MARKER: True, sw.STEPS_V4_MARKER: True,
+            sw.STEPS_V5_MARKER: True}
+    booking = SetupDraft(1, 2, 3, 17, dict(base))
+    summary = SetupDraft(1, 2, 3, 18, dict(base))
+    mgmt = SetupDraft(1, 2, 3, 16, dict(base))
+    for draft in (booking, summary, mgmt):
+        sw.migrate_legacy_draft(draft)
+        assert draft.data[sw.STEPS_V6_MARKER] is True
+    assert booking.step == STEP["booking_rules"]
+    assert summary.step == STEP["summary"]
+    assert mgmt.step == STEP["management_channel"]
+    again = SetupDraft(1, 2, 3, STEP["booking_rules"], dict(booking.data))
+    sw.migrate_legacy_draft(again)
+    assert again.step == STEP["booking_rules"]

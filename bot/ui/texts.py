@@ -814,6 +814,20 @@ SETUP_MGMT_CHANNEL_QUESTION = (
     "management? Pick a channel only staff can see. Leaving it empty (skip or Clear) "
     "turns this feature off."
 )
+SETUP_ANNOUNCEMENT_CHANNEL_QUESTION = (
+    "Optional: where should I post event announcements (general reminders and event start "
+    "messages)? Leaving it empty (skip or Clear) turns the announcements off. "
+    "The two kinds are switched on or off with /announcements."
+)
+
+
+def announcement_summary_lines(channel: object, general: bool, start: bool) -> list[str]:
+    """The channel and the two read-only switches, as in the wizard summary and /config show."""
+    return [
+        f"Announcement channel: {f'<#{channel}>' if channel else 'not set'}",
+        f"General announcements: {'on' if general else 'off'}",
+        f"Event start announcements: {'on' if start else 'off'}",
+    ]
 
 
 def setup_mgmt_all_label(count: int) -> str:

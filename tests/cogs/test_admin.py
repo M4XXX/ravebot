@@ -2003,3 +2003,24 @@ async def test_config_show_lists_the_management_channel(monkeypatch: pytest.Monk
     assert "DJ Management channel: not set" in await _show(monkeypatch, {})
     text = await _show(monkeypatch, {"management_channel": "9"})
     assert "DJ Management channel: <#9>" in text
+
+
+@pytest.mark.asyncio
+async def test_config_show_lists_the_announcement_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    text = await _show(monkeypatch, {})
+    assert "Announcement channel: not set" in text
+    assert "General announcements: off" in text
+    assert "Event start announcements: off" in text
+    text = await _show(
+        monkeypatch,
+        {
+            "announcement_channel": "9",
+            "announcement_general_enabled": "true",
+            "announcement_start_enabled": "true",
+        },
+    )
+    assert "Announcement channel: <#9>" in text
+    assert "General announcements: on" in text
+    assert "Event start announcements: on" in text
