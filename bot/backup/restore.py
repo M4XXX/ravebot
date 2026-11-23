@@ -31,6 +31,7 @@ import asyncpg
 
 from bot import maintenance
 from bot.backup.export import FORMAT, VERSION, _quote, write_safety_export
+from bot.db import pool as db_pool
 from bot.db.config import set_value
 from bot.results import ActionResult
 from bot.sync.mirror_start import ensure_mirror
@@ -226,6 +227,67 @@ async def _write(
         )
 
 
+def _is_older(file_revision: str, running: str) -> bool:
+    """True when the file's revision is one of ours and comes before the running one."""
+    order = db_pool.revision_order()
+    return file_revision in order and running in order and (
+        order.index(file_revision) < order.index(running)
+    )
+
+
+async def _load_old_revision(
+    ctx: Any,
+    converted: dict[str, tuple[list[str], list[list[object]]]],
+    document: dict[str, Any],
+    running: str,
+    safety_file: Any,
+) -> ActionResult | None:
+    """Bring a backup of an older version into the database; None when it worked.
+
+    The schema goes down to the file's revision (one transaction), the rows are written,
+    then the schema goes up to the current revision again (one transaction), which also
+    migrates the rows. Everything in the database is replaced anyway, and the safety
+    export holds the current data. A failure before the new data is in is undone by
+    going up again and writing the safety export back.
+    """
+    pool = ctx.db
+    url = ctx.config.postgres_url
+    ok, detail = await db_pool.run_alembic(url, "downgrade", document["alembic_revision"])
+    if not ok:
+        logger.error("The import could not go down to the backup's revision: %s", detail)
+        return ActionResult(False, texts.IMPORT_MIGRATE_FAILED)
+    try:
+        async with pool.acquire() as conn, conn.transaction():
+            await _check_schema(conn, converted, document["sequences"])
+            await _write(conn, converted, document["sequences"])
+    except (_Refusal, asyncpg.PostgresError, asyncpg.InterfaceError) as exc:
+        logger.error("The old backup does not fit its own revision: %s", exc)
+        return await _undo_migration(ctx, safety_file)
+    ok, detail = await db_pool.run_alembic(url, "upgrade", "head")
+    if not ok:
+        logger.error("Migrating the imported backup failed: %s", detail)
+        # The rows are in, at the old revision. Try to go back to the current data.
+        return await _undo_migration(ctx, safety_file)
+    return None
+
+
+async def _undo_migration(ctx: Any, safety_file: Any) -> ActionResult:
+    """Go up to the current revision and write the safety export back."""
+    pool = ctx.db
+    ok, _detail = await db_pool.run_alembic(ctx.config.postgres_url, "upgrade", "head")
+    if ok:
+        try:
+            data = await asyncio.to_thread(safety_file.read_bytes)
+            document, converted = await asyncio.to_thread(_prepare, data)
+            async with pool.acquire() as conn, conn.transaction():
+                await _check_schema(conn, converted, document["sequences"])
+                await _write(conn, converted, document["sequences"])
+            return ActionResult(False, texts.IMPORT_MIGRATE_FAILED)
+        except Exception:
+            logger.exception("Writing the safety export back failed")
+    return ActionResult(False, texts.IMPORT_MIGRATE_STUCK)
+
+
 async def import_database(ctx: Any, data: bytes) -> ActionResult:
     """Replace the database content with the backup file; see the module docstring.
 
@@ -243,19 +305,22 @@ async def _import_database(ctx: Any, data: bytes) -> ActionResult:
     try:
         document, converted = await asyncio.to_thread(_prepare, data)
         running = await pool.fetchval("SELECT version_num FROM alembic_version")
-        if document["alembic_revision"] != running:
+        file_revision = document["alembic_revision"]
+        migrating = file_revision != running
+        if migrating and not _is_older(file_revision, running):
             raise _Refusal(
                 texts.IMPORT_REVISION_MISMATCH.format(
-                    file_revision=document["alembic_revision"], running_revision=running
+                    file_revision=file_revision, running_revision=running
                 )
             )
-        async with pool.acquire() as conn:
-            await _check_schema(conn, converted, document["sequences"])
+        if not migrating:
+            async with pool.acquire() as conn:
+                await _check_schema(conn, converted, document["sequences"])
     except _Refusal as refusal:
         return ActionResult(False, str(refusal))
 
     try:
-        await write_safety_export(pool, "before-import")
+        safety_file = await write_safety_export(pool, "before-import")
     except Exception:
         logger.exception("The safety export before the import failed")
         return ActionResult(False, texts.IMPORT_SAFETY_FAILED)
@@ -263,6 +328,7 @@ async def _import_database(ctx: Any, data: bytes) -> ActionResult:
     previous = (ctx.maintenance, getattr(ctx, "sync_problem", None))
     notion = getattr(ctx, "notion_client", None) is not None
     written = False
+    keep_pause = False  # a failed migration leaves the old schema: stay paused
     ctx.maintenance = texts.MAINTENANCE
     try:
         async with contextlib.AsyncExitStack() as stack:
@@ -270,9 +336,17 @@ async def _import_database(ctx: Any, data: bytes) -> ActionResult:
                 # Wait for a running Notion cycle; it must not compare an old Notion
                 # snapshot with the restored data.
                 await stack.enter_async_context(ctx.sync_cycle.exclusive())
+            if migrating:
+                stopped = await _load_old_revision(
+                    ctx, converted, document, running, safety_file
+                )
+                if stopped is not None:
+                    keep_pause = stopped.message == texts.IMPORT_MIGRATE_STUCK
+                    return stopped
             try:
                 async with pool.acquire() as conn, conn.transaction():
-                    await _write(conn, converted, document["sequences"])
+                    if not migrating:
+                        await _write(conn, converted, document["sequences"])
                     if notion:
                         # After the restored config, so the file cannot drop the mark.
                         await set_value(conn, CONFIG_GUILD_ID, PG_TRUTH_IMPORTED_KEY, "1")
@@ -285,7 +359,8 @@ async def _import_database(ctx: Any, data: bytes) -> ActionResult:
             written = True
             if ctx.admins is not None:
                 await ctx.admins.load()
-            result = ActionResult(True, texts.IMPORT_DONE)
+            done_text = texts.IMPORT_DONE_MIGRATED if migrating else texts.IMPORT_DONE
+            result = ActionResult(True, done_text)
             if ctx.sync_cycle is not None:
                 try:
                     await ctx.sync_cycle.resync_all()
@@ -296,6 +371,8 @@ async def _import_database(ctx: Any, data: bytes) -> ActionResult:
         if written:
             ctx.maintenance = None
             ctx.sync_problem = None
+        elif keep_pause:
+            pass
         else:
             ctx.maintenance, ctx.sync_problem = previous
     # A bot paused by a failed upgrade import has no mirror yet: start it and queue all.

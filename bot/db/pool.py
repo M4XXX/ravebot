@@ -45,6 +45,38 @@ def redact_url(url: str) -> str:
         return "(unreadable URL)"
 
 
+async def run_alembic(postgres_url: str, *args: str) -> tuple[bool, str]:
+    """Run one alembic command (for example "upgrade", "head") in a subprocess.
+
+    Returns (ok, detail); detail is the error text when it failed. Each alembic run is
+    one transaction on PostgreSQL, so a failed run changes nothing.
+    """
+    env = {**os.environ, "POSTGRES_URL": postgres_url}
+    result = await asyncio.to_thread(
+        subprocess.run,  # noqa: S603
+        [sys.executable, "-m", "alembic", "-c", str(PROJECT_ROOT / "alembic.ini"), *args],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=PROJECT_ROOT,
+    )
+    if result.returncode != 0:
+        logger.error(
+            "alembic %s failed:\nstdout: %s\nstderr: %s", args, result.stdout, result.stderr
+        )
+        return False, result.stderr.strip() or result.stdout.strip()
+    return True, ""
+
+
+def revision_order() -> list[str]:
+    """All migration revisions, oldest first."""
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(Config(str(PROJECT_ROOT / "alembic.ini")))
+    return [rev.revision for rev in reversed(list(script.walk_revisions()))]
+
+
 async def run_migrations(postgres_url: str) -> None:
     """Run Alembic migrations via subprocess before the asyncpg pool is opened.
 

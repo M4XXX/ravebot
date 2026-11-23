@@ -544,6 +544,18 @@ IMPORT_REVISION_MISMATCH = (
     "This backup was made with database revision {file_revision}, but the bot runs "
     "revision {running_revision}. Nothing was changed."
 )
+IMPORT_DONE_MIGRATED = (
+    "The backup was restored. It was made with an older version of the bot; its data was "
+    "migrated to the current version."
+)
+IMPORT_MIGRATE_FAILED = (
+    "The backup was made with an older version and could not be migrated. The data from "
+    "before the import was restored. Nothing was changed."
+)
+IMPORT_MIGRATE_STUCK = (
+    "The backup was loaded, but migrating it to the current version failed. The bot stays "
+    "paused. The safety backup is in the backup folder; restart the bot to retry the migration."
+)
 IMPORT_SCHEMA_MISMATCH = (
     "This backup does not match the database tables ({detail}). Nothing was changed."
 )
