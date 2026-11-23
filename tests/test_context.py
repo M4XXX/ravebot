@@ -132,7 +132,7 @@ def test_attach_notion_hands_the_client_to_the_mirror(monkeypatch: pytest.Monkey
 
 
 class TestMenuAfterFlow:
-    def test_release_of_a_held_lock_schedules_the_menu(
+    async def test_release_of_a_held_lock_schedules_the_menu(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from unittest.mock import MagicMock
@@ -142,43 +142,39 @@ class TestMenuAfterFlow:
         lock = ctx.get_user_lock(42)
         lock.release()  # not held: nothing
         ctx.menu_service.schedule.assert_not_called()
-        import asyncio
 
-        asyncio.run(lock.acquire())
+        await lock.acquire()
         lock.release()
         ctx.menu_service.schedule.assert_called_once_with(42)
 
-    def test_release_if_notifies_unless_told_not_to(
+    async def test_release_if_notifies_unless_told_not_to(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        import asyncio
         from unittest.mock import MagicMock
 
         ctx = BotContext(config=make_config(monkeypatch))
         ctx.menu_service = MagicMock()
         lock = ctx.get_user_lock(42)
-        asyncio.run(lock.acquire())
+        await lock.acquire()
         assert lock.release_if(lock.token, notify=False)
         ctx.menu_service.schedule.assert_not_called()
-        asyncio.run(lock.acquire())
+        await lock.acquire()
         assert lock.release_if(lock.token)
         ctx.menu_service.schedule.assert_called_once_with(42)
 
-    def test_stale_token_does_not_notify(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import asyncio
+    async def test_stale_token_does_not_notify(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from unittest.mock import MagicMock
 
         ctx = BotContext(config=make_config(monkeypatch))
         ctx.menu_service = MagicMock()
         lock = ctx.get_user_lock(42)
-        asyncio.run(lock.acquire())
+        await lock.acquire()
         assert not lock.release_if(lock.token + 5)
         ctx.menu_service.schedule.assert_not_called()
 
-    def test_no_menu_service_is_fine(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import asyncio
+    async def test_no_menu_service_is_fine(self, monkeypatch: pytest.MonkeyPatch) -> None:
 
         ctx = BotContext(config=make_config(monkeypatch))
         lock = ctx.get_user_lock(42)
-        asyncio.run(lock.acquire())
+        await lock.acquire()
         lock.release()
