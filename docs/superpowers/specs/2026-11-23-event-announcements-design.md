@@ -16,7 +16,7 @@ Later the announcements will also get a generated poster as an attachment. That 
 - A template is a Discord message the admin pasted and changed: normal Discord markdown with **placeholders** for event data.
 - **Rules belong to the general announcement only.** An admin can create any number of rules. Each rule has *days before the event* and *time of day*. Rules can be edited and deleted. **No rules means no general posts.** When the general announcement is switched on and has no rules, a default rule is created: 3 days before the event.
 - The event start announcement has no rules: it is posted when the event starts.
-- **An announcement is skipped when the lineup is not completely filled** (every slot booked, `is_fully_booked`) at the time it would be posted. Skipped means skipped: it is not retried later for that rule.
+- **An announcement is skipped when the lineup is not completely filled** (every slot booked, `is_fully_booked`) at the time it would be posted. This applies to both types, so an event whose lineup is incomplete at its start gets no start announcement either. Skipped means skipped: it is not retried later for that rule.
 - **Mentions:** role mentions in a template work. `@everyone` and `@here` never ping (allowed mentions: roles only).
 
 ## My calls (the owner has not decided these; they are marked in the plan and easy to change)
@@ -27,6 +27,14 @@ Later the announcements will also get a generated poster as an attachment. That 
 - Event start announcement: posted at the event's start time (as a new message), edited at every slot change to show the DJ playing now and, if there is one, the next DJ; after the last slot ends it is edited once more to say the event has ended and then never touched again. A bot restart must not post it twice.
 - Times in messages are Discord timestamps (`<t:unix:F>`, `<t:unix:R>`) so each reader sees their own zone.
 - If the template is invalid or too long for Discord (2000 characters after filling), the post is not sent and an admin log entry says why; the default template is the fallback only for an empty template.
+
+## More calls, from the builder check (mine, not the owner's)
+- **When is a rule due?** A rule posts for an event only when its post time lies after the moment the rule was created or the type was switched on (whichever is later), and the event has not started. Switching the feature on or adding a rule therefore never floods the channel with posts for the past. The default 3-day rule on an event only 2 days away does not post for that event.
+- **Several rules:** each rule posts its own message. The post record is keyed by event and rule. Editing a rule (days or time) affects only events it has not posted for yet. Deleting a rule leaves its existing posts. A change of the event's details or lineup edits all existing posts of that event, as long as it has not started.
+- **Event start announcement timing:** it is posted at the event's start time. If the bot was offline then, it still posts, until the event has ended (the end is the start of the last slot plus the slot length; slots are back to back with a fixed length). If the start time changes before the post exists, the new time counts; once posted, the post follows the new slot times. One post per event; a restart never posts a second one.
+- **Channel changed:** posts already made stay where they are and are still edited there (the record keeps the channel id); new posts go to the new channel. A post deleted by hand is not reposted and not edited again.
+- **Canceled or deleted event:** its existing announcements (both types) are edited to a short fixed text ("This event was canceled."), and nothing new is posted for it.
+- **Invalid or too long template:** nothing is sent and the next check tries again, so fixing the template fixes the post as long as the event has not started. The admin log gets one entry per template version, not one per check.
 
 ## Placeholders
 Filled from the event. An unknown placeholder stays visible as typed (so a typo is noticed) and the admin page warns about it when saving.
